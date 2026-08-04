@@ -268,7 +268,9 @@ Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事
 [`docs/contracts/dashboard-v1.schema.json`](docs/contracts/dashboard-v1.schema.json)；并并发调用一次
 `atm quota --json`。额度来自各 Agent 自己的日志而不是会话索引（Codex 会话
 `rate_limits`、Grok `~/.grok/logs/unified.jsonl` 里的 billing credits 与账期刷新时间）。
-它们不进快照协议——这样 CLI 与 App 的版本可以继续各自演进，任一额度源读取失败也只影响自己的卡片。
+私有或第三方额度源可通过 [`quota_providers` 版本化命令协议](docs/quota-provider-protocol.md)
+提供通用多指标卡片，无需链接进 ATM 或暴露服务凭据。额度不进快照协议——这样 CLI 与 App 的版本可以
+继续各自演进，任一额度源读取失败也只影响自己的卡片。
 
 Todo 使用一套生命周期状态：`open/in_progress/waiting/review/blocked/done/dropped`。
 `lane` 表示工作、个人等领域，`maintenance` 是标签而不是状态。当前会话通过 session↔todo

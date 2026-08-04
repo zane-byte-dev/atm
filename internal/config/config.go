@@ -79,9 +79,19 @@ var (
 	// connector speaks ATM's versioned JSON protocol over stdin/stdout, so a
 	// private or third-party integration does not need to be linked into ATM.
 	CollectionConnectors map[string]CollectionConnectorConfig
+	// QuotaProviders registers optional executable quota providers. Providers
+	// keep service credentials and private endpoints outside ATM while returning
+	// versioned, provider-neutral cards for the CLI and App.
+	QuotaProviders map[string]QuotaProviderConfig
 )
 
 type CollectionConnectorConfig struct {
+	Command        string   `json:"command"`
+	Args           []string `json:"args,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+}
+
+type QuotaProviderConfig struct {
 	Command        string   `json:"command"`
 	Args           []string `json:"args,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
@@ -106,6 +116,7 @@ type FileConfig struct {
 	CollectionMessageRetentionDays *int                                 `json:"collection_message_retention_days,omitempty"`
 	CollectionModelCommand         string                               `json:"collection_model_command,omitempty"`
 	CollectionConnectors           map[string]CollectionConnectorConfig `json:"collection_connectors,omitempty"`
+	QuotaProviders                 map[string]QuotaProviderConfig       `json:"quota_providers,omitempty"`
 	DataDir                        string                               `json:"data_dir,omitempty"`
 	Pricing                        map[string][4]float64                `json:"pricing,omitempty"`
 	Subscriptions                  map[string]float64                   `json:"subscriptions,omitempty"`
@@ -175,6 +186,7 @@ func loadConfigFile() {
 		CollectionModelCommand = cfg.CollectionModelCommand
 	}
 	CollectionConnectors = cfg.CollectionConnectors
+	QuotaProviders = cfg.QuotaProviders
 	if cfg.DataDir != "" {
 		AtmDir = expandHome(cfg.DataDir)
 		AtmDB = filepath.Join(AtmDir, "atm.db")
@@ -249,6 +261,7 @@ func ShowConfig() string {
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
 		CollectionModelCommand:         CollectionModelCommand,
 		CollectionConnectors:           CollectionConnectors,
+		QuotaProviders:                 QuotaProviders,
 		DataDir:                        AtmDir,
 		Pricing:                        Pricing,
 		Subscriptions:                  Subscriptions,

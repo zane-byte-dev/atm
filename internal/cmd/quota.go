@@ -1,9 +1,12 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -171,9 +174,72 @@ func printQuotaAgent(name string, q *parser.QuotaInfo, now time.Time, trends quo
 	fmt.Println()
 }
 
-// Agents that expose a quota window. Keep this list in sync with the parsers
-// wired in runQuota.
-var quotaAgents = []string{"codex", "grokbuild"}
+func mergeQuotaProviderCards(out map[string]any, cardsByAgent map[string][]quotaProviderCard,
+	want func(string) bool) {
+	for agent, cards := range cardsByAgent {
+		if !want(agent) || len(cards) == 0 {
+			continue
+		}
+		entry, _ := out[agent].(map[string]any)
+		if entry == nil {
+			entry = map[string]any{}
+		}
+		entry["provider_cards"] = cards
+		out[agent] = entry
+	}
+}
+
+func printQuotaProviderCards(cardsByAgent map[string][]quotaProviderCard,
+	want func(string) bool) bool {
+	printed := false
+	agents := make([]string, 0, len(cardsByAgent))
+	for agent := range cardsByAgent {
+		agents = append(agents, agent)
+	}
+	sort.Strings(agents)
+	for _, agent := range agents {
+		if !want(agent) {
+			continue
+		}
+		for _, card := range cardsByAgent[agent] {
+			label := strings.ToUpper(card.Provider[:1]) + card.Provider[1:]
+			fmt.Printf("%s / %s Quota\n", strings.ToUpper(agent[:1])+agent[1:], label)
+			fmt.Println(strings.Repeat("─", 46))
+			title := card.Title
+			if card.Period != "" {
+				title += " · " + card.Period
+			}
+			fmt.Printf("  %s\n", title)
+			for _, metric := range card.Metrics {
+				unit := metric.Unit
+				if metric.Currency != "" {
+					unit = " " + metric.Currency
+				}
+				fmt.Printf("  %-12s %.*f / %.*f%s  (%5.1f%%)\n",
+					metric.Label, metric.Precision, metric.Used,
+					metric.Precision, metric.Limit, unit, metric.UsedPercent)
+			}
+			if card.ObservedAt != "" || card.Source != "" {
+				fmt.Printf("  Observed: %s", card.ObservedAt)
+				if card.Source != "" {
+					fmt.Printf("  Source: %s", card.Source)
+				}
+				fmt.Println()
+			}
+			fmt.Println()
+			printed = true
+		}
+	}
+	return printed
+}
+
+func loadAndReportQuotaProviders(ctx context.Context, stderr io.Writer) map[string][]quotaProviderCard {
+	cards, errs := loadQuotaProviderCards(ctx)
+	for _, err := range errs {
+		fmt.Fprintf(stderr, "warning: %v\n", err)
+	}
+	return cards
+}
 
 // recordQuotaSamples appends the current rate-limit readings to history. It reads
 // only local sources — never the opt-in Grok live billing endpoint — because sync
@@ -275,27 +341,15 @@ func formatQuotaSpan(minutes int) string {
 	return fmt.Sprintf("%dm", minutes)
 }
 
-func supportsQuota(agent string) bool {
-	for _, a := range quotaAgents {
-		if a == agent {
-			return true
-		}
-	}
-	return false
-}
-
 func runQuota(cmd *cobra.Command, args []string) error {
 	agent, err := resolveAgent()
 	if err != nil {
 		return err
 	}
-	if agent != "" && !supportsQuota(agent) {
-		fmt.Printf("Quota is currently only available for %s.\n", strings.Join(quotaAgents, " and "))
-		return nil
-	}
 
 	now := time.Now()
 	want := func(name string) bool { return agent == "" || agent == name }
+	providerCards := loadAndReportQuotaProviders(cmd.Context(), cmd.ErrOrStderr())
 
 	var codex, grok *parser.QuotaInfo
 	if want("codex") {
@@ -318,6 +372,7 @@ func runQuota(cmd *cobra.Command, args []string) error {
 		if want("grokbuild") {
 			out["grokbuild"] = quotaAgentJSON(grok, now, grokTrends)
 		}
+		mergeQuotaProviderCards(out, providerCards, want)
 		output.JSON(out)
 		return nil
 	}
@@ -329,6 +384,9 @@ func runQuota(cmd *cobra.Command, args []string) error {
 	}
 	if want("grokbuild") && grok != nil {
 		printQuotaAgent("Grok Build", grok, now, grokTrends)
+		printed = true
+	}
+	if printQuotaProviderCards(providerCards, want) {
 		printed = true
 	}
 	if !printed {

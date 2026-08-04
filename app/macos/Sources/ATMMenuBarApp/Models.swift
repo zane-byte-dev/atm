@@ -3764,10 +3764,129 @@ struct ATMQuotaProduct: Decodable, Equatable, Identifiable {
     }
 }
 
+/// One bounded metric supplied by an external quota provider. Providers keep
+/// their credentials and service-specific API code outside ATM; the App only
+/// needs values, bounds, and presentation metadata.
+struct ATMProviderQuotaMetric: Decodable, Equatable, Identifiable {
+    let id: String
+    let label: String
+    let used: Double
+    let limit: Double
+    let usedPercent: Double
+    let unit: String?
+    let currency: String?
+    let precision: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case id, label, used, limit, unit, currency, precision
+        case usedPercent = "used_percent"
+    }
+
+    private func formatted(_ value: Double) -> String {
+        let digits = max(0, min(precision ?? 0, 6))
+        if digits == 0 { return NumberFormat.compact(Int(value.rounded())) }
+        return String(format: "%.*f", digits, value)
+    }
+
+    var valueText: String {
+        if let currency, !currency.isEmpty {
+            let prefix = currency.uppercased() == "CNY" ? "¥" : "\(currency.uppercased()) "
+            return "\(prefix)\(formatted(used)) / \(prefix)\(formatted(limit))"
+        }
+        let suffix = (unit?.isEmpty == false) ? " \(unit!)" : ""
+        return "\(formatted(used)) / \(formatted(limit))\(suffix)"
+    }
+}
+
+struct ATMProviderQuotaPayload: Decodable, Equatable, Identifiable {
+    let id: String
+    let provider: String
+    let title: String
+    let period: String?
+    let observedAt: String
+    let source: String?
+    let metrics: [ATMProviderQuotaMetric]
+
+    enum CodingKeys: String, CodingKey {
+        case id, provider, title, period, source, metrics
+        case observedAt = "observed_at"
+    }
+
+    var observedTimeLabel: String {
+        guard let separator = observedAt.firstIndex(of: "T") else { return observedAt }
+        return String(observedAt[observedAt.index(after: separator)...].prefix(5))
+    }
+}
+
+// Compatibility with ATM builds that emitted the former built-in daily_quota
+// object. It is translated into the provider-neutral card model so
+// upgrading the App restores an existing local observation immediately.
+private struct ATMLegacyDailyCountQuota: Decodable, Equatable {
+    let used: Double
+    let limit: Double
+    let usedPercent: Double
+
+    enum CodingKeys: String, CodingKey {
+        case used, limit
+        case usedPercent = "used_percent"
+    }
+}
+
+private struct ATMLegacyDailyAmountQuota: Decodable, Equatable {
+    let used: Double
+    let limit: Double
+    let usedPercent: Double
+    let currency: String
+
+    enum CodingKeys: String, CodingKey {
+        case used, limit, currency
+        case usedPercent = "used_percent"
+    }
+}
+
+private struct ATMLegacyDailyQuota: Decodable, Equatable {
+    let cardTitle: String
+    let day: String
+    let count: ATMLegacyDailyCountQuota
+    let amount: ATMLegacyDailyAmountQuota
+    let observedAt: String
+    let source: String?
+
+    enum CodingKeys: String, CodingKey {
+        case day, count, amount, source
+        case cardTitle = "card_title"
+        case observedAt = "observed_at"
+    }
+
+    func providerPayload(provider: String?) -> ATMProviderQuotaPayload {
+        ATMProviderQuotaPayload(
+            id: "legacy-daily-\(day)",
+            provider: provider ?? "provider",
+            title: cardTitle,
+            period: "今日",
+            observedAt: observedAt,
+            source: source,
+            metrics: [
+                ATMProviderQuotaMetric(
+                    id: "count", label: "每日次数", used: count.used, limit: count.limit,
+                    usedPercent: count.usedPercent, unit: "次", currency: nil, precision: 0
+                ),
+                ATMProviderQuotaMetric(
+                    id: "amount", label: "每日金额", used: amount.used, limit: amount.limit,
+                    usedPercent: amount.usedPercent, unit: nil, currency: amount.currency, precision: 2
+                )
+            ]
+        )
+    }
+}
+
 struct ATMQuotaAgent: Decodable, Equatable {
     let plan: String?
     let primary: ATMQuotaWindow?
     let secondary: ATMQuotaWindow?
+    let providerCards: [ATMProviderQuotaPayload]?
+    private let provider: String?
+    private let legacyDailyQuota: ATMLegacyDailyQuota?
     /// "log" / "live" / "cache"; absent from agents with a single source.
     let source: String?
     let products: [ATMQuotaProduct]?
@@ -3776,11 +3895,22 @@ struct ATMQuotaAgent: Decodable, Equatable {
         case plan
         case primary
         case secondary
+        case providerCards = "provider_cards"
+        case provider
+        case legacyDailyQuota = "daily_quota"
         case source
         case products
     }
 
     var windows: [ATMQuotaWindow] { [primary, secondary].compactMap { $0 } }
+
+    var allProviderCards: [ATMProviderQuotaPayload] {
+        var cards = providerCards ?? []
+        if let legacyDailyQuota {
+            cards.append(legacyDailyQuota.providerPayload(provider: provider))
+        }
+        return cards
+    }
 }
 
 /// `atm quota --json` returns one entry per agent, keyed by agent name, and
@@ -3797,7 +3927,7 @@ struct ATMQuotaSnapshot: Decodable, Equatable {
         self.agents = agents
     }
 
-    var isEmpty: Bool { cards.isEmpty }
+    var isEmpty: Bool { cards.isEmpty && providerCards.isEmpty }
 
     /// Agents that actually reported a window, sorted for stable rendering.
     var entries: [(agent: String, quota: ATMQuotaAgent)] {
@@ -3834,6 +3964,19 @@ struct ATMQuotaSnapshot: Decodable, Equatable {
         }
     }
 
+    var providerCards: [ATMProviderQuotaCard] {
+        agents.flatMap { agent, quota in
+            quota.allProviderCards.map { payload in
+                ATMProviderQuotaCard(
+                    id: "\(agent):\(payload.provider):\(payload.id)",
+                    agent: agent,
+                    payload: payload
+                )
+            }
+        }
+        .sorted { $0.id < $1.id }
+    }
+
 }
 
 /// One quota tile on the usage page / quick panel.
@@ -3858,6 +4001,27 @@ struct ATMQuotaCard: Identifiable, Equatable {
     /// Config knobs this card offers behind its own gear icon.
     var settings: [ATMQuotaCardSetting] {
         ATMQuotaCardSetting.settings(for: agent)
+    }
+}
+
+struct ATMProviderQuotaCard: Identifiable, Equatable {
+    let id: String
+    let agent: String
+    let payload: ATMProviderQuotaPayload
+
+    var providerLabel: String {
+        let provider = payload.provider.trimmingCharacters(in: .whitespacesAndNewlines)
+        return provider == provider.lowercased() ? provider.capitalized : provider
+    }
+
+    var sourceLabel: String? {
+        switch payload.source {
+        case "browser": return "浏览器"
+        case "live": return "实时"
+        case "cache": return "缓存"
+        case "local": return "本地"
+        default: return payload.source
+        }
     }
 }
 
@@ -3970,30 +4134,41 @@ enum ATMAgentDisplay {
 }
 
 extension ATMQuotaSnapshot {
-    /// Shown in the menu bar only once a rate-limit window crosses the warning
-    /// threshold. The most exhausted source wins.
+    /// Shown in the menu bar only once any built-in window or provider metric
+    /// crosses the warning threshold. The most exhausted source wins.
     var menuBarSuffix: String? {
-        let candidates = cards.map { card in
+        var candidates = cards.map { card in
             (
                 percent: card.window.displayPercent,
                 arrow: card.window.trend?.arrow ?? ""
             )
         }
+        candidates.append(contentsOf: providerCards.flatMap { card in
+            card.payload.metrics.map { (percent: $0.usedPercent, arrow: "") }
+        })
         guard let tightest = candidates.max(by: { $0.percent < $1.percent }) else { return nil }
         let percent = tightest.percent
         guard ATMQuotaLevel.level(forPercent: percent) != .healthy else { return nil }
         return String(format: "%.0f%%", percent) + tightest.arrow
     }
 
-    /// The tooltip has no layout cost, so every window appears.
+    /// The tooltip has no layout cost, so every window and provider metric appears.
     var tooltipText: String? {
-        let parts = cards.map { card -> String in
+        var parts = cards.map { card -> String in
             var text = "\(ATMAgentDisplay.name(card.agent)) \(card.window.windowLabel) "
                 + "\(String(format: "%.0f", card.window.displayPercent))%"
             if let trend = card.window.trend, !trend.isFlat {
                 text += " \(trend.rateText)"
             }
             return text
+        }
+        for card in providerCards {
+            for metric in card.payload.metrics {
+                parts.append(
+                    "\(ATMAgentDisplay.name(card.agent)) \(card.providerLabel) "
+                        + "\(metric.label) \(String(format: "%.0f", metric.usedPercent))%"
+                )
+            }
         }
         guard !parts.isEmpty else { return nil }
         return "配额 " + parts.joined(separator: " / ")
