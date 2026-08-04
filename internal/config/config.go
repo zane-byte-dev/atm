@@ -149,6 +149,9 @@ type QuotaProviderConfig struct {
 	Command        string   `json:"command"`
 	Args           []string `json:"args,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+	// VisibleMetrics optionally limits provider cards to the listed metric IDs.
+	// An absent or empty list preserves the provider's complete response.
+	VisibleMetrics []string `json:"visible_metrics,omitempty"`
 }
 
 type FileConfig struct {

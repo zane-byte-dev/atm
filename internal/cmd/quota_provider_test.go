@@ -27,7 +27,7 @@ func TestQuotaProviderHelperProcess(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "provider unavailable")
 		os.Exit(2)
 	default:
-		fmt.Fprint(os.Stdout, `{"version":1,"cards":[{"id":"daily","agent":"Claude","title":"Plan","period":"today","observed_at":"2026-08-04T03:28:37Z","source":"browser","metrics":[{"id":"count","label":"Count","used":25,"limit":100,"unit":"requests"}]}]}`)
+		fmt.Fprint(os.Stdout, `{"version":1,"cards":[{"id":"daily","agent":"Claude","title":"Plan","period":"today","observed_at":"2026-08-04T03:28:37Z","source":"browser","metrics":[{"id":"count","label":"Count","used":25,"limit":100,"unit":"requests"},{"id":"amount","label":"Amount","used":12.5,"limit":50,"currency":"CNY","precision":2}]}]}`)
 	}
 	os.Exit(0)
 }
@@ -54,6 +54,29 @@ func TestCallQuotaProviderNormalizesCardsAndComputesPercent(t *testing.T) {
 	}
 	if got := card.Metrics[0].UsedPercent; got != 25 {
 		t.Fatalf("used percent = %v", got)
+	}
+}
+
+func TestCallQuotaProviderFiltersVisibleMetrics(t *testing.T) {
+	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
+	providerConfig := quotaProviderHelperConfig("success")
+	providerConfig.VisibleMetrics = []string{" Amount "}
+	cards, err := callQuotaProvider(context.Background(), "example", providerConfig)
+	if err != nil {
+		t.Fatalf("callQuotaProvider: %v", err)
+	}
+	if len(cards) != 1 || len(cards[0].Metrics) != 1 || cards[0].Metrics[0].ID != "amount" {
+		t.Fatalf("filtered cards = %#v", cards)
+	}
+}
+
+func TestCallQuotaProviderRejectsUnknownVisibleMetrics(t *testing.T) {
+	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
+	providerConfig := quotaProviderHelperConfig("success")
+	providerConfig.VisibleMetrics = []string{"missing"}
+	_, err := callQuotaProvider(context.Background(), "example", providerConfig)
+	if err == nil || err.Error() != "quota provider example visible_metrics matched no returned metrics" {
+		t.Fatalf("error = %v", err)
 	}
 }
 

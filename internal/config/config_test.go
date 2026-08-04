@@ -104,7 +104,7 @@ func TestInitAndLoadConfig(t *testing.T) {
   "collection_model_command": "rule",
   "collection_model_runners": {"house": {"command": "~/bin/house-cli", "args": ["--schema", "{{schema_path}}"], "output_field": "result", "timeout_seconds": 60}},
   "collection_connectors": {"slack": {"command": "~/bin/atm-connector-slack", "args": ["--workspace", "example"], "timeout_seconds": 30}},
-  "quota_providers": {"example": {"command": "~/bin/atm-quota-example", "args": ["--profile", "work"], "timeout_seconds": 8}},
+  "quota_providers": {"example": {"command": "~/bin/atm-quota-example", "args": ["--profile", "work"], "timeout_seconds": 8, "visible_metrics": ["amount"]}},
   "data_dir": "~/atm-data",
   "pricing": {"test-model": [1, 2, 3, 4]},
   "subscriptions": {"codex": 20},
@@ -150,7 +150,8 @@ func TestInitAndLoadConfig(t *testing.T) {
 		t.Fatalf("collection connectors = %#v", CollectionConnectors)
 	}
 	if provider := QuotaProviders["example"]; provider.Command != "~/bin/atm-quota-example" ||
-		len(provider.Args) != 2 || provider.TimeoutSeconds != 8 {
+		len(provider.Args) != 2 || provider.TimeoutSeconds != 8 ||
+		len(provider.VisibleMetrics) != 1 || provider.VisibleMetrics[0] != "amount" {
 		t.Fatalf("quota providers = %#v", QuotaProviders)
 	}
 	if shown := ShowConfig(); shown == "" || !containsAll(shown, "UTC", "atm-data", "test-model", "subscriptions", "codex") {
