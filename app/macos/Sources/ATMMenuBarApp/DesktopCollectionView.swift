@@ -189,9 +189,10 @@ struct DesktopCollectionView: View {
             summaryMetric("新建", value: summary.createdToday, color: collectionActionColor("create"))
             summaryMetric("补充", value: summary.appendedToday, color: collectionActionColor("append"))
             summaryMetric("沉淀", value: summary.insightToday, color: collectionActionColor("insight"))
-            if summary.failedToday > 0 {
-                summaryMetric("待重试", value: summary.failedToday, color: collectionActionColor("failed"))
-            }
+            // 这里不再放失败数。三重机制保证失败会自愈：游标不前移（collector 的
+            // `checkpoint was not advanced`）、失败消息不进 HandledCollectionMessageIDs、
+            // 失败 item 不在跳过分支里——下一轮连着原始上下文重新分析，人不用做任何事。
+            // 而且这个数是按 run 累加的：同一条失败 47 次会显示成「47」，读起来像 47 条待处理。
             Spacer()
             if let digest = todaysDigest {
                 // The digest is the readable form of everything filed as an
@@ -548,15 +549,23 @@ private struct CollectionItemDetail: View {
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                     }
-                    if item.action == "failed" || item.action == "reverted" {
+                    // 撤销过的 item 状态回落成 `processed`（见 collector 的 revert），它的消息
+                    // 因此进了 handled 名单、再也不会被自动重新收集——这个按钮是它唯一的回头路，
+                    // 所以留在主位。失败正相反：下一轮自己会重来，于是降级进菜单，只服务
+                    // 「刚修好连接器、不想等下一轮」这种情况。
+                    if item.action == "reverted" {
                         Button("重新处理") { store.reprocessCollectionItem(item) }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                     }
-                    if item.action == "ignore" || item.action == "create" || item.action == "append" || item.action == "reverted" {
+                    if item.action == "ignore" || item.action == "create"
+                        || item.action == "append" || item.action == "failed" {
                         Menu {
-                            if item.action == "ignore" || item.action == "reverted" {
+                            if item.action == "ignore" {
                                 Button("重新判断") { store.reprocessCollectionItem(item) }
+                            }
+                            if item.action == "failed" {
+                                Button("立即重试") { store.reprocessCollectionItem(item) }
                             }
                             if item.action == "create" || item.action == "append" {
                                 Button("修正标题、项目和优先级") { showingCorrection = true }
@@ -1442,7 +1451,8 @@ private func collectionActionTitle(_ action: String) -> String {
     case "append": return "已补充"
     case "insight": return "已沉淀"
     case "ignore": return "无需处理"
-    case "failed": return "等待重试"
+    // 「等待重试」听着像在等人按一下；实际是下一轮 collect 自动重来。
+    case "failed": return "下轮自动重试"
     case "reverted": return "已撤销"
     default: return "等待处理"
     }
