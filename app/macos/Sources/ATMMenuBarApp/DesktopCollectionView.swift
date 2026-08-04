@@ -269,7 +269,7 @@ struct DesktopCollectionView: View {
                     sourceRow(
                         id: source.id,
                         name: source.displayName,
-                        icon: source.kind == "group" ? "person.3.fill" : "person.fill",
+                        icon: source.symbolName,
                         enabled: source.enabled,
                         count: store.collectionOverview.items.filter {
                             $0.sourceID == source.id && !$0.shouldCollapseInCollection
@@ -710,7 +710,7 @@ private struct CollectionItemDetail: View {
 
     private var sourceSummary: some View {
         HStack(spacing: 10) {
-            Image(systemName: source?.kind == "group" ? "person.3.fill" : "person.fill")
+            Image(systemName: collectionKindSymbol(source?.kind))
                 .foregroundStyle(ATMTheme.secondary)
                 .frame(width: 28, height: 28)
                 .background(ATMTheme.controlFill, in: Circle())
@@ -1176,7 +1176,9 @@ private struct AddCollectionSourceSheet: View {
             }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "link.circle.fill")
+                // The glyph is what separates a robot from the person it is
+                // named after when both come back for the same keyword.
+                Image(systemName: candidate.symbolName)
                     .frame(width: 18)
                     .foregroundStyle(ATMTheme.secondary)
                 VStack(alignment: .leading, spacing: 2) {

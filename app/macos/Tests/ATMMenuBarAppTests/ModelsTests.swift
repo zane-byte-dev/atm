@@ -112,6 +112,12 @@ final class ModelsTests: XCTestCase {
         let list = try JSONDecoder().decode(ATMCollectionCandidateList.self, from: data)
         XCTAssertEqual(list.candidates.count, 2)
         XCTAssertFalse(list.candidates[0].isGroup)
+        // A channel reads as a room, a bot as a machine, and an unknown kind
+        // still gets a glyph rather than a blank slot.
+        XCTAssertEqual(list.candidates[0].symbolName, "person.3.fill")
+        XCTAssertEqual(collectionKindSymbol("bot"), "cpu")
+        XCTAssertEqual(list.candidates[1].symbolName, "person.fill")
+        XCTAssertEqual(collectionKindSymbol(nil), "person.fill")
         XCTAssertEqual(list.candidates[0].detail, "由示例连接器返回")
         XCTAssertFalse(list.candidates[1].isGroup)
         XCTAssertEqual(

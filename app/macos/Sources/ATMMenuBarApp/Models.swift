@@ -73,6 +73,19 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     var effectiveIntervalMinutes: Int {
         intervalMinutes ?? (effectiveStrategy == "observe" ? 60 : 5)
     }
+
+    var symbolName: String { collectionKindSymbol(kind) }
+}
+
+/// Glyph for a connector-defined source kind. Kinds belong to the connector, so
+/// this recognizes the few shapes that read differently at a glance — a robot
+/// feed is not a person you talk to — and leaves everything else as one contact.
+func collectionKindSymbol(_ kind: String?) -> String {
+    switch kind {
+    case "group", "channel": return "person.3.fill"
+    case "bot": return "cpu"
+    default: return "person.fill"
+    }
 }
 
 /// One `atm collect source search` result, carrying the identifier the connector
@@ -91,6 +104,8 @@ struct ATMCollectionCandidate: Decodable, Identifiable, Equatable {
     var id: String { "\(kind)/\(externalID)" }
 
     var isGroup: Bool { kind == "group" }
+
+    var symbolName: String { collectionKindSymbol(kind) }
 }
 
 struct ATMCollectionCandidateList: Decodable, Equatable {
