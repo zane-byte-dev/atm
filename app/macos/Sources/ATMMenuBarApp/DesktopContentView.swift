@@ -2056,7 +2056,7 @@ private struct DesktopUsageContent: View, Equatable {
         }
     }
 
-    /// Rate-limit windows are not scoped by usage filters.
+    /// Rate-limit windows and external provider cards are not scoped by usage filters.
     private var quotaModule: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("额度")
@@ -2065,6 +2065,9 @@ private struct DesktopUsageContent: View, Equatable {
             LazyVGrid(columns: Self.quotaCardColumns, spacing: 12) {
                 ForEach(quota.cards) { card in
                     quotaCard(card)
+                }
+                ForEach(quota.providerCards) { card in
+                    providerQuotaCard(card)
                 }
             }
         }
@@ -2937,6 +2940,101 @@ private struct DesktopUsageContent: View, Equatable {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border))
         .help("\(label) \(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)")
+    }
+
+    private func providerQuotaCard(_ card: ATMProviderQuotaCard) -> some View {
+        let payload = card.payload
+        let label = ATMAgentDisplay.name(card.agent)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 5) {
+                ATMAgentMark(agent: card.agent, size: 15)
+                Text(label)
+                    .font(ATMFont.font(.footnote, weight: .semibold))
+                    .lineLimit(1)
+                Text(card.providerLabel)
+                    .font(ATMFont.mono(.caption, .semibold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(ATMTheme.controlFill, in: Capsule())
+                    .fixedSize()
+                Spacer(minLength: 4)
+                if let period = payload.period, !period.isEmpty {
+                    Text(period)
+                        .font(ATMFont.mono(.caption))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+            }
+            .frame(height: 20)
+            .foregroundStyle(ATMTheme.secondary)
+
+            Text(payload.title)
+                .font(ATMFont.font(.caption, weight: .medium))
+                .foregroundStyle(ATMTheme.secondary)
+                .lineLimit(1)
+
+            ForEach(payload.metrics) { metric in
+                providerQuotaMetric(metric)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 6) {
+                if !payload.observedAt.isEmpty {
+                    Label(payload.observedTimeLabel, systemImage: "clock")
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if let sourceLabel = card.sourceLabel {
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(ATMTheme.quotaColor(.healthy))
+                            .frame(width: 4, height: 4)
+                        Text(sourceLabel)
+                    }
+                }
+            }
+            .font(ATMFont.mono(.caption))
+            .foregroundStyle(ATMTheme.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border))
+        .help(
+            "\(label) · \(card.providerLabel) · \(payload.title)："
+                + payload.metrics.map { "\($0.label) \(String(format: "%.1f", $0.usedPercent))%" }
+                    .joined(separator: "，")
+        )
+    }
+
+    private func providerQuotaMetric(_ metric: ATMProviderQuotaMetric) -> some View {
+        let percent = max(0, metric.usedPercent)
+        let color = ATMTheme.quotaColor(ATMQuotaLevel.level(forPercent: percent))
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(metric.label)
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                Text(metric.valueText)
+                    .font(ATMFont.mono(.body, .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                Spacer(minLength: 2)
+                Text(String(format: "%.1f%%", percent))
+                    .font(ATMFont.mono(.caption, .semibold))
+                    .foregroundStyle(color)
+                    .fixedSize()
+            }
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(ATMTheme.controlFill)
+                    Capsule()
+                        .fill(color)
+                        .frame(width: max(0, min(1, percent / 100)) * proxy.size.width)
+                }
+            }
+            .frame(height: 5)
+        }
     }
 
 

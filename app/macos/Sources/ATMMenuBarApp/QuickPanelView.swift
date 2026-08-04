@@ -140,6 +140,11 @@ struct QuickPanelView: View {
                     ForEach(store.quota.cards) { card in
                         quotaRow(agent: card.agent, window: card.window)
                     }
+                    ForEach(store.quota.providerCards) { card in
+                        ForEach(card.payload.metrics) { metric in
+                            providerQuotaRow(card: card, metric: metric)
+                        }
+                    }
                 }
             }
         }
@@ -159,6 +164,19 @@ struct QuickPanelView: View {
             title: "\(label) \(window.windowLabel)",
             percent: percent,
             help: "\(label) \(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)"
+        )
+    }
+
+    private func providerQuotaRow(
+        card: ATMProviderQuotaCard,
+        metric: ATMProviderQuotaMetric
+    ) -> some View {
+        quotaPercentRow(
+            agent: card.agent,
+            title: "\(card.providerLabel) \(metric.label)",
+            percent: metric.usedPercent,
+            help: "\(ATMAgentDisplay.name(card.agent)) · \(card.providerLabel) · "
+                + "\(card.payload.title)：\(metric.valueText)（\(String(format: "%.1f", metric.usedPercent))%）"
         )
     }
 

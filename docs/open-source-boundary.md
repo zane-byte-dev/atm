@@ -10,9 +10,9 @@
 - Todo、Session Binding、Memory、Knowledge 和 Artifact；
 - SQLite 存储、CLI、macOS 通用界面和 Agent hook；
 - collection 存储、分析、审计、digest 与通用连接器注册表；
-- 版本化的外部命令连接器协议。
+- 版本化的外部命令连接器与额度 provider 协议。
 
-依赖公司身份、内网域名、内部 CLI、专有页面结构或专属品牌的实现不随公开核心发布。此前存在的服务专属消息适配器和浏览器额度扩展已从公开快照移除。私有或第三方连接器可以独立发布，并通过 [`connector-protocol.md`](connector-protocol.md) 注册，无需链接进 ATM。
+依赖公司身份、内网域名、内部 CLI、专有页面结构或专属品牌的实现不随公开核心发布。此前存在的服务专属消息适配器和浏览器额度扩展已从公开快照移除。私有或第三方集成可以独立发布，并通过 [`connector-protocol.md`](connector-protocol.md) 或 [`quota-provider-protocol.md`](quota-provider-protocol.md) 注册，无需链接进 ATM。
 
 公开核心不捆绑凭据、登录态、真实消息或真实账号标识。连接器自行管理认证、服务权限和隐私政策。
 

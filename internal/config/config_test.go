@@ -26,6 +26,7 @@ func withTempConfigHome(t *testing.T) string {
 	oldCollectionLookback := CollectionLookbackMinutes
 	oldCollectionModel := CollectionModelCommand
 	oldCollectionConnectors := CollectionConnectors
+	oldQuotaProviders := QuotaProviders
 
 	home := t.TempDir()
 	Home = home
@@ -49,6 +50,7 @@ func withTempConfigHome(t *testing.T) string {
 	CollectionLookbackMinutes = 60
 	CollectionModelCommand = "codex"
 	CollectionConnectors = nil
+	QuotaProviders = nil
 
 	t.Cleanup(func() {
 		Home = oldHome
@@ -67,6 +69,7 @@ func withTempConfigHome(t *testing.T) string {
 		CollectionLookbackMinutes = oldCollectionLookback
 		CollectionModelCommand = oldCollectionModel
 		CollectionConnectors = oldCollectionConnectors
+		QuotaProviders = oldQuotaProviders
 	})
 	return home
 }
@@ -97,6 +100,7 @@ func TestInitAndLoadConfig(t *testing.T) {
   "collection_lookback_minutes": 90,
   "collection_model_command": "rule",
   "collection_connectors": {"slack": {"command": "~/bin/atm-connector-slack", "args": ["--workspace", "example"], "timeout_seconds": 30}},
+  "quota_providers": {"example": {"command": "~/bin/atm-quota-example", "args": ["--profile", "work"], "timeout_seconds": 8}},
   "data_dir": "~/atm-data",
   "pricing": {"test-model": [1, 2, 3, 4]},
   "subscriptions": {"codex": 20},
@@ -136,6 +140,10 @@ func TestInitAndLoadConfig(t *testing.T) {
 	if connector := CollectionConnectors["slack"]; connector.Command != "~/bin/atm-connector-slack" ||
 		len(connector.Args) != 2 || connector.TimeoutSeconds != 30 {
 		t.Fatalf("collection connectors = %#v", CollectionConnectors)
+	}
+	if provider := QuotaProviders["example"]; provider.Command != "~/bin/atm-quota-example" ||
+		len(provider.Args) != 2 || provider.TimeoutSeconds != 8 {
+		t.Fatalf("quota providers = %#v", QuotaProviders)
 	}
 	if shown := ShowConfig(); shown == "" || !containsAll(shown, "UTC", "atm-data", "test-model", "subscriptions", "codex") {
 		t.Fatalf("ShowConfig = %q", shown)

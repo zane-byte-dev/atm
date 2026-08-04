@@ -469,6 +469,58 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(card.products.count, 3)
     }
 
+    func testQuotaDecodesExternalProviderCards() throws {
+        let data = Data(
+            """
+            {
+              "claude":{
+                "provider_cards":[{
+                  "id":"daily","provider":"example","title":"Team plan","period":"今日",
+                  "observed_at":"2026-08-04T03:28:37Z","source":"browser",
+                  "metrics":[
+                    {"id":"count","label":"每日次数","used":428,"limit":4000,"used_percent":10.7,"unit":"次"},
+                    {"id":"amount","label":"每日金额","used":266.58,"limit":1200,"used_percent":22.215,"currency":"CNY","precision":2}
+                  ]
+                }]
+              }
+            }
+            """.utf8
+        )
+        let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: data)
+        XCTAssertTrue(quota.cards.isEmpty)
+        let card = try XCTUnwrap(quota.providerCards.first)
+        XCTAssertEqual(card.agent, "claude")
+        XCTAssertEqual(card.providerLabel, "Example")
+        XCTAssertEqual(card.sourceLabel, "浏览器")
+        XCTAssertEqual(card.payload.metrics.map(\.valueText), ["428 / 4.0K 次", "¥266.58 / ¥1200.00"])
+        XCTAssertFalse(quota.isEmpty)
+        XCTAssertTrue(quota.tooltipText?.contains("Claude Example 每日金额 22%") == true)
+    }
+
+    func testQuotaTranslatesLegacyDailyQuotaIntoProviderCard() throws {
+        let data = Data(
+            """
+            {
+              "claude":{
+                "provider":"legacy",
+                "daily_quota":{
+                  "card_title":"Team daily plan","day":"2026-08-04",
+                  "count":{"used":428,"limit":4000,"used_percent":10.7},
+                  "amount":{"used":266.58,"limit":1200,"used_percent":22.215,"currency":"CNY"},
+                  "observed_at":"2026-08-04T03:28:37.473Z","source":"browser"
+                }
+              }
+            }
+            """.utf8
+        )
+        let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: data)
+        let card = try XCTUnwrap(quota.providerCards.first)
+        XCTAssertEqual(card.providerLabel, "Legacy")
+        XCTAssertEqual(card.payload.period, "今日")
+        XCTAssertEqual(card.payload.metrics.map(\.id), ["count", "amount"])
+        XCTAssertEqual(card.payload.metrics.map(\.usedPercent), [10.7, 22.215])
+    }
+
 
     func testQuotaTreatsAWindowWithoutResetsInAsAlreadyReset() throws {
         // `atm quota --json` drops resets_in once the window has elapsed but
