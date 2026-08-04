@@ -24,11 +24,17 @@ case "$arch" in
   *) die "unsupported arch: $arch" ;;
 esac
 
-# 取最新版本 tag
+# 取最新版本 tag。跟随 github.com 的 Release 重定向，不使用匿名 API
+#（共享出口很容易耗尽 api.github.com 的每小时配额）。
 say "==> 查询最新版本…"
-tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-  | grep '"tag_name"' | head -1 | cut -d'"' -f4)"
-[ -n "$tag" ] || die "无法获取最新版本，请检查网络或仓库是否已发布 Release"
+release_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' \
+  "https://github.com/${REPO}/releases/latest")" \
+  || die "无法获取最新版本，请检查网络或仓库是否已发布 Release"
+tag="${release_url##*/}"
+case "$tag" in
+  v?*) ;;
+  *) die "最新 Release 地址无有效版本标签: ${release_url}" ;;
+esac
 version="${tag#v}"
 say "==> 最新版本: ${tag}"
 
