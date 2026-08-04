@@ -62,7 +62,11 @@ var (
 	CollectionEnabled         = false
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
-	CollectionModelCommand    = "codex"
+	// A comma-separated candidate chain: the first command that runs wins, and
+	// the next one is tried when the previous exits non-zero, times out or is
+	// not installed. That is what keeps collection alive when one CLI is rate
+	// limited. A single command remains a valid chain of one.
+	CollectionModelCommand = "codex"
 	// Synced chat is kept for this many days; 0 keeps it forever. Reading a
 	// conversation stores it so it can be searched and read offline, and that
 	// archive would otherwise grow for as long as the sources stay enabled.
@@ -83,11 +87,61 @@ var (
 	// keep service credentials and private endpoints outside ATM while returning
 	// versioned, provider-neutral cards for the CLI and App.
 	QuotaProviders map[string]QuotaProviderConfig
+	// CollectionModelRunners describes how to drive a CLI that ATM has no
+	// built-in profile for, so a third-party agent CLI can classify chat without
+	// a code change. Keys are the names used in CollectionModelCommand; a key
+	// that matches a built-in profile overrides it.
+	CollectionModelRunners map[string]ModelRunnerConfig
 )
+
+// CollectionModelWorkdirPrefix names the scratch directory every model run gets.
+// It is a shared constant because the parsers key off it: a CLI that persists a
+// session per working directory would otherwise file every classification as a
+// real ATM session in a throwaway project.
+const CollectionModelWorkdirPrefix = "atm-collection-model-"
+
+// IsCollectionModelWorkdir reports whether a path (or a CLI's URL-encoded
+// rendering of one) points inside a classifier scratch directory.
+func IsCollectionModelWorkdir(path string) bool {
+	return strings.Contains(path, CollectionModelWorkdirPrefix)
+}
+
+// CollectionModelCandidates splits the configured command into the ordered
+// chain to try. Candidates are separated by commas; each one keeps its own
+// arguments, which is why a candidate whose arguments contain a comma has to be
+// declared in collection_model_runners instead.
+func CollectionModelCandidates(commandLine string) []string {
+	if strings.TrimSpace(commandLine) == "" {
+		commandLine = CollectionModelCommand
+	}
+	var candidates []string
+	for _, candidate := range strings.Split(commandLine, ",") {
+		if candidate = strings.TrimSpace(candidate); candidate != "" {
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
 
 type CollectionConnectorConfig struct {
 	Command        string   `json:"command"`
 	Args           []string `json:"args,omitempty"`
+	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+}
+
+// ModelRunnerConfig teaches ATM how to call one CLI in headless,
+// schema-constrained mode. Args are a template: {{schema_path}},
+// {{schema_json}}, {{prompt_path}} and {{workdir}} are substituted per run, and
+// a template without a prompt placeholder gets the prompt on stdin.
+// OutputField unwraps a CLI that answers with an envelope instead of the bare
+// object. A custom runner must carry its own sandbox flags — ATM cannot know
+// how a third-party CLI denies network and filesystem writes.
+type ModelRunnerConfig struct {
+	// Command defaults to the map key, so a key may be either a real binary
+	// name or an alias whose command and flags are defined here.
+	Command        string   `json:"command,omitempty"`
+	Args           []string `json:"args,omitempty"`
+	OutputField    string   `json:"output_field,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
 }
 
@@ -115,6 +169,7 @@ type FileConfig struct {
 	// Pointer because 0 is a meaningful setting here: keep chat forever.
 	CollectionMessageRetentionDays *int                                 `json:"collection_message_retention_days,omitempty"`
 	CollectionModelCommand         string                               `json:"collection_model_command,omitempty"`
+	CollectionModelRunners         map[string]ModelRunnerConfig         `json:"collection_model_runners,omitempty"`
 	CollectionConnectors           map[string]CollectionConnectorConfig `json:"collection_connectors,omitempty"`
 	QuotaProviders                 map[string]QuotaProviderConfig       `json:"quota_providers,omitempty"`
 	DataDir                        string                               `json:"data_dir,omitempty"`
@@ -185,6 +240,7 @@ func loadConfigFile() {
 	if cfg.CollectionModelCommand != "" {
 		CollectionModelCommand = cfg.CollectionModelCommand
 	}
+	CollectionModelRunners = cfg.CollectionModelRunners
 	CollectionConnectors = cfg.CollectionConnectors
 	QuotaProviders = cfg.QuotaProviders
 	if cfg.DataDir != "" {
@@ -260,6 +316,7 @@ func ShowConfig() string {
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
 		CollectionModelCommand:         CollectionModelCommand,
+		CollectionModelRunners:         CollectionModelRunners,
 		CollectionConnectors:           CollectionConnectors,
 		QuotaProviders:                 QuotaProviders,
 		DataDir:                        AtmDir,

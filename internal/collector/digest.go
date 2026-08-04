@@ -292,7 +292,13 @@ func (summarizer AutomaticSummarizer) Summarize(ctx context.Context, input Diges
 	if len(input.Items) == 0 {
 		return DigestContent{}, fmt.Errorf("digest needs at least one insight")
 	}
-	data, err := runCollectionModel(ctx, summarizer.ModelCommand, summarizer.Timeout,
+	// A digest is prose, so the keyword classifier has nothing to offer here:
+	// "rule" in the chain is a classification fallback only.
+	models, _ := splitModelCandidates(summarizer.ModelCommand)
+	if len(models) == 0 {
+		return DigestContent{}, fmt.Errorf("collection digest needs a model command; rule mode cannot summarise")
+	}
+	data, err := runCollectionModel(ctx, models, summarizer.Timeout,
 		"digest", digestJSONSchema, digestPrompt(input))
 	if err != nil {
 		return DigestContent{}, err

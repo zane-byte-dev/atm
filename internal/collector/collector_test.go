@@ -570,6 +570,39 @@ func TestAutomaticExtractorFailsClosedUnlessRuleModeIsExplicit(t *testing.T) {
 	}
 }
 
+// A rate-limited primary model is the whole reason the chain exists: the run
+// must continue on the next CLI instead of failing the source.
+func TestAutomaticExtractorFallsBackToTheNextModelInTheChain(t *testing.T) {
+	rateLimited := writeFakeModel(t, "rate-limited", "echo 'usage limit reached' >&2\nexit 1\n")
+	working := writeFakeModel(t, "working",
+		`printf '%s' '{"action":"create","title":"实现自动收集","summary":"从聊天创建 Todo","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"明确需求","confidence":0.9}'`)
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-07-31 [测试发送人] 想做自动收集"}
+	decision, err := (AutomaticExtractor{ModelCommand: rateLimited + "," + working, Timeout: 5 * time.Second}).
+		Extract(context.Background(), batch, nil)
+	if err != nil || decision.Action != "create" || decision.Priority != "P1" {
+		t.Fatalf("chain decision=%+v err=%v", decision, err)
+	}
+}
+
+func TestAutomaticExtractorDegradesToRulesOnlyAtTheEndOfTheChain(t *testing.T) {
+	rateLimited := writeFakeModel(t, "rate-limited", "echo 'usage limit reached' >&2\nexit 1\n")
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
+	if _, err := (AutomaticExtractor{ModelCommand: rateLimited, Timeout: 5 * time.Second}).
+		Extract(context.Background(), batch, nil); err == nil {
+		t.Fatal("a chain without rule must fail closed when the model fails")
+	}
+	decision, err := (AutomaticExtractor{ModelCommand: rateLimited + ",rule", Timeout: 5 * time.Second}).
+		Extract(context.Background(), batch, nil)
+	if err != nil || decision.Action != "create" {
+		t.Fatalf("rule fallback decision=%+v err=%v", decision, err)
+	}
+	if !strings.Contains(decision.Reason, "降级") || !strings.Contains(decision.Reason, "usage limit reached") {
+		t.Fatalf("degraded decision should say why: %q", decision.Reason)
+	}
+}
+
 func TestAutomaticExtractorAcceptsSchemaConstrainedModelDecision(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "fake-codex")
 	body := `#!/bin/sh

@@ -1,18 +1,13 @@
 package collector
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
-	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -48,20 +43,32 @@ type AutomaticExtractor struct {
 }
 
 func (extractor AutomaticExtractor) Extract(ctx context.Context, batch MessageBatch, todos []store.Todo) (Decision, error) {
-	if strings.EqualFold(strings.TrimSpace(extractor.ModelCommand), "rule") {
+	models, ruleFallback := splitModelCandidates(extractor.ModelCommand)
+	if len(models) == 0 {
+		if !ruleFallback {
+			return Decision{}, fmt.Errorf("collection model command is empty")
+		}
 		decision := ruleDecision(batch)
 		decision.Reason = "使用显式配置的本地高置信关键词规则"
 		return normalizeDecision(decision, batch.Source), nil
 	}
-	decision, err := extractor.extractWithCodex(ctx, batch, todos)
+	decision, err := extractor.extractWithModel(ctx, models, batch, todos)
 	if err != nil {
-		return Decision{}, err
+		// Degrading to keywords is only allowed when the chain says so: an
+		// unconfigured source still fails closed rather than filing guesses.
+		if !ruleFallback {
+			return Decision{}, err
+		}
+		decision = ruleDecision(batch)
+		decision.Reason = "模型不可用（" + compactError(err) + "），降级为本地关键词规则"
+		return normalizeDecision(decision, batch.Source), nil
 	}
 	return normalizeDecision(decision, batch.Source), nil
 }
 
-func (extractor AutomaticExtractor) extractWithCodex(ctx context.Context, batch MessageBatch, todos []store.Todo) (Decision, error) {
-	data, err := runCollectionModel(ctx, extractor.ModelCommand, extractor.Timeout,
+func (extractor AutomaticExtractor) extractWithModel(ctx context.Context, models []string,
+	batch MessageBatch, todos []store.Todo) (Decision, error) {
+	data, err := runCollectionModel(ctx, models, extractor.Timeout,
 		"decision", decisionJSONSchema, collectionPrompt(batch, todos))
 	if err != nil {
 		return Decision{}, err
@@ -74,62 +81,6 @@ func (extractor AutomaticExtractor) extractWithCodex(ctx context.Context, batch 
 		return Decision{}, err
 	}
 	return decision, nil
-}
-
-// runCollectionModel runs the configured model on a prompt with a JSON output
-// schema and returns the decoded-ready bytes. The sandbox flags are the point:
-// this reads private chat, so the model gets no network, no user config, no rules
-// file and a scratch directory it cannot escape.
-func runCollectionModel(ctx context.Context, commandLine string, timeout time.Duration,
-	schemaName, schema, prompt string) ([]byte, error) {
-	commandLine = strings.TrimSpace(commandLine)
-	if commandLine == "" {
-		commandLine = config.CollectionModelCommand
-	}
-	parts := strings.Fields(commandLine)
-	if len(parts) == 0 {
-		return nil, fmt.Errorf("collection model command is empty")
-	}
-	if _, err := exec.LookPath(parts[0]); err != nil {
-		return nil, fmt.Errorf("collection model command %q not found", parts[0])
-	}
-	if timeout <= 0 {
-		timeout = 90 * time.Second
-	}
-	tempDir, err := os.MkdirTemp("", "atm-collection-model-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tempDir)
-	schemaPath := filepath.Join(tempDir, schemaName+".schema.json")
-	if err := os.WriteFile(schemaPath, []byte(schema), 0600); err != nil {
-		return nil, err
-	}
-	modelCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	args := append([]string{}, parts[1:]...)
-	args = append(args, "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-		"--skip-git-repo-check", "--sandbox", "read-only", "--output-schema", schemaPath, "-")
-	command := exec.CommandContext(modelCtx, parts[0], args...)
-	command.Dir = tempDir
-	command.Stdin = strings.NewReader(prompt)
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		if modelCtx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("collection model timed out after %s", timeout)
-		}
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = err.Error()
-		}
-		return nil, fmt.Errorf("collection model failed: %s", message)
-	}
-	data := bytes.TrimSpace(stdout.Bytes())
-	data = bytes.TrimPrefix(data, []byte("```json"))
-	data = bytes.TrimPrefix(data, []byte("```"))
-	data = bytes.TrimSuffix(data, []byte("```"))
-	return bytes.TrimSpace(data), nil
 }
 
 func collectionPrompt(batch MessageBatch, todos []store.Todo) string {
