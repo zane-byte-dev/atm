@@ -110,19 +110,29 @@ func TestConcurrentSupersedeLeavesOneLiveMemory(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make([]error, 4)
+	var validated sync.WaitGroup
+	validated.Add(len(errs))
+	releaseWrites := make(chan struct{})
 	for index := 0; index < len(errs); index++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
 			if _, err := EffectiveMemory("m1"); err != nil {
 				errs[index] = err
+				validated.Done()
 				return
 			}
+			validated.Done()
+			<-releaseWrites
 			errs[index] = AppendMemoryEvent(memoryEvent(
 				fmt.Sprintf("m-super-%d", index), MemoryOpSupersede, "global",
 				fmt.Sprintf("replacement %d", index), "m1"))
 		}(index)
 	}
+	// Make the race described above deterministic: every writer has observed m1
+	// as active before any writer is allowed to append its replacement.
+	validated.Wait()
+	close(releaseWrites)
 	wg.Wait()
 
 	accepted := 0
