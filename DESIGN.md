@@ -1,0 +1,63 @@
+# ATM 设计文档
+
+这里只写**代码里读不出来的东西**：意图、边界和非目标。
+
+不写已实现功能清单、数据模型表或架构图 —— 那些的真相在代码里（schema 见
+[`internal/store/schema.go`](internal/store/schema.go)，命令面见 `atm --help` 和
+[README](README.md)），手抄一份只会腐烂并开始说假话。
+
+## 定位
+
+ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统一的第二大脑。它从人的视角提供六个领域的能力：
+
+1. **AI 都在干什么** — 实时看到所有 AI agent 的工作状态，历史会话可追溯
+2. **干得怎么样** — AI 执行任务的效率、思考路径、是否走弯路
+3. **花了多少钱** — token 用量和费用统计，按项目/agent/时间维度
+4. **知识与记忆** — 所有 Agent 查询和贡献同一个中央 Knowledge，共享可追溯的 Memory
+5. **协作与通信** — 交接任务、交接产物和通知结果
+6. **外部事项收集** — 本地连接器把白名单来源转成可追溯、可纠错的 Todo
+
+## 设计原则
+
+- **Agent 无关**：Claude/Codex/Copilot 共享同一套数据模型，差异只存在于 parser 等 adapter。
+- **单一第二大脑**：Knowledge 只有一个；domain、tag、project 是 metadata 和查询视图，不是独立知识库。
+- **ATM 数据自有**：ATM 产生和管理的数据全部位于 `~/.atm`，不会静默写入项目目录或探测其他产品的私有目录。
+- **显式导入**：外部知识和历史数据通过 add/import 进入 ATM，不在日常查询路径中做兼容扫描。
+- **旁路而非主路**：普通 coding/chat 由客户端直接连接 Agent；ATM 停止不能阻断普通会话。
+- **不实现 agent loop 或 Agent scheduler**：ATM 不替 Agent 执行工作。常驻 App 可定时运行连接器采集，采集面只允许创建 Todo，不启动 Agent；与历史任务有关时只记录关联上下文，不合并事项。
+- **不代管 Agent 执行**：把任务交给 Agent 是输出一行指针供人粘贴进自己看得见的会话，ATM 不启动、不跟踪、不判定完成。
+- **事实分域**：Todo 保存工作目标与生命周期，Git 保存实现状态，测试/CI 提供验证证据，Session 保存过程追溯；ATM 提供关联视图，不复制或覆盖其他事实源。
+- **状态正交**：live activity 是观测信号，Session binding 是显式关系，Todo status 是工作生命周期；三者独立展示，禁止按项目名或 `in_progress` 猜测绑定。
+- **单用户单库**：只有一个活的数据库，因此不背向后兼容成本；schema 变更的流程写在
+  [`minUpgradableVersion`](internal/store/schema.go) 的注释里。
+
+## 几个容易被重新提出的决定
+
+- **Knowledge 不做缓存或索引**：检索每次全量读取中央 Markdown。在当前量级（约 100 篇）解析成本远低于
+  进程启动，缓存反而更慢，且会引入失效问题。
+- **ATM 不在进程内运行模型做记忆抽取**：它只提供未整理 session 查询、带来源的 memory 写入和
+  append-only review 游标；语义抽取、去重、路由与授权检查由 curator skill 约束 Agent 完成。
+- **Parser 提取结构，不做业务判断**：应提取一切可用的结构化信息（summary、时间戳、工具调用），
+  但不提取 git commit、不生成摘要。
+- **`review` 状态保留，但不是闸门**：它表示「Agent 声称完成、人尚未验收」。`todo done` 不设前置检查 ——
+  人点下完成时验收已经发生。删掉这个状态等于让 Agent 自己宣布完成。
+
+## 不做
+
+- Agent Schedule/Run、Webhook、独立 daemon 或后台 Agent 执行；由 Enchanted 等运行客户端负责
+- ATM HTTP API、MCP server 或独立 Web UI
+- 远程同步
+- 模型循环或 prompt/event stream 代理
+
+## 已知限制
+
+- Codex/Copilot 暂不支持 thinking 提取（Claude 和 Pi 支持）
+- Copilot 目前偏会话检索和工具统计，不提供 token/cost 明细
+- Qoder 与 QoderWork 依赖本地 SQLite 表结构，Qoder CLI 依赖 JSONL transcript；若上游客户端变更
+  schema，需要更新 parser
+
+## 待办
+
+- [ ] 确认 GitHub Release 资产可从一键安装脚本下载
+- [ ] 增加 clean machine 验证：`go install`、一键安装、Linux 剪贴板/通知
+- [ ] 为 Copilot/Qoder 系列的实际样本补更多 parser 回归测试

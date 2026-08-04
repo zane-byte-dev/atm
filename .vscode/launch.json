@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:atm}/app/macos",
+            "name": "Debug ATMMenuBarApp (app/macos)",
+            "target": "ATMMenuBarApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug ATMMenuBarApp (app/macos)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:atm}/app/macos",
+            "name": "Release ATMMenuBarApp (app/macos)",
+            "target": "ATMMenuBarApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release ATMMenuBarApp (app/macos)"
+        }
+    ]
+}

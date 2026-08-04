@@ -1,0 +1,122 @@
+{
+  "skill_name": "atm",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "用 ATM 搜最近关于 UI 和交互改动的会话，必须包含最新 Codex session。`atm session search 界面 --json --sync` 如果报 readonly database，请继续解决，不要直接扫 ~/.codex/sessions。最后按项目和时间总结。",
+      "expected_output": "使用 ATM 同步后的索引定位相关会话；遇到受限沙箱写权限时申请最小范围沙箱外执行，并基于少量相关 session 总结。",
+      "expectations": [
+        "先使用 ATM session 查询，而不是默认扫描 Agent 原始 session 目录",
+        "遇到 readonly database 时识别为沙箱权限问题，并重跑同一个带 --sync 的命令",
+        "搜索结果过多时按项目、时间和用户目标过滤，再读取候选 session",
+        "最终明确数据是否来自同步后的最新索引"
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "继续处理 atm 仓库的注意力闭环主线。先确认有没有匹配 todo；开始后记录状态。完成菜单栏 UI 的真实验收后写进展，如果要等我看效果就设为 waiting，别新建重复任务。",
+      "expected_output": "复用已有 ATM todo，正确执行 start、里程碑 log，并根据最终条件选择继续 active 或 wait，而不是创建重复 todo。",
+      "expectations": [
+        "先查询 ATM 注意力快照和 atm 项目的现有 todo",
+        "复用匹配任务并在真正开始时执行 atm todo start",
+        "真实验收后记录包含结果和验证边界的进展日志",
+        "只有存在明确外部等待条件时才设为 waiting，并写清 wake condition"
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "帮我看看 ATM 里最近 7 天哪些项目最烧 token、现在有哪些任务需要我处理，只做分析，不要改 todo、记忆或知识。",
+      "expected_output": "只读查询 ATM stats、now 和必要的 todo/session 数据，给出有证据的用量与注意力摘要，不产生写操作。",
+      "expectations": [
+        "使用 atm stats 和 atm now 获取主要证据",
+        "必要时读取相关 todo 或 session，但不过度展开无关原始数据",
+        "区分 token 用量与当前注意力优先级，不把两者混为一谈",
+        "不修改 todo、memory、knowledge 或 artifact"
+      ],
+      "files": []
+    },
+    {
+      "id": 4,
+      "prompt": "我刚确认 mm-dio-hub-service 的 Aone 应用 ID、仓库、内外正式发布流水线和 IFS CLI 制品信息。把这些以后会反复用到的应用信息记录到 ATM 中心化知识库；不要存密钥，也别放到 inbox。",
+      "expected_output": "先查 ATM 知识目录和已有应用记录；没有时在“应用管理” collection 创建以 mm-dio-hub-service 命名的知识卡，写入经核验的应用/仓库/环境/流水线/制品信息并验证可读。",
+      "expectations": [
+        "先使用 atm knowledge catalog/search 查重，不直接盲写",
+        "稳定应用信息写入“应用管理” collection 中以应用名或仓库名为标题前缀的知识卡，而不是 inbox 或新建专属 collection",
+        "知识卡包含应用标识、仓库、环境或发布流水线等可复用字段，并标注核验时间和来源",
+        "不把单次 CR、commit、发布实例、Run ID 或瞬时状态混入应用知识卡",
+        "不写入密钥、令牌、个人凭据或未经验证的推测",
+        "写入后通过 atm knowledge get 或检索验证内容可读取，且不创建同标题重复文档"
+      ],
+      "files": []
+    },
+    {
+      "id": 5,
+      "prompt": "继续 ATM Todo t89 的代码审核。对照任务目标检查当前工作区所有改动，包含 staged 和新文件；先只报告问题，不要直接修。如果没有问题也要说明哪些测试没有跑。",
+      "expected_output": "绑定或复用 t89，先用只读 context 获取 Todo、Session 与 Git 文件清单，再检查实际 unstaged/staged diff 和相关 untracked 文件；以 review 模式输出 findings、测试证据与残余风险，不擅自修改代码或机械改变 Todo 状态。",
+      "expectations": [
+        "复用并确认 t89 的 session binding，读取最新目标、约束和验收条件",
+        "先运行 atm todo context t89 --json 获取按事实源分离的只读交接清单",
+        "检查 git status --short、git diff、git diff --cached，并按 status 读取相关 untracked 文件",
+        "区分 ATM 工作状态、Git 实现状态和测试证据，不用 Todo 文件清单替代工作区检查",
+        "将用户的“先只报告问题”解释为 review 模式，不修改代码、测试或配置，也不机械改变 Todo 状态",
+        "findings 包含严重级别、文件或行号、影响和建议；无 findings 时说明未验证测试与残余风险",
+        "只有出现真实里程碑或状态变化时才按 ATM 规则记录，不复制整段 diff"
+      ],
+      "files": []
+    },
+    {
+      "id": 6,
+      "prompt": "ATM Menubar 一直在运行。帮我查最近 7 天与发布流程有关的会话并概括，不要求包含刚刚产生的会话，也不要改任何状态。",
+      "expected_output": "直接使用不带 --sync 的只读 ATM session 查询检索 Menubar 后台维护的本地索引，筛选少量相关会话后总结；不因普通历史查询触发 SQLite 写入、沙箱权限申请或状态修改。",
+      "expectations": [
+        "默认先运行不带 --sync 的 ATM session list/search 查询",
+        "识别为普通历史查询，不把每次读取升级为 session 源扫描和数据库写入",
+        "只有索引缺失、预期结果异常缺失或用户改为要求实时数据时才考虑 --sync",
+        "按项目、时间和用户目标缩小候选并总结，不扫描 Agent 原始私有目录",
+        "不修改 Todo、Memory、Knowledge 或 Artifact"
+      ],
+      "files": []
+    },
+    {
+      "id": 7,
+      "prompt": "把 ATM Todo t89 当前的代码 Review 交接上下文给我。只汇总 Todo、关联 Session、Git 改动范围和验证状态，不要输出整段 diff、不要跑测试、也不要改任务状态。",
+      "expected_output": "运行 atm todo context t89 --json，按 work_state、implementation、verification 和 trace 分开概括；明确 staged/unstaged/untracked 文件范围，并说明 verification=not_run 是命令未执行测试，不把历史里程碑当成独立验证。",
+      "expectations": [
+        "使用 atm todo context t89 --json，而不是手工拼接多个 ATM 查询",
+        "单一活跃 worktree 可自动使用；存在多个活跃 worktree 时用 --cwd 明确目标，不静默猜测",
+        "明确区分 ATM 工作状态、Git 实现状态、历史里程碑和 Session 追溯",
+        "不把文件清单当成完整 diff，也不声称未运行的测试已通过",
+        "整个操作保持只读，不修改 Todo、代码、测试或配置"
+      ],
+      "files": []
+    },
+    {
+      "id": 8,
+      "prompt": "ATM Menubar 显示索引可能过期。先告诉我现在的数据还可不可信；如果只是查状态，不要立刻触发全量同步。",
+      "expected_output": "先运行只读 atm sync status --json，根据 missing/never/syncing/fresh/stale/failed、last_success_at、age_seconds 和 last_error 解释证据新鲜度；只有确实需要刷新时才建议或执行显式同步。",
+      "expectations": [
+        "先使用 atm sync status --json 读取统一健康模型，不用会话查询结果反推同步状态",
+        "明确解释索引是否存在、最近成功时间、数据年龄和最近错误",
+        "只查状态时不运行 atm sync，也不附加 --sync",
+        "区分 Menubar 后台同步状态与普通 Agent 只读查询",
+        "若状态为 stale、failed、missing 或 never，结合用户是否需要最新数据给出下一步"
+      ],
+      "files": []
+    },
+    {
+      "id": 9,
+      "prompt": "ATM 里 atm 项目有两个 in_progress Todo，Menubar 也看到了一个 Codex 会话。告诉我这个会话到底绑定了哪个任务；不要按项目名猜。",
+      "expected_output": "读取 atm session status --json 的 activity_state、binding_state、binding/todo 和顶层 bindings；只有显式 binding_state=bound 才声明 Session 绑定某个 Todo，并把实时活动与 Todo lifecycle 分开说明。",
+      "expectations": [
+        "使用 session status/current 的显式 binding 数据，不按相同 project 或 in_progress Todo 猜测",
+        "区分 activity_state、binding_state 和 todo.status",
+        "binding_state=unbound 时明确说明没有显式绑定，即使项目存在进行中任务",
+        "todo_missing 或 todo_not_in_progress 时报告绑定异常，不静默当作未绑定",
+        "未观察到实时活动的顶层 binding 不被误报为活跃 Agent"
+      ],
+      "files": []
+    }
+  ]
+}

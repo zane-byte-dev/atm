@@ -1,0 +1,38 @@
+{
+  "skill_name": "atm-memory-curator",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "帮我看看最近一天还没整理的 Codex 和 Pi 会话里，有哪些值得进入 ATM 共享记忆。先给候选预览，不要写入，也不要把会话标成 reviewed。",
+      "expected_output": "使用 ATM 的 pending review 会话列表和 session show 提取候选，输出带来源的预览；不执行 memory、knowledge 或 session review 写操作。",
+      "expectations": [
+        "使用 `atm session list --review pending` 获取范围，而不是扫描 Agent 原始目录",
+        "候选包含类型、scope、精确到 session 与 turn 的来源、建议动作和理由",
+        "明确保持只读，没有调用 remember、supersede、knowledge add/import 或 session review"
+      ],
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "复盘最近的 ATM 会话，重点找已经确认的架构决定、用户偏好和项目别名。只做 dry run，并告诉我如果确认后你会用哪些命令保存来源和推进整理游标。",
+      "expected_output": "区分稳定候选与助手提案，先 memory/knowledge 去重；展示带 --source 的写入命令和最终 session review 命令，但不实际执行。",
+      "expectations": [
+        "不会把未获用户确认的助手建议直接当作长期记忆",
+        "先使用 memory recall 和定向 knowledge search 去重，并避免无范围全库搜索",
+        "示例写入命令包含 `--source session:<id>#turn:<n>`，并说明只有全部处理成功后才调用 session review"
+      ],
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "检查昨天发布相关的会话，判断 CR、commit、流水线状态、版本号、应用别名和长期踩坑哪些该记。只输出分类结果，不改 ATM。",
+      "expected_output": "拒绝一次性发布履历，保留稳定别名和可复用坑作为候选，并把结构化应用资料路由到已有专属 knowledge collection。",
+      "expectations": [
+        "CR、commit、Run ID、瞬时流水线状态和当时版本号被判定为临时状态，不进入 memory",
+        "稳定别名和可复用踩坑可成为 memory 候选，但必须先去重",
+        "应用环境和发布入口等结构化资料被路由到相关 knowledge collection，而不是复制进 memory"
+      ],
+      "files": []
+    }
+  ]
+}

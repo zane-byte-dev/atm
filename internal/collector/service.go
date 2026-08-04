@@ -1,0 +1,835 @@
+package collector
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/store"
+	workapp "github.com/zane-byte-dev/atm/internal/work"
+)
+
+type Service struct {
+	Connectors    *Registry
+	RegistryError error
+	// Fetcher is retained as a narrow injection point for existing embedders and
+	// tests. Production routing uses Connectors and selects by source.Connector.
+	Fetcher    Fetcher
+	Extractor  Extractor
+	Summarizer Summarizer
+	Now        func() time.Time
+}
+
+type RunReport struct {
+	Runs []store.CollectionRun `json:"runs"`
+}
+
+func DefaultService() Service {
+	registry, registryErr := DefaultRegistry()
+	return Service{
+		Connectors: registry, RegistryError: registryErr,
+		Extractor:  AutomaticExtractor{ModelCommand: config.CollectionModelCommand},
+		Summarizer: AutomaticSummarizer{ModelCommand: config.CollectionModelCommand},
+		Now:        func() time.Time { return time.Now().In(config.Loc) },
+	}
+}
+
+func (service Service) Run(ctx context.Context, sourceID string) (RunReport, error) {
+	return service.run(ctx, sourceID, false)
+}
+
+// RunDue is the background path: it honours each source's own cadence. Manual
+// Run calls remain forceful so “立即收集” always means now.
+func (service Service) RunDue(ctx context.Context, sourceID string) (RunReport, error) {
+	return service.run(ctx, sourceID, true)
+}
+
+func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (RunReport, error) {
+	if service.Extractor == nil {
+		return RunReport{}, fmt.Errorf("collector extractor is required")
+	}
+	if service.RegistryError != nil {
+		return RunReport{}, service.RegistryError
+	}
+	if service.Connectors == nil && service.Fetcher == nil {
+		registry, err := DefaultRegistry()
+		if err != nil {
+			return RunReport{}, err
+		}
+		service.Connectors = registry
+	}
+	if service.Now == nil {
+		service.Now = func() time.Time { return time.Now().In(config.Loc) }
+	}
+	db, err := store.Open()
+	if err != nil {
+		return RunReport{}, err
+	}
+	defer db.Close()
+	sources, err := store.ListCollectionSources(db, "", true)
+	if err != nil {
+		return RunReport{}, err
+	}
+	if sourceID != "" {
+		filtered := sources[:0]
+		for _, source := range sources {
+			if source.ID == sourceID {
+				filtered = append(filtered, source)
+			}
+		}
+		sources = filtered
+		if len(sources) == 0 {
+			return RunReport{}, fmt.Errorf("enabled collection source not found: %s", sourceID)
+		}
+	}
+	if dueOnly {
+		due := sources[:0]
+		for _, source := range sources {
+			ready, err := store.CollectionSourceDue(db, source, service.Now())
+			if err != nil {
+				return RunReport{}, err
+			}
+			if ready {
+				due = append(due, source)
+			}
+		}
+		sources = due
+	}
+	report := RunReport{Runs: []store.CollectionRun{}}
+	errors := []string{}
+	for _, source := range sources {
+		run := service.runSource(ctx, db, source)
+		report.Runs = append(report.Runs, run)
+		if run.Status == "failed" {
+			errors = append(errors, sourceDisplayName(source)+": "+run.Error)
+		}
+	}
+	// Once per run rather than once per source. A failure here loses nothing and
+	// the next run retries it, so it does not fail the run; `atm doctor` reports
+	// chat that outlived its retention window, which is what a stuck prune looks
+	// like from outside.
+	if cutoff := store.RetentionCutoff(config.CollectionMessageRetentionDays, service.Now()); cutoff > 0 {
+		_, _ = store.PruneCollectionMessages(db, cutoff)
+	}
+	if len(errors) > 0 {
+		return report, fmt.Errorf("collection failed for %d source(s): %s", len(errors), strings.Join(errors, "; "))
+	}
+	return report, nil
+}
+
+func (service Service) runSource(ctx context.Context, db *sql.DB, source store.CollectionSource) store.CollectionRun {
+	now := service.Now()
+	run := store.CollectionRun{
+		ID: runID(source.ID, now), Connector: source.Connector, SourceID: source.ID,
+		Status: "running", StartedAt: now.Unix(),
+	}
+	if err := store.SaveCollectionRun(db, run); err != nil {
+		run.Status, run.Error = "failed", err.Error()
+		return run
+	}
+	finish := func(run *store.CollectionRun) {
+		run.FinishedAt = service.Now().Unix()
+		if run.Status == "running" {
+			run.Status = "succeeded"
+		}
+		_ = store.SaveCollectionRun(db, *run)
+	}
+	checkpoint, err := store.GetCollectionCheckpoint(db, source.ID)
+	if err != nil {
+		run.Status, run.Error, run.FailedCount = "failed", err.Error(), 1
+		finish(&run)
+		return run
+	}
+	since := checkpoint.CursorTime
+	if since > 0 {
+		since -= int64((20 * time.Minute).Seconds())
+	}
+	fetcher, err := service.fetcherFor(source)
+	if err != nil {
+		run.Status, run.Error, run.FailedCount = "failed", err.Error(), 1
+		finish(&run)
+		return run
+	}
+	messages, newest, err := fetcher.Fetch(ctx, source, since)
+	if err != nil {
+		run.Status, run.Error, run.FailedCount = "failed", err.Error(), 1
+		finish(&run)
+		return run
+	}
+	run.FetchedCount = len(messages)
+	// Archive the chat before deciding anything about it. The classifier only
+	// keeps the lines it acts on, so this is the one chance to hold the rest.
+	if _, err := store.PutCollectionMessages(db, CollectionMessagesFor(source, messages)); err != nil {
+		// Treated like every other store failure here: visible, and the
+		// checkpoint stays put so the next run reads the same window again.
+		run.Status, run.Error, run.FailedCount = "failed", err.Error(), 1
+		finish(&run)
+		return run
+	}
+	handledMessageIDs, err := store.HandledCollectionMessageIDs(db, source.ID)
+	if err != nil {
+		run.Status, run.Error, run.FailedCount = "failed", err.Error(), 1
+		finish(&run)
+		return run
+	}
+	batches := groupMessagesWithContext(source, messages, handledMessageIDs)
+	batchFailed := false
+	for _, batch := range batches {
+		if ctx.Err() != nil {
+			run.FailedCount++
+			run.Error = ctx.Err().Error()
+			batchFailed = true
+			break
+		}
+		item := itemFromBatch(batch, now.Unix())
+		stored, inserted, err := store.PutCollectionItem(db, item)
+		if err != nil {
+			run.FailedCount++
+			run.Error = err.Error()
+			batchFailed = true
+			continue
+		}
+		// Already decided, or held by an on-demand analysis for someone to
+		// confirm. A proposal must not be carried out behind their back.
+		if !inserted && (stored.Status == "processed" || stored.ProposedAction != "") {
+			continue
+		}
+		item = stored
+		item, err = service.processBatch(ctx, batch, item)
+		if err != nil {
+			markItemFailed(db, &item, err)
+			run.FailedCount++
+			if run.Error == "" {
+				run.Error = compactError(err)
+			}
+			batchFailed = true
+			continue
+		}
+		run.AnalyzedCount++
+		switch item.Action {
+		case "ignore":
+			run.IgnoredCount++
+		case "insight":
+			run.InsightCount++
+		case "append":
+			run.AppendedCount++
+		case "create":
+			run.CreatedCount++
+		default:
+			markItemFailed(db, &item, fmt.Errorf("unsupported collection decision: %s", item.Action))
+			run.FailedCount++
+			batchFailed = true
+			continue
+		}
+		if err := store.UpdateCollectionItem(db, item); err != nil {
+			run.FailedCount++
+			run.Error = err.Error()
+			batchFailed = true
+		}
+	}
+	if batchFailed {
+		run.Status = "failed"
+		if run.Error == "" {
+			run.Error = "one or more message batches failed; checkpoint was not advanced"
+		}
+	} else if newest > checkpoint.CursorTime {
+		if err := store.SaveCollectionCheckpoint(db, store.CollectionCheckpoint{
+			SourceID: source.ID, CursorTime: newest,
+		}); err != nil {
+			run.Status, run.Error, run.FailedCount = "failed", err.Error(), run.FailedCount+1
+		}
+	}
+	finish(&run)
+	return run
+}
+
+func (service Service) fetcherFor(source store.CollectionSource) (Fetcher, error) {
+	if service.Connectors != nil {
+		connector, err := service.Connectors.Resolve(source.Connector)
+		if err != nil {
+			return nil, err
+		}
+		return connector, nil
+	}
+	if service.Fetcher != nil {
+		return service.Fetcher, nil
+	}
+	return nil, fmt.Errorf("collection connector is not configured: %s", source.Connector)
+}
+
+func unhandledMessages(messages []Message, handled map[string]struct{}) []Message {
+	if len(handled) == 0 {
+		return messages
+	}
+	result := make([]Message, 0, len(messages))
+	for _, message := range messages {
+		if _, alreadyHandled := handled[message.ID]; !alreadyHandled {
+			result = append(result, message)
+		}
+	}
+	return result
+}
+
+// groupMessagesWithContext splits a fetched window into one batch per topic —
+// "same conversation, gaps under 15 minutes" — for every strategy. Observation
+// sources used to collapse the whole window into a single batch, which was fine
+// when the only outcome was one discardable blurb; it is wrong now that a batch
+// is either kept as an insight or dropped as noise. An hour holding one decision
+// worth remembering and fifty jokes has to be able to answer differently about
+// each, which costs a model call per topic instead of one per run.
+func groupMessagesWithContext(source store.CollectionSource, messages []Message,
+	handled map[string]struct{}) []MessageBatch {
+	groups := groupMessages(source, messages)
+	result := make([]MessageBatch, 0, len(groups))
+	for _, batch := range groups {
+		contextMessages := batch.Messages
+		fresh := unhandledMessages(contextMessages, handled)
+		if len(fresh) == 0 {
+			continue
+		}
+		result = append(result, messageBatchWithContext(source, fresh, contextMessages))
+	}
+	return result
+}
+
+func messageBatchWithContext(source store.CollectionSource, fresh, contextMessages []Message) MessageBatch {
+	freshIDs := map[string]struct{}{}
+	for _, message := range fresh {
+		freshIDs[message.ID] = struct{}{}
+	}
+	return MessageBatch{Source: source, Messages: fresh,
+		Fingerprint:   messageBatchFingerprint(source.ID, fresh),
+		ActionContext: formatMessageContext(fresh, nil),
+		RawContext:    formatMessageContext(contextMessages, freshIDs)}
+}
+
+func (service Service) processBatch(ctx context.Context, batch MessageBatch, item store.CollectionItem) (store.CollectionItem, error) {
+	decision, err := service.decideBatch(ctx, batch)
+	if err != nil {
+		return item, err
+	}
+	return applyDecision(batch, item, decision)
+}
+
+// decideBatch classifies one batch without touching any Todo, so on-demand
+// analysis can hold the decision for a person to confirm while automatic
+// collection carries it out immediately.
+func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Decision, error) {
+	actionContext := batch.ActionContext
+	if actionContext == "" {
+		actionContext = batch.RawContext
+	}
+	if keyword, excluded := collectionExclusion(batch.Source, actionContext); excluded {
+		return normalizeDecision(Decision{Action: "ignore", ItemType: "conversation",
+			Reason: "命中来源排除规则：" + keyword, Confidence: 1}, batch.Source), nil
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		return Decision{}, err
+	}
+	decision, err := service.Extractor.Extract(ctx, batch, todos.Items)
+	if err != nil {
+		return Decision{}, err
+	}
+	return clampToStrategy(normalizeDecision(decision, batch.Source), batch.Source), nil
+}
+
+func collectionExclusion(source store.CollectionSource, context string) (string, bool) {
+	keywords := strings.FieldsFunc(source.ExcludePattern, func(r rune) bool {
+		switch r {
+		case ',', '，', ';', '；', '\n', '\r':
+			return true
+		default:
+			return false
+		}
+	})
+	lowerContext := strings.ToLower(context)
+	for _, keyword := range keywords {
+		keyword = strings.TrimSpace(keyword)
+		if keyword != "" && strings.Contains(lowerContext, strings.ToLower(keyword)) {
+			return keyword, true
+		}
+	}
+	return "", false
+}
+
+func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decision) (store.CollectionItem, error) {
+	if err := validateDecision(decision); err != nil {
+		return item, err
+	}
+	applyDecisionToItem(&item, decision)
+	switch decision.Action {
+	case "ignore":
+		item.TodoID, item.Status = "", "processed"
+	case "insight":
+		// Nothing to carry out here: the item itself is the record, and the
+		// source's daily digest turns it into knowledge. No Todo is touched, so
+		// no [钉钉采集:] marker is written anywhere.
+		item.TodoID, item.Status = "", "processed"
+	case "create":
+		todoID, err := createDecision(batch, decision)
+		if err != nil {
+			return item, err
+		}
+		item.TodoID, item.Status = todoID, "processed"
+	default:
+		return item, fmt.Errorf("unsupported collection decision: %s", decision.Action)
+	}
+	return item, nil
+}
+
+type ItemCorrection struct {
+	Title    *string
+	Project  *string
+	Priority *string
+}
+
+// Reprocess retries a failed or ignored audit item without advancing the
+// source checkpoint. Processed writes must be explicitly reverted first so a
+// reclassification cannot silently orphan an earlier Todo side effect.
+func (service Service) Reprocess(ctx context.Context, itemID string) (store.CollectionItem, error) {
+	if service.Extractor == nil {
+		return store.CollectionItem{}, fmt.Errorf("collector extractor is required")
+	}
+	db, err := store.Open()
+	if err != nil {
+		return store.CollectionItem{}, err
+	}
+	defer db.Close()
+	item, err := store.GetCollectionItem(db, itemID)
+	if err != nil {
+		return item, err
+	}
+	if item.Action == "create" || item.Action == "append" {
+		return item, fmt.Errorf("collection item %s already changed Todo %s; revert it before reprocessing", item.ID, item.TodoID)
+	}
+	_, batch, err := loadItemBatch(db, item)
+	if err != nil {
+		return item, err
+	}
+	item, err = service.processBatch(ctx, batch, item)
+	if err != nil {
+		markItemFailed(db, &item, err)
+		return item, err
+	}
+	if err := store.UpdateCollectionItem(db, item); err != nil {
+		return item, err
+	}
+	return item, nil
+}
+
+// Promote turns an ignored or failed item into a concrete Todo using explicit
+// user intent while retaining normal task-level deduplication.
+func (service Service) Promote(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
+	db, err := store.Open()
+	if err != nil {
+		return store.CollectionItem{}, err
+	}
+	defer db.Close()
+	item, err := store.GetCollectionItem(db, itemID)
+	if err != nil {
+		return item, err
+	}
+	if item.Action == "create" || item.Action == "append" {
+		return item, fmt.Errorf("collection item %s already has Todo %s", item.ID, item.TodoID)
+	}
+	source, batch, err := loadItemBatch(db, item)
+	if err != nil {
+		return item, err
+	}
+	title := strings.TrimSpace(item.Title)
+	if correction.Title != nil {
+		title = strings.TrimSpace(*correction.Title)
+	}
+	if title == "" {
+		title = collectionTitleFromContext(item.RawContext)
+	}
+	project := source.Project
+	if item.Project != "" {
+		project = item.Project
+	}
+	if correction.Project != nil {
+		project = strings.TrimSpace(*correction.Project)
+	}
+	priority := empty(item.Priority, source.Priority)
+	if correction.Priority != nil {
+		priority = strings.ToUpper(strings.TrimSpace(*correction.Priority))
+	}
+	itemType := item.ItemType
+	if itemType == "" || itemType == "conversation" {
+		itemType = "follow_up"
+	}
+	// Confirming what an analysis proposed is a different act from rescuing
+	// something the collector ignored, and the audit trail should say which.
+	reason := "用户从收集处理记录手动转成 Todo"
+	if item.ProposedAction != "" {
+		reason = "用户确认按需分析的建议"
+	}
+	decision := normalizeDecision(Decision{Action: "create", Title: title,
+		Summary:  empty(strings.TrimSpace(item.Summary), strings.TrimSpace(item.RawContext)),
+		ItemType: itemType, Project: project, Priority: priority,
+		Reason: reason, Confidence: 1}, source)
+	item, err = applyDecision(batch, item, decision)
+	if err != nil {
+		markItemFailed(db, &item, err)
+		return item, err
+	}
+	// The proposal has been carried out; nothing is waiting on a person now.
+	item.ProposedAction = ""
+	return item, store.UpdateCollectionItem(db, item)
+}
+
+// Correct keeps the audit decision and its Todo metadata in sync. Nil fields
+// mean unchanged; a non-nil empty project intentionally clears the mapping.
+func (service Service) Correct(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
+	db, err := store.Open()
+	if err != nil {
+		return store.CollectionItem{}, err
+	}
+	defer db.Close()
+	item, err := store.GetCollectionItem(db, itemID)
+	if err != nil {
+		return item, err
+	}
+	if correction.Title == nil && correction.Project == nil && correction.Priority == nil {
+		return item, fmt.Errorf("no collection item correction supplied")
+	}
+	if correction.Title != nil {
+		value := strings.TrimSpace(*correction.Title)
+		if value == "" {
+			return item, fmt.Errorf("corrected title cannot be empty")
+		}
+		item.Title = value
+	}
+	if correction.Project != nil {
+		item.Project = strings.TrimSpace(*correction.Project)
+	}
+	if correction.Priority != nil {
+		value := strings.ToUpper(strings.TrimSpace(*correction.Priority))
+		if value != "P0" && value != "P1" && value != "P2" && value != "P3" {
+			return item, fmt.Errorf("invalid priority: %s", value)
+		}
+		item.Priority = value
+	}
+	if item.TodoID != "" {
+		var corrected store.Todo
+		err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+			todo, err := transaction.Todo(item.TodoID)
+			if err != nil {
+				return err
+			}
+			if correction.Title != nil {
+				todo.Title = item.Title
+			}
+			if correction.Project != nil {
+				todo.Project = item.Project
+			}
+			if correction.Priority != nil {
+				todo.Priority = item.Priority
+			}
+			corrected = *todo
+			return nil
+		})
+		if err != nil {
+			return item, err
+		}
+		if store.TodoDocExists(corrected.ID) {
+			if err := store.SyncTodoDocMetadata(&corrected); err != nil {
+				return item, err
+			}
+		}
+	}
+	return item, store.UpdateCollectionItem(db, item)
+}
+
+// Revert preserves history: a newly created Todo is dropped, while an append
+// gets an explicit compensating note instead of destructive document surgery.
+func (service Service) Revert(itemID string) (store.CollectionItem, error) {
+	db, err := store.Open()
+	if err != nil {
+		return store.CollectionItem{}, err
+	}
+	defer db.Close()
+	item, err := store.GetCollectionItem(db, itemID)
+	if err != nil {
+		return item, err
+	}
+	if item.TodoID == "" || (item.Action != "create" && item.Action != "append") {
+		return item, fmt.Errorf("collection item %s has no reversible Todo write", item.ID)
+	}
+	if item.Action == "create" {
+		source, batch, err := loadItemBatch(db, item)
+		if err != nil {
+			return item, err
+		}
+		_ = source
+		var reverted store.Todo
+		err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+			todo, err := transaction.Todo(item.TodoID)
+			if err != nil {
+				return err
+			}
+			if todo.Source != connectorSource(batch) {
+				return fmt.Errorf("refusing to drop Todo %s because its source no longer matches this collection item", todo.ID)
+			}
+			today, reason := store.Today(), "撤销自动收集误创建"
+			now := time.Now().In(config.Loc).Unix()
+			todo.Status, todo.Closed, todo.ClosedReason, todo.DoneTS = store.TodoStatusDropped, &today, &reason, &now
+			if _, err := transaction.UnbindTodoSessions(todo.ID, "collection-reverted"); err != nil {
+				return err
+			}
+			reverted = *todo
+			return nil
+		})
+		if err != nil {
+			return item, err
+		}
+		if store.TodoDocExists(reverted.ID) {
+			if err := store.SyncTodoDocMetadata(&reverted); err != nil {
+				return item, err
+			}
+		}
+	} else {
+		todos, err := store.LoadTodosReadOnly()
+		if err != nil {
+			return item, err
+		}
+		todo := store.FindTodo(todos, item.TodoID)
+		if todo == nil {
+			return item, store.TodoNotFoundError(todos, item.TodoID)
+		}
+		marker := "[撤销钉钉采集:" + shortFingerprint(item.Fingerprint) + "] 此前自动补充被用户标记为误判；原记录保留供审计。"
+		if _, err := store.AppendTodoLog(todo, marker, "补充"); err != nil {
+			return item, err
+		}
+	}
+	item.Action, item.Status, item.Reason = "reverted", "processed", "用户撤销了自动收集结果"
+	return item, store.UpdateCollectionItem(db, item)
+}
+
+func loadItemBatch(db *sql.DB, item store.CollectionItem) (store.CollectionSource, MessageBatch, error) {
+	source, err := store.GetCollectionSource(db, item.SourceID)
+	if err != nil {
+		return source, MessageBatch{}, err
+	}
+	messages := make([]Message, 0, len(item.MessageIDs))
+	for index, id := range item.MessageIDs {
+		message := Message{ID: id, ConversationID: item.ConversationID, Sender: item.Sender,
+			CreatedAt: item.OccurredAt}
+		if index == 0 {
+			message.Content = item.RawContext
+		}
+		messages = append(messages, message)
+	}
+	if len(messages) == 0 {
+		messages = append(messages, Message{ID: item.ID, ConversationID: item.ConversationID,
+			Sender: item.Sender, CreatedAt: item.OccurredAt, Content: item.RawContext})
+	}
+	return source, MessageBatch{Source: source, Messages: messages,
+		Fingerprint: item.Fingerprint, RawContext: item.RawContext}, nil
+}
+
+func collectionTitleFromContext(context string) string {
+	line := strings.TrimSpace(strings.Split(strings.TrimSpace(context), "\n")[0])
+	if index := strings.Index(line, "] "); index >= 0 {
+		line = strings.TrimSpace(line[index+2:])
+	}
+	if runes := []rune(line); len(runes) > 60 {
+		line = string(runes[:60])
+	}
+	return empty(line, "处理收集到的事项")
+}
+
+func groupMessages(source store.CollectionSource, messages []Message) []MessageBatch {
+	if len(messages) == 0 {
+		return nil
+	}
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].CreatedAt != messages[j].CreatedAt {
+			return messages[i].CreatedAt < messages[j].CreatedAt
+		}
+		return messages[i].ID < messages[j].ID
+	})
+	groups := [][]Message{{messages[0]}}
+	for _, message := range messages[1:] {
+		current := &groups[len(groups)-1]
+		previous := (*current)[len(*current)-1]
+		if message.ConversationID == previous.ConversationID && message.CreatedAt-previous.CreatedAt <= int64((15*time.Minute).Seconds()) {
+			*current = append(*current, message)
+			continue
+		}
+		groups = append(groups, []Message{message})
+	}
+	batches := make([]MessageBatch, 0, len(groups))
+	for _, group := range groups {
+		context := formatMessageContext(group, nil)
+		batches = append(batches, MessageBatch{Source: source, Messages: group,
+			Fingerprint: messageBatchFingerprint(source.ID, group), ActionContext: context, RawContext: context})
+	}
+	return batches
+}
+
+func messageBatchFingerprint(sourceID string, messages []Message) string {
+	ids := make([]string, 0, len(messages))
+	for _, message := range messages {
+		ids = append(ids, message.ID)
+	}
+	sort.Strings(ids)
+	hash := sha256.Sum256([]byte(sourceID + "\x00" + strings.Join(ids, "\x00")))
+	return hex.EncodeToString(hash[:])
+}
+
+func formatMessageContext(messages []Message, freshIDs map[string]struct{}) string {
+	lines := make([]string, 0, len(messages))
+	for _, message := range messages {
+		prefix := ""
+		if freshIDs != nil {
+			if _, fresh := freshIDs[message.ID]; fresh {
+				prefix = "[新消息] "
+			} else {
+				prefix = "[上下文] "
+			}
+		}
+		stamp := time.Unix(message.CreatedAt, 0).In(config.Loc).Format("2006-01-02 15:04:05")
+		lines = append(lines, fmt.Sprintf("%s%s [%s] %s", prefix, stamp,
+			empty(message.Sender, "未知发送者"), message.Content))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func itemFromBatch(batch MessageBatch, now int64) store.CollectionItem {
+	messageIDs := make([]string, 0, len(batch.Messages))
+	senderSet := map[string]struct{}{}
+	latest := int64(0)
+	conversation := batch.Source.ExternalID
+	for _, message := range batch.Messages {
+		messageIDs = append(messageIDs, message.ID)
+		if message.Sender != "" {
+			senderSet[message.Sender] = struct{}{}
+		}
+		if message.CreatedAt > latest {
+			latest = message.CreatedAt
+		}
+		if message.ConversationID != "" {
+			conversation = message.ConversationID
+		}
+	}
+	senders := make([]string, 0, len(senderSet))
+	for sender := range senderSet {
+		senders = append(senders, sender)
+	}
+	sort.Strings(senders)
+	return store.CollectionItem{SourceID: batch.Source.ID, Connector: batch.Source.Connector,
+		ConversationID: conversation, Fingerprint: batch.Fingerprint, MessageIDs: messageIDs,
+		Sender: strings.Join(senders, "、"), OccurredAt: latest, RawContext: batch.RawContext,
+		Action: "pending", Status: "pending", CreatedAt: now, UpdatedAt: now}
+}
+
+func applyDecisionToItem(item *store.CollectionItem, decision Decision) {
+	item.Action, item.Title, item.Summary, item.ItemType = decision.Action, decision.Title, decision.Summary, decision.ItemType
+	item.Project, item.Priority, item.Reason = decision.Project, decision.Priority, decision.Reason
+	item.Confidence, item.Error = decision.Confidence, ""
+}
+
+func markItemFailed(db *sql.DB, item *store.CollectionItem, err error) {
+	item.Action, item.Status, item.Error = "failed", "failed", compactError(err)
+	_ = store.UpdateCollectionItem(db, *item)
+}
+
+func createDecision(batch MessageBatch, decision Decision) (string, error) {
+	var relatedTodoID string
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		return "", err
+	}
+	// Exact source markers win over semantic matching after a crash between Todo
+	// creation and collection-item persistence.
+	sourcePrefix := connectorSource(batch)
+	for _, todo := range todos.Items {
+		if store.TodoIsActive(todo) && todo.Source == sourcePrefix {
+			return todo.ID, nil
+		}
+	}
+	if related := store.FindTodo(todos, decision.RelatedTodoID); related != nil && store.TodoIsActive(*related) {
+		relatedTodoID = related.ID
+	}
+	if relatedTodoID == "" {
+		matches := store.MatchTodosWithOptions(todos, store.TodoMatchOptions{
+			Project: decision.Project, Query: decision.Title + " " + decision.Summary,
+			Limit: 1, MinQueryScore: 65, AllProjects: true,
+		})
+		if len(matches) > 0 {
+			relatedTodoID = matches[0].ID
+		}
+	}
+	var created store.Todo
+	err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		todos := transaction.Todos()
+		created = store.Todo{ID: store.NextTodoID(todos), Title: decision.Title,
+			Description: todoDescription(decision, relatedTodoID), Priority: decision.Priority,
+			Status: store.TodoStatusOpen, Project: decision.Project, Lane: "work",
+			Created: store.Today(), Source: connectorSource(batch)}
+		todos.Items = append(todos.Items, created)
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if _, err := store.EnsureTodoDoc(&created); err != nil {
+		return "", err
+	}
+	return created.ID, nil
+}
+
+func todoDescription(decision Decision, relatedTodoID string) string {
+	description := strings.TrimSpace(decision.Summary)
+	if relatedTodoID == "" {
+		return description
+	}
+	relation := "相关历史 Todo：" + relatedTodoID + "（仅作上下文关联，不合并事项）"
+	if description == "" {
+		return relation
+	}
+	return description + "\n\n" + relation
+}
+
+func connectorSource(batch MessageBatch) string {
+	messageID := ""
+	if len(batch.Messages) > 0 {
+		messageID = batch.Messages[0].ID
+	}
+	conversation := batch.Source.ExternalID
+	if len(batch.Messages) > 0 && batch.Messages[0].ConversationID != "" {
+		conversation = batch.Messages[0].ConversationID
+	}
+	return batch.Source.Connector + ":" + conversation + ":" + messageID
+}
+
+func runID(sourceID string, now time.Time) string {
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", sourceID, now.UnixNano())))
+	return "cr_" + hex.EncodeToString(hash[:8])
+}
+
+func sourceDisplayName(source store.CollectionSource) string {
+	return empty(source.Name, source.ExternalID)
+}
+
+func empty(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func shortFingerprint(value string) string {
+	if len(value) <= 16 {
+		return value
+	}
+	return value[:16]
+}

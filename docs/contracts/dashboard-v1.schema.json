@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zane-byte-dev/atm/docs/contracts/dashboard-v1.schema.json",
+  "title": "ATM Dashboard Snapshot v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "generated_at",
+    "work",
+    "todos",
+    "day_stats",
+    "hour_stats",
+    "model_day_stats",
+    "model_hour_stats",
+    "ranges",
+    "live_status",
+    "index_health"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "work": {
+      "type": "object"
+    },
+    "todos": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "day_stats": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "hour_stats": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "model_day_stats": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "model_hour_stats": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "ranges": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "1",
+        "7",
+        "30"
+      ],
+      "properties": {
+        "1": {
+          "$ref": "#/$defs/range"
+        },
+        "7": {
+          "$ref": "#/$defs/range"
+        },
+        "30": {
+          "$ref": "#/$defs/range"
+        }
+      }
+    },
+    "live_status": {
+      "type": "object"
+    },
+    "current_session": {
+      "type": "object"
+    },
+    "index_health": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_stats",
+        "sessions",
+        "skill_stats"
+      ],
+      "properties": {
+        "speed": {
+          "comment": "Derived request throughput and turn wait for this range. Percentiles are computed here because they cannot be re-aggregated client-side.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "models",
+            "turns",
+            "untimed_requests",
+            "out_of_window_requests"
+          ],
+          "properties": {
+            "models": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "turns": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "untimed_requests": {
+              "type": "integer"
+            },
+            "out_of_window_requests": {
+              "type": "integer"
+            }
+          }
+        },
+        "model_stats": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "skill_stats": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  }
+}

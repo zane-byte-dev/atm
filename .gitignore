@@ -1,0 +1,6 @@
+node_modules/
+bin/
+/atm
+skills/*-workspace/
+.playwright-cli/
+.DS_Store

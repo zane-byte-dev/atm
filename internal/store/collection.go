@@ -1,0 +1,647 @@
+package store
+
+import (
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/zane-byte-dev/atm/internal/config"
+)
+
+const (
+	CollectionStrategyTasks   = "tasks"
+	CollectionStrategyObserve = "observe"
+)
+
+var collectionSourceTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+
+type CollectionSource struct {
+	ID             string `json:"id"`
+	Connector      string `json:"connector"`
+	Kind           string `json:"kind"`
+	ExternalID     string `json:"external_id"`
+	Name           string `json:"name,omitempty"`
+	Project        string `json:"project,omitempty"`
+	ExcludePattern string `json:"exclude_pattern,omitempty"`
+	// Instruction is what this source should be watched for, in the user's own
+	// words. It reaches the classifier as trusted instruction; the chat does not.
+	Instruction string `json:"instruction,omitempty"`
+	// KnowledgeCollection is where this source's daily digest is filed. Empty
+	// means config.CollectionDigestCollection.
+	KnowledgeCollection string `json:"knowledge_collection,omitempty"`
+	Strategy            string `json:"strategy"`
+	IntervalMinutes     int    `json:"interval_minutes"`
+	Priority            string `json:"priority"`
+	Enabled             bool   `json:"enabled"`
+	CreatedAt           int64  `json:"created_at"`
+	UpdatedAt           int64  `json:"updated_at"`
+}
+
+// CollectionDigest records the knowledge document one source's insights for one
+// day were distilled into. CoveredThrough is the newest insight the current body
+// accounts for: anything past it makes the digest due again.
+type CollectionDigest struct {
+	SourceID       string `json:"source_id"`
+	DigestDate     string `json:"digest_date"`
+	DocumentID     string `json:"document_id"`
+	Collection     string `json:"collection,omitempty"`
+	Title          string `json:"title,omitempty"`
+	ItemCount      int    `json:"item_count"`
+	CoveredThrough int64  `json:"covered_through"`
+	CreatedAt      int64  `json:"created_at"`
+	UpdatedAt      int64  `json:"updated_at"`
+}
+
+type CollectionCheckpoint struct {
+	SourceID   string `json:"source_id"`
+	CursorTime int64  `json:"cursor_time"`
+	Cursor     string `json:"cursor,omitempty"`
+	UpdatedAt  int64  `json:"updated_at"`
+}
+
+type CollectionRun struct {
+	ID            string `json:"id"`
+	Connector     string `json:"connector"`
+	SourceID      string `json:"source_id,omitempty"`
+	Status        string `json:"status"`
+	StartedAt     int64  `json:"started_at"`
+	FinishedAt    int64  `json:"finished_at,omitempty"`
+	FetchedCount  int    `json:"fetched_count"`
+	AnalyzedCount int    `json:"analyzed_count"`
+	CreatedCount  int    `json:"created_count"`
+	AppendedCount int    `json:"appended_count"`
+	InsightCount  int    `json:"insight_count"`
+	IgnoredCount  int    `json:"ignored_count"`
+	FailedCount   int    `json:"failed_count"`
+	Error         string `json:"error,omitempty"`
+}
+
+type CollectionItem struct {
+	ID             string   `json:"id"`
+	SourceID       string   `json:"source_id"`
+	Connector      string   `json:"connector"`
+	ConversationID string   `json:"conversation_id,omitempty"`
+	Fingerprint    string   `json:"fingerprint"`
+	MessageIDs     []string `json:"message_ids"`
+	Sender         string   `json:"sender,omitempty"`
+	OccurredAt     int64    `json:"occurred_at,omitempty"`
+	RawContext     string   `json:"raw_context,omitempty"`
+	Action         string   `json:"action"`
+	// ProposedAction is what an on-demand analysis decided but has not carried
+	// out: empty unless a person still has to confirm it. See Service.Analyze.
+	ProposedAction string  `json:"proposed_action,omitempty"`
+	Title          string  `json:"title,omitempty"`
+	Summary        string  `json:"summary,omitempty"`
+	ItemType       string  `json:"item_type,omitempty"`
+	Project        string  `json:"project,omitempty"`
+	Priority       string  `json:"priority,omitempty"`
+	Reason         string  `json:"reason,omitempty"`
+	Confidence     float64 `json:"confidence,omitempty"`
+	TodoID         string  `json:"todo_id,omitempty"`
+	Status         string  `json:"status"`
+	Error          string  `json:"error,omitempty"`
+	CreatedAt      int64   `json:"created_at"`
+	UpdatedAt      int64   `json:"updated_at"`
+}
+
+type CollectionSummary struct {
+	Sources  int `json:"sources"`
+	Enabled  int `json:"enabled_sources"`
+	Fetched  int `json:"fetched_today"`
+	Created  int `json:"created_today"`
+	Appended int `json:"appended_today"`
+	Insight  int `json:"insight_today"`
+	Ignored  int `json:"ignored_today"`
+	Failed   int `json:"failed_today"`
+}
+
+type CollectionOverview struct {
+	Summary CollectionSummary  `json:"summary"`
+	Sources []CollectionSource `json:"sources"`
+	Runs    []CollectionRun    `json:"runs"`
+	Items   []CollectionItem   `json:"items"`
+	Digests []CollectionDigest `json:"digests"`
+}
+
+func CollectionSourceID(connector, kind, externalID string) string {
+	hash := sha256.Sum256([]byte(strings.Join([]string{connector, kind, externalID}, "\x00")))
+	return "cs_" + hex.EncodeToString(hash[:8])
+}
+
+func CollectionItemID(connector, fingerprint string) string {
+	hash := sha256.Sum256([]byte(connector + "\x00" + fingerprint))
+	return "ci_" + hex.EncodeToString(hash[:8])
+}
+
+func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSource, error) {
+	source.Connector = strings.ToLower(strings.TrimSpace(source.Connector))
+	source.Kind = strings.ToLower(strings.TrimSpace(source.Kind))
+	source.ExternalID = strings.TrimSpace(source.ExternalID)
+	source.Name = strings.TrimSpace(source.Name)
+	source.Project = strings.TrimSpace(source.Project)
+	source.ExcludePattern = strings.TrimSpace(source.ExcludePattern)
+	source.Instruction = strings.TrimSpace(source.Instruction)
+	source.KnowledgeCollection = strings.ToLower(strings.TrimSpace(source.KnowledgeCollection))
+	source.Strategy = strings.ToLower(strings.TrimSpace(source.Strategy))
+	if source.Connector == "" || source.ExternalID == "" {
+		return CollectionSource{}, fmt.Errorf("connector and external ID are required")
+	}
+	if !collectionSourceTypePattern.MatchString(source.Connector) {
+		return CollectionSource{}, fmt.Errorf("invalid collection connector: %s", source.Connector)
+	}
+	if !collectionSourceTypePattern.MatchString(source.Kind) {
+		return CollectionSource{}, fmt.Errorf("invalid collection source kind: %s", source.Kind)
+	}
+	if source.Priority == "" {
+		source.Priority = "P2"
+	}
+	if !validCollectionPriority(source.Priority) {
+		return CollectionSource{}, fmt.Errorf("invalid priority: %s", source.Priority)
+	}
+	if source.Strategy == "" {
+		source.Strategy = CollectionStrategyTasks
+	}
+	if source.Strategy != CollectionStrategyTasks && source.Strategy != CollectionStrategyObserve {
+		return CollectionSource{}, fmt.Errorf("invalid collection strategy: %s", source.Strategy)
+	}
+	if source.IntervalMinutes == 0 {
+		if source.Strategy == CollectionStrategyObserve {
+			source.IntervalMinutes = 60
+		} else {
+			source.IntervalMinutes = 5
+		}
+	}
+	if source.IntervalMinutes < 1 || source.IntervalMinutes > 1440 {
+		return CollectionSource{}, fmt.Errorf("collection interval must be between 1 and 1440 minutes")
+	}
+	now := time.Now().In(config.Loc).Unix()
+	if source.ID == "" {
+		source.ID = CollectionSourceID(source.Connector, source.Kind, source.ExternalID)
+	}
+	if source.CreatedAt == 0 {
+		source.CreatedAt = now
+	}
+	source.UpdatedAt = now
+	_, err := db.Exec(`INSERT INTO collection_sources
+		(id,connector,kind,external_id,name,project,exclude_pattern,instruction,knowledge_collection,
+		 strategy,interval_minutes,priority,enabled,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(connector,kind,external_id) DO UPDATE SET
+			name=excluded.name,project=excluded.project,exclude_pattern=excluded.exclude_pattern,
+			instruction=excluded.instruction,knowledge_collection=excluded.knowledge_collection,
+			strategy=excluded.strategy,
+			interval_minutes=excluded.interval_minutes,priority=excluded.priority,
+			enabled=excluded.enabled,updated_at=excluded.updated_at`,
+		source.ID, source.Connector, source.Kind, source.ExternalID, source.Name,
+		source.Project, source.ExcludePattern, source.Instruction, source.KnowledgeCollection,
+		source.Strategy, source.IntervalMinutes, source.Priority,
+		boolInt(source.Enabled), source.CreatedAt, source.UpdatedAt)
+	if err != nil {
+		return CollectionSource{}, err
+	}
+	return FindCollectionSource(db, source.Connector, source.Kind, source.ExternalID)
+}
+
+func FindCollectionSource(db *sql.DB, connector, kind, externalID string) (CollectionSource, error) {
+	return scanCollectionSource(db.QueryRow(collectionSourceSelect+
+		` WHERE connector=? AND kind=? AND external_id=?`, connector, kind, externalID))
+}
+
+func GetCollectionSource(db *sql.DB, id string) (CollectionSource, error) {
+	return scanCollectionSource(db.QueryRow(collectionSourceSelect+` WHERE id=?`, id))
+}
+
+func ListCollectionSources(db *sql.DB, connector string, enabledOnly bool) ([]CollectionSource, error) {
+	query := collectionSourceSelect + ` WHERE (?='' OR connector=?)`
+	if enabledOnly {
+		query += ` AND enabled=1`
+	}
+	query += ` ORDER BY connector,name,external_id`
+	rows, err := db.Query(query, connector, connector)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	sources := []CollectionSource{}
+	for rows.Next() {
+		source, err := scanCollectionSource(rows)
+		if err != nil {
+			return nil, err
+		}
+		sources = append(sources, source)
+	}
+	return sources, rows.Err()
+}
+
+func SetCollectionSourceEnabled(db *sql.DB, id string, enabled bool) error {
+	result, err := db.Exec(`UPDATE collection_sources SET enabled=?,updated_at=? WHERE id=?`,
+		boolInt(enabled), time.Now().In(config.Loc).Unix(), id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err == nil && count == 0 {
+		return fmt.Errorf("collection source not found: %s", id)
+	}
+	return err
+}
+
+func DeleteCollectionSource(db *sql.DB, id string) error {
+	result, err := db.Exec(`DELETE FROM collection_sources WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err == nil && count == 0 {
+		return fmt.Errorf("collection source not found: %s", id)
+	}
+	return err
+}
+
+func GetCollectionCheckpoint(db *sql.DB, sourceID string) (CollectionCheckpoint, error) {
+	checkpoint := CollectionCheckpoint{SourceID: sourceID}
+	err := db.QueryRow(`SELECT cursor_time,cursor,updated_at FROM collection_checkpoints WHERE source_id=?`, sourceID).
+		Scan(&checkpoint.CursorTime, &checkpoint.Cursor, &checkpoint.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return checkpoint, nil
+	}
+	return checkpoint, err
+}
+
+func SaveCollectionCheckpoint(db *sql.DB, checkpoint CollectionCheckpoint) error {
+	checkpoint.UpdatedAt = time.Now().In(config.Loc).Unix()
+	_, err := db.Exec(`INSERT INTO collection_checkpoints(source_id,cursor_time,cursor,updated_at)
+		VALUES(?,?,?,?) ON CONFLICT(source_id) DO UPDATE SET
+		cursor_time=excluded.cursor_time,cursor=excluded.cursor,updated_at=excluded.updated_at`,
+		checkpoint.SourceID, checkpoint.CursorTime, checkpoint.Cursor, checkpoint.UpdatedAt)
+	return err
+}
+
+func SaveCollectionRun(db *sql.DB, run CollectionRun) error {
+	_, err := db.Exec(`INSERT INTO collection_runs
+		(id,connector,source_id,status,started_at,finished_at,fetched_count,analyzed_count,
+		 created_count,appended_count,insight_count,ignored_count,failed_count,error)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO UPDATE SET status=excluded.status,finished_at=excluded.finished_at,
+		fetched_count=excluded.fetched_count,analyzed_count=excluded.analyzed_count,
+		created_count=excluded.created_count,appended_count=excluded.appended_count,
+		insight_count=excluded.insight_count,
+		ignored_count=excluded.ignored_count,failed_count=excluded.failed_count,error=excluded.error`,
+		run.ID, run.Connector, run.SourceID, run.Status, run.StartedAt, run.FinishedAt,
+		run.FetchedCount, run.AnalyzedCount, run.CreatedCount, run.AppendedCount,
+		run.InsightCount, run.IgnoredCount, run.FailedCount, run.Error)
+	return err
+}
+
+func PutCollectionItem(db *sql.DB, item CollectionItem) (CollectionItem, bool, error) {
+	now := time.Now().In(config.Loc).Unix()
+	if item.ID == "" {
+		item.ID = CollectionItemID(item.Connector, item.Fingerprint)
+	}
+	if item.Action == "" {
+		item.Action = "pending"
+	}
+	if item.Status == "" {
+		item.Status = "pending"
+	}
+	if item.CreatedAt == 0 {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+	messageIDs, err := json.Marshal(item.MessageIDs)
+	if err != nil {
+		return CollectionItem{}, false, err
+	}
+	result, err := db.Exec(`INSERT INTO collection_items
+		(id,source_id,connector,conversation_id,fingerprint,message_ids,sender,occurred_at,
+		 raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,todo_id,
+		 status,error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
+		item.ID, item.SourceID, item.Connector, item.ConversationID, item.Fingerprint,
+		string(messageIDs), item.Sender, item.OccurredAt, item.RawContext, item.Action,
+		item.ProposedAction, item.Title, item.Summary, item.ItemType, item.Project, item.Priority, item.Reason,
+		item.Confidence, nullableString(item.TodoID), item.Status, item.Error, item.CreatedAt, item.UpdatedAt)
+	if err != nil {
+		return CollectionItem{}, false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return CollectionItem{}, false, err
+	}
+	stored, err := GetCollectionItemByFingerprint(db, item.Connector, item.Fingerprint)
+	return stored, count > 0, err
+}
+
+func UpdateCollectionItem(db *sql.DB, item CollectionItem) error {
+	messageIDs, err := json.Marshal(item.MessageIDs)
+	if err != nil {
+		return err
+	}
+	item.UpdatedAt = time.Now().In(config.Loc).Unix()
+	_, err = db.Exec(`UPDATE collection_items SET conversation_id=?,message_ids=?,sender=?,occurred_at=?,
+		raw_context=?,action=?,proposed_action=?,title=?,summary=?,item_type=?,project=?,priority=?,reason=?,confidence=?,
+		todo_id=?,status=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
+		item.Sender, item.OccurredAt, item.RawContext, item.Action, item.ProposedAction, item.Title, item.Summary,
+		item.ItemType, item.Project, item.Priority, item.Reason, item.Confidence,
+		nullableString(item.TodoID), item.Status, item.Error, item.UpdatedAt, item.ID)
+	return err
+}
+
+func GetCollectionItemByFingerprint(db *sql.DB, connector, fingerprint string) (CollectionItem, error) {
+	row := db.QueryRow(collectionItemSelect+` WHERE connector=? AND fingerprint=?`, connector, fingerprint)
+	return scanCollectionItem(row)
+}
+
+func GetCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
+	return scanCollectionItem(db.QueryRow(collectionItemSelect+` WHERE id=?`, id))
+}
+
+// HandledCollectionMessageIDs returns the exact source messages that already
+// reached a final decision, or are waiting for a person to confirm a proposed
+// decision. Collection fetches deliberately overlap their checkpoint window;
+// filtering by these message IDs before regrouping is what keeps an expanding
+// conversation from becoming a brand-new batch on every run.
+func HandledCollectionMessageIDs(db *sql.DB, sourceID string) (map[string]struct{}, error) {
+	rows, err := db.Query(`SELECT message_ids FROM collection_items
+		WHERE source_id=? AND (status='processed' OR proposed_action<>'')`, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	handled := map[string]struct{}{}
+	for rows.Next() {
+		var encoded string
+		if err := rows.Scan(&encoded); err != nil {
+			return nil, err
+		}
+		var messageIDs []string
+		if err := json.Unmarshal([]byte(encoded), &messageIDs); err != nil {
+			return nil, err
+		}
+		for _, messageID := range messageIDs {
+			if messageID != "" {
+				handled[messageID] = struct{}{}
+			}
+		}
+	}
+	return handled, rows.Err()
+}
+
+func ListCollectionItems(db *sql.DB, sourceID string, limit int) ([]CollectionItem, error) {
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+	rows, err := db.Query(collectionItemSelect+` WHERE (?='' OR source_id=?)
+		ORDER BY updated_at DESC,id DESC LIMIT ?`, sourceID, sourceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CollectionItem{}
+	for rows.Next() {
+		item, err := scanCollectionItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func ListCollectionRuns(db *sql.DB, limit int) ([]CollectionRun, error) {
+	if limit < 1 || limit > 200 {
+		limit = 20
+	}
+	rows, err := db.Query(`SELECT id,connector,source_id,status,started_at,finished_at,fetched_count,
+		analyzed_count,created_count,appended_count,insight_count,ignored_count,failed_count,error
+		FROM collection_runs ORDER BY started_at DESC,id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := []CollectionRun{}
+	for rows.Next() {
+		var run CollectionRun
+		if err := rows.Scan(&run.ID, &run.Connector, &run.SourceID, &run.Status, &run.StartedAt,
+			&run.FinishedAt, &run.FetchedCount, &run.AnalyzedCount, &run.CreatedCount,
+			&run.AppendedCount, &run.InsightCount, &run.IgnoredCount, &run.FailedCount,
+			&run.Error); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
+}
+
+// CollectionDayBounds returns the half-open Unix range [start, end) of the local
+// day containing the given time. Digests are per local day, so every query that
+// scopes insights to "that day" has to agree on where the day starts.
+func CollectionDayBounds(when time.Time) (int64, int64) {
+	local := when.In(config.Loc)
+	start := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, config.Loc)
+	return start.Unix(), start.AddDate(0, 0, 1).Unix()
+}
+
+// ListCollectionInsights returns one source's insight decisions inside a day,
+// oldest first — the order a digest should read them in. Items whose occurred_at
+// is unset fall back to when the decision was recorded, so a batch missing
+// message timestamps still lands in a day rather than in 1970.
+func ListCollectionInsights(db *sql.DB, sourceID string, dayStart, dayEnd int64) ([]CollectionItem, error) {
+	rows, err := db.Query(collectionItemSelect+` WHERE source_id=? AND action='insight'
+		AND (CASE WHEN occurred_at>0 THEN occurred_at ELSE created_at END) >= ?
+		AND (CASE WHEN occurred_at>0 THEN occurred_at ELSE created_at END) < ?
+		ORDER BY (CASE WHEN occurred_at>0 THEN occurred_at ELSE created_at END) ASC,id ASC`,
+		sourceID, dayStart, dayEnd)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CollectionItem{}
+	for rows.Next() {
+		item, err := scanCollectionItem(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// CollectionInsightWatermark is the effective timestamp ListCollectionInsights
+// orders by, so callers can compare an item against a digest's CoveredThrough
+// without re-deriving the fallback.
+func CollectionInsightWatermark(item CollectionItem) int64 {
+	if item.OccurredAt > 0 {
+		return item.OccurredAt
+	}
+	return item.CreatedAt
+}
+
+func GetCollectionDigest(db *sql.DB, sourceID, digestDate string) (CollectionDigest, error) {
+	digest := CollectionDigest{SourceID: sourceID, DigestDate: digestDate}
+	err := db.QueryRow(`SELECT document_id,collection,title,item_count,covered_through,created_at,updated_at
+		FROM collection_digests WHERE source_id=? AND digest_date=?`, sourceID, digestDate).
+		Scan(&digest.DocumentID, &digest.Collection, &digest.Title, &digest.ItemCount,
+			&digest.CoveredThrough, &digest.CreatedAt, &digest.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return digest, nil
+	}
+	return digest, err
+}
+
+func SaveCollectionDigest(db *sql.DB, digest CollectionDigest) error {
+	now := time.Now().In(config.Loc).Unix()
+	if digest.CreatedAt == 0 {
+		digest.CreatedAt = now
+	}
+	digest.UpdatedAt = now
+	_, err := db.Exec(`INSERT INTO collection_digests
+		(source_id,digest_date,document_id,collection,title,item_count,covered_through,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(source_id,digest_date) DO UPDATE SET
+			document_id=excluded.document_id,collection=excluded.collection,title=excluded.title,
+			item_count=excluded.item_count,covered_through=excluded.covered_through,
+			updated_at=excluded.updated_at`,
+		digest.SourceID, digest.DigestDate, digest.DocumentID, digest.Collection, digest.Title,
+		digest.ItemCount, digest.CoveredThrough, digest.CreatedAt, digest.UpdatedAt)
+	return err
+}
+
+func ListCollectionDigests(db *sql.DB, limit int) ([]CollectionDigest, error) {
+	if limit < 1 || limit > 200 {
+		limit = 20
+	}
+	rows, err := db.Query(`SELECT source_id,digest_date,document_id,collection,title,item_count,
+		covered_through,created_at,updated_at FROM collection_digests
+		ORDER BY digest_date DESC,updated_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	digests := []CollectionDigest{}
+	for rows.Next() {
+		var digest CollectionDigest
+		if err := rows.Scan(&digest.SourceID, &digest.DigestDate, &digest.DocumentID,
+			&digest.Collection, &digest.Title, &digest.ItemCount, &digest.CoveredThrough,
+			&digest.CreatedAt, &digest.UpdatedAt); err != nil {
+			return nil, err
+		}
+		digests = append(digests, digest)
+	}
+	return digests, rows.Err()
+}
+
+// CollectionSourceDue reports whether a background run should visit a source.
+// Manual runs bypass this check. Failed runs do not postpone retries: only the
+// latest successful run satisfies the source cadence.
+func CollectionSourceDue(db *sql.DB, source CollectionSource, now time.Time) (bool, error) {
+	var latest sql.NullInt64
+	err := db.QueryRow(`SELECT MAX(started_at) FROM collection_runs
+		WHERE source_id=? AND status='succeeded'`, source.ID).Scan(&latest)
+	if err != nil {
+		return false, err
+	}
+	if !latest.Valid {
+		return true, nil
+	}
+	interval := source.IntervalMinutes
+	if interval < 1 {
+		interval = 5
+	}
+	return now.Unix()-latest.Int64 >= int64((time.Duration(interval) * time.Minute).Seconds()), nil
+}
+
+func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, error) {
+	sources, err := ListCollectionSources(db, "", false)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	items, err := ListCollectionItems(db, "", itemLimit)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	runs, err := ListCollectionRuns(db, 20)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	digests, err := ListCollectionDigests(db, 20)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	summary := CollectionSummary{Sources: len(sources)}
+	for _, source := range sources {
+		if source.Enabled {
+			summary.Enabled++
+		}
+	}
+	start, _ := CollectionDayBounds(time.Now().In(config.Loc))
+	err = db.QueryRow(`SELECT
+		COALESCE(SUM(fetched_count),0),COALESCE(SUM(created_count),0),
+		COALESCE(SUM(appended_count),0),COALESCE(SUM(insight_count),0),
+		COALESCE(SUM(ignored_count),0),
+		COALESCE(SUM(failed_count),0) FROM collection_runs WHERE started_at>=?`, start).
+		Scan(&summary.Fetched, &summary.Created, &summary.Appended, &summary.Insight,
+			&summary.Ignored, &summary.Failed)
+	return CollectionOverview{Summary: summary, Sources: sources, Runs: runs,
+		Items: items, Digests: digests}, err
+}
+
+const collectionItemSelect = `SELECT id,source_id,connector,conversation_id,fingerprint,message_ids,
+	sender,occurred_at,raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,
+	COALESCE(todo_id,''),status,error,created_at,updated_at FROM collection_items`
+
+const collectionSourceSelect = `SELECT id,connector,kind,external_id,name,project,exclude_pattern,
+	instruction,knowledge_collection,strategy,interval_minutes,priority,enabled,created_at,updated_at
+	FROM collection_sources`
+
+type collectionScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanCollectionSource(scanner collectionScanner) (CollectionSource, error) {
+	var source CollectionSource
+	var enabled int
+	err := scanner.Scan(&source.ID, &source.Connector, &source.Kind, &source.ExternalID,
+		&source.Name, &source.Project, &source.ExcludePattern, &source.Instruction,
+		&source.KnowledgeCollection, &source.Strategy, &source.IntervalMinutes, &source.Priority,
+		&enabled, &source.CreatedAt, &source.UpdatedAt)
+	source.Enabled = enabled != 0
+	return source, err
+}
+
+func scanCollectionItem(scanner collectionScanner) (CollectionItem, error) {
+	var item CollectionItem
+	var messageIDs string
+	err := scanner.Scan(&item.ID, &item.SourceID, &item.Connector, &item.ConversationID,
+		&item.Fingerprint, &messageIDs, &item.Sender, &item.OccurredAt, &item.RawContext,
+		&item.Action, &item.ProposedAction, &item.Title, &item.Summary, &item.ItemType, &item.Project,
+		&item.Priority, &item.Reason, &item.Confidence, &item.TodoID, &item.Status,
+		&item.Error, &item.CreatedAt, &item.UpdatedAt)
+	if err == nil {
+		err = json.Unmarshal([]byte(messageIDs), &item.MessageIDs)
+	}
+	return item, err
+}
+
+func validCollectionPriority(priority string) bool {
+	return priority == "P0" || priority == "P1" || priority == "P2" || priority == "P3"
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
