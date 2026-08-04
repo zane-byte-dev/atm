@@ -121,11 +121,13 @@ struct DesktopAgentsView: View {
                                     } label: {
                                         DesktopAgentPresenceRow(
                                             session: session,
-                                            isSelected: navigation.selectedAgentID == session.id
+                                            isSelected: navigation.selectedAgentID == session.id,
+                                            showsOrigin: originLabel(session) != dominantOrigin
                                         )
                                     }
                                     .buttonStyle(.plain)
-                                    .help("选择 Agent 会话")
+                                    // 行里不再逐张画来源，tooltip 兜住完整来源。
+                                    .help(originLabel(session))
                                     .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                                     .listRowBackground(Color.clear)
                                 }
@@ -133,8 +135,11 @@ struct DesktopAgentsView: View {
                                 HStack {
                                     Text(state.title)
                                     Spacer()
+                                    // 状态色画在分区计数上，而不是每行一颗圆点：同一分区里
+                                    // 每行的颜色必然相同，逐行画等于把分区标题又说一遍。
                                     Text("\(values.count)")
                                         .font(ATMFont.mono(.caption, .semibold))
+                                        .foregroundStyle(state.tint)
                                 }
                             }
                         }
@@ -146,11 +151,13 @@ struct DesktopAgentsView: View {
 
             if unobservedBindingCount > 0 {
                 Divider()
-                Text("另有 \(unobservedBindingCount) 条 binding 暂无实时活动，不计入活跃 Agent")
+                // 说会话状态，不说内部模型：「binding / 不计入活跃 Agent」是实现词汇。
+                Text("另有 \(unobservedBindingCount) 个会话休眠中")
                     .font(ATMFont.font(.caption, weight: .medium))
                     .foregroundStyle(ATMTheme.secondary)
                     .padding(.horizontal, 14)
                     .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                    .help("这些会话有显式绑定但当前没有实时活动，因此不计入活跃 Agent。")
             }
         }
         .background(ATMTheme.surface)
@@ -158,14 +165,39 @@ struct DesktopAgentsView: View {
 
     private var activeAgentSummary: String {
         let active = sessions.filter(\.isCurrentlyActive)
-        guard !active.isEmpty else { return "最近 10 分钟有 \(sessions.count) 个可见会话" }
-
-        var counts: [String: Int] = [:]
-        for session in active {
-            counts[ATMAgentDisplay.name(session.tool), default: 0] += 1
+        var parts = [
+            active.isEmpty
+                ? "最近 10 分钟有 \(sessions.count) 个可见会话"
+                : "\(active.count) 个会话正在活跃"
+        ]
+        if let origin = dominantOrigin {
+            parts.append(isOriginUniform ? origin : "\(origin) 等")
         }
-        let clients = counts.keys.sorted().map { "\($0) \(counts[$0] ?? 0)" }
-        return "\(active.count) 个会话正在活跃 · " + clients.joined(separator: " · ")
+        return parts.joined(separator: " · ")
+    }
+
+    /// 栏内最常见的来源。这一句是列表的「默认来源」，行里只画偏离它的那些——
+    /// 单项目单客户端时（最常见的情况）`Codex Desktop · atm` 本来会在每张卡的
+    /// 首行、最抢眼的位置复读一遍，而它恰恰是各行之间唯一不变的东西。
+    private var dominantOrigin: String? {
+        var counts: [String: Int] = [:]
+        for session in sessions {
+            counts[originLabel(session), default: 0] += 1
+        }
+        // 计数相同时按字典序定序，免得来源标签随轮询顺序跳动。
+        return counts.max { lhs, rhs in
+            lhs.value == rhs.value ? lhs.key > rhs.key : lhs.value < rhs.value
+        }?.key
+    }
+
+    private var isOriginUniform: Bool {
+        Set(sessions.map(originLabel)).count <= 1
+    }
+
+    private func originLabel(_ session: ATMLiveSession) -> String {
+        let client = ATMAgentDisplay.clientName(session)
+        let project = ATMAgentDisplay.projectName(session)
+        return "\(client) · \(project)"
     }
 
     private var emptyDetail: some View {
@@ -215,112 +247,95 @@ struct DesktopAgentsView: View {
     }
 }
 
+private extension ATMAgentPresenceState {
+    var tint: Color {
+        switch self {
+        case .attention: return ATMTheme.danger
+        case .active: return ATMTheme.success
+        case .recent: return ATMTheme.secondary
+        }
+    }
+}
+
+/// 两行卡片：第一行是身份与状态，第二行是上下文，两行都只画各行之间**不一样**的东西。
+///
+/// 之前是四行，其中三行在同一栏里逐张复读：`Codex Desktop · atm`（栏内恒定，且占着
+/// 卡片首行最抢眼的位置）、`未绑定`（默认态，等于把「什么都没发生」高亮成胶囊）、
+/// 模型名（同一客户端下几乎恒定，详情页「技术信息」已有）。状态本身也被说了三遍——
+/// 分区标题、彩色圆点、`N 分钟活跃` 里的「活跃」二字。分区标题已经承载状态语义，
+/// 圆点在同色分区里没有信息，时长因此退回纯时长。
 private struct DesktopAgentPresenceRow: View {
     let session: ATMLiveSession
     let isSelected: Bool
+    /// 该会话的来源是否偏离列表头写明的默认来源。
+    let showsOrigin: Bool
 
     @State private var isHovered = false
 
     // 只有 chevron 用得到 hover，行表面的 hover 由 atmRowSurface 自己管。
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 7) {
                 ATMAgentMark(agent: session.tool, size: 16)
-                Circle()
-                    .fill(presenceColor)
-                    .frame(width: 7, height: 7)
-                Text("\(clientDisplayName) · \(displayProject)")
-                    .font(ATMFont.font(.footnote, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
+                Text(session.presenceTitle)
+                    // 固定字重 —— 见 ATMRowSurface：选中不切字重，否则标题会抖。
+                    .font(ATMFont.font(.body, weight: .medium))
+                    .foregroundStyle(ATMTheme.primary)
                     .lineLimit(1)
-                Spacer(minLength: 4)
-                if session.presenceState == .attention {
-                    Text("需要你")
-                        .font(ATMFont.font(.caption, weight: .semibold))
-                        .foregroundStyle(ATMTheme.danger)
-                }
-                if isHovered {
-                    Image(systemName: "chevron.right")
-                        .font(ATMFont.font(.caption, weight: .semibold))
-                        .foregroundStyle(ATMTheme.secondary)
-                }
+                Spacer(minLength: 6)
+                trailingMeta
             }
 
-            Text(session.presenceTitle)
-                // 固定字重 —— 见 ATMRowSurface：选中不切字重，否则标题会抖。
-                .font(ATMFont.font(.body, weight: .medium))
-                .foregroundStyle(ATMTheme.primary)
-                .lineLimit(1)
-
-            if let input = session.latestUserInputBelowTitle {
+            if session.latestUserInputBelowTitle != nil || showsOrigin {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    Text("你")
-                        .font(ATMFont.font(.caption, weight: .semibold))
-                        .foregroundStyle(ATMTheme.secondary)
-                    Text(input)
-                        .font(ATMFont.font(.footnote))
-                        .foregroundStyle(ATMTheme.secondary)
-                        .lineLimit(1)
+                    if let input = session.latestUserInputBelowTitle {
+                        Text("你")
+                            .font(ATMFont.font(.caption, weight: .semibold))
+                        Text(input)
+                            .font(ATMFont.footnote)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 6)
+                    if showsOrigin {
+                        Text("\(ATMAgentDisplay.clientName(session)) · \(ATMAgentDisplay.projectName(session))")
+                            .font(ATMFont.font(.caption, weight: .medium))
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    }
                 }
-            }
-
-            HStack(spacing: 6) {
-                statusChip(presenceText, color: presenceColor)
-                if let todoID = session.bindingTodoID {
-                    statusChip(todoID.uppercased(), color: ATMTheme.accent)
-                } else {
-                    statusChip("未绑定", color: ATMTheme.secondary)
-                }
-                Spacer(minLength: 4)
-                if let model = nonEmpty(session.model) {
-                    Text(model)
-                        .font(ATMFont.mono(.caption, .medium))
-                        .foregroundStyle(ATMTheme.secondary)
-                        .lineLimit(1)
-                }
+                .foregroundStyle(ATMTheme.secondary)
             }
         }
         .atmRowSurface(isSelected: isSelected)
         .onHover { isHovered = $0 }
     }
 
-    private var displayProject: String {
-        nonEmpty(session.project) ?? "未知项目"
-    }
-
-    private var clientDisplayName: String {
-        nonEmpty(session.client) ?? ATMAgentDisplay.name(session.tool)
-    }
-
-    private var presenceText: String {
-        if session.presenceState == .attention { return "等待介入" }
-        if session.isCurrentlyActive { return NumberFormat.age(session.ageSeconds) }
-        return "\(NumberFormat.age(session.ageSeconds))活跃"
-    }
-
-    private func statusChip(_ text: String, color: Color) -> some View {
-        Text(text)
-            .font(ATMFont.mono(.caption, .medium))
-            .foregroundStyle(color)
-            .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(color.opacity(0.08), in: Capsule())
-    }
-
-    private func nonEmpty(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            return nil
+    /// 尾部整块 `fixedSize`：让长标题先被截断，而不是把时长挤没。chevron 用 opacity
+    /// 而不是条件插入，否则悬停时它挤掉的那点宽度会改变标题截断位置，行文字跟着抖一下。
+    private var trailingMeta: some View {
+        HStack(spacing: 6) {
+            if session.presenceState == .attention {
+                Text("需要你")
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(ATMTheme.danger)
+            }
+            if let todoID = session.bindingTodoID {
+                Text(todoID.uppercased())
+                    .font(ATMFont.mono(.caption, .medium))
+                    .foregroundStyle(ATMTheme.accent)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(ATMTheme.accent.opacity(0.08), in: Capsule())
+            }
+            Text(NumberFormat.age(session.ageSeconds))
+                .font(ATMFont.mono(.caption, .medium))
+                .foregroundStyle(ATMTheme.secondary)
+            Image(systemName: "chevron.right")
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+                .opacity(isHovered ? 1 : 0)
         }
-        return value
-    }
-
-    private var presenceColor: Color {
-        switch session.presenceState {
-        case .attention: return ATMTheme.danger
-        case .active: return ATMTheme.success
-        case .recent: return ATMTheme.secondary
-        }
+        .fixedSize()
     }
 }
 
@@ -374,11 +389,11 @@ private struct DesktopAgentPresenceDetail: View {
 
             HStack(spacing: 6) {
                 Circle()
-                    .fill(presenceColor)
+                    .fill(session.presenceState.tint)
                     .frame(width: 7, height: 7)
                 Text(session.presenceState == .attention ? "需要你" : activityLabel)
                     .font(ATMFont.font(.footnote, weight: .medium))
-                    .foregroundStyle(presenceColor)
+                    .foregroundStyle(session.presenceState.tint)
             }
         }
         .padding(.horizontal, 20)
@@ -391,9 +406,9 @@ private struct DesktopAgentPresenceDetail: View {
     private var headerIdentity: some View {
         HStack(spacing: 7) {
             ATMAgentMark(agent: session.tool, size: 18)
-            Text(nonEmpty(session.client) ?? ATMAgentDisplay.name(session.tool))
+            Text(ATMAgentDisplay.clientName(session))
             Text("·")
-            Label(nonEmpty(session.project) ?? "未知项目", systemImage: "folder")
+            Label(ATMAgentDisplay.projectName(session), systemImage: "folder")
             Text("·")
             Text(shortSessionID(session.sessionID))
                 .font(ATMFont.mono(.footnote, .medium))
@@ -496,32 +511,39 @@ private struct DesktopAgentPresenceDetail: View {
         }
     }
 
+    /// 不叫「最新完成结果」：`latestResult` 是最后一次 final answer，会话往下可能还在跑，
+    /// 于是标题写着「完成」、正文的状态标签写着「正在继续处理」，自己打自己。状态也不在
+    /// 这里重复——头部的圆点加文字已经说了一遍，需要介入时 attentionBanner 还会说一遍。
     private func latestResult(_ text: String) -> some View {
-        detailSection("最新完成结果") {
-            VStack(alignment: .leading, spacing: 12) {
-                Label(resultStateLabel, systemImage: resultStateIcon)
-                    .font(ATMFont.font(.footnote, weight: .semibold))
-                    .foregroundStyle(presenceColor)
-                ATMMarkdownContentView(source: text)
-            }
+        detailSection("最新进展") {
+            ATMMarkdownContentView(source: text)
         }
     }
 
+    /// 最新一条在最上面且默认只展开它。
+    ///
+    /// `updates` 从 CLI 出来是按时间正序的（见 parser 里的 `recentUpdates`），全展开时
+    /// 得从上往下读三条才知道现在是什么状态，而越靠上的越旧、越没用——三条往往还是同一件
+    /// 事的三次重述。逐条那个一模一样的 `text.bubble` 图标也去掉了：三条同图标等于没图标。
     private var executionUpdates: some View {
-        detailSection("执行动态") {
-            VStack(alignment: .leading, spacing: 13) {
-                ForEach(Array(session.visibleUpdates.enumerated()), id: \.offset) { index, update in
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: "text.bubble")
-                            .font(ATMFont.font(.footnote, weight: .semibold))
-                            .foregroundStyle(ATMTheme.accent)
-                            .frame(width: 16)
-                        ATMMarkdownContentView(source: update)
+        let updates = Array(session.visibleUpdates.reversed())
+        return detailSection("执行动态") {
+            VStack(alignment: .leading, spacing: 12) {
+                if let latest = updates.first {
+                    ATMMarkdownContentView(source: latest)
+                }
+                if updates.count > 1 {
+                    DisclosureGroup("更早 \(updates.count - 1) 条动态") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(Array(updates.dropFirst().enumerated()), id: \.offset) { _, update in
+                                ATMMarkdownContentView(source: update)
+                            }
+                        }
+                        .padding(.top, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    if index < session.visibleUpdates.count - 1 {
-                        Divider()
-                            .padding(.leading, 26)
-                    }
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
                 }
             }
         }
@@ -562,7 +584,7 @@ private struct DesktopAgentPresenceDetail: View {
     private var technicalDetails: some View {
         DisclosureGroup("技术信息") {
             VStack(spacing: 9) {
-                infoRow("来源", nonEmpty(session.client) ?? ATMAgentDisplay.name(session.tool))
+                infoRow("来源", ATMAgentDisplay.clientName(session))
                 infoRow("入口", launchRoute.destinationLabel)
                 infoRow("模型", session.model ?? "未知")
                 infoRow("会话", session.sessionID)
@@ -593,30 +615,6 @@ private struct DesktopAgentPresenceDetail: View {
     private var activityLabel: String {
         if session.isCurrentlyActive { return "刚刚更新" }
         return "\(NumberFormat.age(session.ageSeconds))活跃"
-    }
-
-    private var resultStateLabel: String {
-        switch session.presenceState {
-        case .attention: return "等待你的输入"
-        case .active: return "Agent 正在继续处理"
-        case .recent: return "最近完成"
-        }
-    }
-
-    private var resultStateIcon: String {
-        switch session.presenceState {
-        case .attention: return "person.crop.circle.badge.exclamationmark"
-        case .active: return "waveform.path"
-        case .recent: return "checkmark.circle"
-        }
-    }
-
-    private var presenceColor: Color {
-        switch session.presenceState {
-        case .attention: return ATMTheme.danger
-        case .active: return ATMTheme.success
-        case .recent: return ATMTheme.secondary
-        }
     }
 
     private var launchRoute: ATMAgentSessionLaunchRoute {

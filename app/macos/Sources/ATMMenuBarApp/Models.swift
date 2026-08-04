@@ -4098,6 +4098,18 @@ enum ATMAgentDisplay {
         }
     }
 
+    /// The client label a session should carry: its own `client` when the tool
+    /// reported one ("Codex Desktop"), otherwise the pretty tool name ("Codex").
+    static func clientName(_ session: ATMLiveSession) -> String {
+        let client = session.client?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return client.isEmpty ? name(session.tool) : client
+    }
+
+    static func projectName(_ session: ATMLiveSession) -> String {
+        let project = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
+        return project.isEmpty ? "未知项目" : project
+    }
+
     /// One- or two-character badge glyph. Prefer over a generic SF Symbol when
     /// the mark must stay readable at 14–18pt in dense lists.
     static func monogram(_ agent: String) -> String {

@@ -1439,6 +1439,35 @@ final class ModelsTests: XCTestCase {
         XCTAssertNil(duplicate.latestReplyText)
     }
 
+    /// The Agent list hides a row's origin when it matches the column's dominant
+    /// one, so these two labels have to agree exactly between the header and the
+    /// rows — a whitespace-only `client` falling back differently in one of them
+    /// would print `Codex Desktop · atm` on every card again.
+    func testAgentOriginLabelsFallBackWhenClientOrProjectIsBlank() {
+        let reported = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "a",
+            project: "atm",
+            client: "Codex Desktop",
+            ageSeconds: 1
+        )
+        XCTAssertEqual(ATMAgentDisplay.clientName(reported), "Codex Desktop")
+        XCTAssertEqual(ATMAgentDisplay.projectName(reported), "atm")
+
+        let blank = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "b",
+            project: "   ",
+            client: "  ",
+            ageSeconds: 1
+        )
+        XCTAssertEqual(ATMAgentDisplay.clientName(blank), "Codex")
+        XCTAssertEqual(ATMAgentDisplay.projectName(blank), "未知项目")
+
+        let missing = ATMLiveSession(tool: "qodercli", sessionID: "c", project: "atm", ageSeconds: 1)
+        XCTAssertEqual(ATMAgentDisplay.clientName(missing), "QoderCLI")
+    }
+
     func testAgentSessionLaunchRouteUsesExactTTYWhenAvailable() {
         let session = ATMLiveSession(
             tool: "Claude Code",
