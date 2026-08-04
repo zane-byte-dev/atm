@@ -33,6 +33,11 @@ done
 
 grep -Fq 'main: ./cmd/atm' .goreleaser.yaml
 grep -Fq 'binary: atm' .goreleaser.yaml
+grep -Fq 'https://github.com/${REPO}/releases/latest' install.sh
+if grep -Fq 'api.github.com/repos/${REPO}/releases/latest' install.sh; then
+  printf '%s\n' "install.sh must not depend on the anonymous GitHub API rate limit" >&2
+  exit 1
+fi
 grep -Fq 'asset="${BIN}_${version}_${os}_${arch}.tar.gz"' install.sh
 grep -Fq 'checksums_url="https://github.com/${REPO}/releases/download/${tag}/checksums.txt"' install.sh
 grep -Fq 'actual_checksum" = "$expected_checksum' install.sh

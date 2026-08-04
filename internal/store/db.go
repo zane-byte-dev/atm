@@ -82,6 +82,17 @@ func openReadOnlyDSN(dsn string) (*sql.DB, error) {
 }
 
 func migrate(db *sql.DB) error {
+	// The common path must stay read-only. bootstrapSchema deliberately starts
+	// with a write so fresh databases and real migrations serialize across
+	// processes, but doing that on every Open makes unrelated short-lived writers
+	// contend just to rediscover that the schema is already current. In
+	// particular, concurrent memory/review commands could exhaust SQLite's busy
+	// window before reaching their actual INSERT. A current schema needs no lock.
+	var current int
+	if err := db.QueryRow(`SELECT version FROM schema_version LIMIT 1`).Scan(&current); err == nil && current == SchemaVersion {
+		return nil
+	}
+
 	version, created, err := bootstrapSchema(db)
 	if err != nil || created {
 		return err
