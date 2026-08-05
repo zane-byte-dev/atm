@@ -1,0 +1,6 @@
+{"type":"ai-title","timestamp":"2026-08-01T09:00:00Z","aiTitle":"Corpus sample session"}
+{"type":"user","timestamp":"2026-08-01T09:00:01Z","message":{"content":[{"type":"text","text":"<system-reminder>noise that must not be indexed</system-reminder>"}]}}
+{"type":"user","timestamp":"2026-08-01T09:00:02Z","message":{"content":[{"type":"text","text":"PLACEHOLDER_USER_PROMPT"}]}}
+{"type":"assistant","timestamp":"2026-08-01T09:00:05Z","message":{"id":"msg_corpus_1","model":"claude-opus-5","usage":{"input_tokens":1200,"output_tokens":340,"cache_creation_input_tokens":64,"cache_read_input_tokens":900},"content":[{"type":"tool_use","name":"Read"},{"type":"tool_use","name":"Skill","input":{"skill":"atm"}},{"type":"text","text":"PLACEHOLDER_ASSISTANT_REPLY"}]}}
+{"type":"user","timestamp":"2026-08-01T09:00:09Z","message":{"content":[{"type":"text","text":"PLACEHOLDER_FOLLOW_UP"}]}}
+{"type":"assistant","timestamp":"2026-08-01T09:00:12Z","message":{"id":"msg_corpus_2","model":"claude-opus-5","usage":{"input_tokens":1500,"output_tokens":120,"cache_read_input_tokens":1400},"content":[{"type":"text","text":"PLACEHOLDER_FINAL_REPLY"}]}}

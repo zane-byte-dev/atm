@@ -85,6 +85,48 @@ func GetModelPricing(db *sql.DB) ([]ModelPricing, error) {
 	return result, nil
 }
 
+// ExtractionCounts is what a parser actually got out of one agent's transcripts,
+// as opposed to how many files it found. Every agent ships its own format and
+// changes it without telling ATM, so the failure mode that matters is not an
+// error — it is a parser that still reads the file, still creates the session,
+// and silently extracts nothing from it. Files on disk with zero messages or
+// zero token accounting behind them is what that looks like from here.
+type ExtractionCounts struct {
+	Agent    string `json:"agent"`
+	Sessions int    `json:"sessions"`
+	Messages int    `json:"messages"`
+	// UsageRows counts rows in either accounting table, because agents differ in
+	// which one they populate and an agent that reports neither is the signal.
+	UsageRows int `json:"usage_rows"`
+	Tools     int `json:"tools"`
+}
+
+// GetExtractionCounts reports, per agent, how much content the parsers pulled
+// out of the sessions they indexed. Read-only and index-based: it re-parses
+// nothing, so doctor stays cheap.
+func GetExtractionCounts(db *sql.DB) (map[string]ExtractionCounts, error) {
+	rows, err := db.Query(`SELECT s.agent, COUNT(DISTINCT s.id),
+		(SELECT COUNT(*) FROM messages m JOIN sessions ms ON m.session_id=ms.id WHERE ms.agent=s.agent),
+		(SELECT COUNT(*) FROM usage u JOIN sessions us ON u.session_id=us.id WHERE us.agent=s.agent)
+			+ (SELECT COUNT(*) FROM usage_events e JOIN sessions es ON e.session_id=es.id WHERE es.agent=s.agent),
+		(SELECT COALESCE(SUM(t.count),0) FROM tools t JOIN sessions ts ON t.session_id=ts.id WHERE ts.agent=s.agent)
+		FROM sessions s GROUP BY s.agent`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]ExtractionCounts{}
+	for rows.Next() {
+		var counts ExtractionCounts
+		if err := rows.Scan(&counts.Agent, &counts.Sessions, &counts.Messages,
+			&counts.UsageRows, &counts.Tools); err != nil {
+			return nil, err
+		}
+		out[counts.Agent] = counts
+	}
+	return out, rows.Err()
+}
+
 // ForgettableSession is a session resolved for `atm session forget`, with what
 // forgetting it would cost the user in tokens and dollars.
 type ForgettableSession struct {

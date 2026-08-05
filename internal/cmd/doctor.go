@@ -151,6 +151,50 @@ func collectionModelIssues() []doctorIssue {
 			"`atm config set collection_model_command \"grok,codex\"`"}}
 }
 
+// extractionIssues turns "the parser read the file and got nothing out of it"
+// into something a person sees.
+//
+// Every agent owns its own transcript format and changes it whenever it likes.
+// When that happens ATM does not error: discovery still finds the files, the
+// session row is still created, and the fields the parser looked for are simply
+// absent — so history quietly stops growing and spend quietly reads as zero. The
+// numbers are the only evidence, and they are only damning in combination:
+// indexed sessions with no messages behind them, or an agent that reports tokens
+// upstream but none here.
+//
+// Each check requires an indexed session first. An agent that was never used has
+// zero of everything and must not be reported as broken, and each check is gated
+// on the parser claiming that capability at all — an upstream that never reported
+// tokens is a documented limitation, not a regression.
+func extractionIssues(agent string, source doctorSource, counts store.ExtractionCounts) []doctorIssue {
+	if source.Files == 0 || counts.Sessions == 0 {
+		return nil
+	}
+	claims := parser.CapabilitiesFor(agent)
+	var issues []doctorIssue
+	if claims.Messages && counts.Messages == 0 {
+		issues = append(issues, doctorIssue{
+			Severity: "warning", Domain: "parser", Code: "parser_extracts_no_messages",
+			Subject: agent,
+			Detail: fmt.Sprintf("%d indexed session(s) from %d discovered file(s) contain no messages",
+				counts.Sessions, source.Files),
+			Suggestion: "the upstream transcript format has probably changed: upgrade atm, and if it is already current, " +
+				"report it with `atm diagnose --bundle` attached",
+		})
+	}
+	if claims.Usage && counts.UsageRows == 0 {
+		issues = append(issues, doctorIssue{
+			Severity: "warning", Domain: "parser", Code: "parser_extracts_no_usage",
+			Subject: agent,
+			Detail: fmt.Sprintf("%d indexed session(s) carry no token accounting, so this agent's spend reads as zero",
+				counts.Sessions),
+			Suggestion: "check whether this agent reports usage at all (`atm doctor` coverage row); if it used to, " +
+				"upgrade atm and report it with `atm diagnose --bundle` attached",
+		})
+	}
+	return issues
+}
+
 func runDoctorReport(db *sql.DB) error {
 	report, err := buildDoctorReport(db)
 	if err != nil {
@@ -179,6 +223,14 @@ func buildDoctorReport(db *sql.DB) (doctorReport, error) {
 	for _, item := range coverage {
 		indexed[item.Agent] = item.Sessions
 	}
+	extraction := map[string]store.ExtractionCounts{}
+	if db != nil {
+		var err error
+		extraction, err = store.GetExtractionCounts(db)
+		if err != nil {
+			return doctorReport{}, err
+		}
+	}
 	var sources []doctorSource
 	var issues []doctorIssue
 	if db == nil {
@@ -200,6 +252,9 @@ func buildDoctorReport(db *sql.DB) (doctorReport, error) {
 			issues = append(issues, doctorIssue{Severity: "info", Domain: "source", Code: "source_empty", Subject: a.Name(), Detail: "source path exists but no supported session files were discovered", Suggestion: "verify the configured path and upstream client data format"})
 		default:
 			source.Status = "ok"
+		}
+		if db != nil {
+			issues = append(issues, extractionIssues(a.Name(), source, extraction[a.Name()])...)
 		}
 		sources = append(sources, source)
 	}
