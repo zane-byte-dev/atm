@@ -19,6 +19,12 @@ type MessageBatch struct {
 	// RawContext may additionally include already-handled lines as continuity.
 	ActionContext string
 	RawContext    string
+	// ExcludedKeyword is the source keyword that matched at least one message in
+	// this batch. Those messages stay in Messages so the run marks them handled,
+	// but they are demoted to continuity: absent from ActionContext and marked
+	// [上下文] in RawContext. An empty ActionContext therefore means the whole
+	// batch was noise.
+	ExcludedKeyword string
 }
 
 type Decision struct {

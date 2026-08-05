@@ -410,6 +410,52 @@ func TestSourceExclusionIsAuditedWithoutCallingModel(t *testing.T) {
 	}
 }
 
+// Batching is time-based, so a noisy broadcast routinely shares a window with a
+// real request. Excluding per batch dropped both — a CR bot's "有新增commits"
+// silently took the "邀请你评审" three minutes before it down as well.
+func TestSourceExclusionDropsOnlyTheMatchedMessages(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	db, _ := store.Open()
+	source.ExcludePattern = "构建成功"
+	var err error
+	source, err = store.UpsertCollectionSource(db, source)
+	db.Close()
+	if err != nil {
+		t.Fatalf("update source exclusion: %v", err)
+	}
+	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "修复登录超时",
+		ItemType: "bug", Confidence: 0.9}}
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "noise", ConversationID: source.ExternalID, Sender: "机器人",
+			CreatedAt: 11_400, Content: "构建成功：主干流水线 #42"},
+		{ID: "real", ConversationID: source.ExternalID, Sender: "测试发送人",
+			CreatedAt: 11_500, Content: "登录超时需要修复一下"},
+	}, newest: 11_500}, Extractor: extractor, Now: tickingClock()}
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].CreatedCount != 1 || extractor.calls != 1 {
+		t.Fatalf("mixed batch run=%+v calls=%d err=%v", report, extractor.calls, err)
+	}
+	batch := extractor.batches[0]
+	if strings.Contains(batch.ActionContext, "构建成功") || !strings.Contains(batch.ActionContext, "登录超时") {
+		t.Fatalf("action context still carries the excluded line: %q", batch.ActionContext)
+	}
+	// The excluded line stays readable as continuity, but only as [上下文]: the
+	// prompt allows [新消息] lines alone to trigger a decision.
+	if !strings.Contains(batch.RawContext, "[上下文] ") || !strings.Contains(batch.RawContext, "构建成功") ||
+		!strings.Contains(batch.RawContext, "[新消息] ") {
+		t.Fatalf("raw context lost the excluded line or its marker: %q", batch.RawContext)
+	}
+	db, _ = store.Open()
+	defer db.Close()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	// Both IDs belong to the item, so the excluded message counts as handled and
+	// is not re-fetched into a fresh batch on every later run.
+	if len(items) != 1 || len(items[0].MessageIDs) != 2 {
+		t.Fatalf("excluded message left unhandled: %+v", items)
+	}
+}
+
 // A batch yields exactly one decision, so what a batch covers decides how many
 // separate events can survive one window. Chat wants them merged — a request and
 // the line clarifying it are one Todo. A notification feed wants them apart: two

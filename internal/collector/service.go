@@ -318,14 +318,46 @@ func decisionUnits(source store.CollectionSource, fresh []Message) [][]Message {
 }
 
 func messageBatchWithContext(source store.CollectionSource, fresh, contextMessages []Message) MessageBatch {
-	freshIDs := map[string]struct{}{}
-	for _, message := range fresh {
-		freshIDs[message.ID] = struct{}{}
+	actionable, keyword := actionableMessages(source, fresh)
+	actionableIDs := map[string]struct{}{}
+	for _, message := range actionable {
+		actionableIDs[message.ID] = struct{}{}
 	}
 	return MessageBatch{Source: source, Messages: fresh,
-		Fingerprint:   messageBatchFingerprint(source.ID, fresh),
-		ActionContext: formatMessageContext(fresh, nil),
-		RawContext:    formatMessageContext(contextMessages, freshIDs)}
+		Fingerprint:     messageBatchFingerprint(source.ID, fresh),
+		ActionContext:   formatMessageContext(actionable, nil),
+		RawContext:      formatMessageContext(contextMessages, actionableIDs),
+		ExcludedKeyword: keyword}
+}
+
+// actionableMessages drops the individual messages a source's keywords match,
+// rather than the batch that happens to contain them. Both the CLI flag and the
+// App call this a message filter, and batching is purely time-based: one 构建成功
+// used to take every real request within fifteen minutes of it down as well.
+// The dropped lines stay available as continuity — a status broadcast right
+// after the request it belongs to is exactly the context that resolves it.
+func actionableMessages(source store.CollectionSource, messages []Message) ([]Message, string) {
+	if strings.TrimSpace(source.ExcludePattern) == "" {
+		return messages, ""
+	}
+	actionable := make([]Message, 0, len(messages))
+	keyword := ""
+	for _, message := range messages {
+		// Matched against the rendered line, not the bare content, so a keyword
+		// can still name a sender the way it could when this ran on the batch.
+		matched, excluded := collectionExclusion(source, formatMessageContext([]Message{message}, nil))
+		if !excluded {
+			actionable = append(actionable, message)
+			continue
+		}
+		if keyword == "" {
+			keyword = matched
+		}
+	}
+	if keyword == "" {
+		return messages, ""
+	}
+	return actionable, keyword
 }
 
 func (service Service) processBatch(ctx context.Context, batch MessageBatch, item store.CollectionItem) (store.CollectionItem, error) {
@@ -340,13 +372,13 @@ func (service Service) processBatch(ctx context.Context, batch MessageBatch, ite
 // analysis can hold the decision for a person to confirm while automatic
 // collection carries it out immediately.
 func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Decision, error) {
-	actionContext := batch.ActionContext
-	if actionContext == "" {
-		actionContext = batch.RawContext
-	}
-	if keyword, excluded := collectionExclusion(batch.Source, actionContext); excluded {
+	// Filtering already happened per message while the batch was built, so an
+	// empty action context means every fresh line was noise. A batch rebuilt
+	// from a stored item carries no keyword at all: someone asking for another
+	// look is not asking the same keyword to answer again.
+	if batch.ExcludedKeyword != "" && strings.TrimSpace(batch.ActionContext) == "" {
 		return normalizeDecision(Decision{Action: "ignore", ItemType: "conversation",
-			Reason: "命中来源排除规则：" + keyword, Confidence: 1}, batch.Source), nil
+			Reason: "命中来源排除规则：" + batch.ExcludedKeyword, Confidence: 1}, batch.Source), nil
 	}
 	todos, err := store.LoadTodosReadOnly()
 	if err != nil {
