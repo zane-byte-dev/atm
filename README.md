@@ -261,6 +261,11 @@ token 和成本都还在，`atm stats --days 90` 的历史不会自己缩水。�
 不想留的用 `atm session forget <id>` 永久移除，它的 token 和成本会一起离开所有统计。只有已保留的
 会话能被 forget：源文件还在时下次 sync 会把它重新索引进来，所以命令会直接拒绝，而不是假装删掉。
 
+索引**不做自动清理**：没有保留期，也没有后台 compaction，库单调增长是有意接受的成本。原因写在
+[DESIGN.md](DESIGN.md) 里——它比 Agent 自己的日志活得更久正是它的意义，而「哪条会话不再需要」只有人知道。
+删除只有 `session forget` 这一条显式路径；后续会加「推荐清理」：ATM 列出候选和各自的 token/成本代价，
+由人确认后执行。
+
 Claude、Codex、Pi 和 Qoder CLI 支持从上游 transcript 提供的字段读取逐请求模型与
 input/output/cache token 明细；Pi 还支持
 会话增量同步、顺序消息和 thinking。同一会话切换模型时，`atm stats --by model`
