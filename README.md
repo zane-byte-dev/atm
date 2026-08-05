@@ -3,6 +3,7 @@
 给人用的 AI 管理面板。看 AI 都在干什么、干得怎么样、花了多少钱。
 
 > 设计原则与非目标见 [DESIGN.md](DESIGN.md)
+> 版本间的变化见 [CHANGELOG.md](CHANGELOG.md)
 > 当前可用性、支持矩阵和发布前清单见 [docs/release-readiness.md](docs/release-readiness.md)
 
 公开使用或参与开发前，请阅读 [隐私与数据处理](PRIVACY.md)、
