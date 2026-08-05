@@ -1,5 +1,12 @@
 APP     := atm
-VERSION ?= 0.6.0
+
+# Derive the version from git so a locally built binary reports the commit it
+# was actually built from, including a -dirty suffix for uncommitted work. A
+# hardcoded default would make `make install` self-report a version unrelated to
+# the released tags. Releases go through goreleaser, which injects {{.Version}}
+# from the tag it is building and never reads this.
+GIT_VERSION := $(shell git describe --tags --dirty --always 2>/dev/null | sed 's/^v//')
+VERSION ?= $(if $(GIT_VERSION),$(GIT_VERSION),dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64

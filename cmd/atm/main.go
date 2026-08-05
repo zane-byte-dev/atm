@@ -6,7 +6,11 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
-var version = "0.6.0"
+// version is injected at build time via -X main.version (see Makefile and
+// .goreleaser.yaml). The fallback is deliberately not a real version number: a
+// binary built without ldflags should say so rather than claim a release it is
+// not.
+var version = "dev"
 
 func main() {
 	config.LoadConfig()
