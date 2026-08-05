@@ -227,19 +227,20 @@ Parser 层自动处理以下噪音，保证存储和展示的数据是真实用�
 装上 hook 后，Agent 会在事件发生时直接推给 ATM：
 
 ```bash
-atm agent hook install            # Claude / Codex / Grok Build 都装；Pi 见下方说明
+atm agent hook install            # Claude / Codex / Grok Build / Qoder 都装；Pi 见下方说明
 atm agent hook install --source claude
-atm agent hook install --source grokbuild
+atm agent hook install --source qoder
 atm agent hook status             # 看当前接了哪些事件
 atm agent hook uninstall          # 原样摘掉
 ```
 
-- 写入的是 Agent 自己的配置（`~/.claude/settings.json`、`~/.codex/hooks.json`、`~/.grok/hooks/atm-notch.json`），**只增删 ATM 自己那几条**，同一份配置里其他工具的 hook 一条不动
+- 写入的是 Agent 自己的配置（`~/.claude/settings.json`、`~/.codex/hooks.json`、`~/.grok/hooks/atm-notch.json`、`~/.qoder/settings.json`），**只增删 ATM 自己那几条**，同一份配置里其他工具的 hook 一条不动
 - 装的都是只上报的 hook（`SessionStart` / `UserPromptSubmit` / `Stop` / `SessionEnd` / `Notification`），**不会拦住工具调用，也不会替你做授权决定**；App 没在跑时 hook 立刻静默退出，不影响 Agent
 - 事件走 `~/.atm/notch.sock`（0600），只在本机；带的是会话 ID、cwd 和一句提示文字
 - **Grok Build** 使用独立文件 `~/.grok/hooks/atm-notch.json`，与同目录其他 hook 文件合并加载；payload 支持 Grok 的 camelCase 字段
-- **Pi** 没有 hook 配置文件，把 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 复制到 `~/.pi/agent/extensions/` 即可
-- 没接 hook 的 Agent（copilot / qoder）继续走原来的关键词判断，行为不变
+- **Qoder** 的 hook 事件名与 payload 与 Claude 同构，一份 `~/.qoder/settings.json` 同时覆盖 Qoder IDE 与 Qoder CLI。Qoder 只在启动时读这份配置，**装完要重启 Qoder 才生效**；刘海因此不看「文件里装了」而只认真实收到的事件，重启前维持原来的关键词判断，收到第一个事件后自动切换
+- **Pi** 没有 hook 配置文件，把 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 复制到 `~/.pi/agent/extensions/` 即可。Pi 的 `agent_settled` 上报为「已完成」而不是「需要你」——它分不清是做完了还是卡住了，而 attention 是刘海最高优先级的状态，猜错会让每一轮结束都变橙
+- 没接 hook 的 Agent（copilot / qoderwork）继续走原来的关键词判断，行为不变
 
 也可以在 App 的「设置 → 通用 → Agent 事件推送」里一键安装并查看接入状态。
 

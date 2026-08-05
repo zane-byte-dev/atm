@@ -131,20 +131,26 @@ struct ATMAgentHookSource: Decodable, Equatable, Identifiable {
         case "claude": return "Claude Code"
         case "codex": return "Codex"
         case "grokbuild": return "Grok Build"
+        case "qoder": return "Qoder"
         case "pi": return "Pi"
         default: return source
         }
     }
 
     /// The hook source behind a parsed session's `tool`, or nil for agents ATM
-    /// cannot install hooks into (copilot, qoder — they keep the
+    /// cannot install hooks into (copilot, qoderwork — they keep the
     /// snapshot-diffing heuristic). Grok Build is installable via
-    /// `~/.grok/hooks/atm-notch.json`.
+    /// `~/.grok/hooks/atm-notch.json`, Qoder via `~/.qoder/settings.json`.
+    ///
+    /// Qoder is matched exactly rather than by prefix: the IDE and Qoder CLI read
+    /// the same settings document, but QoderWork is a different product with its
+    /// own runtime, and claiming it is hooked would silence it outright.
     static func source(forTool tool: String) -> String? {
         let key = tool.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if key.hasPrefix("claude") { return "claude" }
         if key.hasPrefix("codex") { return "codex" }
         if key.hasPrefix("grok") { return "grokbuild" }
+        if key == "qoder" || key == "qoder cli" { return "qoder" }
         if key == "pi" { return "pi" }
         return nil
     }

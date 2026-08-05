@@ -76,14 +76,21 @@ export default function (pi: ExtensionAPI) {
 		// the moment the ball is back with the user — unlike turn_end, which also
 		// fires between the steps of a run that is still going.
 		//
-		// Pi does not distinguish "finished" from "blocked on a question", so this
-		// reports attention when nothing is queued and completion otherwise. The
-		// notch shows "等待下一步" rather than claiming to know which it was.
+		// Reported as a completion, not as attention. Pi cannot tell "finished"
+		// from "blocked on a question", and attention is the wrong side of that
+		// coin to guess: it is the notch's loudest state, it outranks the
+		// completion card, and it survives ten minutes — so every settled turn
+		// left the island orange claiming work still needed you. A completion is
+		// the accurate half of what a settle means, and attention stays reserved
+		// for the moments an agent really is blocked.
+		//
+		// With messages still queued the run carries on, which is `started`: the
+		// same thing an `input` reports, and enough to retire a pending signal.
 		if (ctx.hasPendingMessages()) {
-			report(ctx, "completed");
+			report(ctx, "started");
 			return;
 		}
-		report(ctx, "attention", { reason: "settled" });
+		report(ctx, "completed");
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {

@@ -360,6 +360,35 @@ func TestPiParseFilePreservesOrderAndUsageByModel(t *testing.T) {
 	}
 }
 
+// Pi's live rows name the session by an eight-character prefix for display,
+// while the notch extension reports the whole id. ResumeID is what carries the
+// untruncated one, and without it a Pi hook event can never be joined to the row
+// it describes — leaving the snapshot heuristic to prompt on its own.
+func TestPiLiveSessionsExposeTheFullSessionID(t *testing.T) {
+	const sessionID = "019fd0f0-e373-7f32-9c1a-656466790cbc"
+	root := t.TempDir()
+	oldSessions := config.PiSessions
+	config.PiSessions = root
+	t.Cleanup(func() { config.PiSessions = oldSessions })
+
+	fp := filepath.Join(root, "--tmp-pi-project--", "2026-08-05T08-01-15-635Z_"+sessionID+".jsonl")
+	writeJSONL(t, fp,
+		`{"type":"session","timestamp":"2026-08-05T08:01:15Z","cwd":"/tmp/pi-project"}`,
+		`{"type":"message","timestamp":"2026-08-05T08:01:16Z","message":{"role":"user","content":"实现 t202"}}`,
+	)
+
+	sessions := PiLiveSessions(24 * time.Hour)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	if sessions[0].SessionID != sessionID[:8] {
+		t.Errorf("session id = %q, want the truncated one for display", sessions[0].SessionID)
+	}
+	if sessions[0].ResumeID != sessionID {
+		t.Errorf("resume id = %q, want %q", sessions[0].ResumeID, sessionID)
+	}
+}
+
 func TestPiParseAppendReturnsOnlyNewRecords(t *testing.T) {
 	fp := filepath.Join(t.TempDir(), "--tmp-p--", "date_abcdefgh.jsonl")
 	writeJSONL(t, fp,

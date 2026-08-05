@@ -46,9 +46,36 @@ a database from a much older version. `atm backup` exists for exactly that case.
   which stops a notification feed from collapsing a batch of unrelated events
   into a single decision. Bot sources are supported and shown with their own
   glyph.
+- **A global shortcut brings the App's main window to the front** — `⌥⌘A` by
+  default, press again to put it away. Getting back to ATM used to mean finding a
+  small icon in a menu bar that is already full, which is most of the cost of a
+  glance. It reopens whichever section was last in view rather than resetting to
+  任务, and only hides the window while ATM is already in front, so the same
+  keystroke from another app always raises it. Settings → 通用 → 全局快捷键 turns
+  it off, rebinds it to any combination holding ⌘, ⌃ or ⌥, or points it at the
+  quick panel instead. It registers through Carbon's hot key table rather than
+  watching keyboard events, so it needs no Input Monitoring permission and the
+  keystroke does not also land in whatever app was in front; a combination
+  another app already owns fails to register and says so in that setting instead
+  of silently doing nothing.
+- **Qoder 接入刘海事件推送。** `atm agent hook install --source qoder` 写入
+  `~/.qoder/settings.json`，一份配置同时覆盖 Qoder IDE 与 Qoder CLI——两者的 hook 事件名
+  和 payload 与 Claude 同构，所以复用同一套映射。Qoder 只在启动时读这份配置，装完需要重启
+  Qoder；刘海不把「文件里装了」当成通道可用，重启前维持原来的关键词判断，收到第一个事件后
+  自动接管。**这是 Qoder 提示过于频繁的正解**：此前刘海只能每 3 秒 diff 一次会话记录，而
+  Qoder 一轮里会写好几条回复，每条都被读成一次「已完成」。
 
 ### Changed
 
+- **Qoder 和 Pi 的会话现在带得上 hook 事件。** 两者的 live 会话此前只有截断到 8 位的
+  session ID，而 hook 上报的是完整 UUID，事件因此永远匹配不到任何一行——Pi 的扩展装了也等
+  于没装。完整 ID 现在存在 `resume_id` 里，刘海按会话（而不是按目录）把事件对上行，同一个
+  Qoder 会话被 SQLite 和 transcript 两个读取路径各报一行时，一次 `Stop` 同时覆盖两行，不再
+  一轮响两次。
+- **Pi 的 `agent_settled` 上报为「已完成」而不是「需要你」。** Pi 分不清一轮结束是做完了还
+  是卡在提问上，此前选择报 attention——而 attention 是刘海最响的状态，它压住完成卡片、留存
+  十分钟，于是每一轮结束都变橙说工作还等着你。完成是 settle 确实包含的那一半含义，attention
+  留给 Agent 真的被挡住的时刻。已排队消息时报 `started`，那一轮还在继续。
 - **收集的处理记录跟随它建出来的 Todo。** 一条记录判成新建或补充之后，那个 Todo 被完成
   或废弃时账本此前毫不知情——真实库里 20 条有 Todo 的记录中 12 条的任务早已结束，却仍
   全部躺在 App「处理记录」主列表里，看不出哪些还欠一个动作。现在 Todo 的状态在每次查询

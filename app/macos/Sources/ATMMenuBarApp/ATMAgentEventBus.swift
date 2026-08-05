@@ -193,10 +193,17 @@ enum ATMAgentHookAuthority {
         // fire), and its transcript parser *does* fill `latest_result`. Handing
         // Grok to hooks before the first event would silence the text path and
         // leave the island darker than with no install at all.
+        //
+        // Qoder is held to the same bar for a different reason: it reads
+        // ~/.qoder/settings.json once at launch, so a freshly installed hook does
+        // not fire until the app is restarted. Trusting the file would leave
+        // every Qoder session dark in between. Its `UserPromptSubmit` arrives at
+        // the start of a turn, before any assistant text a snapshot could
+        // misread, so waiting for the first event costs nothing and heals itself.
         guard isListening,
               let source = ATMAgentHookSource.source(forTool: session.tool),
               let report else { return false }
-        if source == "grokbuild" {
+        if source == "grokbuild" || source == "qoder" {
             return false
         }
         return report.sources.contains { $0.source == source && $0.reportsTurnEnd }

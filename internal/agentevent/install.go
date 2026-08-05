@@ -89,6 +89,29 @@ func DesiredHooks(source string) []HookSpec {
 			{Event: "Notification"},
 			{Event: "PostToolUse"},
 		}
+	case SourceQoder:
+		// Qoder reads Claude's hooks document out of ~/.qoder/settings.json, so
+		// the event names and the payload are the same — but the matcher
+		// vocabulary is not verified the way Claude's is. Notification is
+		// therefore installed unscoped, Grok-style: Qoder repeats the type in the
+		// payload, so `classify` recovers it from `notificationType` and the one
+		// `notificationKinds` table still applies. Naming matchers we cannot
+		// confirm would risk registering hooks that never fire.
+		//
+		// PostToolUseFailure is listed because Qoder emits it as a separate event
+		// (Claude folds failures into PostToolUse). Without it a tool that
+		// errored out would leave the attention signal it resolved standing until
+		// the TTL.
+		return []HookSpec{
+			{Event: "SessionStart"},
+			{Event: "UserPromptSubmit"},
+			{Event: "Stop"},
+			{Event: "SessionEnd"},
+			{Event: "Notification"},
+			{Event: "PreToolUse", Matcher: "AskUserQuestion", Reason: "ask_user_question"},
+			{Event: "PostToolUse"},
+			{Event: "PostToolUseFailure"},
+		}
 	}
 	return nil
 }
@@ -107,6 +130,10 @@ func ConfigPath(source, home string) (string, error) {
 		return filepath.Join(home, ".codex", "hooks.json"), nil
 	case SourceGrokbuild:
 		return filepath.Join(home, ".grok", "hooks", "atm-notch.json"), nil
+	case SourceQoder:
+		// Shared by the Qoder IDE and Qoder CLI. Other tools live in this same
+		// document, so it is merged into, never replaced.
+		return filepath.Join(home, ".qoder", "settings.json"), nil
 	}
 	return "", fmt.Errorf("no hook config known for source %q", source)
 }

@@ -414,8 +414,63 @@ final class AgentEventTests: XCTestCase {
         XCTAssertEqual(ATMAgentHookSource.source(forTool: "Codex"), "codex")
         XCTAssertEqual(ATMAgentHookSource.source(forTool: "Pi"), "pi")
         XCTAssertEqual(ATMAgentHookSource.source(forTool: "Grok Build"), "grokbuild")
+        // The IDE and the CLI read the same ~/.qoder/settings.json.
+        XCTAssertEqual(ATMAgentHookSource.source(forTool: "Qoder"), "qoder")
+        XCTAssertEqual(ATMAgentHookSource.source(forTool: "Qoder CLI"), "qoder")
         XCTAssertNil(ATMAgentHookSource.source(forTool: "Copilot"))
+        // A different product with its own runtime: claiming Qoder's install
+        // covers it would hand its state to hooks that never fire.
         XCTAssertNil(ATMAgentHookSource.source(forTool: "QoderWork"))
+    }
+
+    func testQoderKeepsTranscriptInferenceUntilARealHookEventArrives() {
+        // Qoder reads its settings once at launch, so a hook installed into
+        // ~/.qoder/settings.json does not fire until the app restarts. Trusting
+        // the file would leave every Qoder session with no source of state at all.
+        let qoder = session(
+            tool: "Qoder",
+            sessionID: "1af727db",
+            resumeID: "1af727db-91c1-4d8d-87f5-fcf4ad264c62"
+        )
+        let installed = hookReport(
+            source: "qoder",
+            installed: ["SessionStart", "UserPromptSubmit", "Stop", "SessionEnd", "Notification"]
+        )
+        XCTAssertFalse(ATMAgentHookAuthority.isAuthoritative(
+            session: qoder, seenSessionKeys: [], report: installed, isListening: true
+        ))
+        // The hook reports the full session id, which is why the parser keeps it
+        // as resumeID: this is the join that grants authority.
+        XCTAssertTrue(ATMAgentHookAuthority.isAuthoritative(
+            session: qoder,
+            seenSessionKeys: ["1af727db-91c1-4d8d-87f5-fcf4ad264c62"],
+            report: installed,
+            isListening: true
+        ))
+    }
+
+    @MainActor
+    func testAQoderStopEventTakesOverTheTurnStateOfBothRowsForThatSession() {
+        // One Qoder conversation is reported twice — once from the SQLite client
+        // database, once from the transcript directory — and both rows carry the
+        // same full session id. A single Stop must cover both, or the row that
+        // missed out keeps inferring completions from text and the island prompts
+        // twice per turn.
+        let bus = ATMAgentEventBus()
+        bus.apply(ATMAgentEvent(
+            version: 1, source: "qoder", event: .completed,
+            sessionID: "1af727db-91c1-4d8d-87f5-fcf4ad264c62", cwd: "/Users/tester/mox/atm",
+            tool: nil, reason: nil, text: "done", at: nil
+        ), now: now)
+
+        for tool in ["Qoder", "Qoder CLI"] {
+            let row = session(
+                tool: tool,
+                sessionID: "1af727db",
+                resumeID: "1af727db-91c1-4d8d-87f5-fcf4ad264c62"
+            )
+            XCTAssertTrue(bus.isHookAuthoritative(row), "\(tool) should be hook-owned")
+        }
     }
 
     func testGrokKeepsTranscriptInferenceUntilARealHookEventArrives() {

@@ -39,9 +39,12 @@ final class StatusBarController {
         if ProcessInfo.processInfo.environment["ATM_OPEN_PANEL"] == "1" {
             DispatchQueue.main.async { [weak self] in self?.openPanel() }
         }
+        ATMGlobalHotKeyManager.shared.onTrigger = { [weak self] in self?.handleGlobalHotKey() }
+        ATMGlobalHotKeyManager.shared.start()
     }
 
     func stop() {
+        ATMGlobalHotKeyManager.shared.stop()
         agentNotchController?.stop()
         store.stop()
         stopOutsideClickMonitor()
@@ -174,11 +177,45 @@ final class StatusBarController {
     @objc private func statusItemClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp {
             showContextMenu()
-        } else if panel.isVisible {
+        } else {
+            toggleQuickPanel()
+        }
+    }
+
+    /// The global shortcut and the status item share one gesture: press once to
+    /// glance, press again to get out of the way. A shortcut that only ever
+    /// opened would leave the panel stranded over whatever the person went back
+    /// to, since the panel closes on an outside *click*, not on a keystroke.
+    private func toggleQuickPanel() {
+        if panel.isVisible {
             closePanel()
         } else {
             openPanel()
         }
+    }
+
+    private func handleGlobalHotKey() {
+        switch ATMGlobalHotKeyPreferences.target {
+        case .desktop:
+            toggleDesktop()
+        case .quickPanel:
+            toggleQuickPanel()
+        }
+    }
+
+    /// Press again to put ATM away, the same way the quick panel behaves. Hiding
+    /// only applies while ATM is the app in front and this window is the one being
+    /// looked at: from another app the same keystroke has to raise the window, or
+    /// the shortcut would silently hide a window nobody could see.
+    ///
+    /// Keeps whichever section was last open — the shortcut is "come back to what
+    /// I was doing", while the menu's 打开 ATM 主窗口 keeps the 任务 default.
+    private func toggleDesktop() {
+        if let window = desktopWindow, window.isVisible, NSApp.isActive, window.isKeyWindow {
+            window.orderOut(nil)
+            return
+        }
+        openDesktop(section: desktopNavigation.section)
     }
 
     private func openPanel() {

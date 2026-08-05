@@ -27,9 +27,16 @@ struct DesktopSettingsView: View {
 
     @ObservedObject var store: ATMDataStore
     @ObservedObject private var appearance = ATMAppearance.shared
+    @ObservedObject private var hotKeys = ATMGlobalHotKeyManager.shared
     @State private var selectedTab: SettingsTab = .general
     @AppStorage(ATMTodoListPreferences.showDroppedKey)
     private var showsDropped = ATMTodoListPreferences.defaultShowsDropped
+    @AppStorage(ATMGlobalHotKeyPreferences.enabledKey)
+    private var globalHotKeyEnabled = ATMGlobalHotKeyPreferences.defaultEnabled
+    @AppStorage(ATMGlobalHotKeyPreferences.hotKeyKey)
+    private var globalHotKeyValue = ATMGlobalHotKeyPreferences.defaultHotKey.storageValue
+    @AppStorage(ATMGlobalHotKeyPreferences.targetKey)
+    private var globalHotKeyTarget = ATMGlobalHotKeyPreferences.defaultTarget.rawValue
     @AppStorage(ATMAgentNotchPreferences.enabledKey)
     private var agentNotchEnabled = ATMAgentNotchPreferences.defaultEnabled
     @AppStorage(ATMAgentNotchPreferences.retentionKey)
@@ -165,12 +172,70 @@ struct DesktopSettingsView: View {
                     }
                 }
 
+                card { globalHotKeySection }
+
                 Spacer(minLength: 0)
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The global shortcut lives in 通用 rather than in a tab of its own: it is a
+    /// single app-wide binding, and the only other place it could sit — 刘海 — is
+    /// about pushed events rather than about opening ATM by hand.
+    private var globalHotKeySection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("全局快捷键")
+                        .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                    Text("在任何应用中按一次呼出 ATM，再按一次收起。默认 ⌥⌘A；点击下方按钮后按新的组合即可改绑。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Toggle("启用全局快捷键", isOn: $globalHotKeyEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            HStack(spacing: 14) {
+                ATMHotKeyRecorder(hotKey: globalHotKeyBinding, isEnabled: globalHotKeyEnabled)
+
+                Picker("呼出", selection: $globalHotKeyTarget) {
+                    ForEach(ATMGlobalHotKeyTarget.allCases) { target in
+                        Text(target.label).tag(target.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+                .disabled(!globalHotKeyEnabled)
+            }
+
+            // A combination another app already owns cannot be registered, and the
+            // only symptom is a shortcut that does nothing — so say so here rather
+            // than leaving it to be discovered by pressing keys.
+            if globalHotKeyEnabled,
+               case .unavailable(let hotKey) = hotKeys.registration {
+                Text("\(hotKey.displayString) 已被系统或其他应用占用，请换一个组合。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// `@AppStorage` only holds the serialized form; an unreadable value falls
+    /// back to the default so the recorder always has something to show.
+    private var globalHotKeyBinding: Binding<ATMHotKey> {
+        Binding(
+            get: { ATMHotKey(storageValue: globalHotKeyValue) ?? ATMGlobalHotKeyPreferences.defaultHotKey },
+            set: { globalHotKeyValue = $0.storageValue }
+        )
     }
 
     /// The 刘海 tab: everything about the menu-bar notch experience — the strip

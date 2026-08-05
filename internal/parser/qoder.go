@@ -204,10 +204,14 @@ func QoderLiveSessions(maxAge time.Duration) []Session {
 		if len(shortID) > 8 {
 			shortID = shortID[:8]
 		}
+		// Qoder's hook payload carries the full session_id while SessionID is
+		// truncated for display, so the untruncated one goes in ResumeID — the
+		// field the notch joins hook events on.
 		sessions = append(sessions, Session{
 			Tool:       "Qoder",
 			Project:    config.CanonicalProject(project),
 			SessionID:  shortID,
+			ResumeID:   sid,
 			Summary:    title,
 			AgeSeconds: int(age.Seconds()),
 		})

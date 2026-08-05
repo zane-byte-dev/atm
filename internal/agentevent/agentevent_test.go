@@ -287,6 +287,52 @@ func TestFromHookMapsEveryEventWeAct1On(t *testing.T) {
 			raw:      `{"hookEventName":"pre_tool_use","sessionId":"g1","cwd":"/w","toolName":"run_terminal_command"}`,
 			wantDrop: true,
 		},
+		{
+			// Captured from a real Qoder Stop delivery: snake_case keys, Claude's
+			// PascalCase event values, and the full session id the parser now
+			// keeps as ResumeID so this event can be joined to a row.
+			name:     "qoder stop completes the turn",
+			source:   SourceQoder,
+			raw:      `{"session_id":"1af727db-91c1-4d8d-87f5-fcf4ad264c62","request_set_id":"r1","transcript_path":"/t.jsonl","cwd":"/w","hook_event_name":"Stop","last_assistant_message":"done"}`,
+			wantKind: KindCompleted,
+			wantText: "done",
+		},
+		{
+			name:     "qoder prompt submit starts work",
+			source:   SourceQoder,
+			raw:      `{"hook_event_name":"UserPromptSubmit","session_id":"q1","cwd":"/w","prompt":"实现 t202"}`,
+			wantKind: KindStarted,
+			wantText: "实现 t202",
+		},
+		{
+			// Qoder's hook file pins no Notification matcher, so the type has to
+			// come out of the payload the same way Grok's does.
+			name:       "qoder notification type classifies a permission prompt",
+			source:     SourceQoder,
+			raw:        `{"hook_event_name":"Notification","session_id":"q1","cwd":"/w","notification_type":"permission_prompt","message":"Qoder needs permission"}`,
+			wantKind:   KindAttention,
+			wantReason: "permission_prompt",
+			wantText:   "Qoder needs permission",
+		},
+		{
+			name:       "qoder ask user question is an attention",
+			source:     SourceQoder,
+			reason:     "ask_user_question",
+			raw:        `{"hook_event_name":"PreToolUse","session_id":"q1","cwd":"/w","tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"装哪一组 hook？"}]}}`,
+			wantKind:   KindAttention,
+			wantReason: "ask_user_question",
+			wantText:   "装哪一组 hook？",
+			wantTool:   "AskUserQuestion",
+		},
+		{
+			// Qoder raises tool failures as their own event rather than folding
+			// them into PostToolUse, and the block is just as resolved either way.
+			name:     "qoder post tool use failure unblocks",
+			source:   SourceQoder,
+			raw:      `{"hook_event_name":"PostToolUseFailure","session_id":"q1","cwd":"/w","tool_name":"Bash"}`,
+			wantKind: KindResumed,
+			wantTool: "Bash",
+		},
 	}
 
 	for _, tc := range cases {

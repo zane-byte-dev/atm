@@ -2,10 +2,12 @@ package parser
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 )
@@ -253,5 +255,55 @@ func TestDiscoverQoderCLICoversBothLayouts(t *testing.T) {
 	got := DiscoverQoderCLI()
 	if len(got) != 2 || got[0] != paths[0] || got[1] != paths[1] {
 		t.Fatalf("discovered = %#v", got)
+	}
+}
+
+// Live sessions have to carry the identifier Qoder's hook actually reports.
+// Both readers truncate the session id to eight characters for display, and the
+// hook payload carries the whole uuid — so without ResumeID the notch has
+// nothing to join a `Stop` event onto and falls back to guessing completions
+// from the transcript, which is what made Qoder prompt on every poll.
+func TestQoderLiveSessionsExposeTheFullSessionID(t *testing.T) {
+	const sessionID = "1af727db-91c1-4d8d-87f5-fcf4ad264c62"
+	now := time.Now().UnixMilli()
+	seedQoderDB(t, fmt.Sprintf(
+		`INSERT INTO chat_session VALUES ('%s','Live session','atm','agent',%d,%d,%d)`,
+		sessionID, now, now, now,
+	))
+
+	sessions := QoderLiveSessions(24 * time.Hour)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	if sessions[0].SessionID != sessionID[:8] {
+		t.Errorf("session id = %q, want the truncated one for display", sessions[0].SessionID)
+	}
+	if sessions[0].ResumeID != sessionID {
+		t.Errorf("resume id = %q, want %q", sessions[0].ResumeID, sessionID)
+	}
+}
+
+func TestQoderCLILiveSessionsExposeTheFullSessionID(t *testing.T) {
+	oldProjects := config.QoderCLIProjects
+	root := t.TempDir()
+	config.QoderCLIProjects = root
+	t.Cleanup(func() { config.QoderCLIProjects = oldProjects })
+
+	const sessionID = "1af727db-91c1-4d8d-87f5-fcf4ad264c62"
+	path := filepath.Join(root, "-tmp-my-project", "transcript", sessionID+".jsonl")
+	writeJSONL(t, path,
+		`{"type":"session_meta","timestamp":"2026-08-05T01:00:00Z","cwd":"/tmp/my-project","sessionId":"`+sessionID+`"}`,
+		`{"type":"user","timestamp":"2026-08-05T01:00:01Z","cwd":"/tmp/my-project","message":{"role":"user","content":[{"type":"text","text":"实现 t202"}]}}`,
+	)
+
+	sessions := QoderCLILiveSessions(24 * time.Hour)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	if sessions[0].SessionID != sessionID[:8] {
+		t.Errorf("session id = %q, want the truncated one for display", sessions[0].SessionID)
+	}
+	if sessions[0].ResumeID != sessionID {
+		t.Errorf("resume id = %q, want %q", sessions[0].ResumeID, sessionID)
 	}
 }
