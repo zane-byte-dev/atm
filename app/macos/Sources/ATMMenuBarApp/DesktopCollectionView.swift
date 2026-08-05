@@ -842,6 +842,7 @@ private struct AddCollectionSourceSheet: View {
     @State private var instruction = ""
     @State private var knowledgeCollection = ""
     @State private var strategy = "tasks"
+    @State private var decisionUnit = "window"
     @State private var intervalMinutes = 5
 
     @State private var keyword = ""
@@ -873,6 +874,7 @@ private struct AddCollectionSourceSheet: View {
         _instruction = State(initialValue: source?.instruction ?? "")
         _knowledgeCollection = State(initialValue: source?.knowledgeCollection ?? "")
         _strategy = State(initialValue: source?.effectiveStrategy ?? "tasks")
+        _decisionUnit = State(initialValue: source?.effectiveDecisionUnit ?? "window")
         _intervalMinutes = State(initialValue: source?.effectiveIntervalMinutes ?? 5)
         // An existing source already has its identifier; only new ones search.
         _manualEntry = State(initialValue: source != nil)
@@ -929,6 +931,15 @@ private struct AddCollectionSourceSheet: View {
                                 }
                             }
 
+                            formField("判定单位", hint: decisionUnitHint) {
+                                Picker("判定单位", selection: $decisionUnit) {
+                                    Label("按时段", systemImage: "clock").tag("window")
+                                    Label("按消息", systemImage: "text.line.first.and.arrowtriangle.forward").tag("message")
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.segmented)
+                            }
+
                             HStack(alignment: .top, spacing: 14) {
                                 formField("采集频率", hint: "每次检查新消息的间隔") {
                                     Stepper(value: $intervalMinutes, in: 1...1440) {
@@ -972,6 +983,7 @@ private struct AddCollectionSourceSheet: View {
                         connector: connector, target: target, name: name, project: project, priority: priority,
                         excludePattern: excludePattern, instruction: instruction,
                         knowledgeCollection: knowledgeCollection, strategy: strategy,
+                        decisionUnit: decisionUnit,
                         intervalMinutes: intervalMinutes, enabled: source?.enabled ?? true
                     )
                     onClose()
@@ -1084,6 +1096,14 @@ private struct AddCollectionSourceSheet: View {
         strategy == "observe"
             ? "识别可复用信息并写入知识库，不创建任务"
             : "从消息中识别需求、缺陷和待办，创建或补充任务"
+    }
+
+    /// One batch yields one decision, so this is what decides how many separate
+    /// events can survive the same window — not merely how work is split up.
+    private var decisionUnitHint: String {
+        decisionUnit == "message"
+            ? "每条消息单独判定，同一时段的其他消息只作上下文。通知机器人这类「一条消息就是一件事」的来源用这个"
+            : "同一会话、间隔 15 分钟内的消息合并判定，得到一个结果。聊天用这个：一句请求和随后的补充说明是同一件事"
     }
 
     private func priorityLabel(_ value: String) -> String {

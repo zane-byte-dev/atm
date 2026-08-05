@@ -52,7 +52,11 @@ final class ModelsTests: XCTestCase {
                           "external_id":"channel-1","name":"产品反馈","project":"atm",
                           "exclude_pattern":"机器人通知",
                           "strategy":"observe","interval_minutes":60,
-                          "priority":"P1","enabled":true,"created_at":10,"updated_at":11}],
+                          "priority":"P1","enabled":true,"created_at":10,"updated_at":11},
+                         {"id":"cs2","connector":"example","kind":"bot",
+                          "external_id":"bot-1","name":"发布通知",
+                          "strategy":"tasks","decision_unit":"message","interval_minutes":15,
+                          "priority":"P2","enabled":true,"created_at":12,"updated_at":13}],
               "runs":[{"id":"cr1","connector":"example","source_id":"cs1",
                        "status":"succeeded","started_at":100,"finished_at":110,
                        "fetched_count":3,"analyzed_count":3,"created_count":1,
@@ -73,6 +77,11 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.sources.first?.externalID, "channel-1")
         XCTAssertEqual(overview.sources.first?.excludePattern, "机器人通知")
         XCTAssertEqual(overview.sources.first?.effectiveStrategy, "observe")
+        // A source saved before the column existed decodes as the window
+        // behaviour it actually had; a notification feed carries its own.
+        XCTAssertEqual(overview.sources.first?.effectiveDecisionUnit, "window")
+        XCTAssertEqual(overview.sources.last?.effectiveDecisionUnit, "message")
+        XCTAssertEqual(overview.sources.last?.symbolName, "cpu")
         XCTAssertEqual(overview.sources.first?.effectiveIntervalMinutes, 60)
         XCTAssertEqual(overview.latestRun?.id, "cr1")
         XCTAssertEqual(overview.connectorHealth.first?.status, "ready")

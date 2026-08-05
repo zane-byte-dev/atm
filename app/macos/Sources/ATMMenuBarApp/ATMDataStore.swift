@@ -1209,6 +1209,7 @@ final class ATMDataStore: ObservableObject {
         instruction: String,
         knowledgeCollection: String,
         strategy: String,
+        decisionUnit: String,
         intervalMinutes: Int,
         enabled: Bool
     ) {
@@ -1220,6 +1221,7 @@ final class ATMDataStore: ObservableObject {
                 let runner = try ATMCommandRunner()
                 var arguments = ["collect", "source", "add", "--connector", connectorID] + target.arguments
                     + ["--priority", priority, "--strategy", strategy,
+                       "--decision-unit", decisionUnit,
                        "--interval", String(intervalMinutes), "--json"]
                 let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedProject = project.trimmingCharacters(in: .whitespacesAndNewlines)

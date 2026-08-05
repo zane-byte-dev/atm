@@ -661,7 +661,15 @@ func TestMigrateV30ToV31RelaxesSourceKindsAndKeepsCheckpoints(t *testing.T) {
 			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
 			UNIQUE (connector,kind,external_id)
 		)`,
-		`INSERT INTO collection_sources_v30 SELECT * FROM collection_sources`,
+		// Columns are named, not starred: the live table grows over time (v32
+		// added decision_unit) and a star-select would break this simulation
+		// every time it does.
+		`INSERT INTO collection_sources_v30
+			(id,connector,kind,external_id,name,project,exclude_pattern,instruction,
+			 knowledge_collection,strategy,interval_minutes,priority,enabled,created_at,updated_at)
+		 SELECT id,connector,kind,external_id,name,project,exclude_pattern,instruction,
+			 knowledge_collection,strategy,interval_minutes,priority,enabled,created_at,updated_at
+		 FROM collection_sources`,
 		`DROP TABLE collection_checkpoints`,
 		`DROP TABLE collection_sources`,
 		`ALTER TABLE collection_sources_v30 RENAME TO collection_sources`,

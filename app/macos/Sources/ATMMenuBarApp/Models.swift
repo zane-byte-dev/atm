@@ -47,6 +47,7 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     let instruction: String?
     let knowledgeCollection: String?
     let strategy: String?
+    let decisionUnit: String?
     let intervalMinutes: Int?
     let priority: String
     let enabled: Bool
@@ -56,6 +57,7 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, connector, kind, name, project, priority, enabled, strategy, instruction
         case externalID = "external_id"
+        case decisionUnit = "decision_unit"
         case excludePattern = "exclude_pattern"
         case knowledgeCollection = "knowledge_collection"
         case intervalMinutes = "interval_minutes"
@@ -69,6 +71,10 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     }
 
     var effectiveStrategy: String { strategy == "observe" ? "observe" : "tasks" }
+
+    /// Older databases and hand-written fixtures predate the column, and window
+    /// is what they behaved as.
+    var effectiveDecisionUnit: String { decisionUnit == "message" ? "message" : "window" }
 
     var effectiveIntervalMinutes: Int {
         intervalMinutes ?? (effectiveStrategy == "observe" ? 60 : 5)

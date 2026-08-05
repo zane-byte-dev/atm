@@ -159,6 +159,11 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 31
+		case 31:
+			if err := migrateV31ToV32(db); err != nil {
+				return err
+			}
+			version = 32
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -659,6 +664,34 @@ func migrateV30ToV31(db *sql.DB) error {
 		}
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 31`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV31ToV32 lets a source say what one decision covers. Batching by "same
+// conversation, gaps under fifteen minutes" suits chat, where a request and the
+// clarifications after it are one piece of work; a notification feed is the
+// opposite, and since a batch yields exactly one decision, grouping silently
+// dropped every event but one. Existing sources keep the window behaviour.
+func migrateV31ToV32(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	hasColumn, err := tableHasColumn(tx, "collection_sources", "decision_unit")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := tx.Exec(`ALTER TABLE collection_sources
+			ADD COLUMN decision_unit TEXT NOT NULL DEFAULT 'window'
+				CHECK (decision_unit IN ('window','message'))`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 32`); err != nil {
 		return err
 	}
 	return tx.Commit()

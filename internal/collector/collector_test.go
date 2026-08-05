@@ -30,14 +30,20 @@ func (fetcher *fakeFetcher) Fetch(_ context.Context, _ store.CollectionSource, s
 
 type fakeExtractor struct {
 	decision Decision
-	err      error
-	calls    int
-	batches  []MessageBatch
+	// decide, when set, answers per batch. A run that has to produce a different
+	// decision for each message it sees cannot use a single canned one.
+	decide  func(MessageBatch) Decision
+	err     error
+	calls   int
+	batches []MessageBatch
 }
 
 func (extractor *fakeExtractor) Extract(_ context.Context, batch MessageBatch, _ []store.Todo) (Decision, error) {
 	extractor.calls++
 	extractor.batches = append(extractor.batches, batch)
+	if extractor.decide != nil {
+		return extractor.decide(batch), extractor.err
+	}
 	return extractor.decision, extractor.err
 }
 
@@ -401,6 +407,80 @@ func TestSourceExclusionIsAuditedWithoutCallingModel(t *testing.T) {
 	items, _ := store.ListCollectionItems(db, source.ID, 10)
 	if len(items) != 1 || items[0].Action != "ignore" || !strings.Contains(items[0].Reason, "排除规则") {
 		t.Fatalf("excluded audit item: %+v", items)
+	}
+}
+
+// A batch yields exactly one decision, so what a batch covers decides how many
+// separate events can survive one window. Chat wants them merged — a request and
+// the line clarifying it are one Todo. A notification feed wants them apart: two
+// review invitations three minutes apart are two pieces of work, and grouping
+// them keeps one and loses the other with no trace.
+func TestDecisionUnitDecidesHowManyEventsSurviveOneWindow(t *testing.T) {
+	messages := []Message{
+		{ID: "first", ConversationID: "cid-product", Sender: "机器人",
+			CreatedAt: 11_400, Content: "邀请你评审代码：登录重构"},
+		{ID: "second", ConversationID: "cid-product", Sender: "机器人",
+			CreatedAt: 11_520, Content: "邀请你评审代码：配额上报"},
+	}
+	titleFromLastLine := func(batch MessageBatch) Decision {
+		lines := strings.Split(strings.TrimSpace(batch.ActionContext), "\n")
+		return Decision{Action: "create", ItemType: "follow_up", Confidence: 0.9,
+			Title: lines[len(lines)-1]}
+	}
+
+	for _, testCase := range []struct {
+		unit      string
+		wantCalls int
+		wantTodos int
+	}{
+		{unit: store.CollectionDecisionUnitWindow, wantCalls: 1, wantTodos: 1},
+		{unit: store.CollectionDecisionUnitMessage, wantCalls: 2, wantTodos: 2},
+	} {
+		t.Run(testCase.unit, func(t *testing.T) {
+			withCollectorStore(t)
+			source := addCollectorSource(t)
+			db, _ := store.Open()
+			source.DecisionUnit = testCase.unit
+			var err error
+			source, err = store.UpsertCollectionSource(db, source)
+			db.Close()
+			if err != nil {
+				t.Fatalf("set decision unit %s: %v", testCase.unit, err)
+			}
+			extractor := &fakeExtractor{decide: titleFromLastLine}
+			service := Service{Fetcher: &fakeFetcher{messages: messages, newest: 11_520},
+				Extractor: extractor, Now: tickingClock()}
+			report, err := service.Run(context.Background(), source.ID)
+			if err != nil || extractor.calls != testCase.wantCalls ||
+				report.Runs[0].CreatedCount != testCase.wantTodos {
+				t.Fatalf("unit %s: run=%+v calls=%d err=%v",
+					testCase.unit, report.Runs[0], extractor.calls, err)
+			}
+			db, _ = store.Open()
+			defer db.Close()
+			items, _ := store.ListCollectionItems(db, source.ID, 10)
+			todos := map[string]struct{}{}
+			for _, item := range items {
+				todos[item.TodoID] = struct{}{}
+			}
+			if len(items) != testCase.wantTodos || len(todos) != testCase.wantTodos {
+				t.Fatalf("unit %s: items=%+v distinct todos=%d", testCase.unit, items, len(todos))
+			}
+			if testCase.unit == store.CollectionDecisionUnitWindow {
+				return
+			}
+			// Each message was decided alone, but still read next to the rest of
+			// its window: the other line is present as context, not as a trigger.
+			for index, batch := range extractor.batches {
+				if strings.Count(batch.ActionContext, "邀请你评审代码") != 1 {
+					t.Fatalf("batch %d decided on more than its own message: %q", index, batch.ActionContext)
+				}
+				if strings.Count(batch.RawContext, "邀请你评审代码") != 2 ||
+					strings.Count(batch.RawContext, "[新消息] ") != 1 {
+					t.Fatalf("batch %d lost its window as context: %q", index, batch.RawContext)
+				}
+			}
+		})
 	}
 }
 
