@@ -4,6 +4,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarController: StatusBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // First thing: whether the previous run ended cleanly can only be answered
+        // before anything else touches the marker.
+        ATMLog.recordStartup()
         NSApp.setActivationPolicy(.regular)
         // Must happen before any window opens: the Edit menu is what makes
         // ⌘V / ⌘C / ⌘X / ⌘A / ⌘Z work inside the app's text fields.
@@ -19,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         statusBarController?.stop()
+        ATMLog.recordCleanExit()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {

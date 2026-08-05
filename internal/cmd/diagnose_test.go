@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/contract"
+	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -184,6 +186,56 @@ func TestDiagnoseExcludesRecordContent(t *testing.T) {
 		if strings.Contains(string(data), secret) {
 			t.Errorf("bundle leaked %s", secret)
 		}
+	}
+}
+
+// The bundle has to carry the log tails, or an intermittent fault — failing once
+// a day, fine otherwise — reads as no fault at all.
+func TestDiagnoseBundleCarriesLogTails(t *testing.T) {
+	withFakeHome(t)
+	logging.Failure("command_failed", "atm sync", errors.New("SEEDED_LOG_FAILURE"), nil)
+
+	target := filepath.Join(t.TempDir(), "bundle.json")
+	report := writeDiagnoseBundle(t, target)
+
+	cli, ok := report.Logs["cli"]
+	if !ok {
+		t.Fatal("bundle has no cli log section")
+	}
+	if !cli.Exists {
+		t.Error("cli log reported as absent after a failure was logged")
+	}
+	if len(cli.Lines) == 0 || !strings.Contains(strings.Join(cli.Lines, "\n"), "SEEDED_LOG_FAILURE") {
+		t.Errorf("logged failure did not reach the bundle: %v", cli.Lines)
+	}
+	// The app section must be present even with no App installed, so "no app log"
+	// is distinguishable from "we forgot to look".
+	if _, ok := report.Logs["app"]; !ok {
+		t.Error("bundle has no app log section")
+	}
+}
+
+// The log is attached to public bug reports, and `atm todo add "<title>"` and
+// `atm knowledge import <path>` put content directly in argv. Recording the
+// subcommand without its arguments is what keeps that out.
+func TestCommandLoggingExcludesArguments(t *testing.T) {
+	withFakeHome(t)
+	oldArgs := os.Args
+	os.Args = []string{"atm", "todo", "add", "SECRET_TODO_TITLE_IN_ARGV"}
+	t.Cleanup(func() { os.Args = oldArgs })
+
+	logging.Failure("command_failed", failedCommandPath(), errors.New("boom"), nil)
+
+	lines, err := logging.Tail(logging.Path(), 0)
+	if err != nil {
+		t.Fatalf("tail: %v", err)
+	}
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "SECRET_TODO_TITLE_IN_ARGV") {
+		t.Fatalf("log captured a command argument: %s", joined)
+	}
+	if !strings.Contains(joined, "atm todo add") {
+		t.Errorf("log lost the command path, so the failure is not locatable: %s", joined)
 	}
 }
 

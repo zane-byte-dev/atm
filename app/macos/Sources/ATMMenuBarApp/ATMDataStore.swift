@@ -1547,15 +1547,29 @@ final class ATMDataStore: ObservableObject {
                 // unrelated warnings buries the one thing the user must act on.
                 if let mismatch = dashboard.schemaMismatch {
                     nextState.errorMessage = mismatch.summary
+                    ATMLog.failure("dashboard_schema_mismatch", fields: [
+                        "cli_version": String(mismatch.cliVersion),
+                        "app_version": String(mismatch.appVersion),
+                    ])
                 } else {
                     nextState.errorMessage = warnings.isEmpty
                         ? nil
                         : "部分数据未刷新：" + warnings.prefix(3).joined(separator: "；")
                             + (warnings.count > 3 ? "；另有 \(warnings.count - 3) 项" : "")
                 }
+                // On screen this is replaced by the next successful cycle, which is
+                // why an intermittent failure was impossible to investigate: by the
+                // time anyone looked, the evidence was gone.
+                if let error = dashboard.error {
+                    ATMLog.failure("dashboard_refresh_failed", error: error)
+                }
+                if let error = quotaOutcome.error {
+                    ATMLog.failure("quota_refresh_failed", error: error)
+                }
                 applyDashboardRefresh(nextState)
             } catch {
                 errorMessage = error.localizedDescription
+                ATMLog.failure("refresh_failed", error: error.localizedDescription)
             }
         }
     }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/contract"
+	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
 
@@ -92,15 +93,61 @@ type diagnoseDataEntry struct {
 	Entries int    `json:"entries,omitempty"`
 }
 
+// diagnoseLog is the tail of one log file. Without this the bundle could only
+// describe the present, so an intermittent fault — failing once a day, fine
+// otherwise — looked identical to no fault at all.
+type diagnoseLog struct {
+	Path   string   `json:"path"`
+	Exists bool     `json:"exists"`
+	Lines  []string `json:"lines"`
+	// Truncated says the tail hit its cap, so what is here is the recent end of a
+	// longer history rather than all of it.
+	Truncated bool `json:"truncated"`
+}
+
 type diagnoseBundleReport struct {
-	GeneratedAt string              `json:"generated_at"`
-	ATM         diagnoseATM         `json:"atm"`
-	Platform    diagnosePlatform    `json:"platform"`
-	App         diagnoseApp         `json:"app"`
-	Sync        syncStatusReport    `json:"sync"`
-	DataDir     []diagnoseDataEntry `json:"data_dir"`
-	Doctor      doctorReport        `json:"doctor"`
-	Redaction   []string            `json:"redaction"`
+	GeneratedAt string                 `json:"generated_at"`
+	ATM         diagnoseATM            `json:"atm"`
+	Platform    diagnosePlatform       `json:"platform"`
+	App         diagnoseApp            `json:"app"`
+	Sync        syncStatusReport       `json:"sync"`
+	DataDir     []diagnoseDataEntry    `json:"data_dir"`
+	Doctor      doctorReport           `json:"doctor"`
+	Logs        map[string]diagnoseLog `json:"logs"`
+	Redaction   []string               `json:"redaction"`
+}
+
+// diagnoseLogTailLines bounds what the bundle carries. Enough to cover a
+// recurring fault, small enough that the bundle stays attachable.
+const diagnoseLogTailLines = 200
+
+func collectDiagnoseLogs() map[string]diagnoseLog {
+	out := map[string]diagnoseLog{}
+	for name, path := range map[string]string{
+		"cli": logging.Path(),
+		"app": filepath.Join(logging.Dir(), "app.log"),
+	} {
+		entry := diagnoseLog{Path: path}
+		if _, err := os.Stat(path); err == nil {
+			entry.Exists = true
+		}
+		lines, err := logging.Tail(path, diagnoseLogTailLines)
+		if err != nil {
+			entry.Lines = []string{fmt.Sprintf("could not read log: %v", err)}
+			out[name] = entry
+			continue
+		}
+		// Empty rather than null: a consumer reading this bundle should not have to
+		// distinguish "no failures logged" from "field missing".
+		entry.Lines = lines
+		if entry.Lines == nil {
+			entry.Lines = []string{}
+		}
+		// Say so rather than let a capped view read as the whole history.
+		entry.Truncated = len(lines) == diagnoseLogTailLines
+		out[name] = entry
+	}
+	return out
 }
 
 func runDiagnose(cmd *cobra.Command, args []string) error {
@@ -166,11 +213,13 @@ func buildDiagnoseReport() (diagnoseBundleReport, error) {
 			GoVersion: runtime.Version(),
 			CPUs:      runtime.NumCPU(),
 		},
-		App: inspectATMApp(),
+		App:  inspectATMApp(),
+		Logs: collectDiagnoseLogs(),
 		Redaction: []string{
 			"paths under $HOME are rewritten to ~",
 			"session text, todo/memory/knowledge content and credentials are never collected",
 			"directories are reported by entry count and size only, never by file name",
+			fmt.Sprintf("logs are the last %d lines and record failures only, never command arguments", diagnoseLogTailLines),
 		},
 	}
 

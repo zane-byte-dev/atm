@@ -98,7 +98,7 @@ atm stats   --by skill [--agent X] [--days N]     # Skill 调用次数、会话�
 atm stats   --by request [--session ID]          # 单次模型请求明细
 atm stats   --by speed [--days N]                # 模型输出速度 tok/s 与轮次等待时长
 atm doctor                                          # 数据源与明细覆盖率诊断（含可测速比例）
-atm diagnose [--bundle] [-o path]                # 报障用支持包：版本/schema/doctor 结论/同步错误，脱敏且不联网
+atm diagnose [--bundle] [-o path]                # 报障用支持包：版本/schema/doctor 结论/同步错误/日志尾部，脱敏且不联网
 atm sync    [--agent X]                          # 手动触发数据同步
 atm sync status [--agent X] --json               # 只读查看索引新鲜度、最近同步结果与错误
 atm config  [init]                               # 查看/初始化配置文件
@@ -279,6 +279,13 @@ Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事
 
 `atm todo archive <id>` 把已完结的 Todo 移出工作集：行仍然保留，所以它的 ID 不会被复用，
 依赖和进展记录仍可引用它；`atm todo list --status archived` 查看，`atm todo unarchive` 取回。
+
+失败会落盘到 `~/.atm/logs/`：CLI 写 `cli.log`，菜单栏 App 写 `app.log`，一行一个 JSON 事件，
+单文件封顶 5 MB 并保留一个轮转。**只记失败和进程启停**，不记会话正文、Todo/记忆/知识内容、凭据，
+也不记命令参数（`atm todo add "<标题>"` 的标题本身就是内容），所以日志里是 `atm todo add` 而不是完整命令行。
+App 无法在自己崩溃时写日志，因此用一个「上次是否正常退出」的标记来区分崩溃与正常退出，并在日志里
+指向 macOS 的 crash report 目录而不是把报告内容抄进来。`atm diagnose --bundle` 会带上两个日志的
+最后 200 行 —— 这是「每天失败一次、其余时间正常」这类间歇故障唯一能被看见的地方。
 
 `atm backup` 归档这个库真正无处重建的部分：Todo、共享记忆、中央知识、连接器收集账本和 review 游标。
 会话镜像被有意排除——它由 `atm sync` 从各家 transcript 重建，归档因此小到一个量级，值得经常做。

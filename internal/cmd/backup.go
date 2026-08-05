@@ -64,6 +64,9 @@ var transientEntries = []string{
 	"atm.db-shm",
 	"atm.db-wal",
 	"exec",
+	// Diagnostic output, not a record: it describes what went wrong on this
+	// machine and means nothing after a restore elsewhere.
+	"logs",
 	"notch.sock",
 }
 
