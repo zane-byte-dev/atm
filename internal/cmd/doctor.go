@@ -38,6 +38,17 @@ type doctorIssue struct {
 	Suggestion string `json:"suggestion"`
 }
 
+// doctorReport is everything a doctor run found, before it is rendered. It is
+// split out from printing so `atm diagnose` can embed the same findings in a
+// support bundle instead of re-deriving them or shelling out to doctor.
+type doctorReport struct {
+	Sources      []doctorSource              `json:"sources"`
+	Coverage     []store.Coverage            `json:"coverage"`
+	ModelPricing []store.ModelPricing        `json:"model_pricing"`
+	TodoIssues   []store.TodoDependencyIssue `json:"todo_dependency_issues"`
+	Issues       []doctorIssue               `json:"issues"`
+}
+
 func init() { rootCmd.AddCommand(doctorCmd) }
 
 var doctorCmd = &cobra.Command{Use: "doctor", Short: "Check data sources and request-level coverage", RunE: runDoctor}
@@ -141,6 +152,15 @@ func collectionModelIssues() []doctorIssue {
 }
 
 func runDoctorReport(db *sql.DB) error {
+	report, err := buildDoctorReport(db)
+	if err != nil {
+		return err
+	}
+	printDoctorReport(report)
+	return nil
+}
+
+func buildDoctorReport(db *sql.DB) (doctorReport, error) {
 	paths := map[string]string{"claude": config.ClaudeProjects, "codex": config.CodexSessions, "pi": config.PiSessions, "copilot": config.CopilotWorkspaces, "qoder": config.QoderDB, "qodercli": config.QoderCLIProjects, "qoderwork": config.QoderWorkDB, "grokbuild": config.GrokSessions}
 	coverage := []store.Coverage{}
 	retained := map[string]int{}
@@ -148,11 +168,11 @@ func runDoctorReport(db *sql.DB) error {
 		var err error
 		coverage, err = store.GetCoverage(db)
 		if err != nil {
-			return err
+			return doctorReport{}, err
 		}
 		retained, err = store.GetRetainedSessionCounts(db)
 		if err != nil {
-			return err
+			return doctorReport{}, err
 		}
 	}
 	indexed := map[string]int{}
@@ -198,7 +218,7 @@ func runDoctorReport(db *sql.DB) error {
 		var err error
 		pricing, err = store.GetModelPricing(db)
 		if err != nil {
-			return err
+			return doctorReport{}, err
 		}
 		issues = append(issues, pricingIssues(pricing)...)
 	}
@@ -215,37 +235,49 @@ func runDoctorReport(db *sql.DB) error {
 	} else {
 		issues = append(issues, doctorIssue{Severity: "warning", Domain: "todo", Code: "todo_read_failed", Subject: config.AtmDB, Detail: loadErr.Error(), Suggestion: "repair or restore the ATM SQLite database before changing task state"})
 	}
+	return doctorReport{
+		Sources:      sources,
+		Coverage:     coverage,
+		ModelPricing: pricing,
+		TodoIssues:   todoIssues,
+		Issues:       issues,
+	}, nil
+}
+
+func printDoctorReport(report doctorReport) {
 	if jsonOutput {
-		output.JSON(map[string]any{"sources": sources, "coverage": coverage, "model_pricing": pricing, "todo_dependency_issues": todoIssues, "issues": issues, "summary": map[string]int{"issues": len(issues)}})
-		return nil
+		// Kept as an explicit map rather than marshalling doctorReport so the
+		// published shape — including the summary the struct does not carry — does
+		// not silently change when a field is added to the struct.
+		output.JSON(map[string]any{"sources": report.Sources, "coverage": report.Coverage, "model_pricing": report.ModelPricing, "todo_dependency_issues": report.TodoIssues, "issues": report.Issues, "summary": map[string]int{"issues": len(report.Issues)}})
+		return
 	}
 	fmt.Println("ATM Doctor")
 	fmt.Println(strings.Repeat("=", 72))
 	fmt.Println("\nData sources")
-	for _, s := range sources {
+	for _, s := range report.Sources {
 		fmt.Printf("  %-9s %-29s files=%-5d indexed=%-5d retained=%-5d %s\n", s.Agent, s.Status, s.Files, s.IndexedSessions, s.RetainedSessions, s.Path)
 	}
 	fmt.Println("\nRequest detail coverage")
-	for _, c := range coverage {
+	for _, c := range report.Coverage {
 		fmt.Printf("  %-9s %-12s sessions=%-5d detailed=%-6d reported=%-6d coverage=%6.1f%% unknown_model=%-4d timed=%6.1f%%\n", c.Agent, c.CoverageStatus, c.Sessions, c.DetailedRequests, c.ReportedRequests, c.CoveragePercent, c.UnknownModels, c.TimedPercent)
 	}
 	fmt.Println("  timed = share of requests whose speed could be measured from the transcript")
-	if len(pricing) > 0 {
+	if len(report.ModelPricing) > 0 {
 		fmt.Println("\nCost rates")
-		for _, p := range pricing {
+		for _, p := range report.ModelPricing {
 			fmt.Printf("  %-30s %-8s cost=%10.2f requests=%-7d\n", p.Model, p.Source, p.CostUSD, p.Requests)
 		}
 		fmt.Println("  exact = the model's own rate | family = its family's rate | default = no match, Opus-tier upper bound")
 		fmt.Println("  family and default are estimates; pin exact rates in ~/.atm/pricing.json")
 	}
-	fmt.Printf("\nIssues (%d)\n", len(issues))
-	if len(issues) == 0 {
+	fmt.Printf("\nIssues (%d)\n", len(report.Issues))
+	if len(report.Issues) == 0 {
 		fmt.Println("  none")
 	}
-	for _, issue := range issues {
+	for _, issue := range report.Issues {
 		fmt.Printf("  %-7s %-10s %-32s %s\n", issue.Severity, issue.Domain, issue.Code, issue.Subject)
 		fmt.Printf("           %s\n", issue.Detail)
 		fmt.Printf("           next: %s\n", issue.Suggestion)
 	}
-	return nil
 }

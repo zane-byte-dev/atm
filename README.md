@@ -98,6 +98,7 @@ atm stats   --by skill [--agent X] [--days N]     # Skill 调用次数、会话�
 atm stats   --by request [--session ID]          # 单次模型请求明细
 atm stats   --by speed [--days N]                # 模型输出速度 tok/s 与轮次等待时长
 atm doctor                                          # 数据源与明细覆盖率诊断（含可测速比例）
+atm diagnose [--bundle] [-o path]                # 报障用支持包：版本/schema/doctor 结论/同步错误，脱敏且不联网
 atm sync    [--agent X]                          # 手动触发数据同步
 atm sync status [--agent X] --json               # 只读查看索引新鲜度、最近同步结果与错误
 atm config  [init]                               # 查看/初始化配置文件
