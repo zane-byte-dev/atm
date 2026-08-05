@@ -19,16 +19,29 @@ import Foundation
 /// - Never disturb the App. Logging is best-effort; a read-only disk must not
 ///   change what the App does.
 enum ATMLog {
+    /// Redirects the log for tests. Production never sets it, so the App always
+    /// resolves the real home the same way ATMDataStore and ATMAgentEventListener
+    /// do. Without this the only testable part would be the pure logic, leaving
+    /// rotation and crash detection — the parts that are easy to get wrong —
+    /// verifiable by hand only.
+    static var homeOverride: URL?
+
     /// Deliberately not the OS logging system. os_log goes to a unified store the
     /// user cannot attach to an issue, and ATM's whole support story is a file a
     /// person can read and send. See DESIGN.md on ATM keeping its own data under
     /// ~/.atm.
     static var directory: URL {
-        let home = FileManager.default.homeDirectoryForCurrentUser
+        let home = homeOverride ?? FileManager.default.homeDirectoryForCurrentUser
         return home.appendingPathComponent(".atm/logs", isDirectory: true)
     }
 
     static var fileURL: URL { directory.appendingPathComponent("app.log") }
+
+    /// Blocks until queued writes have landed, so a test can assert on the file.
+    /// Production never needs it: nothing reads the log back in-process.
+    static func flushForTesting() {
+        queue.sync {}
+    }
 
     /// Marks a clean shutdown. Its absence at startup is how a crash or a force
     /// quit is detected — the App cannot write a log entry while it is dying.
