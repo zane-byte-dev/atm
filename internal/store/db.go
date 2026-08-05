@@ -99,8 +99,15 @@ func migrate(db *sql.DB) error {
 	}
 	switch {
 	case version < minUpgradableVersion:
+		// Deleting the database is the last step, not the first: sessions rebuild
+		// from agent transcripts, but todos, memory, knowledge, the collection
+		// ledger and the review cursor are this database's own records and have
+		// nowhere to rebuild from. `atm backup` reads a schema this old precisely
+		// because it never takes this path.
 		return fmt.Errorf("database schema v%d is no longer supported (minimum v%d): "+
-			"remove %s and run `atm sync` to rebuild it", version, minUpgradableVersion, config.AtmDB)
+			"run `atm backup` first to keep your todos, memory and knowledge, "+
+			"then remove %s and run `atm sync` to rebuild the session index",
+			version, minUpgradableVersion, config.AtmDB)
 	case version > SchemaVersion:
 		// An older binary against a newer database: reading it would silently
 		// misinterpret columns this build does not know about.

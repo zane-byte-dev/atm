@@ -101,6 +101,8 @@ atm doctor                                          # 数据源与明细覆盖�
 atm sync    [--agent X]                          # 手动触发数据同步
 atm sync status [--agent X] --json               # 只读查看索引新鲜度、最近同步结果与错误
 atm config  [init]                               # 查看/初始化配置文件
+atm backup  [-o path]                            # 归档无处重建的记录（todo/记忆/知识/收集账本）
+atm restore <archive> [--yes]                    # 从归档恢复；被替换的数据移到 pre-restore-<时间>/
 
 # 外部需求收集（可扩展连接器）
 atm collect status --json                         # 健康状态、来源、运行和处理记录
@@ -271,6 +273,15 @@ Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事
 
 `atm todo archive <id>` 把已完结的 Todo 移出工作集：行仍然保留，所以它的 ID 不会被复用，
 依赖和进展记录仍可引用它；`atm todo list --status archived` 查看，`atm todo unarchive` 取回。
+
+`atm backup` 归档这个库真正无处重建的部分：Todo、共享记忆、中央知识、连接器收集账本和 review 游标。
+会话镜像被有意排除——它由 `atm sync` 从各家 transcript 重建，归档因此小到一个量级，值得经常做。
+排除的方式是清空而不是删表：恢复出来的库 schema 完整，`atm doctor` 立刻可读，下一次 sync 把行填回来。
+
+它同时是 schema 太旧被拒时的逃生口。`atm backup` 不走会 migrate 的打开路径，所以被
+`minUpgradableVersion` 硬拒的库仍然备份得出来——先备份，再删库重建索引，这个顺序写在拒绝信息里。
+`atm restore` 会拒绝比当前构建更新的归档（宁可不认，也不误读未知列），并把被替换的数据移到
+`~/.atm/pre-restore-<时间>/` 而不是删除。
 
 会话搜索使用固定字面子串，不依赖 FTS5。查询默认以只读快照打开数据库；`atm sync status --json`
 会只读报告索引是否存在、最后成功同步时间、数据年龄、最近错误和已索引会话数。需要最新会话时再运行
