@@ -2683,6 +2683,62 @@ enum ATMDashboardContract {
     static let supportedSchemaVersion = 6
 }
 
+/// A dashboard payload whose contract version this App cannot read.
+///
+/// This used to surface as `DecodingError`, which reached the user as
+/// "Unsupported ATM dashboard schema 7" — accurate, and useless: it names
+/// neither which half is behind nor what to do about it. The CLI and the App are
+/// shipped separately and updated separately, so one of them being older is a
+/// routine state, not a corrupt payload.
+struct ATMDashboardSchemaMismatch: LocalizedError, Equatable {
+    /// Which side has to move. Derived from the two versions rather than passed
+    /// in, so the message cannot disagree with the numbers it quotes.
+    enum Direction: Equatable {
+        case appTooOld
+        case cliTooOld
+    }
+
+    let cliVersion: Int
+    let appVersion: Int
+
+    var direction: Direction {
+        cliVersion > appVersion ? .appTooOld : .cliTooOld
+    }
+
+    /// Both messages name the two versions, say which side is behind, and give a
+    /// command that can be run. The App cannot update itself — it has no
+    /// privilege to replace its own bundle — so "self-rescue" here means the user
+    /// is never left guessing which of the two to touch.
+    var errorDescription: String? {
+        switch direction {
+        case .appTooOld:
+            return "ATM App 需要更新：CLI 输出仪表盘 v\(cliVersion)，本 App 只支持 v\(appVersion)。"
+        case .cliTooOld:
+            return "atm CLI 需要更新：本 App 需要仪表盘 v\(appVersion)，CLI 只输出 v\(cliVersion)。"
+        }
+    }
+
+    var recoverySuggestion: String? {
+        switch direction {
+        case .appTooOld:
+            return "下载新版 ATM.app 覆盖安装后重启 App；从源码构建则运行 "
+                + "app/macos/Scripts/build-app.sh。CLI 与 App 必须配套升级。"
+        case .cliTooOld:
+            return "运行 curl -fsSL "
+                + "https://raw.githubusercontent.com/zane-byte-dev/atm/main/install.sh | sh"
+                + " 更新 CLI，然后点刷新。"
+        }
+    }
+
+    /// One line for a surface that shows a single string. Kept here rather than
+    /// composed at each call site so every surface says the same thing.
+    var summary: String {
+        [errorDescription, recoverySuggestion]
+            .compactMap { $0 }
+            .joined(separator: " ")
+    }
+}
+
 struct ATMDashboardRangeEnvelope: Decodable {
     let startDate: String
     let endDate: String
@@ -2748,10 +2804,13 @@ struct ATMDashboardEnvelope: Decodable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try values.decode(Int.self, forKey: .schemaVersion)
         guard schemaVersion == ATMDashboardContract.supportedSchemaVersion else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .schemaVersion,
-                in: values,
-                debugDescription: "Unsupported ATM dashboard schema \(schemaVersion)"
+            // Deliberately not a DecodingError: this is a version skew between two
+            // separately shipped binaries, and the user needs to know which one to
+            // update. JSONDecoder propagates a non-DecodingError unchanged, so the
+            // guidance survives to the surface that shows it.
+            throw ATMDashboardSchemaMismatch(
+                cliVersion: schemaVersion,
+                appVersion: ATMDashboardContract.supportedSchemaVersion
             )
         }
         generatedAt = try values.decodeIfPresent(String.self, forKey: .generatedAt) ?? ""

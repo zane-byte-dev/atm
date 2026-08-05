@@ -38,6 +38,16 @@ enum ATMCommandPolicy {
 private struct ATMCommandOutcome<Value> {
     let value: Value?
     let error: String?
+    /// Set when the failure was a CLI/App contract skew rather than a bad
+    /// payload. Carried as a type, not folded into `error`, because the caller has
+    /// to present it differently: nothing refreshed, and the fix is an upgrade.
+    let schemaMismatch: ATMDashboardSchemaMismatch?
+
+    init(value: Value?, error: String?, schemaMismatch: ATMDashboardSchemaMismatch? = nil) {
+        self.value = value
+        self.error = error
+        self.schemaMismatch = schemaMismatch
+    }
 }
 
 /// Shape of `atm config get <key> --json` for boolean settings.
@@ -55,6 +65,10 @@ private func decodeCommand<Value: Decodable>(
         return ATMCommandOutcome(value: try JSONDecoder().decode(type, from: data), error: nil)
     } catch is CancellationError {
         return ATMCommandOutcome(value: nil, error: nil)
+    } catch let mismatch as ATMDashboardSchemaMismatch {
+        // Not truncated: the whole point of this message is the instruction at the
+        // end of it.
+        return ATMCommandOutcome(value: nil, error: mismatch.summary, schemaMismatch: mismatch)
     } catch {
         return ATMCommandOutcome(
             value: nil,
@@ -1528,10 +1542,17 @@ final class ATMDataStore: ObservableObject {
                         lastSyncAttemptAt = date
                     }
                 }
-                nextState.errorMessage = warnings.isEmpty
-                    ? nil
-                    : "部分数据未刷新：" + warnings.prefix(3).joined(separator: "；")
-                        + (warnings.count > 3 ? "；另有 \(warnings.count - 3) 项" : "")
+                // A contract skew is not "some data did not refresh" — the App and
+                // the CLI cannot talk at all, and wrapping it in that prefix next to
+                // unrelated warnings buries the one thing the user must act on.
+                if let mismatch = dashboard.schemaMismatch {
+                    nextState.errorMessage = mismatch.summary
+                } else {
+                    nextState.errorMessage = warnings.isEmpty
+                        ? nil
+                        : "部分数据未刷新：" + warnings.prefix(3).joined(separator: "；")
+                            + (warnings.count > 3 ? "；另有 \(warnings.count - 3) 项" : "")
+                }
                 applyDashboardRefresh(nextState)
             } catch {
                 errorMessage = error.localizedDescription

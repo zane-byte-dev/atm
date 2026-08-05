@@ -413,6 +413,54 @@ final class ModelsTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(ATMDashboardEnvelope.self, from: data))
     }
 
+    /// A newer CLI than the App: the App is the side that has to move, and the
+    /// message has to say so rather than describing a corrupt payload.
+    func testDashboardSchemaMismatchTellsTheUserToUpdateTheApp() throws {
+        let data = Data(
+            #"{"schema_version":\#(ATMDashboardContract.supportedSchemaVersion + 1)}"#.utf8
+        )
+        do {
+            _ = try JSONDecoder().decode(ATMDashboardEnvelope.self, from: data)
+            XCTFail("expected a schema mismatch")
+        } catch let mismatch as ATMDashboardSchemaMismatch {
+            XCTAssertEqual(mismatch.direction, .appTooOld)
+            XCTAssertEqual(mismatch.cliVersion, ATMDashboardContract.supportedSchemaVersion + 1)
+            XCTAssertEqual(mismatch.appVersion, ATMDashboardContract.supportedSchemaVersion)
+            let summary = mismatch.summary
+            XCTAssertTrue(summary.contains("App 需要更新"), summary)
+            XCTAssertTrue(summary.contains("build-app.sh"), "no actionable step: \(summary)")
+            // Both numbers must appear, or the user cannot tell how far apart they are.
+            XCTAssertTrue(summary.contains("v\(ATMDashboardContract.supportedSchemaVersion + 1)"), summary)
+            XCTAssertTrue(summary.contains("v\(ATMDashboardContract.supportedSchemaVersion)"), summary)
+        }
+    }
+
+    /// An older CLI than the App: the same failure, the opposite instruction.
+    func testDashboardSchemaMismatchTellsTheUserToUpdateTheCLI() throws {
+        let older = ATMDashboardContract.supportedSchemaVersion - 1
+        let data = Data(#"{"schema_version":\#(older)}"#.utf8)
+        do {
+            _ = try JSONDecoder().decode(ATMDashboardEnvelope.self, from: data)
+            XCTFail("expected a schema mismatch")
+        } catch let mismatch as ATMDashboardSchemaMismatch {
+            XCTAssertEqual(mismatch.direction, .cliTooOld)
+            let summary = mismatch.summary
+            XCTAssertTrue(summary.contains("CLI 需要更新"), summary)
+            XCTAssertTrue(summary.contains("install.sh"), "no actionable step: \(summary)")
+            XCTAssertTrue(summary.contains("v\(older)"), summary)
+        }
+    }
+
+    /// The two directions must not produce the same advice; that was the bug.
+    func testDashboardSchemaMismatchDirectionsGiveDifferentAdvice() {
+        let appBehind = ATMDashboardSchemaMismatch(cliVersion: 7, appVersion: 6)
+        let cliBehind = ATMDashboardSchemaMismatch(cliVersion: 5, appVersion: 6)
+        XCTAssertNotEqual(appBehind.recoverySuggestion, cliBehind.recoverySuggestion)
+        XCTAssertNotEqual(appBehind.errorDescription, cliBehind.errorDescription)
+        XCTAssertEqual(appBehind.direction, .appTooOld)
+        XCTAssertEqual(cliBehind.direction, .cliTooOld)
+    }
+
     func testQuotaDecodesWindowsAndSkipsAgentsWithoutData() throws {
         let data = Data(
             """

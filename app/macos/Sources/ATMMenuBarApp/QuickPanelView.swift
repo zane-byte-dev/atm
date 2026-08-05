@@ -377,6 +377,10 @@ struct QuickPanelView: View {
         Label(text, systemImage: icon)
             .font(ATMFont.font(.caption, weight: .medium))
             .foregroundStyle(color)
+            // A banner that carries an instruction has to show all of it; the
+            // version-mismatch message ends in the command to run.
+            .fixedSize(horizontal: false, vertical: true)
+            .multilineTextAlignment(.leading)
             .padding(9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))

@@ -972,6 +972,12 @@ private struct DesktopTasksView: View {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.danger)
+                    // Wraps rather than truncates: the version-mismatch message
+                    // ends in the command to run, and a clipped instruction is no
+                    // instruction.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
             }
