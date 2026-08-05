@@ -171,16 +171,45 @@ struct QuickPanelView: View {
         card: ATMProviderQuotaCard,
         metric: ATMProviderQuotaMetric
     ) -> some View {
-        quotaPercentRow(
+        let url = card.payload.linkURL
+        return quotaPercentRow(
             agent: card.agent,
             title: "\(card.providerLabel) \(metric.label)",
             percent: metric.usedPercent,
             help: "\(ATMAgentDisplay.name(card.agent)) · \(card.providerLabel) · "
                 + "\(card.payload.title)：\(metric.valueText)（\(String(format: "%.1f", metric.usedPercent))%）"
+                + (url == nil ? "" : " · 点击打开"),
+            url: url
         )
     }
 
+    /// `url` is the page behind the reading, when the provider named one. Built-in
+    /// rate-limit windows have no such page and stay unclickable.
+    @ViewBuilder
     private func quotaPercentRow(
+        agent: String,
+        title: String,
+        percent: Double,
+        help: String,
+        url: URL? = nil
+    ) -> some View {
+        if let url {
+            Button {
+                // The panel is transient and the browser is about to take focus,
+                // so it goes away first — same as opening the desktop window.
+                close()
+                NSWorkspace.shared.open(url)
+            } label: {
+                quotaPercentRowBody(agent: agent, title: title, percent: percent, help: help)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            quotaPercentRowBody(agent: agent, title: title, percent: percent, help: help)
+        }
+    }
+
+    private func quotaPercentRowBody(
         agent: String,
         title: String,
         percent: Double,

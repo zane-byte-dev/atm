@@ -2948,9 +2948,24 @@ private struct DesktopUsageContent: View, Equatable {
         .help("\(label) \(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)")
     }
 
+    /// A card whose provider named the page behind the reading is a way in to it:
+    /// the whole card opens that page, so a quota running low is one click from
+    /// wherever it is managed.
+    @ViewBuilder
     private func providerQuotaCard(_ card: ATMProviderQuotaCard) -> some View {
+        if let url = card.payload.linkURL {
+            DesktopQuotaCardLink(url: url) { isHovered in
+                providerQuotaCardBody(card, isHovered: isHovered)
+            }
+        } else {
+            providerQuotaCardBody(card, isHovered: false)
+        }
+    }
+
+    private func providerQuotaCardBody(_ card: ATMProviderQuotaCard, isHovered: Bool) -> some View {
         let payload = card.payload
         let label = ATMAgentDisplay.name(card.agent)
+        let linksOut = payload.linkURL != nil
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 5) {
                 ATMAgentMark(agent: card.agent, size: 15)
@@ -2968,6 +2983,14 @@ private struct DesktopUsageContent: View, Equatable {
                     Text(period)
                         .font(ATMFont.mono(.caption))
                         .foregroundStyle(ATMTheme.secondary)
+                }
+                if linksOut {
+                    // Drawn whether or not the pointer is here, so revealing it on
+                    // hover cannot shove the period label sideways.
+                    Image(systemName: "arrow.up.right")
+                        .font(ATMFont.font(.caption, weight: .semibold))
+                        .foregroundStyle(ATMTheme.accent)
+                        .opacity(isHovered ? 1 : 0)
                 }
             }
             .frame(height: 20)
@@ -3012,13 +3035,19 @@ private struct DesktopUsageContent: View, Equatable {
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(isHovered ? ATMTheme.accent : ATMTheme.border)
+        )
+        // The card's own padding is part of the hit area, not a dead margin.
+        .contentShape(RoundedRectangle(cornerRadius: 12))
         .help(
             "\(label) · \(card.providerLabel) · \(payload.title)："
                 + (payload.isUnavailable
                     ? payload.unavailableText
                     : payload.metrics.map { "\($0.label) \(String(format: "%.1f", $0.usedPercent))%" }
                         .joined(separator: "，"))
+                + (linksOut ? " · 点击打开" : "")
         )
     }
 
@@ -3218,6 +3247,30 @@ private struct DesktopUsageContent: View, Equatable {
         }
     }
 
+}
+
+/// Makes one quota card open a page.
+///
+/// Its own view because each card needs its own hover state — a single `@State`
+/// on the grid's parent would light up every card at once. macOS `.plain`
+/// buttons draw no hover of their own (see `ATMIconButton`), so the card body
+/// takes the hover flag and decides what it means.
+private struct DesktopQuotaCardLink<Content: View>: View {
+    let url: URL
+    @ViewBuilder var content: (Bool) -> Content
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            content(isHovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.12), value: isHovered)
+    }
 }
 
 /// Gear on a quota card that opens that agent's own settings.

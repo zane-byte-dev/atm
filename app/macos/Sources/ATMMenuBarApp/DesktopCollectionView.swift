@@ -251,7 +251,7 @@ struct DesktopCollectionView: View {
                     Image(systemName: "plus")
                 }
                 .buttonStyle(.plain)
-                .help("添加钉钉来源")
+                .help("添加收集来源")
             }
             .padding(.horizontal, 14)
             .frame(height: 44)
@@ -832,9 +832,9 @@ private struct AddCollectionSourceSheet: View {
     let source: ATMCollectionSource?
     let onClose: () -> Void
 
-    @State private var connector = ""
-    @State private var kind = "channel"
-    @State private var externalID = ""
+    /// Connector plus what it points at, in one value — see
+    /// `ATMCollectionSourceIdentity` for why the save rules live outside the view.
+    @State private var identity: ATMCollectionSourceIdentity
     @State private var name = ""
     @State private var project = ""
     @State private var priority = "P2"
@@ -845,13 +845,16 @@ private struct AddCollectionSourceSheet: View {
     @State private var decisionUnit = "window"
     @State private var intervalMinutes = 5
 
+    @State private var searchKind = ATMCollectionSearchKind.all
     @State private var keyword = ""
     @State private var candidates: [ATMCollectionCandidate] = []
-    @State private var selection: ATMCollectionCandidate?
     @State private var searchedKeyword: String?
     @State private var isSearching = false
     @State private var searchError: String?
-    @State private var manualEntry = false
+    /// The last name a candidate filled in, so a 显示名称 the person typed
+    /// themselves is never overwritten by picking a different candidate.
+    @State private var autoFilledName: String?
+    @FocusState private var keywordFocused: Bool
 
     init(
         store: ATMDataStore,
@@ -861,9 +864,19 @@ private struct AddCollectionSourceSheet: View {
         self.store = store
         self.source = source
         self.onClose = onClose
-        _connector = State(initialValue: source?.connector ?? "")
-        _kind = State(initialValue: source?.kind ?? "channel")
-        _externalID = State(initialValue: source?.externalID ?? "")
+        var identity = ATMCollectionSourceIdentity()
+        if let source {
+            identity.connector = source.connector
+            identity.locked = .identifier(kind: source.kind, externalID: source.externalID)
+            identity.manualKind = source.kind
+            identity.externalID = source.externalID
+        } else {
+            // With one connector configured there is no choice to make, and
+            // pre-selecting it is what lets the search field work right away.
+            let configured = Self.connectorOptions(in: store, including: nil)
+            identity.connector = configured.count == 1 ? configured[0].connector : ""
+        }
+        _identity = State(initialValue: identity)
         _name = State(initialValue: source?.name ?? "")
         _project = State(initialValue: source?.project ?? "")
         _priority = State(initialValue: source?.priority ?? "P2")
@@ -876,8 +889,6 @@ private struct AddCollectionSourceSheet: View {
         _strategy = State(initialValue: source?.effectiveStrategy ?? "tasks")
         _decisionUnit = State(initialValue: source?.effectiveDecisionUnit ?? "window")
         _intervalMinutes = State(initialValue: source?.effectiveIntervalMinutes ?? 5)
-        // An existing source already has its identifier; only new ones search.
-        _manualEntry = State(initialValue: source != nil)
     }
 
     var body: some View {
@@ -889,128 +900,37 @@ private struct AddCollectionSourceSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     sourceSection
-
-                    settingsSection(title: "基本信息", icon: "rectangle.and.pencil.and.ellipsis") {
-                        HStack(alignment: .top, spacing: 14) {
-                            formField("显示名称", hint: "在来源列表中显示") {
-                                TextField("例如：需求讨论群", text: $name)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            formField("默认项目", hint: "新任务默认归属，可留空") {
-                                TextField("例如：atm", text: $project)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                        }
-                    }
-
-                    settingsSection(title: "收集范围", icon: "line.3.horizontal.decrease.circle") {
-                        VStack(alignment: .leading, spacing: 14) {
-                            formField("排除关键词", hint: "包含这些词的消息会被跳过，多个词用逗号分隔") {
-                                TextField("例如：闲聊, 打卡", text: $excludePattern)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                            formField("重点关注", hint: "用自然语言描述希望提取的内容；群聊消息不会被当作指令") {
-                                TextField("例如：只关注 MR、需求和线上问题", text: $instruction)
-                                    .textFieldStyle(.roundedBorder)
-                                    .help("这是可信指令，聊天内容不是。")
-                            }
-                        }
-                    }
-
-                    settingsSection(title: "处理方式", icon: "slider.horizontal.3") {
-                        VStack(alignment: .leading, spacing: 16) {
-                            formField("处理策略", hint: strategyHint) {
-                                Picker("处理策略", selection: $strategy) {
-                                    Label("提取任务", systemImage: "checklist").tag("tasks")
-                                    Label("沉淀知识", systemImage: "books.vertical").tag("observe")
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.segmented)
-                                .onChange(of: strategy) { value in
-                                    intervalMinutes = value == "observe" ? 60 : 5
-                                }
-                            }
-
-                            formField("判定单位", hint: decisionUnitHint) {
-                                Picker("判定单位", selection: $decisionUnit) {
-                                    Label("按时段", systemImage: "clock").tag("window")
-                                    Label("按消息", systemImage: "text.line.first.and.arrowtriangle.forward").tag("message")
-                                }
-                                .labelsHidden()
-                                .pickerStyle(.segmented)
-                            }
-
-                            HStack(alignment: .top, spacing: 14) {
-                                formField("采集频率", hint: "每次检查新消息的间隔") {
-                                    Stepper(value: $intervalMinutes, in: 1...1440) {
-                                        Text("每 \(intervalMinutes) 分钟")
-                                            .monospacedDigit()
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }
-                                }
-                                formField("默认优先级", hint: "用于新提取的任务") {
-                                    Picker("默认优先级", selection: $priority) {
-                                        ForEach(["P0", "P1", "P2", "P3"], id: \.self) { value in
-                                            Text(priorityLabel(value)).tag(value)
-                                        }
-                                    }
-                                    .labelsHidden()
-                                }
-                                .frame(width: 150)
-                            }
-
-                            formField("知识库集合", hint: "留空时沉淀到 inbox") {
-                                TextField("inbox", text: $knowledgeCollection)
-                                    .textFieldStyle(.roundedBorder)
-                            }
-                        }
-                    }
+                    scopeSection
+                    processingSection
                 }
                 .padding(22)
             }
 
             Divider()
 
-            HStack(spacing: 10) {
-                Text("配置将在下一次收集时生效")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                Spacer()
-                Button("取消", action: onClose)
-                    .keyboardShortcut(.cancelAction)
-                Button(source == nil ? "添加" : "保存") {
-                    store.addCollectionSource(
-                        connector: connector, target: target, name: name, project: project, priority: priority,
-                        excludePattern: excludePattern, instruction: instruction,
-                        knowledgeCollection: knowledgeCollection, strategy: strategy,
-                        decisionUnit: decisionUnit,
-                        intervalMinutes: intervalMinutes, enabled: source?.enabled ?? true
-                    )
-                    onClose()
-                }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(connector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                          kind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || target.value.isEmpty)
-            }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 14)
-            .background(ATMTheme.surface)
+            footer
         }
         .background(ATMTheme.canvas)
-        .frame(width: 600, height: source == nil ? 680 : 640)
+        // Editing has no connector picker, no search and no candidate list, so it
+        // needs materially less room than adding does.
+        .frame(width: 620, height: source == nil ? 700 : 640)
+        .onAppear {
+            // Opening on the one field that always needs typing; when the
+            // connector is still unchosen the picker is one Tab away.
+            keywordFocused = source == nil && !identity.trimmedConnector.isEmpty
+        }
     }
 
     private var sheetHeader: some View {
         HStack(spacing: 13) {
-            Image(systemName: source == nil ? "person.badge.plus" : "person.3.fill")
+            Image(systemName: source == nil ? "person.badge.plus" : "slider.horizontal.3")
                 .font(ATMFont.font(.title3, weight: .semibold))
                 .foregroundStyle(ATMTheme.accent)
                 .frame(width: 38, height: 38)
                 .background(ATMTheme.accentFill, in: RoundedRectangle(cornerRadius: 10))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(source == nil ? "添加连接器来源" : "编辑连接器来源")
+                Text(source == nil ? "添加收集来源" : "编辑收集来源")
                     .font(ATMFont.font(.title2, weight: .bold))
                 Text(subtitle)
                     .font(ATMFont.footnote)
@@ -1024,34 +944,492 @@ private struct AddCollectionSourceSheet: View {
         .background(ATMTheme.surface)
     }
 
+    private var footer: some View {
+        HStack(spacing: 10) {
+            if let reason = identity.blockReason {
+                Label(reason, systemImage: "arrow.up.circle")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            } else {
+                Text("配置将在下一次收集时生效")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            Spacer()
+            Button("取消", action: onClose)
+                .keyboardShortcut(.cancelAction)
+            Button(source == nil ? "添加" : "保存", action: save)
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(identity.blockReason != nil)
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 14)
+        .background(ATMTheme.surface)
+    }
+
+    private func save() {
+        guard let target = identity.target else { return }
+        store.addCollectionSource(
+            connector: identity.trimmedConnector, target: target, name: name,
+            project: project, priority: priority,
+            excludePattern: excludePattern, instruction: instruction,
+            knowledgeCollection: knowledgeCollection, strategy: strategy,
+            decisionUnit: decisionUnit,
+            intervalMinutes: intervalMinutes, enabled: source?.enabled ?? true
+        )
+        onClose()
+    }
+
+    // MARK: - 来源
+
     @ViewBuilder
     private var sourceSection: some View {
         settingsSection(title: "来源", icon: "point.3.connected.trianglepath.dotted") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top, spacing: 14) {
-                    formField("连接器", hint: "对应 config.json 中 collection_connectors 的键") {
-                        TextField("例如：slack", text: $connector)
-                            .textFieldStyle(.roundedBorder)
-                            .disabled(source != nil)
-                            .onChange(of: connector) { _ in resetSearch() }
-                    }
-                    formField("来源类型", hint: "由连接器定义，例如 channel、issue") {
-                        TextField("channel", text: $kind)
-                            .textFieldStyle(.roundedBorder)
-                            .disabled(source != nil)
-                            .onChange(of: kind) { _ in resetSearch() }
+            VStack(alignment: .leading, spacing: 14) {
+                if identity.isEditing {
+                    lockedIdentityCard
+                } else {
+                    connectorField
+                    Divider()
+                    if let selected = identity.selection, !identity.manualEntry {
+                        selectedCandidateCard(selected)
+                    } else if identity.manualEntry {
+                        manualIdentifierFields
+                    } else {
+                        searchField
+                        candidateList
                     }
                 }
 
-                if manualEntry {
-                    manualIdentifierField
-                } else {
-                    searchField
-                    candidateList
+                formField("显示名称", hint: "在来源列表和处理记录里显示，可留空则显示 ID") {
+                    TextField(namePlaceholder, text: $name)
+                        .textFieldStyle(.roundedBorder)
                 }
             }
         }
     }
+
+    /// Every configured connector, plus the one an existing source was saved
+    /// with — a connector removed from config.json still has to be nameable, or
+    /// its sources become uneditable.
+    private static func connectorOptions(
+        in store: ATMDataStore,
+        including connector: String?
+    ) -> [ATMCollectionConnectorHealth] {
+        var options = store.collectionOverview.connectorHealth
+        let existing = (connector ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !existing.isEmpty, !options.contains(where: { $0.connector == existing }) {
+            options.append(
+                ATMCollectionConnectorHealth(
+                    connector: existing, status: "not_checked", error: nil, checkedAt: nil
+                )
+            )
+        }
+        return options.sorted { $0.connector < $1.connector }
+    }
+
+    private var connectorOptions: [ATMCollectionConnectorHealth] {
+        Self.connectorOptions(in: store, including: source?.connector)
+    }
+
+    private var selectedConnectorHealth: ATMCollectionConnectorHealth? {
+        connectorOptions.first { $0.connector == identity.trimmedConnector }
+    }
+
+    @ViewBuilder
+    private var connectorField: some View {
+        if connectorOptions.isEmpty {
+            // Nothing to pick from is a configuration problem, not an empty
+            // dropdown: say where connectors come from instead of showing one.
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "link.badge.plus")
+                    .foregroundStyle(ATMTheme.warning)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("还没有配置连接器")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("在 ~/.atm/config.json 的 collection_connectors 里登记一个可执行连接器后，这里就能选到它。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ATMTheme.warningFill, in: RoundedRectangle(cornerRadius: 8))
+        } else {
+            formField("连接器", hint: "已登记的连接器，来自 config.json 的 collection_connectors") {
+                VStack(alignment: .leading, spacing: 7) {
+                    Picker("连接器", selection: $identity.connector) {
+                        if identity.trimmedConnector.isEmpty {
+                            Text("请选择连接器").tag("")
+                        }
+                        ForEach(connectorOptions, id: \.connector) { health in
+                            Text(health.connector).tag(health.connector)
+                        }
+                    }
+                    .labelsHidden()
+                    .onChange(of: identity.connector) { _ in resetSearch() }
+
+                    if let health = selectedConnectorHealth {
+                        connectorHealthLine(health)
+                    }
+                }
+            }
+        }
+    }
+
+    private func connectorHealthLine(_ health: ATMCollectionConnectorHealth) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: health.statusIcon)
+            Text(health.statusLabel)
+            if health.isUnverified {
+                Text("· 运行一次收集后才能确认")
+                    .foregroundStyle(ATMTheme.secondary)
+            } else if let error = health.error, !error.isEmpty {
+                Text("· \(error)")
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .font(ATMFont.footnote)
+        .foregroundStyle(ATMTheme.collectionHealthColor(health.status))
+    }
+
+    /// An existing source's identity in one read-only row. Three disabled text
+    /// fields said the same thing while looking editable.
+    private var lockedIdentityCard: some View {
+        HStack(spacing: 10) {
+            Image(systemName: collectionKindSymbol(source?.kind))
+                .foregroundStyle(ATMTheme.secondary)
+                .frame(width: 28, height: 28)
+                .background(ATMTheme.controlFill, in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(source?.connector ?? "")
+                        .font(ATMFont.mono(.footnote))
+                    Text("·")
+                        .foregroundStyle(ATMTheme.secondary)
+                    Text(collectionKindLabel(source?.kind))
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                Text(source?.externalID ?? "")
+                    .font(ATMFont.mono(.footnote))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+                    .textSelection(.enabled)
+            }
+            Spacer(minLength: 0)
+            Label("已锁定", systemImage: "lock.fill")
+                .font(ATMFont.caption)
+                .foregroundStyle(ATMTheme.secondary)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
+    }
+
+    private var searchField: some View {
+        formField("搜索来源", hint: "连接器按名称查找并返回稳定 ID；找不到时可以手动填写") {
+            VStack(alignment: .leading, spacing: 9) {
+                Picker("范围", selection: $searchKind) {
+                    ForEach(ATMCollectionSearchKind.allCases) { kind in
+                        Text(kind.label).tag(kind)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .disabled(identity.trimmedConnector.isEmpty)
+                .onChange(of: searchKind) { _ in
+                    // The previous results answered a different question.
+                    candidates = []
+                    searchedKeyword = nil
+                    searchError = nil
+                }
+
+                HStack(spacing: 8) {
+                    TextField("名称或关键词", text: $keyword)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($keywordFocused)
+                        .onSubmit(search)
+                    if isSearching {
+                        ProgressView().controlSize(.small)
+                    }
+                    Button("搜索", action: search)
+                        .disabled(!canSearch)
+                }
+                .disabled(identity.trimmedConnector.isEmpty)
+
+                if let searchError {
+                    Label(searchError, systemImage: "exclamationmark.triangle.fill")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+
+                Button("找不到？手动填写来源 ID") {
+                    identity.manualEntry = true
+                    identity.manualKind = searchKind == .all ? "group" : searchKind.rawValue
+                }
+                .buttonStyle(.link)
+                .font(ATMFont.footnote)
+                .disabled(identity.trimmedConnector.isEmpty)
+            }
+        }
+    }
+
+    private var canSearch: Bool {
+        !identity.trimmedConnector.isEmpty
+            && !keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !isSearching
+    }
+
+    @ViewBuilder
+    private var candidateList: some View {
+        if !candidates.isEmpty {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("找到 \(candidates.count) 个结果，选一个")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+                ScrollView {
+                    VStack(spacing: 1) {
+                        ForEach(candidates) { candidate in
+                            candidateRow(candidate)
+                        }
+                    }
+                    .padding(4)
+                }
+                .frame(maxHeight: 168)
+                .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9)
+                        .stroke(ATMTheme.border, lineWidth: 1)
+                }
+            }
+        } else if !isSearching, let searchedKeyword, searchError == nil {
+            Text("没有找到「\(searchedKeyword)」。换个更短、连续的关键词试试，或手动填写来源 ID。")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func candidateRow(_ candidate: ATMCollectionCandidate) -> some View {
+        Button {
+            select(candidate)
+        } label: {
+            HStack(spacing: 9) {
+                // The glyph is what separates a robot from the person it is
+                // named after when both come back for the same keyword.
+                Image(systemName: candidate.symbolName)
+                    .frame(width: 18)
+                    .foregroundStyle(ATMTheme.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(candidate.name)
+                        .font(ATMFont.font(.body, weight: .medium))
+                        .lineLimit(1)
+                    HStack(spacing: 5) {
+                        Text(collectionKindLabel(candidate.kind))
+                        if let detail = candidate.detail, !detail.isEmpty {
+                            Text("· \(detail)")
+                                .lineLimit(1)
+                        }
+                    }
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            .atmRowSurface(isSelected: identity.selection == candidate)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// What the connector resolved, kept on screen after picking: the ID that
+    /// gets saved is the part nobody can verify later from memory.
+    private func selectedCandidateCard(_ candidate: ATMCollectionCandidate) -> some View {
+        formField("已选择来源", hint: "由连接器解析，ATM 保存的就是这个 ID") {
+            HStack(spacing: 10) {
+                Image(systemName: candidate.symbolName)
+                    .foregroundStyle(ATMTheme.success)
+                    .frame(width: 28, height: 28)
+                    .background(ATMTheme.successFill, in: Circle())
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(candidate.name)
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            .lineLimit(1)
+                        Text(collectionKindLabel(candidate.kind))
+                            .font(ATMFont.caption)
+                            .foregroundStyle(ATMTheme.secondary)
+                    }
+                    Text(candidate.externalID)
+                        .font(ATMFont.mono(.footnote))
+                        .foregroundStyle(ATMTheme.secondary)
+                        .lineLimit(1)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 0)
+                Button("更换") {
+                    identity.selection = nil
+                    keywordFocused = true
+                }
+                .controlSize(.small)
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
+        }
+    }
+
+    private var manualIdentifierFields: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                formField("来源类型", hint: "由连接器定义") {
+                    Picker("来源类型", selection: $identity.manualKind) {
+                        ForEach(manualKindOptions, id: \.self) { kind in
+                            Text("\(collectionKindLabel(kind))（\(kind)）").tag(kind)
+                        }
+                    }
+                    .labelsHidden()
+                }
+                formField("来源 ID", hint: "连接器使用的稳定唯一标识") {
+                    TextField("粘贴来源 ID", text: $identity.externalID)
+                        .textFieldStyle(.roundedBorder)
+                        .font(ATMFont.mono(.body))
+                }
+            }
+            Button("返回按名称搜索") {
+                identity.manualEntry = false
+                identity.externalID = ""
+                keywordFocused = true
+            }
+            .buttonStyle(.link)
+            .font(ATMFont.footnote)
+        }
+    }
+
+    /// Kinds worth offering: what this connector's existing sources already use,
+    /// plus the shapes every chat connector has. Kinds are connector-defined, so
+    /// this is a shortcut list rather than a closed set — anything unusual is
+    /// still reachable by adding the source with the CLI.
+    private var manualKindOptions: [String] {
+        let used = store.collectionOverview.sources
+            .filter { $0.connector == identity.trimmedConnector }
+            .map(\.kind)
+        var options = ["group", "user", "bot"]
+        for kind in used + [identity.manualKind] where !options.contains(kind) && !kind.isEmpty {
+            options.append(kind)
+        }
+        return options
+    }
+
+    // MARK: - 收集范围
+
+    private var scopeSection: some View {
+        settingsSection(title: "收集范围", icon: "line.3.horizontal.decrease.circle") {
+            VStack(alignment: .leading, spacing: 14) {
+                formField("排除关键词", hint: excludeHint) {
+                    // Vertical axis: a real exclusion list runs past one line, and
+                    // a single-line field hid everything but the last few words.
+                    TextField("例如：闲聊, 打卡", text: $excludePattern, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1...3)
+                }
+                formField("重点关注", hint: "用自然语言描述希望提取的内容；群聊消息不会被当作指令") {
+                    TextField("例如：只关注 MR、需求和线上问题", text: $instruction, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(2...5)
+                        .help("这是可信指令，聊天内容不是。")
+                }
+            }
+        }
+    }
+
+    private var excludeHint: String {
+        let count = excludePattern
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .count
+        let base = "包含这些词的消息会被跳过，多个词用逗号分隔"
+        return count > 0 ? "\(base) · 已排除 \(count) 个词" : base
+    }
+
+    // MARK: - 处理方式
+
+    private var processingSection: some View {
+        settingsSection(title: "处理方式", icon: "slider.horizontal.3") {
+            VStack(alignment: .leading, spacing: 16) {
+                formField("处理策略", hint: strategyHint) {
+                    Picker("处理策略", selection: $strategy) {
+                        Label("提取任务", systemImage: "checklist").tag("tasks")
+                        Label("沉淀知识", systemImage: "books.vertical").tag("observe")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .onChange(of: strategy) { value in
+                        // Only nudge the interval when it is still the other
+                        // strategy's default; a frequency someone chose survives.
+                        let previousDefault = value == "observe" ? 5 : 60
+                        if intervalMinutes == previousDefault {
+                            intervalMinutes = value == "observe" ? 60 : 5
+                        }
+                    }
+                }
+
+                formField("判定单位", hint: decisionUnitHint) {
+                    Picker("判定单位", selection: $decisionUnit) {
+                        Label("按时段", systemImage: "clock").tag("window")
+                        Label("按消息", systemImage: "text.line.first.and.arrowtriangle.forward").tag("message")
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                }
+
+                HStack(alignment: .top, spacing: 14) {
+                    formField("采集频率", hint: "每次检查新消息的间隔") {
+                        Stepper(value: $intervalMinutes, in: 1...1440) {
+                            Text("每 \(intervalMinutes) 分钟")
+                                .monospacedDigit()
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    if strategy == "observe" {
+                        formField("知识库集合", hint: "留空时沉淀到 inbox") {
+                            TextField("inbox", text: $knowledgeCollection)
+                                .textFieldStyle(.roundedBorder)
+                        }
+                    } else {
+                        formField("默认优先级", hint: "用于新提取的任务") {
+                            Picker("默认优先级", selection: $priority) {
+                                ForEach(["P0", "P1", "P2", "P3"], id: \.self) { value in
+                                    Text(priorityLabel(value)).tag(value)
+                                }
+                            }
+                            .labelsHidden()
+                        }
+                        .frame(width: 150)
+                    }
+                }
+
+                if strategy != "observe" {
+                    formField("默认项目", hint: "新任务默认归属，可留空") {
+                        TextField("例如：atm", text: $project)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - 通用外壳
 
     private func settingsSection<Content: View>(
         title: String,
@@ -1117,152 +1495,29 @@ private struct AddCollectionSourceSheet: View {
 
     private var subtitle: String {
         if source != nil {
-            return "来源 ID 已锁定；你可以调整名称、筛选范围与处理方式。"
+            return "连接器与来源 ID 已锁定；名称、筛选范围与处理方式都可以改。"
         }
-        return "选择已配置的连接器，并搜索或手动填写来源标识。"
+        return "选一个连接器，按名称找到会话，其余保持默认也能用。"
     }
 
-    /// A picked candidate carries the connector-resolved kind and stable ID.
-    private var target: ATMCollectionSourceTarget {
-        if let source {
-            return .identifier(kind: source.kind, externalID: source.externalID)
-        }
-        if let selection, !manualEntry {
-            return .candidate(selection)
-        }
-        return .identifier(kind: kind, externalID: externalID)
+    private var namePlaceholder: String {
+        identity.selection?.name ?? source?.externalID ?? "例如：需求讨论群"
     }
 
-    private var searchField: some View {
-        formField("搜索来源", hint: "连接器支持搜索时可按名称选择；也可以直接填写稳定 ID") {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    TextField("名称或关键词", text: $keyword)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit(search)
-                    Button("搜索", action: search)
-                        .disabled(connector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                                  keyword.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSearching)
-                    if isSearching {
-                        ProgressView().controlSize(.small)
-                    }
-                }
-                if let searchError {
-                    Text(searchError)
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.danger)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Button("改为手动填写 ID") { manualEntry = true }
-                    .buttonStyle(.link)
-                    .font(ATMFont.footnote)
-            }
-        }
-    }
+    // MARK: - 搜索
 
-    @ViewBuilder
-    private var candidateList: some View {
-        if !candidates.isEmpty {
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(candidates) { candidate in
-                        candidateRow(candidate)
-                        if candidate != candidates.last { Divider() }
-                    }
-                }
-            }
-            .frame(maxHeight: 180)
-            .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(ATMTheme.border, lineWidth: 1)
-            }
-        } else if !isSearching, let searchedKeyword, searchError == nil {
-            Text("没有找到「\(searchedKeyword)」。请换个关键词，或改为手动填写 ID。")
-                .font(ATMFont.footnote)
-                .foregroundStyle(ATMTheme.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func candidateRow(_ candidate: ATMCollectionCandidate) -> some View {
-        Button {
-            let previous = selection
-            selection = candidate
-            // The resolved name is a starting point, not a lock: a 显示名称 the
-            // person typed themselves survives switching candidates.
-            if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || name == previous?.name {
-                name = candidate.name
-            }
-        } label: {
-            HStack(spacing: 8) {
-                // The glyph is what separates a robot from the person it is
-                // named after when both come back for the same keyword.
-                Image(systemName: candidate.symbolName)
-                    .frame(width: 18)
-                    .foregroundStyle(ATMTheme.secondary)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(candidate.name)
-                        .lineLimit(1)
-                    if let detail = candidate.detail, !detail.isEmpty {
-                        Text(detail)
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                            .lineLimit(1)
-                    }
-                }
-                Spacer()
-                if selection == candidate {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(ATMTheme.success)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private var manualIdentifierField: some View {
-        formField("来源 ID", hint: source == nil ? "填写连接器使用的稳定唯一标识" : "唯一标识由连接器提供，保存时不会更改") {
-            VStack(alignment: .leading, spacing: 8) {
-                if source != nil {
-                    HStack(spacing: 8) {
-                        Image(systemName: "lock.fill")
-                            .font(ATMFont.caption)
-                            .foregroundStyle(ATMTheme.secondary)
-                        Text(externalID)
-                            .font(ATMFont.mono(.body))
-                            .foregroundStyle(ATMTheme.primary)
-                            .lineLimit(1)
-                            .textSelection(.enabled)
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 30)
-                    .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 6))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(ATMTheme.border, lineWidth: 1)
-                    }
-                } else {
-                    TextField("粘贴来源 ID", text: $externalID)
-                        .textFieldStyle(.roundedBorder)
-                    Button("返回按名称搜索") {
-                        manualEntry = false
-                        externalID = ""
-                    }
-                    .buttonStyle(.link)
-                    .font(ATMFont.footnote)
-                }
-            }
+    private func select(_ candidate: ATMCollectionCandidate) {
+        identity.selection = candidate
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedName.isEmpty || trimmedName == autoFilledName {
+            name = candidate.name
+            autoFilledName = candidate.name
         }
     }
 
     private func resetSearch() {
         candidates = []
-        selection = nil
+        identity.selection = nil
         searchedKeyword = nil
         searchError = nil
     }
@@ -1270,21 +1525,20 @@ private struct AddCollectionSourceSheet: View {
     @MainActor
     private func search() {
         let trimmed = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isSearching else { return }
+        guard canSearch else { return }
         isSearching = true
         searchError = nil
         Task {
             let (found, error) = await store.searchCollectionSources(
-                connector: connector, kind: kind, keyword: trimmed
+                connector: identity.trimmedConnector, kind: searchKind.rawValue, keyword: trimmed
             )
             candidates = found
             searchError = error
             searchedKeyword = trimmed
-            selection = found.count == 1 ? found.first : nil
-            if let only = found.first, found.count == 1,
-               name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                name = only.name
-            }
+            // One result is not ambiguous, so picking it saves a click; more than
+            // one has to be chosen, and the previous pick is no longer in the list.
+            identity.selection = nil
+            if found.count == 1, let only = found.first { select(only) }
             isSearching = false
         }
     }

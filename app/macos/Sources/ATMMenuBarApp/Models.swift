@@ -94,6 +94,50 @@ func collectionKindSymbol(_ kind: String?) -> String {
     }
 }
 
+/// Readable name for a connector-defined source kind, matching the CLI's own
+/// vocabulary (`collectionKindLabel` in internal/cmd/collect.go). A kind ATM has
+/// never seen prints as itself: kinds belong to the connector, so an unknown one
+/// is a label to show, not an error.
+func collectionKindLabel(_ kind: String?) -> String {
+    switch kind {
+    case "group", "channel": return "群聊"
+    case "user", "contact", "open_dingtalk_id": return "联系人"
+    case "bot": return "机器人"
+    case .none, "", "all": return "来源"
+    case .some(let kind): return kind
+    }
+}
+
+/// How `atm collect source search` is narrowed. This is a discovery filter, not
+/// the kind that gets persisted — the kind ATM saves always comes back on the
+/// chosen candidate, so picking 群聊 here never decides what a source is stored as.
+enum ATMCollectionSearchKind: String, CaseIterable, Identifiable {
+    case all
+    case group
+    case user
+    case bot
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: return "全部"
+        case .group: return "群聊"
+        case .user: return "联系人"
+        case .bot: return "机器人"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .all: return "square.grid.2x2"
+        case .group: return "person.3.fill"
+        case .user: return "person.fill"
+        case .bot: return "cpu"
+        }
+    }
+}
+
 /// One `atm collect source search` result, carrying the identifier the connector
 /// needs plus enough detail to tell two same-named results apart.
 struct ATMCollectionCandidate: Decodable, Identifiable, Equatable {
@@ -192,6 +236,57 @@ enum ATMCollectionSourceTarget: Equatable {
         case .identifier(_, let externalID): return externalID.trimmingCharacters(in: .whitespacesAndNewlines)
         }
     }
+
+    var kind: String {
+        switch self {
+        case .identifier(let kind, _): return kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+}
+
+/// The identity half of the add/edit source sheet: which connector, and which
+/// conversation on it. Kept out of the view so the two rules that decide whether
+/// a save is even possible — what target gets persisted, and what is still
+/// missing — are testable, and so the sheet has one source of truth instead of
+/// four `@State` fields it has to keep consistent by hand.
+struct ATMCollectionSourceIdentity: Equatable {
+    var connector = ""
+    /// Set when editing: `collect source add` upserts on connector + kind + id,
+    /// so an existing source's target is what makes the save an edit rather than
+    /// a second source. Never editable.
+    var locked: ATMCollectionSourceTarget?
+    /// The connector-resolved candidate. Preferred over the typed identifier
+    /// because it carries the kind the connector itself uses for this source.
+    var selection: ATMCollectionCandidate?
+    /// True when the person gave up on search and is pasting an identifier.
+    var manualEntry = false
+    var manualKind = "group"
+    var externalID = ""
+
+    var isEditing: Bool { locked != nil }
+
+    var trimmedConnector: String {
+        connector.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// What would be saved, or nil while the sheet still has nothing to point at.
+    var target: ATMCollectionSourceTarget? {
+        if let locked { return locked }
+        if !manualEntry, let selection { return .candidate(selection) }
+        let target = ATMCollectionSourceTarget.identifier(kind: manualKind, externalID: externalID)
+        guard !target.kind.isEmpty, !target.value.isEmpty else { return nil }
+        return target
+    }
+
+    /// Why the save button is off, phrased as the next thing to do. Nil means
+    /// ready — a disabled button with no reason is the thing this replaces.
+    var blockReason: String? {
+        if trimmedConnector.isEmpty { return "请先选择连接器" }
+        guard target != nil else {
+            return manualEntry ? "请填写来源类型和来源 ID" : "请搜索并选择一个来源"
+        }
+        return nil
+    }
 }
 
 struct ATMCollectionRun: Decodable, Identifiable, Equatable {
@@ -259,6 +354,31 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
         case connector, status, error
         case checkedAt = "checked_at"
     }
+
+    /// 状态词。设置页和「添加来源」都读这一份，同一个连接器不会在两处叫两个名字。
+    var statusLabel: String {
+        switch status {
+        case "ready": return "可用"
+        case "auth_required": return "需要登录"
+        case "permission_required": return "缺少消息权限/权益"
+        case "error": return "连接异常"
+        default: return "尚未检测"
+        }
+    }
+
+    var statusIcon: String {
+        switch status {
+        case "ready": return "checkmark.circle.fill"
+        case "auth_required": return "person.crop.circle.badge.exclamationmark"
+        case "permission_required": return "lock.trianglebadge.exclamationmark"
+        case "error": return "exclamationmark.triangle.fill"
+        default: return "questionmark.circle"
+        }
+    }
+
+    /// True while nothing has run yet — the status says nothing about the
+    /// connector either way, so callers can offer a first run instead of a verdict.
+    var isUnverified: Bool { checkedAt == nil || status == "not_checked" }
 }
 
 struct ATMCollectionItem: Decodable, Identifiable, Equatable {
@@ -3885,6 +4005,8 @@ struct ATMProviderQuotaPayload: Decodable, Equatable, Identifiable {
     let period: String?
     let observedAt: String
     let source: String?
+    /// The page this reading came from, when the provider names one.
+    let url: String?
     let metrics: [ATMProviderQuotaMetric]
     /// Set by ATM, never by the provider: the last card it returned, held in
     /// place with no reading behind it because the provider reported nothing or
@@ -3893,9 +4015,22 @@ struct ATMProviderQuotaPayload: Decodable, Equatable, Identifiable {
     let unavailableReason: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, provider, title, period, source, metrics, unavailable
+        case id, provider, title, period, source, url, metrics, unavailable
         case observedAt = "observed_at"
         case unavailableReason = "unavailable_reason"
+    }
+
+    /// Only http(s) reaches the browser. The CLI already rejects anything else,
+    /// so this is the second gate — it also covers a hand-edited
+    /// `quota_provider_cards.json`, where a `file://` or custom scheme would
+    /// otherwise become a click that launches something.
+    var linkURL: URL? {
+        guard let raw = url?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+              let parsed = URL(string: raw),
+              let scheme = parsed.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              parsed.host?.isEmpty == false
+        else { return nil }
+        return parsed
     }
 
     /// A card with no metrics counts too, so an ATM build that predates the flag
@@ -3992,6 +4127,7 @@ private struct ATMLegacyDailyQuota: Decodable, Equatable {
             period: "今日",
             observedAt: observedAt,
             source: source,
+            url: nil,
             metrics: [
                 ATMProviderQuotaMetric(
                     id: "count", label: "每日次数", used: count.used, limit: count.limit,

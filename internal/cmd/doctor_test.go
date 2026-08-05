@@ -59,10 +59,14 @@ func TestExtractionIssuesRespectsDeclaredCapabilities(t *testing.T) {
 
 // The half-broken case is the realistic one: messages still parse, token
 // accounting stops. Only the affected half may be reported.
+//
+// Uses claude because the agent has to be one that claims usage — qoderwork was
+// the original example until it was confirmed that its upstream never fills the
+// token fields, at which point it stopped claiming it.
 func TestExtractionIssuesReportsOnlyTheMissingHalf(t *testing.T) {
-	issues := extractionIssues("qoderwork",
+	issues := extractionIssues("claude",
 		doctorSource{Files: 34},
-		store.ExtractionCounts{Agent: "qoderwork", Sessions: 34, Messages: 318, UsageRows: 0})
+		store.ExtractionCounts{Agent: "claude", Sessions: 34, Messages: 318, UsageRows: 0})
 
 	codes := issueCodes(issues)
 	if codes["parser_extracts_no_messages"] {

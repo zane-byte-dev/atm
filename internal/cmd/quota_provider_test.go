@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/config"
@@ -28,8 +29,10 @@ func TestQuotaProviderHelperProcess(t *testing.T) {
 	case "error":
 		fmt.Fprintln(os.Stderr, "provider unavailable")
 		os.Exit(2)
+	case "badurl":
+		fmt.Fprint(os.Stdout, `{"version":1,"cards":[{"id":"daily","agent":"claude","title":"Plan","observed_at":"2026-08-04T03:28:37Z","url":"file:///etc/passwd","metrics":[{"id":"count","label":"Count","used":1,"limit":10}]}]}`)
 	default:
-		fmt.Fprint(os.Stdout, `{"version":1,"cards":[{"id":"daily","agent":"Claude","title":"Plan","period":"today","observed_at":"2026-08-04T03:28:37Z","source":"browser","metrics":[{"id":"count","label":"Count","used":25,"limit":100,"unit":"requests"},{"id":"amount","label":"Amount","used":12.5,"limit":50,"currency":"CNY","precision":2}]}]}`)
+		fmt.Fprint(os.Stdout, `{"version":1,"cards":[{"id":"daily","agent":"Claude","title":"Plan","period":"today","observed_at":"2026-08-04T03:28:37Z","source":"browser","url":"https://example.com/account","metrics":[{"id":"count","label":"Count","used":25,"limit":100,"unit":"requests"},{"id":"amount","label":"Amount","used":12.5,"limit":50,"currency":"CNY","precision":2}]}]}`)
 	}
 	os.Exit(0)
 }
@@ -56,6 +59,19 @@ func TestCallQuotaProviderNormalizesCardsAndComputesPercent(t *testing.T) {
 	}
 	if got := card.Metrics[0].UsedPercent; got != 25 {
 		t.Fatalf("used percent = %v", got)
+	}
+	if card.URL != "https://example.com/account" {
+		t.Fatalf("card url = %q", card.URL)
+	}
+}
+
+// The App opens this URL in the browser, so a scheme it should never launch has
+// to be refused before it reaches either the card or the on-disk cache.
+func TestCallQuotaProviderRejectsANonHTTPCardURL(t *testing.T) {
+	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
+	_, err := callQuotaProvider(context.Background(), "example", quotaProviderHelperConfig("badurl"))
+	if err == nil || !strings.Contains(err.Error(), "must be an absolute http(s) URL") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

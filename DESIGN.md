@@ -68,6 +68,12 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 
 - Codex/Copilot 暂不支持 thinking 提取（Claude 和 Pi 支持）
 - Copilot 目前偏会话检索和工具统计，不提供 token/cost 明细
+- Qoder CLI 与 QoderWork 同样没有 token/cost 明细，原因在上游而非 parser（2026-08-05 核验）：
+  QoderWork 的 metadata 里 `inputTokens`/`outputTokens`/`totalCostUsd` 恒为 0，而同一批消息的
+  `durationMs` 与 `contextUsageRatio` 有真实值；Qoder CLI 的 transcript 里根本不存在任何
+  token 字段。两者的提取逻辑保留着，上游一旦开始写入，把
+  [`parser.CapabilitiesFor`](internal/parser/capabilities.go) 改回 `Usage: true` 即可恢复统计。
+  Qoder 本体（IDE）提供 token，不在此列。
 - Qoder 与 QoderWork 依赖本地 SQLite 表结构，Qoder CLI 依赖 JSONL transcript；若上游客户端变更
   schema，需要更新 parser
 

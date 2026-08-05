@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,7 @@ const (
 	quotaProviderOutputLimit     = 1 << 20
 	quotaProviderErrorLimit      = 64 << 10
 	quotaProviderDefaultTimeout  = 10 * time.Second
+	quotaProviderURLLimit        = 2048
 )
 
 var quotaProviderToken = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -42,14 +44,18 @@ type quotaProviderResponse struct {
 // can expose one or more bounded metrics without teaching ATM about its
 // service, endpoints, credentials, or product-specific vocabulary.
 type quotaProviderCard struct {
-	ID         string                `json:"id"`
-	Agent      string                `json:"agent"`
-	Provider   string                `json:"provider"`
-	Title      string                `json:"title"`
-	Period     string                `json:"period,omitempty"`
-	ObservedAt string                `json:"observed_at"`
-	Source     string                `json:"source,omitempty"`
-	Metrics    []quotaProviderMetric `json:"metrics"`
+	ID         string `json:"id"`
+	Agent      string `json:"agent"`
+	Provider   string `json:"provider"`
+	Title      string `json:"title"`
+	Period     string `json:"period,omitempty"`
+	ObservedAt string `json:"observed_at"`
+	Source     string `json:"source,omitempty"`
+	// Where this reading came from, so a card can send the reader to the page
+	// that owns the number instead of only showing it. http(s) only: the App
+	// hands this to the system browser.
+	URL     string                `json:"url,omitempty"`
+	Metrics []quotaProviderMetric `json:"metrics"`
 	// Set by ATM, never by a provider: this is the last card the provider
 	// returned, held in place with no reading behind it. See quota_provider_cache.go.
 	Unavailable       bool   `json:"unavailable,omitempty"`
@@ -274,6 +280,28 @@ func filterQuotaProviderMetrics(providerID string, visible []string,
 	return filtered, nil
 }
 
+// validateQuotaProviderCardURL keeps a card's link to something a browser can
+// open. The App passes it to NSWorkspace, so a provider bug — or a hand-edited
+// quota_provider_cards.json, which comes back through this same function — must
+// not be able to launch a file:// path or a custom scheme handler.
+func validateQuotaProviderCardURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	if len(raw) > quotaProviderURLLimit {
+		return fmt.Errorf("exceeds %d bytes", quotaProviderURLLimit)
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return err
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if (scheme != "http" && scheme != "https") || parsed.Host == "" {
+		return fmt.Errorf("must be an absolute http(s) URL")
+	}
+	return nil
+}
+
 func expandQuotaProviderPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -306,6 +334,10 @@ func normalizeQuotaProviderCards(providerID string, cards []quotaProviderCard) e
 		card.Title = strings.TrimSpace(card.Title)
 		card.Period = strings.TrimSpace(card.Period)
 		card.Source = strings.TrimSpace(card.Source)
+		card.URL = strings.TrimSpace(card.URL)
+		if err := validateQuotaProviderCardURL(card.URL); err != nil {
+			return fmt.Errorf("quota provider %s card %s url: %w", providerID, card.ID, err)
+		}
 		// ATM owns these two: a provider reports data or reports nothing, and
 		// cannot hand out a card that claims to be its own placeholder.
 		card.Unavailable = false

@@ -325,15 +325,16 @@ struct DesktopSettingsView: View {
                                     Text(health.connector)
                                         .font(ATMFont.mono(.footnote))
                                         .frame(width: 80, alignment: .leading)
-                                    Label(
-                                        collectionHealthLabel(health.status),
-                                        systemImage: collectionHealthIcon(health.status)
-                                    )
-                                    .foregroundStyle(collectionHealthColor(health.status))
-                                    .font(ATMFont.font(.body, weight: .medium))
+                                    Label(health.statusLabel, systemImage: health.statusIcon)
+                                        .foregroundStyle(ATMTheme.collectionHealthColor(health.status))
+                                        .font(ATMFont.font(.body, weight: .medium))
                                     Spacer()
                                     if let checkedAt = health.checkedAt {
                                         Text("检测于 \(collectionSettingsRelativeTime(checkedAt))")
+                                            .font(ATMFont.caption)
+                                            .foregroundStyle(ATMTheme.secondary)
+                                    } else {
+                                        Text("请立即收集一次")
                                             .font(ATMFont.caption)
                                             .foregroundStyle(ATMTheme.secondary)
                                     }
@@ -726,34 +727,6 @@ struct DesktopSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border, lineWidth: 1))
-    }
-
-    private func collectionHealthLabel(_ status: String?) -> String {
-        switch status {
-        case "ready": return "可用"
-        case "auth_required": return "需要登录"
-        case "permission_required": return "缺少消息权限/权益"
-        case "error": return "连接异常"
-        default: return "尚未检测（请立即收集一次）"
-        }
-    }
-
-    private func collectionHealthIcon(_ status: String?) -> String {
-        switch status {
-        case "ready": return "checkmark.circle.fill"
-        case "auth_required": return "person.crop.circle.badge.exclamationmark"
-        case "permission_required": return "lock.trianglebadge.exclamationmark"
-        case "error": return "exclamationmark.triangle.fill"
-        default: return "questionmark.circle"
-        }
-    }
-
-    private func collectionHealthColor(_ status: String?) -> Color {
-        switch status {
-        case "ready": return ATMTheme.success
-        case "auth_required", "permission_required", "error": return ATMTheme.warning
-        default: return ATMTheme.secondary
-        }
     }
 
     private func collectionSettingsRelativeTime(_ timestamp: Int64) -> String {

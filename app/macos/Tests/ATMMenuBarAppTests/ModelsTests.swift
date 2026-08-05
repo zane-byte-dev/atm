@@ -141,6 +141,79 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "source", "search", "示例研发"]), 45)
     }
 
+    /// The add sheet only knows the connector and whatever the person has picked
+    /// or typed; these two rules decide what `collect source add` is handed, and
+    /// what the footer says while it cannot be handed anything.
+    func testCollectionSourceIdentityResolvesWhatGetsSaved() {
+        var identity = ATMCollectionSourceIdentity()
+        XCTAssertNil(identity.target)
+        XCTAssertEqual(identity.blockReason, "请先选择连接器")
+
+        identity.connector = " DingTalk "
+        XCTAssertEqual(identity.trimmedConnector, "dingtalk")
+        XCTAssertEqual(identity.blockReason, "请搜索并选择一个来源")
+
+        // A picked candidate wins over the manual fields: it carries the kind the
+        // connector itself uses, which is not something anyone should retype.
+        identity.manualKind = "group"
+        identity.externalID = "typed-id"
+        identity.selection = ATMCollectionCandidate(
+            kind: "bot", externalID: "bot-1", name: "Code助手", detail: nil
+        )
+        XCTAssertEqual(identity.target?.arguments, ["--kind", "bot", "--id", "bot-1"])
+        XCTAssertNil(identity.blockReason)
+
+        // Switching to manual entry ignores the stale candidate.
+        identity.manualEntry = true
+        XCTAssertEqual(identity.target?.arguments, ["--kind", "group", "--id", "typed-id"])
+        identity.externalID = "   "
+        XCTAssertNil(identity.target)
+        XCTAssertEqual(identity.blockReason, "请填写来源类型和来源 ID")
+
+        // Editing pins the identity: the upsert keys on it, so a save that let it
+        // drift would create a second source instead of updating this one.
+        identity.locked = .identifier(kind: "group", externalID: "chat-9")
+        XCTAssertTrue(identity.isEditing)
+        XCTAssertEqual(identity.target?.arguments, ["--kind", "group", "--id", "chat-9"])
+        XCTAssertNil(identity.blockReason)
+    }
+
+    func testCollectionVocabularyNamesKindsAndConnectorHealth() {
+        XCTAssertEqual(collectionKindLabel("group"), "群聊")
+        XCTAssertEqual(collectionKindLabel("open_dingtalk_id"), "联系人")
+        XCTAssertEqual(collectionKindLabel("bot"), "机器人")
+        XCTAssertEqual(collectionKindLabel("all"), "来源")
+        XCTAssertEqual(collectionKindLabel(nil), "来源")
+        // A kind ATM has never seen belongs to the connector, so it prints as
+        // itself rather than as "未知".
+        XCTAssertEqual(collectionKindLabel("issue"), "issue")
+
+        // The search filter is discovery only; every case has to survive the trip
+        // to `collect source search --kind`.
+        XCTAssertEqual(ATMCollectionSearchKind.allCases.map(\.rawValue), ["all", "group", "user", "bot"])
+        for kind in ATMCollectionSearchKind.allCases {
+            XCTAssertFalse(kind.label.isEmpty)
+            XCTAssertFalse(kind.systemImage.isEmpty)
+        }
+
+        let ready = ATMCollectionConnectorHealth(
+            connector: "example", status: "ready", error: nil, checkedAt: 110
+        )
+        XCTAssertEqual(ready.statusLabel, "可用")
+        XCTAssertFalse(ready.isUnverified)
+        let unchecked = ATMCollectionConnectorHealth(
+            connector: "example", status: "not_checked", error: nil, checkedAt: nil
+        )
+        XCTAssertEqual(unchecked.statusLabel, "尚未检测")
+        XCTAssertTrue(unchecked.isUnverified)
+        XCTAssertEqual(
+            ATMCollectionConnectorHealth(
+                connector: "example", status: "auth_required", error: "not_authenticated", checkedAt: 9
+            ).statusIcon,
+            "person.crop.circle.badge.exclamationmark"
+        )
+    }
+
     func testCollectionHistoryDecodesReadOnlyConversation() throws {
         let data = Data(
             """
@@ -540,6 +613,7 @@ final class ModelsTests: XCTestCase {
                 "provider_cards":[{
                   "id":"daily","provider":"example","title":"Team plan","period":"今日",
                   "observed_at":"2026-08-04T03:28:37Z","source":"browser",
+                  "url":"https://example.com/account",
                   "metrics":[
                     {"id":"count","label":"每日次数","used":428,"limit":4000,"used_percent":10.7,"unit":"次"},
                     {"id":"amount","label":"每日金额","used":266.58,"limit":1200,"used_percent":22.215,"currency":"CNY","precision":2}
@@ -556,8 +630,32 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(card.providerLabel, "Example")
         XCTAssertEqual(card.sourceLabel, "浏览器")
         XCTAssertEqual(card.payload.metrics.map(\.valueText), ["428 / 4.0K 次", "¥266.58 / ¥1200.00"])
+        XCTAssertEqual(card.payload.linkURL?.absoluteString, "https://example.com/account")
         XCTAssertFalse(quota.isEmpty)
         XCTAssertTrue(quota.tooltipText?.contains("Claude Example 每日金额 22%") == true)
+    }
+
+    /// The card's URL becomes a click that opens the system browser, so a scheme
+    /// the App must never launch has to read as "no link" rather than as a link.
+    /// The CLI already refuses these; this covers a hand-edited cache file.
+    func testProviderCardIgnoresANonHTTPURL() throws {
+        func linkURL(_ url: String) throws -> URL? {
+            let data = Data(
+                """
+                {"claude":{"provider_cards":[{"id":"daily","provider":"example",
+                "title":"Team plan","observed_at":"2026-08-04T03:28:37Z","url":"\(url)",
+                "metrics":[]}]}}
+                """.utf8
+            )
+            let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: data)
+            return try XCTUnwrap(quota.providerCards.first).payload.linkURL
+        }
+
+        XCTAssertNil(try linkURL("file:///etc/passwd"))
+        XCTAssertNil(try linkURL("javascript:alert(1)"))
+        XCTAssertNil(try linkURL("/manage/"))
+        XCTAssertNil(try linkURL(""))
+        XCTAssertEqual(try linkURL("https://example.com/account")?.host, "example.com")
     }
 
     /// ATM keeps the last card a provider returned and marks it unavailable once

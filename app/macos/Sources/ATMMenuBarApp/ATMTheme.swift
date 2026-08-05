@@ -42,6 +42,15 @@ enum ATMTheme {
     static let chartPlotFill = primary.opacity(0.022)
     static let chartGrid = secondary.opacity(0.18)
 
+    /// 连接器健康色。设置页和「添加来源」共用，别处不要再判一次状态字符串。
+    static func collectionHealthColor(_ status: String?) -> Color {
+        switch status {
+        case "ready": return success
+        case "auth_required", "permission_required", "error": return warning
+        default: return secondary
+        }
+    }
+
     static func quotaColor(_ level: ATMQuotaLevel) -> Color {
         switch level {
         case .critical: return danger

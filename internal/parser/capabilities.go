@@ -26,12 +26,22 @@ var capabilities = map[string]Capabilities{
 	"codex":  {Messages: true, Usage: true},
 	"pi":     {Messages: true, Usage: true},
 	// Copilot's workspace storage holds the conversation and tool calls but no
-	// token or cost detail — see the known limitations in README. Reporting its
-	// missing usage as a problem would be reporting the upstream's design.
-	"copilot":   {Messages: true, Usage: false},
-	"qoder":     {Messages: true, Usage: true},
-	"qodercli":  {Messages: true, Usage: true},
-	"qoderwork": {Messages: true, Usage: true},
+	// token or cost detail — see the known limitations in DESIGN.md. Reporting
+	// its missing usage as a problem would be reporting the upstream's design.
+	"copilot": {Messages: true, Usage: false},
+	"qoder":   {Messages: true, Usage: true},
+	// Qoder CLI transcripts carry no token accounting at all: across every
+	// session on a real install, no key path under message.* exists beyond
+	// content and role, and nothing anywhere names tokens, usage or cost. The
+	// parser's extraction is left in place — if a later version starts writing
+	// it, this flips back to true and the numbers appear without further work.
+	"qodercli": {Messages: true, Usage: false},
+	// QoderWork writes inputTokens and outputTokens, and both are always zero;
+	// totalCostUsd likewise. It is not that the fields are missing — durationMs
+	// and contextUsageRatio on the same messages hold real values — the upstream
+	// simply does not fill the token ones. Same reasoning as qodercli: the
+	// extraction stays, the claim does not.
+	"qoderwork": {Messages: true, Usage: false},
 	"grokbuild": {Messages: true, Usage: true},
 }
 

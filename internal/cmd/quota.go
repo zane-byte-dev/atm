@@ -233,6 +233,9 @@ func printQuotaProviderCards(cardsByAgent map[string][]quotaProviderCard,
 				}
 				fmt.Println()
 			}
+			if card.URL != "" {
+				fmt.Printf("  Page: %s\n", card.URL)
+			}
 			fmt.Println()
 			printed = true
 		}

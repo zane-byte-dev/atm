@@ -73,6 +73,12 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 	defer rows.Close()
 
 	var inputs, outputs []Message
+	// Messages carries the turns in order. Inputs/Outputs are kept alongside it
+	// because the session views read them, but they cannot be the storage path
+	// here: that fallback pairs one output to each input by index, and a Qoder
+	// agent run answers a single prompt with many assistant messages — 27 prompts
+	// against 154 replies on a real database, of which the pairing would keep 27.
+	var messages []TranscriptMessage
 	var usage Usage
 	var lastTS int64
 	tools := map[string]int{}
@@ -91,12 +97,24 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 
 		if role == "user" && content.Valid {
 			c := content.String
-			if len(c) > 0 && len(c) < 500 && !looksEncrypted(c) {
-				inputs = append(inputs, Message{Content: c, TS: ts})
+			// Truncate rather than drop. This used to skip anything over 500 bytes,
+			// presumably to keep IDE context out of the index — but Qoder inlines
+			// that context into the prompt, so on a real database every single user
+			// message exceeded it (shortest observed: 1048 bytes). The result was an
+			// empty Inputs slice, and because the storage layer pairs outputs to
+			// inputs by index, every assistant reply was discarded with them: five
+			// sessions, 331 messages upstream, zero indexed. No other parser drops on
+			// length; they all truncate.
+			if len(c) > 0 && !looksEncrypted(c) {
+				text := truncateText(c, 2000)
+				inputs = append(inputs, Message{Content: text, TS: ts})
+				messages = append(messages, TranscriptMessage{Role: "user", Content: text, TS: ts})
 			}
 		} else if role == "assistant" {
 			if content.Valid && len(content.String) > 0 && !looksEncrypted(content.String) {
-				outputs = append(outputs, Message{Content: truncateText(content.String, 2000), TS: ts})
+				text := truncateText(content.String, 2000)
+				outputs = append(outputs, Message{Content: text, TS: ts})
+				messages = append(messages, TranscriptMessage{Role: "assistant", Content: text, TS: ts})
 			}
 		} else if role == "tool" {
 			tools["tool_call"]++
@@ -146,6 +164,7 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 		Summary:   title,
 		Inputs:    inputs,
 		Outputs:   outputs,
+		Messages:  messages,
 		Tools:     tools,
 		Usage:     usage,
 		EndOffset: endOffset,
@@ -196,17 +215,34 @@ func QoderLiveSessions(maxAge time.Duration) []Session {
 	return sessions
 }
 
+// looksEncrypted reports whether the text is a stored blob rather than prose —
+// Qoder puts base64 payloads in the same column as conversation.
+//
+// The test is composition, not occurrence. Counting `+ / =` and rejecting at six
+// meant any prose containing a couple of paths and a few plus signs — "go test
+// ./... + go vet ./..." clears the threshold on its own — was discarded as a
+// blob. What actually distinguishes base64 is that it is *only* base64: an
+// unbroken run of the alphabet with no spaces, punctuation or non-Latin script.
+// Prose and code always have some.
 func looksEncrypted(s string) bool {
-	if len(s) < 20 {
+	runes := []rune(s)
+	if len(runes) < 20 {
 		return false
 	}
-	nonAlnum := 0
-	for _, c := range s[:min(len(s), 100)] {
-		if c == '+' || c == '/' || c == '=' {
-			nonAlnum++
+	head := runes[:min(len(runes), 100)]
+	marks, inAlphabet := 0, 0
+	for _, c := range head {
+		switch {
+		case c == '+' || c == '/' || c == '=':
+			marks++
+			inAlphabet++
+		case (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'):
+			inAlphabet++
 		}
 	}
-	return nonAlnum > 5
+	// Every character in the alphabet, and enough padding//+ to be encoded data
+	// rather than a long identifier.
+	return marks > 5 && inAlphabet == len(head)
 }
 
 func min(a, b int) int {

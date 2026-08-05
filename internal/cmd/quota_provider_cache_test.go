@@ -50,6 +50,11 @@ func TestLoadQuotaProviderCardsHoldsTheCardWhenAProviderReportsNothing(t *testin
 	if len(card.Metrics) != 0 || card.Source != "" {
 		t.Fatalf("placeholder kept a reading: %#v", card)
 	}
+	// The link outlives the reading: a card with no numbers is exactly when
+	// "where do I go to refresh this" is worth a click.
+	if card.URL != "https://example.com/account" {
+		t.Fatalf("placeholder dropped its page: %#v", card)
+	}
 }
 
 func TestLoadQuotaProviderCardsHoldsTheCardWhenAProviderFails(t *testing.T) {

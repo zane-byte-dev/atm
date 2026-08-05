@@ -57,6 +57,7 @@ The provider writes one JSON object to stdout:
       "period": "Today",
       "observed_at": "2026-08-04T03:28:37Z",
       "source": "browser",
+      "url": "https://example.com/account",
       "metrics": [
         {
           "id": "count",
@@ -84,6 +85,13 @@ validates finite non-negative `used` values, positive `limit` values, RFC 3339
 timestamps, unique metric IDs, and a precision from 0 through 6. It computes
 `used_percent`; providers cannot supply a conflicting percentage.
 
+`url` is optional and names the page this reading came from — the account page
+where the numbers can be seen in full or the quota topped up. It must be an
+absolute `http` or `https` URL of at most 2048 bytes; any other scheme is a
+provider error, because the App hands this address to the system browser. The
+App makes the whole card and its quick-panel rows clickable, and `atm quota`
+prints it as `Page:`.
+
 A provider may return several cards and agents. ATM merges the resulting
 `provider_cards` into the normal `atm quota --json` entry for each agent, so a
 built-in rate-limit window and external cards can coexist.
@@ -107,8 +115,9 @@ error and produces no warning, including when `visible_metrics` is set.
 ATM remembers the last cards each provider returned in
 `~/.atm/quota_provider_cards.json`. While a provider reports nothing or fails,
 those cards stay on screen as placeholders instead of disappearing: same agent,
-provider, title, period, and `observed_at`, with empty `metrics`, no `source`,
-and
+provider, title, period, `observed_at`, and `url` — a missing reading is exactly
+when "where do I refresh this" is most worth a click — with empty `metrics`, no
+`source`, and
 
 ```json
 {"unavailable": true, "unavailable_reason": "empty"}
