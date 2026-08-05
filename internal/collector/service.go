@@ -285,28 +285,79 @@ func unhandledMessages(messages []Message, handled map[string]struct{}) []Messag
 // each, which costs a model call per topic instead of one per run.
 func groupMessagesWithContext(source store.CollectionSource, messages []Message,
 	handled map[string]struct{}) []MessageBatch {
-	groups := groupMessages(source, messages)
+	groups := groupMessages(messages)
 	result := make([]MessageBatch, 0, len(groups))
-	for _, batch := range groups {
-		contextMessages := batch.Messages
+	for _, contextMessages := range groups {
 		fresh := unhandledMessages(contextMessages, handled)
 		if len(fresh) == 0 {
 			continue
 		}
-		result = append(result, messageBatchWithContext(source, fresh, contextMessages))
+		for _, unit := range decisionUnits(source, fresh) {
+			result = append(result, messageBatchWithContext(source, unit, contextMessages))
+		}
 	}
 	return result
 }
 
-func messageBatchWithContext(source store.CollectionSource, fresh, contextMessages []Message) MessageBatch {
-	freshIDs := map[string]struct{}{}
+// decisionUnits splits a window's fresh messages into the pieces that each get
+// their own decision. Grouping is right for chat — a request and the two lines
+// clarifying it are one piece of work — but a batch yields exactly one decision,
+// so for a notification feed, where every push is a separate event, grouping
+// silently keeps one and loses the rest. Either way the whole window still
+// travels with each unit as context, so a reply that only makes sense next to
+// the message above it still reads correctly.
+func decisionUnits(source store.CollectionSource, fresh []Message) [][]Message {
+	if source.DecisionUnit != store.CollectionDecisionUnitMessage {
+		return [][]Message{fresh}
+	}
+	units := make([][]Message, 0, len(fresh))
 	for _, message := range fresh {
-		freshIDs[message.ID] = struct{}{}
+		units = append(units, []Message{message})
+	}
+	return units
+}
+
+func messageBatchWithContext(source store.CollectionSource, fresh, contextMessages []Message) MessageBatch {
+	actionable, keyword := actionableMessages(source, fresh)
+	actionableIDs := map[string]struct{}{}
+	for _, message := range actionable {
+		actionableIDs[message.ID] = struct{}{}
 	}
 	return MessageBatch{Source: source, Messages: fresh,
-		Fingerprint:   messageBatchFingerprint(source.ID, fresh),
-		ActionContext: formatMessageContext(fresh, nil),
-		RawContext:    formatMessageContext(contextMessages, freshIDs)}
+		Fingerprint:     messageBatchFingerprint(source.ID, fresh),
+		ActionContext:   formatMessageContext(actionable, nil),
+		RawContext:      formatMessageContext(contextMessages, actionableIDs),
+		ExcludedKeyword: keyword}
+}
+
+// actionableMessages drops the individual messages a source's keywords match,
+// rather than the batch that happens to contain them. Both the CLI flag and the
+// App call this a message filter, and batching is purely time-based: one 构建成功
+// used to take every real request within fifteen minutes of it down as well.
+// The dropped lines stay available as continuity — a status broadcast right
+// after the request it belongs to is exactly the context that resolves it.
+func actionableMessages(source store.CollectionSource, messages []Message) ([]Message, string) {
+	if strings.TrimSpace(source.ExcludePattern) == "" {
+		return messages, ""
+	}
+	actionable := make([]Message, 0, len(messages))
+	keyword := ""
+	for _, message := range messages {
+		// Matched against the rendered line, not the bare content, so a keyword
+		// can still name a sender the way it could when this ran on the batch.
+		matched, excluded := collectionExclusion(source, formatMessageContext([]Message{message}, nil))
+		if !excluded {
+			actionable = append(actionable, message)
+			continue
+		}
+		if keyword == "" {
+			keyword = matched
+		}
+	}
+	if keyword == "" {
+		return messages, ""
+	}
+	return actionable, keyword
 }
 
 func (service Service) processBatch(ctx context.Context, batch MessageBatch, item store.CollectionItem) (store.CollectionItem, error) {
@@ -321,13 +372,13 @@ func (service Service) processBatch(ctx context.Context, batch MessageBatch, ite
 // analysis can hold the decision for a person to confirm while automatic
 // collection carries it out immediately.
 func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Decision, error) {
-	actionContext := batch.ActionContext
-	if actionContext == "" {
-		actionContext = batch.RawContext
-	}
-	if keyword, excluded := collectionExclusion(batch.Source, actionContext); excluded {
+	// Filtering already happened per message while the batch was built, so an
+	// empty action context means every fresh line was noise. A batch rebuilt
+	// from a stored item carries no keyword at all: someone asking for another
+	// look is not asking the same keyword to answer again.
+	if batch.ExcludedKeyword != "" && strings.TrimSpace(batch.ActionContext) == "" {
 		return normalizeDecision(Decision{Action: "ignore", ItemType: "conversation",
-			Reason: "命中来源排除规则：" + keyword, Confidence: 1}, batch.Source), nil
+			Reason: "命中来源排除规则：" + batch.ExcludedKeyword, Confidence: 1}, batch.Source), nil
 	}
 	todos, err := store.LoadTodosReadOnly()
 	if err != nil {
@@ -646,7 +697,11 @@ func collectionTitleFromContext(context string) string {
 	return empty(line, "处理收集到的事项")
 }
 
-func groupMessages(source store.CollectionSource, messages []Message) []MessageBatch {
+// groupMessages splits a fetched window into topics — "same conversation, gaps
+// under fifteen minutes" — and returns the messages of each. Turning a topic
+// into batches belongs to the callers: automatic collection has to tell fresh
+// messages from context, and both of them apply the source's decision unit.
+func groupMessages(messages []Message) [][]Message {
 	if len(messages) == 0 {
 		return nil
 	}
@@ -666,11 +721,19 @@ func groupMessages(source store.CollectionSource, messages []Message) []MessageB
 		}
 		groups = append(groups, []Message{message})
 	}
-	batches := make([]MessageBatch, 0, len(groups))
-	for _, group := range groups {
-		context := formatMessageContext(group, nil)
-		batches = append(batches, MessageBatch{Source: source, Messages: group,
-			Fingerprint: messageBatchFingerprint(source.ID, group), ActionContext: context, RawContext: context})
+	return groups
+}
+
+// analysisBatches is the on-demand counterpart of groupMessagesWithContext: an
+// explicit window has no checkpoint, so every message is eligible, but the
+// source's decision unit and keyword filtering apply exactly as they do to an
+// automatic run — otherwise "分析这段" would answer differently from collection.
+func analysisBatches(source store.CollectionSource, messages []Message) []MessageBatch {
+	batches := make([]MessageBatch, 0)
+	for _, group := range groupMessages(messages) {
+		for _, unit := range decisionUnits(source, group) {
+			batches = append(batches, messageBatchWithContext(source, unit, group))
+		}
 	}
 	return batches
 }

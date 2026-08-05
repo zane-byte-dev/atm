@@ -14,7 +14,8 @@ Register providers in `~/.atm/config.json`:
     "example": {
       "command": "~/.local/bin/atm-quota-example",
       "args": ["--profile", "work"],
-      "timeout_seconds": 10
+      "timeout_seconds": 10,
+      "visible_metrics": ["amount"]
     }
   }
 }
@@ -24,6 +25,12 @@ Provider and card identifiers match `[a-z][a-z0-9_-]{0,63}`. ATM expands a
 leading `~/` in the command path, starts providers without a shell, runs all
 configured providers concurrently, and limits each provider to 1 MiB of stdout
 and 64 KiB of stderr. The default timeout is 10 seconds.
+
+`visible_metrics` is optional. When present, ATM keeps only those metric IDs in
+CLI and App output and drops cards with no selected metrics. Omit it (or use an
+empty list) to show every metric. For example, an Idealab provider that returns
+`count` and `amount` can use `"visible_metrics": ["amount"]` to show only the
+amount row.
 
 ## Request
 

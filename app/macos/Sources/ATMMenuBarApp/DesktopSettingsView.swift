@@ -385,7 +385,7 @@ struct DesktopSettingsView: View {
                         } else {
                             ForEach(store.collectionOverview.sources) { source in
                                 HStack {
-                                    Image(systemName: source.kind == "group" ? "person.3.fill" : "person.fill")
+                                    Image(systemName: source.symbolName)
                                         .frame(width: 20)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(source.displayName)

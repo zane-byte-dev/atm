@@ -52,7 +52,11 @@ final class ModelsTests: XCTestCase {
                           "external_id":"channel-1","name":"产品反馈","project":"atm",
                           "exclude_pattern":"机器人通知",
                           "strategy":"observe","interval_minutes":60,
-                          "priority":"P1","enabled":true,"created_at":10,"updated_at":11}],
+                          "priority":"P1","enabled":true,"created_at":10,"updated_at":11},
+                         {"id":"cs2","connector":"example","kind":"bot",
+                          "external_id":"bot-1","name":"发布通知",
+                          "strategy":"tasks","decision_unit":"message","interval_minutes":15,
+                          "priority":"P2","enabled":true,"created_at":12,"updated_at":13}],
               "runs":[{"id":"cr1","connector":"example","source_id":"cs1",
                        "status":"succeeded","started_at":100,"finished_at":110,
                        "fetched_count":3,"analyzed_count":3,"created_count":1,
@@ -73,6 +77,11 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.sources.first?.externalID, "channel-1")
         XCTAssertEqual(overview.sources.first?.excludePattern, "机器人通知")
         XCTAssertEqual(overview.sources.first?.effectiveStrategy, "observe")
+        // A source saved before the column existed decodes as the window
+        // behaviour it actually had; a notification feed carries its own.
+        XCTAssertEqual(overview.sources.first?.effectiveDecisionUnit, "window")
+        XCTAssertEqual(overview.sources.last?.effectiveDecisionUnit, "message")
+        XCTAssertEqual(overview.sources.last?.symbolName, "cpu")
         XCTAssertEqual(overview.sources.first?.effectiveIntervalMinutes, 60)
         XCTAssertEqual(overview.latestRun?.id, "cr1")
         XCTAssertEqual(overview.connectorHealth.first?.status, "ready")
@@ -112,6 +121,12 @@ final class ModelsTests: XCTestCase {
         let list = try JSONDecoder().decode(ATMCollectionCandidateList.self, from: data)
         XCTAssertEqual(list.candidates.count, 2)
         XCTAssertFalse(list.candidates[0].isGroup)
+        // A channel reads as a room, a bot as a machine, and an unknown kind
+        // still gets a glyph rather than a blank slot.
+        XCTAssertEqual(list.candidates[0].symbolName, "person.3.fill")
+        XCTAssertEqual(collectionKindSymbol("bot"), "cpu")
+        XCTAssertEqual(list.candidates[1].symbolName, "person.fill")
+        XCTAssertEqual(collectionKindSymbol(nil), "person.fill")
         XCTAssertEqual(list.candidates[0].detail, "由示例连接器返回")
         XCTAssertFalse(list.candidates[1].isGroup)
         XCTAssertEqual(
@@ -1437,6 +1452,35 @@ final class ModelsTests: XCTestCase {
             lastAnswer: "Updating the Agent workspace"
         )
         XCTAssertNil(duplicate.latestReplyText)
+    }
+
+    /// The Agent list hides a row's origin when it matches the column's dominant
+    /// one, so these two labels have to agree exactly between the header and the
+    /// rows — a whitespace-only `client` falling back differently in one of them
+    /// would print `Codex Desktop · atm` on every card again.
+    func testAgentOriginLabelsFallBackWhenClientOrProjectIsBlank() {
+        let reported = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "a",
+            project: "atm",
+            client: "Codex Desktop",
+            ageSeconds: 1
+        )
+        XCTAssertEqual(ATMAgentDisplay.clientName(reported), "Codex Desktop")
+        XCTAssertEqual(ATMAgentDisplay.projectName(reported), "atm")
+
+        let blank = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "b",
+            project: "   ",
+            client: "  ",
+            ageSeconds: 1
+        )
+        XCTAssertEqual(ATMAgentDisplay.clientName(blank), "Codex")
+        XCTAssertEqual(ATMAgentDisplay.projectName(blank), "未知项目")
+
+        let missing = ATMLiveSession(tool: "qodercli", sessionID: "c", project: "atm", ageSeconds: 1)
+        XCTAssertEqual(ATMAgentDisplay.clientName(missing), "QoderCLI")
     }
 
     func testAgentSessionLaunchRouteUsesExactTTYWhenAvailable() {

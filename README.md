@@ -127,6 +127,8 @@ atm collect item revert <item-id> -y               # 撤销误创建/误补充�
 # history 和 run 拉到的聊天原文都会同步进 ~/.atm/atm.db，默认保留 90 天：
 #   atm config set collection_message_retention_days 30   # 改成 30 天
 #   atm config set collection_message_retention_days 0    # 0 = 永久保留
+# 分类模型可写成候选链，前一个限额/超时/没装就自动换下一个：
+#   atm config set collection_model_command "grok,codex"
 
 # 中央知识、共享记忆和产物
 atm knowledge catalog
@@ -168,6 +170,14 @@ macOS 菜单栏 App 常驻时按默认 5 分钟间隔采集；主窗口关闭不
 checkpoint，并重叠回读 20 分钟，消息 ID 与来源标记共同保证重复拉取不会重复新建。语义匹配只用于在新 Todo 中记录相关历史 Todo，不会把新事项补充进旧 Todo。认证由连接器管理，ATM 不保存连接器 token/Cookie。
 模型只输出固定决策 JSON，TodoWriter 才能写 ATM；权限、模型或写入失败会显示为等待重试且不会推进 checkpoint。
 采集默认关闭，启用前需在 `collection_connectors` 中配置并验证连接器。
+
+分类模型由 `collection_model_command` 决定，可以写成按序尝试的候选链
+（`atm config set collection_model_command "grok,codex"`）：前一个被限额、超时或没装时自动换下一个，
+一个 CLI 挂掉不再整条采集停摆。内置 `codex` 与 `grok` 两套无头调用方式（都在一次性工作目录里跑、只读沙箱、
+禁联网搜索/记忆/子 Agent；grok 没有 `--ignore-user-config` 等价开关，差异见文档）；其他 CLI 通过
+[`collection_model_runners` 模板](docs/collection-model-runner.md)自行声明 argv 和取值路径，不用改代码。
+链尾可以放 `rule` 作为最后兜底，降级产生的记录会写明原因。ATM 会跳过分类自己在
+`atm-collection-model-*` 工作目录里留下的 CLI 会话，它们不进 `atm session` 和 `atm stats`。
 
 `todo context` 是每次调用即时生成的只读快照，不代表 handoff 已持久化，也不触发 review 状态。
 它默认使用 Todo 的单一活跃 Session 绑定；没有活跃绑定时退回最近绑定，

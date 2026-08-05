@@ -26,14 +26,15 @@ import (
 // 'insight' decision, which distils chat worth remembering into the knowledge
 // base instead of forcing it into a Todo or dropping it. v31 removes the
 // service-specific source-kind constraint so registered connectors own their
-// vocabulary. Keep min at 21 while
+// vocabulary. v32 adds collection_sources.decision_unit so a notification feed
+// can be decided per message instead of per time window. Keep min at 21 while
 // those upgrade steps exist; after the live database has been upgraded,
 // raise this to SchemaVersion and delete the steps. Note what a hard
 // reject costs: session tables rebuild from agent logs on the next `atm sync`,
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 31
+	SchemaVersion        = 32
 	minUpgradableVersion = 21
 )
 
@@ -288,6 +289,15 @@ func createSchema(tx *sql.Tx) error {
 			-- talk the classifier into filing work for other people.
 			strategy        TEXT NOT NULL DEFAULT 'tasks'
 				CHECK (strategy IN ('tasks','observe')),
+			-- How much of a fetched window one decision covers. 'window' groups
+			-- messages by "same conversation, gaps under fifteen minutes", which
+			-- is right for chat: a request and its follow-up clarifications are
+			-- one piece of work. A notification feed is the opposite — every push
+			-- is a separate event, and grouping them means all but one are lost,
+			-- because a batch yields exactly one decision. 'message' decides on
+			-- each message, still reading its window as context.
+			decision_unit   TEXT NOT NULL DEFAULT 'window'
+				CHECK (decision_unit IN ('window','message')),
 			interval_minutes INTEGER NOT NULL DEFAULT 5
 				CHECK (interval_minutes BETWEEN 1 AND 1440),
 			priority    TEXT NOT NULL DEFAULT 'P2'

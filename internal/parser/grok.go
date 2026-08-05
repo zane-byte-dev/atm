@@ -52,6 +52,13 @@ func DiscoverGrok() []string {
 		if !cwdEntry.IsDir() {
 			continue
 		}
+		// Grok persists a session per working directory, including the scratch
+		// directory ATM's own chat classifier runs in. Those are ATM talking to
+		// itself about someone else's chat — not a session anybody worked in —
+		// so they never become sessions, projects or token usage here.
+		if config.IsCollectionModelWorkdir(cwdEntry.Name()) {
+			continue
+		}
 		cwdPath := filepath.Join(config.GrokSessions, cwdEntry.Name())
 		sessionEntries, err := os.ReadDir(cwdPath)
 		if err != nil {

@@ -189,9 +189,10 @@ struct DesktopCollectionView: View {
             summaryMetric("新建", value: summary.createdToday, color: collectionActionColor("create"))
             summaryMetric("补充", value: summary.appendedToday, color: collectionActionColor("append"))
             summaryMetric("沉淀", value: summary.insightToday, color: collectionActionColor("insight"))
-            if summary.failedToday > 0 {
-                summaryMetric("待重试", value: summary.failedToday, color: collectionActionColor("failed"))
-            }
+            // 这里不再放失败数。三重机制保证失败会自愈：游标不前移（collector 的
+            // `checkpoint was not advanced`）、失败消息不进 HandledCollectionMessageIDs、
+            // 失败 item 不在跳过分支里——下一轮连着原始上下文重新分析，人不用做任何事。
+            // 而且这个数是按 run 累加的：同一条失败 47 次会显示成「47」，读起来像 47 条待处理。
             Spacer()
             if let digest = todaysDigest {
                 // The digest is the readable form of everything filed as an
@@ -268,7 +269,7 @@ struct DesktopCollectionView: View {
                     sourceRow(
                         id: source.id,
                         name: source.displayName,
-                        icon: source.kind == "group" ? "person.3.fill" : "person.fill",
+                        icon: source.symbolName,
                         enabled: source.enabled,
                         count: store.collectionOverview.items.filter {
                             $0.sourceID == source.id && !$0.shouldCollapseInCollection
@@ -548,15 +549,23 @@ private struct CollectionItemDetail: View {
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                     }
-                    if item.action == "failed" || item.action == "reverted" {
+                    // 撤销过的 item 状态回落成 `processed`（见 collector 的 revert），它的消息
+                    // 因此进了 handled 名单、再也不会被自动重新收集——这个按钮是它唯一的回头路，
+                    // 所以留在主位。失败正相反：下一轮自己会重来，于是降级进菜单，只服务
+                    // 「刚修好连接器、不想等下一轮」这种情况。
+                    if item.action == "reverted" {
                         Button("重新处理") { store.reprocessCollectionItem(item) }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                     }
-                    if item.action == "ignore" || item.action == "create" || item.action == "append" || item.action == "reverted" {
+                    if item.action == "ignore" || item.action == "create"
+                        || item.action == "append" || item.action == "failed" {
                         Menu {
-                            if item.action == "ignore" || item.action == "reverted" {
+                            if item.action == "ignore" {
                                 Button("重新判断") { store.reprocessCollectionItem(item) }
+                            }
+                            if item.action == "failed" {
+                                Button("立即重试") { store.reprocessCollectionItem(item) }
                             }
                             if item.action == "create" || item.action == "append" {
                                 Button("修正标题、项目和优先级") { showingCorrection = true }
@@ -701,7 +710,7 @@ private struct CollectionItemDetail: View {
 
     private var sourceSummary: some View {
         HStack(spacing: 10) {
-            Image(systemName: source?.kind == "group" ? "person.3.fill" : "person.fill")
+            Image(systemName: collectionKindSymbol(source?.kind))
                 .foregroundStyle(ATMTheme.secondary)
                 .frame(width: 28, height: 28)
                 .background(ATMTheme.controlFill, in: Circle())
@@ -833,6 +842,7 @@ private struct AddCollectionSourceSheet: View {
     @State private var instruction = ""
     @State private var knowledgeCollection = ""
     @State private var strategy = "tasks"
+    @State private var decisionUnit = "window"
     @State private var intervalMinutes = 5
 
     @State private var keyword = ""
@@ -864,6 +874,7 @@ private struct AddCollectionSourceSheet: View {
         _instruction = State(initialValue: source?.instruction ?? "")
         _knowledgeCollection = State(initialValue: source?.knowledgeCollection ?? "")
         _strategy = State(initialValue: source?.effectiveStrategy ?? "tasks")
+        _decisionUnit = State(initialValue: source?.effectiveDecisionUnit ?? "window")
         _intervalMinutes = State(initialValue: source?.effectiveIntervalMinutes ?? 5)
         // An existing source already has its identifier; only new ones search.
         _manualEntry = State(initialValue: source != nil)
@@ -920,6 +931,15 @@ private struct AddCollectionSourceSheet: View {
                                 }
                             }
 
+                            formField("判定单位", hint: decisionUnitHint) {
+                                Picker("判定单位", selection: $decisionUnit) {
+                                    Label("按时段", systemImage: "clock").tag("window")
+                                    Label("按消息", systemImage: "text.line.first.and.arrowtriangle.forward").tag("message")
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.segmented)
+                            }
+
                             HStack(alignment: .top, spacing: 14) {
                                 formField("采集频率", hint: "每次检查新消息的间隔") {
                                     Stepper(value: $intervalMinutes, in: 1...1440) {
@@ -963,6 +983,7 @@ private struct AddCollectionSourceSheet: View {
                         connector: connector, target: target, name: name, project: project, priority: priority,
                         excludePattern: excludePattern, instruction: instruction,
                         knowledgeCollection: knowledgeCollection, strategy: strategy,
+                        decisionUnit: decisionUnit,
                         intervalMinutes: intervalMinutes, enabled: source?.enabled ?? true
                     )
                     onClose()
@@ -1077,6 +1098,14 @@ private struct AddCollectionSourceSheet: View {
             : "从消息中识别需求、缺陷和待办，创建或补充任务"
     }
 
+    /// One batch yields one decision, so this is what decides how many separate
+    /// events can survive the same window — not merely how work is split up.
+    private var decisionUnitHint: String {
+        decisionUnit == "message"
+            ? "每条消息单独判定，同一时段的其他消息只作上下文。通知机器人这类「一条消息就是一件事」的来源用这个"
+            : "同一会话、间隔 15 分钟内的消息合并判定，得到一个结果。聊天用这个：一句请求和随后的补充说明是同一件事"
+    }
+
     private func priorityLabel(_ value: String) -> String {
         switch value {
         case "P0": return "P0 · 紧急"
@@ -1167,7 +1196,9 @@ private struct AddCollectionSourceSheet: View {
             }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "link.circle.fill")
+                // The glyph is what separates a robot from the person it is
+                // named after when both come back for the same keyword.
+                Image(systemName: candidate.symbolName)
                     .frame(width: 18)
                     .foregroundStyle(ATMTheme.secondary)
                 VStack(alignment: .leading, spacing: 2) {
@@ -1442,7 +1473,8 @@ private func collectionActionTitle(_ action: String) -> String {
     case "append": return "已补充"
     case "insight": return "已沉淀"
     case "ignore": return "无需处理"
-    case "failed": return "等待重试"
+    // 「等待重试」听着像在等人按一下；实际是下一轮 collect 自动重来。
+    case "failed": return "下轮自动重试"
     case "reverted": return "已撤销"
     default: return "等待处理"
     }

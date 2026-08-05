@@ -25,6 +25,7 @@ func withTempConfigHome(t *testing.T) string {
 	oldCollectionInterval := CollectionIntervalMinutes
 	oldCollectionLookback := CollectionLookbackMinutes
 	oldCollectionModel := CollectionModelCommand
+	oldCollectionModelRunners := CollectionModelRunners
 	oldCollectionConnectors := CollectionConnectors
 	oldQuotaProviders := QuotaProviders
 
@@ -49,6 +50,7 @@ func withTempConfigHome(t *testing.T) string {
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
 	CollectionModelCommand = "codex"
+	CollectionModelRunners = nil
 	CollectionConnectors = nil
 	QuotaProviders = nil
 
@@ -68,6 +70,7 @@ func withTempConfigHome(t *testing.T) string {
 		CollectionIntervalMinutes = oldCollectionInterval
 		CollectionLookbackMinutes = oldCollectionLookback
 		CollectionModelCommand = oldCollectionModel
+		CollectionModelRunners = oldCollectionModelRunners
 		CollectionConnectors = oldCollectionConnectors
 		QuotaProviders = oldQuotaProviders
 	})
@@ -99,8 +102,9 @@ func TestInitAndLoadConfig(t *testing.T) {
   "collection_interval_minutes": 7,
   "collection_lookback_minutes": 90,
   "collection_model_command": "rule",
+  "collection_model_runners": {"house": {"command": "~/bin/house-cli", "args": ["--schema", "{{schema_path}}"], "output_field": "result", "timeout_seconds": 60}},
   "collection_connectors": {"slack": {"command": "~/bin/atm-connector-slack", "args": ["--workspace", "example"], "timeout_seconds": 30}},
-  "quota_providers": {"example": {"command": "~/bin/atm-quota-example", "args": ["--profile", "work"], "timeout_seconds": 8}},
+  "quota_providers": {"example": {"command": "~/bin/atm-quota-example", "args": ["--profile", "work"], "timeout_seconds": 8, "visible_metrics": ["amount"]}},
   "data_dir": "~/atm-data",
   "pricing": {"test-model": [1, 2, 3, 4]},
   "subscriptions": {"codex": 20},
@@ -137,16 +141,46 @@ func TestInitAndLoadConfig(t *testing.T) {
 			CollectionEnabled, CollectionIntervalMinutes, CollectionLookbackMinutes,
 			CollectionModelCommand)
 	}
+	if runner := CollectionModelRunners["house"]; runner.Command != "~/bin/house-cli" ||
+		len(runner.Args) != 2 || runner.OutputField != "result" || runner.TimeoutSeconds != 60 {
+		t.Fatalf("collection model runners = %#v", CollectionModelRunners)
+	}
 	if connector := CollectionConnectors["slack"]; connector.Command != "~/bin/atm-connector-slack" ||
 		len(connector.Args) != 2 || connector.TimeoutSeconds != 30 {
 		t.Fatalf("collection connectors = %#v", CollectionConnectors)
 	}
 	if provider := QuotaProviders["example"]; provider.Command != "~/bin/atm-quota-example" ||
-		len(provider.Args) != 2 || provider.TimeoutSeconds != 8 {
+		len(provider.Args) != 2 || provider.TimeoutSeconds != 8 ||
+		len(provider.VisibleMetrics) != 1 || provider.VisibleMetrics[0] != "amount" {
 		t.Fatalf("quota providers = %#v", QuotaProviders)
 	}
 	if shown := ShowConfig(); shown == "" || !containsAll(shown, "UTC", "atm-data", "test-model", "subscriptions", "codex") {
 		t.Fatalf("ShowConfig = %q", shown)
+	}
+}
+
+func TestCollectionModelCandidatesSplitsTheChain(t *testing.T) {
+	withTempConfigHome(t)
+	got := CollectionModelCandidates(" grok --effort low , codex ,, ")
+	if len(got) != 2 || got[0] != "grok --effort low" || got[1] != "codex" {
+		t.Fatalf("candidates = %#v", got)
+	}
+	// An unset command still resolves to the configured default chain.
+	CollectionModelCommand = "grok,codex"
+	if got := CollectionModelCandidates(""); len(got) != 2 || got[0] != "grok" {
+		t.Fatalf("default candidates = %#v", got)
+	}
+}
+
+func TestIsCollectionModelWorkdirMatchesEncodedPaths(t *testing.T) {
+	if !IsCollectionModelWorkdir("/private/var/folders/kq/T/" + CollectionModelWorkdirPrefix + "2291227821") {
+		t.Fatal("scratch path not recognised")
+	}
+	if !IsCollectionModelWorkdir("%2Fprivate%2Fvar%2FT%2F" + CollectionModelWorkdirPrefix + "42") {
+		t.Fatal("URL-encoded scratch path not recognised")
+	}
+	if IsCollectionModelWorkdir("/Users/mj/mox/atm") {
+		t.Fatal("a real project must not look like a scratch directory")
 	}
 }
 

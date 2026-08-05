@@ -81,7 +81,7 @@ func (service Service) Analyze(ctx context.Context, sourceID string,
 	if err != nil {
 		return report, err
 	}
-	batches := groupMessages(source, messages)
+	batches := analysisBatches(source, messages)
 	report.Batches = len(batches)
 	for _, batch := range batches {
 		if ctx.Err() != nil {

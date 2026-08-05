@@ -43,7 +43,14 @@ Settable keys:
   collection_lookback_minutes N Initial source lookback (default 60)
   collection_message_retention_days N  Days of synced chat to keep
                                 (default 90; 0 keeps it forever)
-  collection_model_command CMD  Structured classifier command (default codex)`,
+  collection_model_command CMD  Structured classifier command (default codex).
+                                Accepts a comma-separated chain tried in order,
+                                e.g. "grok,codex" or "grok,codex,rule"; the next
+                                one runs when the previous is rate limited,
+                                times out or is not installed. codex and grok
+                                have built-in profiles; any other CLI needs a
+                                collection_model_runners entry in config.json
+                                (see docs/collection-model-runner.md)`,
 	// Only `init` is a valid positional arg; anything else errors instead of
 	// silently falling through to "show config".
 	ValidArgs: []string{"init"},

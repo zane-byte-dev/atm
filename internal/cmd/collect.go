@@ -25,6 +25,7 @@ var (
 	collectSourceFocus      string
 	collectSourceKnowledge  string
 	collectSourceStrategy   string
+	collectSourceUnit       string
 	collectSourceInterval   int
 	collectSourcePriority   string
 	collectSourceDisabled   bool
@@ -99,6 +100,9 @@ func init() {
 			config.CollectionDigestCollection+")")
 	collectSourceAddCmd.Flags().StringVar(&collectSourceStrategy, "strategy", store.CollectionStrategyTasks,
 		"processing strategy: tasks (may create Todos) or observe (knowledge only)")
+	collectSourceAddCmd.Flags().StringVar(&collectSourceUnit, "decision-unit", store.CollectionDecisionUnitWindow,
+		"what one decision covers: window (messages within 15 minutes) or message "+
+			"(each message on its own — for notification feeds)")
 	collectSourceAddCmd.Flags().IntVar(&collectSourceInterval, "interval", 0,
 		"source collection interval in minutes (default: tasks 5, observe 60)")
 	collectSourceAddCmd.Flags().StringVar(&collectSourcePriority, "priority", "P2", "default priority: P0, P1, P2, P3")
@@ -430,6 +434,11 @@ var collectSourceListCmd = &cobra.Command{
 					source.Strategy, source.IntervalMinutes, emptyAs(source.Project, "-"),
 					emptyAs(source.KnowledgeCollection, config.CollectionDigestCollection),
 					source.Enabled, source.Name)
+				// Printed only when it deviates: a column reading "window" on
+				// every row would just widen an already wide line.
+				if source.DecisionUnit == store.CollectionDecisionUnitMessage {
+					fmt.Printf("%-20s 每条消息单独判定，同一时段的其他消息只作上下文\n", "")
+				}
 				if source.Instruction != "" {
 					fmt.Printf("%-20s 关注：%s\n", "", source.Instruction)
 				}
@@ -513,7 +522,7 @@ var collectSourceAddCmd = &cobra.Command{
 				ExternalID: target.ExternalID, Name: target.Name,
 				Project: collectSourceProject, ExcludePattern: collectSourceExclude,
 				Instruction: collectSourceFocus, KnowledgeCollection: collectSourceKnowledge,
-				Strategy:        collectSourceStrategy,
+				Strategy: collectSourceStrategy, DecisionUnit: collectSourceUnit,
 				IntervalMinutes: collectSourceInterval, Priority: collectSourcePriority,
 				Enabled: !collectSourceDisabled,
 			})

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/parser"
@@ -120,6 +121,25 @@ func collectionRetentionIssues(db *sql.DB) []doctorIssue {
 			"or set collection_message_retention_days to 0 to keep chat on purpose"}}
 }
 
+// collectionModelIssues reports a collection chain with nothing left to run.
+// Classification happens in the background, so a missing or renamed CLI shows
+// up as sources that quietly stop producing anything rather than as an error
+// anyone sees.
+func collectionModelIssues() []doctorIssue {
+	if !config.CollectionEnabled {
+		return nil
+	}
+	runnable, missing := collector.CheckModelCommands(config.CollectionModelCommand)
+	if len(runnable) > 0 || len(missing) == 0 {
+		return nil
+	}
+	return []doctorIssue{{Severity: "warning", Domain: "collection", Code: "collection_model_unavailable",
+		Subject: config.CollectionModelCommand,
+		Detail:  fmt.Sprintf("no configured classifier command is installed: %s", strings.Join(missing, ", ")),
+		Suggestion: "install one of them, or point the chain at a CLI that exists with " +
+			"`atm config set collection_model_command \"grok,codex\"`"}}
+}
+
 func runDoctorReport(db *sql.DB) error {
 	paths := map[string]string{"claude": config.ClaudeProjects, "codex": config.CodexSessions, "pi": config.PiSessions, "copilot": config.CopilotWorkspaces, "qoder": config.QoderDB, "qodercli": config.QoderCLIProjects, "qoderwork": config.QoderWorkDB, "grokbuild": config.GrokSessions}
 	coverage := []store.Coverage{}
@@ -185,6 +205,7 @@ func runDoctorReport(db *sql.DB) error {
 	if db != nil {
 		issues = append(issues, collectionRetentionIssues(db)...)
 	}
+	issues = append(issues, collectionModelIssues()...)
 	var todoIssues []store.TodoDependencyIssue
 	if todos, loadErr := store.LoadTodosReadOnly(); loadErr == nil {
 		todoIssues = store.AuditTodoDependencies(todos)

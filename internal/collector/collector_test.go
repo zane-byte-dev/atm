@@ -30,14 +30,20 @@ func (fetcher *fakeFetcher) Fetch(_ context.Context, _ store.CollectionSource, s
 
 type fakeExtractor struct {
 	decision Decision
-	err      error
-	calls    int
-	batches  []MessageBatch
+	// decide, when set, answers per batch. A run that has to produce a different
+	// decision for each message it sees cannot use a single canned one.
+	decide  func(MessageBatch) Decision
+	err     error
+	calls   int
+	batches []MessageBatch
 }
 
 func (extractor *fakeExtractor) Extract(_ context.Context, batch MessageBatch, _ []store.Todo) (Decision, error) {
 	extractor.calls++
 	extractor.batches = append(extractor.batches, batch)
+	if extractor.decide != nil {
+		return extractor.decide(batch), extractor.err
+	}
 	return extractor.decision, extractor.err
 }
 
@@ -404,6 +410,126 @@ func TestSourceExclusionIsAuditedWithoutCallingModel(t *testing.T) {
 	}
 }
 
+// Batching is time-based, so a noisy broadcast routinely shares a window with a
+// real request. Excluding per batch dropped both — a CR bot's "有新增commits"
+// silently took the "邀请你评审" three minutes before it down as well.
+func TestSourceExclusionDropsOnlyTheMatchedMessages(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	db, _ := store.Open()
+	source.ExcludePattern = "构建成功"
+	var err error
+	source, err = store.UpsertCollectionSource(db, source)
+	db.Close()
+	if err != nil {
+		t.Fatalf("update source exclusion: %v", err)
+	}
+	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "修复登录超时",
+		ItemType: "bug", Confidence: 0.9}}
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "noise", ConversationID: source.ExternalID, Sender: "机器人",
+			CreatedAt: 11_400, Content: "构建成功：主干流水线 #42"},
+		{ID: "real", ConversationID: source.ExternalID, Sender: "测试发送人",
+			CreatedAt: 11_500, Content: "登录超时需要修复一下"},
+	}, newest: 11_500}, Extractor: extractor, Now: tickingClock()}
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].CreatedCount != 1 || extractor.calls != 1 {
+		t.Fatalf("mixed batch run=%+v calls=%d err=%v", report, extractor.calls, err)
+	}
+	batch := extractor.batches[0]
+	if strings.Contains(batch.ActionContext, "构建成功") || !strings.Contains(batch.ActionContext, "登录超时") {
+		t.Fatalf("action context still carries the excluded line: %q", batch.ActionContext)
+	}
+	// The excluded line stays readable as continuity, but only as [上下文]: the
+	// prompt allows [新消息] lines alone to trigger a decision.
+	if !strings.Contains(batch.RawContext, "[上下文] ") || !strings.Contains(batch.RawContext, "构建成功") ||
+		!strings.Contains(batch.RawContext, "[新消息] ") {
+		t.Fatalf("raw context lost the excluded line or its marker: %q", batch.RawContext)
+	}
+	db, _ = store.Open()
+	defer db.Close()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	// Both IDs belong to the item, so the excluded message counts as handled and
+	// is not re-fetched into a fresh batch on every later run.
+	if len(items) != 1 || len(items[0].MessageIDs) != 2 {
+		t.Fatalf("excluded message left unhandled: %+v", items)
+	}
+}
+
+// A batch yields exactly one decision, so what a batch covers decides how many
+// separate events can survive one window. Chat wants them merged — a request and
+// the line clarifying it are one Todo. A notification feed wants them apart: two
+// review invitations three minutes apart are two pieces of work, and grouping
+// them keeps one and loses the other with no trace.
+func TestDecisionUnitDecidesHowManyEventsSurviveOneWindow(t *testing.T) {
+	messages := []Message{
+		{ID: "first", ConversationID: "cid-product", Sender: "机器人",
+			CreatedAt: 11_400, Content: "邀请你评审代码：登录重构"},
+		{ID: "second", ConversationID: "cid-product", Sender: "机器人",
+			CreatedAt: 11_520, Content: "邀请你评审代码：配额上报"},
+	}
+	titleFromLastLine := func(batch MessageBatch) Decision {
+		lines := strings.Split(strings.TrimSpace(batch.ActionContext), "\n")
+		return Decision{Action: "create", ItemType: "follow_up", Confidence: 0.9,
+			Title: lines[len(lines)-1]}
+	}
+
+	for _, testCase := range []struct {
+		unit      string
+		wantCalls int
+		wantTodos int
+	}{
+		{unit: store.CollectionDecisionUnitWindow, wantCalls: 1, wantTodos: 1},
+		{unit: store.CollectionDecisionUnitMessage, wantCalls: 2, wantTodos: 2},
+	} {
+		t.Run(testCase.unit, func(t *testing.T) {
+			withCollectorStore(t)
+			source := addCollectorSource(t)
+			db, _ := store.Open()
+			source.DecisionUnit = testCase.unit
+			var err error
+			source, err = store.UpsertCollectionSource(db, source)
+			db.Close()
+			if err != nil {
+				t.Fatalf("set decision unit %s: %v", testCase.unit, err)
+			}
+			extractor := &fakeExtractor{decide: titleFromLastLine}
+			service := Service{Fetcher: &fakeFetcher{messages: messages, newest: 11_520},
+				Extractor: extractor, Now: tickingClock()}
+			report, err := service.Run(context.Background(), source.ID)
+			if err != nil || extractor.calls != testCase.wantCalls ||
+				report.Runs[0].CreatedCount != testCase.wantTodos {
+				t.Fatalf("unit %s: run=%+v calls=%d err=%v",
+					testCase.unit, report.Runs[0], extractor.calls, err)
+			}
+			db, _ = store.Open()
+			defer db.Close()
+			items, _ := store.ListCollectionItems(db, source.ID, 10)
+			todos := map[string]struct{}{}
+			for _, item := range items {
+				todos[item.TodoID] = struct{}{}
+			}
+			if len(items) != testCase.wantTodos || len(todos) != testCase.wantTodos {
+				t.Fatalf("unit %s: items=%+v distinct todos=%d", testCase.unit, items, len(todos))
+			}
+			if testCase.unit == store.CollectionDecisionUnitWindow {
+				return
+			}
+			// Each message was decided alone, but still read next to the rest of
+			// its window: the other line is present as context, not as a trigger.
+			for index, batch := range extractor.batches {
+				if strings.Count(batch.ActionContext, "邀请你评审代码") != 1 {
+					t.Fatalf("batch %d decided on more than its own message: %q", index, batch.ActionContext)
+				}
+				if strings.Count(batch.RawContext, "邀请你评审代码") != 2 ||
+					strings.Count(batch.RawContext, "[新消息] ") != 1 {
+					t.Fatalf("batch %d lost its window as context: %q", index, batch.RawContext)
+				}
+			}
+		})
+	}
+}
+
 func TestServiceFailureDoesNotAdvanceCheckpointAndCanRecover(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
@@ -567,6 +693,39 @@ func TestAutomaticExtractorFailsClosedUnlessRuleModeIsExplicit(t *testing.T) {
 	decision, err := (AutomaticExtractor{ModelCommand: "rule"}).Extract(context.Background(), batch, nil)
 	if err != nil || decision.Action != "create" || decision.Project != "atm" || decision.Priority != "P2" {
 		t.Fatalf("explicit rule decision=%+v err=%v", decision, err)
+	}
+}
+
+// A rate-limited primary model is the whole reason the chain exists: the run
+// must continue on the next CLI instead of failing the source.
+func TestAutomaticExtractorFallsBackToTheNextModelInTheChain(t *testing.T) {
+	rateLimited := writeFakeModel(t, "rate-limited", "echo 'usage limit reached' >&2\nexit 1\n")
+	working := writeFakeModel(t, "working",
+		`printf '%s' '{"action":"create","title":"实现自动收集","summary":"从聊天创建 Todo","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"明确需求","confidence":0.9}'`)
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-07-31 [测试发送人] 想做自动收集"}
+	decision, err := (AutomaticExtractor{ModelCommand: rateLimited + "," + working, Timeout: 5 * time.Second}).
+		Extract(context.Background(), batch, nil)
+	if err != nil || decision.Action != "create" || decision.Priority != "P1" {
+		t.Fatalf("chain decision=%+v err=%v", decision, err)
+	}
+}
+
+func TestAutomaticExtractorDegradesToRulesOnlyAtTheEndOfTheChain(t *testing.T) {
+	rateLimited := writeFakeModel(t, "rate-limited", "echo 'usage limit reached' >&2\nexit 1\n")
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
+	if _, err := (AutomaticExtractor{ModelCommand: rateLimited, Timeout: 5 * time.Second}).
+		Extract(context.Background(), batch, nil); err == nil {
+		t.Fatal("a chain without rule must fail closed when the model fails")
+	}
+	decision, err := (AutomaticExtractor{ModelCommand: rateLimited + ",rule", Timeout: 5 * time.Second}).
+		Extract(context.Background(), batch, nil)
+	if err != nil || decision.Action != "create" {
+		t.Fatalf("rule fallback decision=%+v err=%v", decision, err)
+	}
+	if !strings.Contains(decision.Reason, "降级") || !strings.Contains(decision.Reason, "usage limit reached") {
+		t.Fatalf("degraded decision should say why: %q", decision.Reason)
 	}
 }
 

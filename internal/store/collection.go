@@ -16,6 +16,12 @@ import (
 const (
 	CollectionStrategyTasks   = "tasks"
 	CollectionStrategyObserve = "observe"
+
+	// CollectionDecisionUnitWindow groups a source's messages by conversation and
+	// a fifteen-minute gap before deciding; CollectionDecisionUnitMessage decides
+	// on each message, reading the rest of its window as context.
+	CollectionDecisionUnitWindow  = "window"
+	CollectionDecisionUnitMessage = "message"
 )
 
 var collectionSourceTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -35,7 +41,13 @@ type CollectionSource struct {
 	// means config.CollectionDigestCollection.
 	KnowledgeCollection string `json:"knowledge_collection,omitempty"`
 	Strategy            string `json:"strategy"`
-	IntervalMinutes     int    `json:"interval_minutes"`
+	// DecisionUnit is how much of a fetched window one decision covers:
+	// CollectionDecisionUnitWindow for chat, where consecutive messages are one
+	// piece of work, or CollectionDecisionUnitMessage for a notification feed,
+	// where each push is its own event. A batch produces exactly one decision,
+	// so this is what keeps a feed's events from swallowing each other.
+	DecisionUnit    string `json:"decision_unit"`
+	IntervalMinutes int    `json:"interval_minutes"`
 	Priority            string `json:"priority"`
 	Enabled             bool   `json:"enabled"`
 	CreatedAt           int64  `json:"created_at"`
@@ -148,6 +160,7 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 	source.Instruction = strings.TrimSpace(source.Instruction)
 	source.KnowledgeCollection = strings.ToLower(strings.TrimSpace(source.KnowledgeCollection))
 	source.Strategy = strings.ToLower(strings.TrimSpace(source.Strategy))
+	source.DecisionUnit = strings.ToLower(strings.TrimSpace(source.DecisionUnit))
 	if source.Connector == "" || source.ExternalID == "" {
 		return CollectionSource{}, fmt.Errorf("connector and external ID are required")
 	}
@@ -169,6 +182,12 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 	if source.Strategy != CollectionStrategyTasks && source.Strategy != CollectionStrategyObserve {
 		return CollectionSource{}, fmt.Errorf("invalid collection strategy: %s", source.Strategy)
 	}
+	if source.DecisionUnit == "" {
+		source.DecisionUnit = CollectionDecisionUnitWindow
+	}
+	if source.DecisionUnit != CollectionDecisionUnitWindow && source.DecisionUnit != CollectionDecisionUnitMessage {
+		return CollectionSource{}, fmt.Errorf("invalid collection decision unit: %s", source.DecisionUnit)
+	}
 	if source.IntervalMinutes == 0 {
 		if source.Strategy == CollectionStrategyObserve {
 			source.IntervalMinutes = 60
@@ -189,17 +208,17 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 	source.UpdatedAt = now
 	_, err := db.Exec(`INSERT INTO collection_sources
 		(id,connector,kind,external_id,name,project,exclude_pattern,instruction,knowledge_collection,
-		 strategy,interval_minutes,priority,enabled,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 strategy,decision_unit,interval_minutes,priority,enabled,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(connector,kind,external_id) DO UPDATE SET
 			name=excluded.name,project=excluded.project,exclude_pattern=excluded.exclude_pattern,
 			instruction=excluded.instruction,knowledge_collection=excluded.knowledge_collection,
-			strategy=excluded.strategy,
+			strategy=excluded.strategy,decision_unit=excluded.decision_unit,
 			interval_minutes=excluded.interval_minutes,priority=excluded.priority,
 			enabled=excluded.enabled,updated_at=excluded.updated_at`,
 		source.ID, source.Connector, source.Kind, source.ExternalID, source.Name,
 		source.Project, source.ExcludePattern, source.Instruction, source.KnowledgeCollection,
-		source.Strategy, source.IntervalMinutes, source.Priority,
+		source.Strategy, source.DecisionUnit, source.IntervalMinutes, source.Priority,
 		boolInt(source.Enabled), source.CreatedAt, source.UpdatedAt)
 	if err != nil {
 		return CollectionSource{}, err
@@ -596,7 +615,8 @@ const collectionItemSelect = `SELECT id,source_id,connector,conversation_id,fing
 	COALESCE(todo_id,''),status,error,created_at,updated_at FROM collection_items`
 
 const collectionSourceSelect = `SELECT id,connector,kind,external_id,name,project,exclude_pattern,
-	instruction,knowledge_collection,strategy,interval_minutes,priority,enabled,created_at,updated_at
+	instruction,knowledge_collection,strategy,decision_unit,interval_minutes,priority,enabled,
+	created_at,updated_at
 	FROM collection_sources`
 
 type collectionScanner interface {
@@ -608,8 +628,8 @@ func scanCollectionSource(scanner collectionScanner) (CollectionSource, error) {
 	var enabled int
 	err := scanner.Scan(&source.ID, &source.Connector, &source.Kind, &source.ExternalID,
 		&source.Name, &source.Project, &source.ExcludePattern, &source.Instruction,
-		&source.KnowledgeCollection, &source.Strategy, &source.IntervalMinutes, &source.Priority,
-		&enabled, &source.CreatedAt, &source.UpdatedAt)
+		&source.KnowledgeCollection, &source.Strategy, &source.DecisionUnit,
+		&source.IntervalMinutes, &source.Priority, &enabled, &source.CreatedAt, &source.UpdatedAt)
 	source.Enabled = enabled != 0
 	return source, err
 }

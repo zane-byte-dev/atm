@@ -877,6 +877,18 @@ func TestDiscoverGrokFindsChatHistory(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "session_search.sqlite"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
+	// ATM's own chat classifier runs Grok in a scratch directory, which Grok
+	// records as a session like any other. It is not work anyone did, so it
+	// must never reach the session index.
+	classifierDir := filepath.Join(root,
+		"%2Fprivate%2Fvar%2Ffolders%2Fkq%2FT%2F"+config.CollectionModelWorkdirPrefix+"2291227821",
+		"session-def")
+	if err := os.MkdirAll(classifierDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(classifierDir, "chat_history.jsonl"), []byte("{}\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	got := DiscoverGrok()
 	if len(got) != 1 || got[0] != chat {
 		t.Fatalf("DiscoverGrok = %#v", got)

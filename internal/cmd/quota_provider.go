@@ -204,7 +204,43 @@ func callQuotaProvider(parent context.Context, providerID string,
 	if err := normalizeQuotaProviderCards(providerID, response.Cards); err != nil {
 		return nil, err
 	}
-	return response.Cards, nil
+	return filterQuotaProviderMetrics(providerID, providerConfig.VisibleMetrics, response.Cards)
+}
+
+// filterQuotaProviderMetrics applies the user's display preference before the
+// cards reach either CLI output or the App. Metric IDs are provider-defined and
+// stable; cards with no selected metrics disappear instead of rendering empty.
+func filterQuotaProviderMetrics(providerID string, visible []string,
+	cards []quotaProviderCard) ([]quotaProviderCard, error) {
+	if len(visible) == 0 {
+		return cards, nil
+	}
+	wanted := make(map[string]bool, len(visible))
+	for _, raw := range visible {
+		metricID := strings.ToLower(strings.TrimSpace(raw))
+		if !quotaProviderToken.MatchString(metricID) {
+			return nil, fmt.Errorf("quota provider %s has invalid visible metric %q", providerID, raw)
+		}
+		wanted[metricID] = true
+	}
+	filtered := make([]quotaProviderCard, 0, len(cards))
+	for _, card := range cards {
+		metrics := make([]quotaProviderMetric, 0, len(card.Metrics))
+		for _, metric := range card.Metrics {
+			if wanted[metric.ID] {
+				metrics = append(metrics, metric)
+			}
+		}
+		if len(metrics) == 0 {
+			continue
+		}
+		card.Metrics = metrics
+		filtered = append(filtered, card)
+	}
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("quota provider %s visible_metrics matched no returned metrics", providerID)
+	}
+	return filtered, nil
 }
 
 func expandQuotaProviderPath(path string) string {

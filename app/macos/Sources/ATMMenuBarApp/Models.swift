@@ -47,6 +47,7 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     let instruction: String?
     let knowledgeCollection: String?
     let strategy: String?
+    let decisionUnit: String?
     let intervalMinutes: Int?
     let priority: String
     let enabled: Bool
@@ -56,6 +57,7 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, connector, kind, name, project, priority, enabled, strategy, instruction
         case externalID = "external_id"
+        case decisionUnit = "decision_unit"
         case excludePattern = "exclude_pattern"
         case knowledgeCollection = "knowledge_collection"
         case intervalMinutes = "interval_minutes"
@@ -70,8 +72,25 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
 
     var effectiveStrategy: String { strategy == "observe" ? "observe" : "tasks" }
 
+    /// Older databases and hand-written fixtures predate the column, and window
+    /// is what they behaved as.
+    var effectiveDecisionUnit: String { decisionUnit == "message" ? "message" : "window" }
+
     var effectiveIntervalMinutes: Int {
         intervalMinutes ?? (effectiveStrategy == "observe" ? 60 : 5)
+    }
+
+    var symbolName: String { collectionKindSymbol(kind) }
+}
+
+/// Glyph for a connector-defined source kind. Kinds belong to the connector, so
+/// this recognizes the few shapes that read differently at a glance — a robot
+/// feed is not a person you talk to — and leaves everything else as one contact.
+func collectionKindSymbol(_ kind: String?) -> String {
+    switch kind {
+    case "group", "channel": return "person.3.fill"
+    case "bot": return "cpu"
+    default: return "person.fill"
     }
 }
 
@@ -91,6 +110,8 @@ struct ATMCollectionCandidate: Decodable, Identifiable, Equatable {
     var id: String { "\(kind)/\(externalID)" }
 
     var isGroup: Bool { kind == "group" }
+
+    var symbolName: String { collectionKindSymbol(kind) }
 }
 
 struct ATMCollectionCandidateList: Decodable, Equatable {
@@ -4096,6 +4117,18 @@ enum ATMAgentDisplay {
             if agent == agent.lowercased() { return agent.capitalized }
             return agent.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+    }
+
+    /// The client label a session should carry: its own `client` when the tool
+    /// reported one ("Codex Desktop"), otherwise the pretty tool name ("Codex").
+    static func clientName(_ session: ATMLiveSession) -> String {
+        let client = session.client?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return client.isEmpty ? name(session.tool) : client
+    }
+
+    static func projectName(_ session: ATMLiveSession) -> String {
+        let project = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
+        return project.isEmpty ? "未知项目" : project
     }
 
     /// One- or two-character badge glyph. Prefer over a generic SF Symbol when
