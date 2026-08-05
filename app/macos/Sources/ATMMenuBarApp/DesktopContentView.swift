@@ -1205,6 +1205,7 @@ struct DesktopTodoDetail: View {
     @State private var isEditing = false
     @State private var selectedTab: DetailTab = .detail
     @State private var copiedPrompt = false
+    @State private var deleteCandidate: ATMTodo?
     @State private var title: String
     @State private var description: String
     @State private var priority: String
@@ -1250,6 +1251,24 @@ struct DesktopTodoDetail: View {
         .onChange(of: store.snapshot.refreshedAt) { _ in
             store.loadBoundSessions(for: todo.id)
         }
+        .confirmationDialog(
+            "删除 \(deleteCandidate?.id.uppercased() ?? "")？",
+            isPresented: Binding(
+                get: { deleteCandidate != nil },
+                set: { if !$0 { deleteCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let target = deleteCandidate {
+                Button("永久删除", role: .destructive) {
+                    store.perform(.delete, on: target)
+                    deleteCandidate = nil
+                }
+            }
+            Button("取消", role: .cancel) { deleteCandidate = nil }
+        } message: {
+            Text(deleteCandidate?.title ?? "").font(ATMFont.body)
+        }
     }
 
     private var detailTabs: some View {
@@ -1292,31 +1311,17 @@ struct DesktopTodoDetail: View {
                     Text(todo.created)
                     Spacer(minLength: 8)
                     HStack(spacing: 2) {
-                        // Status-scoped lifecycle first; utility (copy/edit) always.
-                        // Affirmative complete/accept is rendered last among lifecycle
-                        // so it stays on the right edge of the action cluster.
-                        let lifecycle = ATMTodoStatusActions.primaryItems(for: todo)
-                        let leading = lifecycle.filter { $0.action != .complete }
-                        let trailing = lifecycle.filter { $0.action == .complete }
-                        ForEach(leading) { item in
+                        // 固定常用外露，其余进「···」下拉；工具栏形状恒定，
+                        // 不再随 status 动态增减。顺序：开始 · 完成 · 编辑 · ···
+                        let inline = ATMTodoStatusActions.inlineItems(for: todo)
+                        let overflow = ATMTodoStatusActions.overflowItems(for: todo)
+                        ForEach(inline) { item in
                             actionButton(item.systemImage, help: item.help) {
                                 store.perform(item.action, on: todo)
-                            }
-                        }
-                        if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                            actionButton(
-                                copiedPrompt ? "checkmark" : "doc.on.doc",
-                                help: copiedPrompt ? "已复制启动提示" : "复制启动提示（粘贴到 Agent 会话）"
-                            ) {
-                                copyLaunchPrompt(for: todo)
                             }
                         }
                         actionButton("pencil", help: "编辑任务") { isEditing = true }
-                        ForEach(trailing) { item in
-                            actionButton(item.systemImage, help: item.help) {
-                                store.perform(item.action, on: todo)
-                            }
-                        }
+                        overflowMenu(overflow: overflow, todo: todo)
                     }
                 }
                 .font(ATMFont.body)
@@ -1509,6 +1514,50 @@ struct DesktopTodoDetail: View {
             iconTier: .body,
             action: action
         )
+    }
+
+    /// 「···」溢出菜单：复制启动提示、剩余 lifecycle（暂不处理/回到待办/放弃等）、
+    /// 删除。形状恒定，内容随状态拼装。与 `actionButton` 同样的 chip 外观。
+    @ViewBuilder
+    private func overflowMenu(
+        overflow: [ATMTodoLifecycleItem],
+        todo: ATMTodo
+    ) -> some View {
+        Menu {
+            if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
+                Button {
+                    copyLaunchPrompt(for: todo)
+                } label: {
+                    Label(
+                        copiedPrompt ? "已复制启动提示" : "复制启动提示",
+                        systemImage: copiedPrompt ? "checkmark" : "doc.on.doc"
+                    )
+                }
+            }
+            ForEach(overflow) { item in
+                Button {
+                    store.perform(item.action, on: todo)
+                } label: {
+                    Label(item.title, systemImage: item.systemImage)
+                }
+            }
+            Divider()
+            Button(role: .destructive) {
+                deleteCandidate = todo
+            } label: {
+                Label("删除…", systemImage: "trash")
+            }
+        } label: {
+            ATMIconMenuLabel(
+                systemImage: "ellipsis",
+                help: "更多操作",
+                chrome: .chip,
+                isEnabled: !store.isActing,
+                side: 26,
+                iconTier: .body
+            )
+        }
+        .menuStyle(.borderlessButton)
     }
 
     private func copyLaunchPrompt(for todo: ATMTodo) {

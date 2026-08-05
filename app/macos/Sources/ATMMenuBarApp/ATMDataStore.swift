@@ -574,6 +574,22 @@ enum ATMTodoStatusActions {
         items(for: todo).filter(\.isPrimary)
     }
 
+    /// Actions always visible as toolbar icon chips: start (or restart) and
+    /// complete/accept. These are the stable "常用" controls; everything else
+    /// drops into the `···` overflow menu. Derived from `items(for:)` so the
+    /// inline set still tracks each status gate (e.g. review offers only
+    /// 验收, done/dropped offers only 重新开始).
+    static func inlineItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
+        items(for: todo).filter { $0.action == .start || $0.action == .complete }
+    }
+
+    /// Remaining status-scoped actions that go inside the `···` overflow menu:
+    /// deferLater / returnToOpen / drop, plus the non-primary seats that used
+    /// to hide in the context menu only.
+    static func overflowItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
+        items(for: todo).filter { $0.action != .start && $0.action != .complete }
+    }
+
     /// Launch prompt is for handing work to an agent; review is the human gate.
     static func showsLaunchPrompt(for todo: ATMTodo) -> Bool {
         todo.status != "review"

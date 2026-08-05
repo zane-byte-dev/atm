@@ -34,6 +34,8 @@ make install    # 构建并安装到 /usr/local/bin
 
 独立菜单栏 App 常驻显示今日 Token；主窗口提供任务、收集、Agent、知识和用量工作区。收集工作区
 把钉钉等外部来源的消息自动分类为新 Todo、知识沉淀或忽略记录，并提供失败重试、纠错与撤销；与历史 Todo 有关时在新 Todo 中记录关联，不合并事项。
+处理记录跟随它写出去的 Todo：那个 Todo 被完成或废弃后（在哪儿关的都算），这条记录一并
+了结，折叠进「沉淀与已了结」，主列表只留还欠一个动作的跟进。
 沉淀的内容按来源每天汇总成一篇知识文档写进中央知识库。
 知识工作区
 按“知识库 / 文章 / 详情”组织中央知识，并把共享记忆作为特殊知识库统一浏览。支持跨库搜索、
@@ -108,6 +110,8 @@ atm restore <archive> [--yes]                    # 从归档恢复；被替换�
 
 # 外部需求收集（可扩展连接器）
 atm collect status --json                         # 健康状态、来源、运行和处理记录
+                                                  # 文本里的 Filed Todos 说明建过多少、还开着几个；
+                                                  # JSON 每条记录带 todo_status/todo_archived
 atm collect source search deploy --connector slack --kind channel --limit 10
 atm collect source add --connector slack --kind channel --id C123 --name deploys
 atm collect source add --connector github --kind issue --id owner/repo#42 --project atm

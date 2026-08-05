@@ -119,6 +119,14 @@ type CollectionItem struct {
 	Error          string  `json:"error,omitempty"`
 	CreatedAt      int64   `json:"created_at"`
 	UpdatedAt      int64   `json:"updated_at"`
+	// TodoStatus and TodoArchived are the linked Todo's current lifecycle state,
+	// read back on every query rather than stored. A Todo can be finished,
+	// dropped or archived from the CLI, the App or any agent, and none of those
+	// routes should have to remember to write into this ledger — nor could a
+	// stored copy explain the records that predate the feedback. Empty and false
+	// when the item never touched a Todo.
+	TodoStatus   string `json:"todo_status,omitempty"`
+	TodoArchived bool   `json:"todo_archived,omitempty"`
 }
 
 type CollectionSummary struct {
@@ -130,6 +138,13 @@ type CollectionSummary struct {
 	Insight  int `json:"insight_today"`
 	Ignored  int `json:"ignored_today"`
 	Failed   int `json:"failed_today"`
+	// Followups counts every record that wrote to a Todo, and FollowupsClosed how
+	// many of those Todos have since been finished or dropped. Unlike the counts
+	// above these are not scoped to today — the point is what collection is still
+	// on the hook for, which has no reason to have started this morning. Records
+	// are the unit, not Todos: two records may legitimately name the same Todo.
+	Followups       int `json:"followups"`
+	FollowupsClosed int `json:"followups_closed"`
 }
 
 type CollectionOverview struct {
@@ -372,12 +387,12 @@ func UpdateCollectionItem(db *sql.DB, item CollectionItem) error {
 }
 
 func GetCollectionItemByFingerprint(db *sql.DB, connector, fingerprint string) (CollectionItem, error) {
-	row := db.QueryRow(collectionItemSelect+` WHERE connector=? AND fingerprint=?`, connector, fingerprint)
+	row := db.QueryRow(collectionItemSelect+` WHERE i.connector=? AND i.fingerprint=?`, connector, fingerprint)
 	return scanCollectionItem(row)
 }
 
 func GetCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
-	return scanCollectionItem(db.QueryRow(collectionItemSelect+` WHERE id=?`, id))
+	return scanCollectionItem(db.QueryRow(collectionItemSelect+` WHERE i.id=?`, id))
 }
 
 // HandledCollectionMessageIDs returns the exact source messages that already
@@ -415,8 +430,8 @@ func ListCollectionItems(db *sql.DB, sourceID string, limit int) ([]CollectionIt
 	if limit < 1 || limit > 500 {
 		limit = 100
 	}
-	rows, err := db.Query(collectionItemSelect+` WHERE (?='' OR source_id=?)
-		ORDER BY updated_at DESC,id DESC LIMIT ?`, sourceID, sourceID, limit)
+	rows, err := db.Query(collectionItemSelect+` WHERE (?='' OR i.source_id=?)
+		ORDER BY i.updated_at DESC,i.id DESC LIMIT ?`, sourceID, sourceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -471,10 +486,10 @@ func CollectionDayBounds(when time.Time) (int64, int64) {
 // is unset fall back to when the decision was recorded, so a batch missing
 // message timestamps still lands in a day rather than in 1970.
 func ListCollectionInsights(db *sql.DB, sourceID string, dayStart, dayEnd int64) ([]CollectionItem, error) {
-	rows, err := db.Query(collectionItemSelect+` WHERE source_id=? AND action='insight'
-		AND (CASE WHEN occurred_at>0 THEN occurred_at ELSE created_at END) >= ?
-		AND (CASE WHEN occurred_at>0 THEN occurred_at ELSE created_at END) < ?
-		ORDER BY (CASE WHEN occurred_at>0 THEN occurred_at ELSE created_at END) ASC,id ASC`,
+	rows, err := db.Query(collectionItemSelect+` WHERE i.source_id=? AND i.action='insight'
+		AND (CASE WHEN i.occurred_at>0 THEN i.occurred_at ELSE i.created_at END) >= ?
+		AND (CASE WHEN i.occurred_at>0 THEN i.occurred_at ELSE i.created_at END) < ?
+		ORDER BY (CASE WHEN i.occurred_at>0 THEN i.occurred_at ELSE i.created_at END) ASC,i.id ASC`,
 		sourceID, dayStart, dayEnd)
 	if err != nil {
 		return nil, err
@@ -499,6 +514,15 @@ func CollectionInsightWatermark(item CollectionItem) int64 {
 		return item.OccurredAt
 	}
 	return item.CreatedAt
+}
+
+// CollectionItemTodoClosed reports whether the Todo this record filed has since
+// been finished or dropped. That settles the record too: the source's request
+// was answered, wherever the answering happened. Archiving is only ever allowed
+// after a close, so the status column is the whole answer — TodoArchived only
+// explains why the Todo is no longer in the working set.
+func CollectionItemTodoClosed(item CollectionItem) bool {
+	return item.TodoStatus == TodoStatusDone || item.TodoStatus == TodoStatusDropped
 }
 
 func GetCollectionDigest(db *sql.DB, sourceID, digestDate string) (CollectionDigest, error) {
@@ -606,13 +630,29 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 		COALESCE(SUM(failed_count),0) FROM collection_runs WHERE started_at>=?`, start).
 		Scan(&summary.Fetched, &summary.Created, &summary.Appended, &summary.Insight,
 			&summary.Ignored, &summary.Failed)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	// Counted over the whole ledger rather than the returned page: itemLimit is a
+	// display budget, and "how many filed Todos are still open" must not shrink
+	// because the caller asked for fewer rows.
+	err = db.QueryRow(`SELECT COUNT(*),
+		COALESCE(SUM(CASE WHEN t.status IN ('done','dropped') THEN 1 ELSE 0 END),0)
+		FROM collection_items i JOIN todos t ON t.id=i.todo_id
+		WHERE i.action IN ('create','append')`).
+		Scan(&summary.Followups, &summary.FollowupsClosed)
 	return CollectionOverview{Summary: summary, Sources: sources, Runs: runs,
 		Items: items, Digests: digests}, err
 }
 
-const collectionItemSelect = `SELECT id,source_id,connector,conversation_id,fingerprint,message_ids,
-	sender,occurred_at,raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,
-	COALESCE(todo_id,''),status,error,created_at,updated_at FROM collection_items`
+// collectionItemSelect reads a record together with the current state of the
+// Todo it wrote to. Every column is table-qualified because id, status,
+// created_at and updated_at exist on both sides of the join.
+const collectionItemSelect = `SELECT i.id,i.source_id,i.connector,i.conversation_id,i.fingerprint,
+	i.message_ids,i.sender,i.occurred_at,i.raw_context,i.action,i.proposed_action,i.title,i.summary,
+	i.item_type,i.project,i.priority,i.reason,i.confidence,COALESCE(i.todo_id,''),i.status,i.error,
+	i.created_at,i.updated_at,COALESCE(t.status,''),t.archived_at IS NOT NULL
+	FROM collection_items i LEFT JOIN todos t ON t.id=i.todo_id`
 
 const collectionSourceSelect = `SELECT id,connector,kind,external_id,name,project,exclude_pattern,
 	instruction,knowledge_collection,strategy,decision_unit,interval_minutes,priority,enabled,
@@ -637,11 +677,13 @@ func scanCollectionSource(scanner collectionScanner) (CollectionSource, error) {
 func scanCollectionItem(scanner collectionScanner) (CollectionItem, error) {
 	var item CollectionItem
 	var messageIDs string
+	var todoArchived int
 	err := scanner.Scan(&item.ID, &item.SourceID, &item.Connector, &item.ConversationID,
 		&item.Fingerprint, &messageIDs, &item.Sender, &item.OccurredAt, &item.RawContext,
 		&item.Action, &item.ProposedAction, &item.Title, &item.Summary, &item.ItemType, &item.Project,
 		&item.Priority, &item.Reason, &item.Confidence, &item.TodoID, &item.Status,
-		&item.Error, &item.CreatedAt, &item.UpdatedAt)
+		&item.Error, &item.CreatedAt, &item.UpdatedAt, &item.TodoStatus, &todoArchived)
+	item.TodoArchived = todoArchived != 0
 	if err == nil {
 		err = json.Unmarshal([]byte(messageIDs), &item.MessageIDs)
 	}

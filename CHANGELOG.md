@@ -49,6 +49,16 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Changed
 
+- **收集的处理记录跟随它建出来的 Todo。** 一条记录判成新建或补充之后，那个 Todo 被完成
+  或废弃时账本此前毫不知情——真实库里 20 条有 Todo 的记录中 12 条的任务早已结束，却仍
+  全部躺在 App「处理记录」主列表里，看不出哪些还欠一个动作。现在 Todo 的状态在每次查询
+  时从 Todo 本体读回，不另存一份：在 CLI、App 还是任何 Agent 关的都算，也对这个改动之前
+  的历史记录立即生效。已了结的记录折叠进「沉淀与已了结」并显示 `t196 已完成`（归档的另
+  注「已归档」，解释为什么任务列表里找不到它），主列表和来源计数只剩未了结的跟进；
+  `atm collect status` 多一行 `Filed Todos: 20 · 8 still open`，`--json` 每条记录带
+  `todo_status` 和 `todo_archived`。任务已了结时不再提供「撤销自动处理」——撤销的语义是
+  「这次采集判断错了，把它建的任务废掉」，对一个已经做完的任务改写历史没有意义；
+  `atm collect item revert` 的行为不变。
 - **A locally built binary reports the commit it came from.** `make install`
   previously stamped a hardcoded `0.6.0` into every build regardless of the
   source, and a build without linker flags claimed the same version. The version

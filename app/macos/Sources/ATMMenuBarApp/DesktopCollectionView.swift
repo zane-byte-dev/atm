@@ -361,7 +361,7 @@ struct DesktopCollectionView: View {
                             } label: {
                                 HStack(spacing: 7) {
                                     Image(systemName: showingIgnoredItems ? "chevron.down" : "chevron.right")
-                                    Text("沉淀与无需处理")
+                                    Text("沉淀与已了结")
                                     Spacer()
                                     Text(String(ignoredItems.count))
                                         .font(ATMFont.mono(.caption))
@@ -493,6 +493,11 @@ private struct CollectionItemRow: View {
                     Text(itemType.title)
                     Text("·")
                     Text(collectionActionTitle(item.action))
+                    if item.todoClosed, let todoID = item.todoID, let status = item.todoStatus {
+                        Text("·")
+                        Text("\(todoID) \(ATMTodoStatusStyle.label(forStatus: status))")
+                            .foregroundStyle(ATMTodoStatusStyle.color(forStatus: status))
+                    }
                     if let time = item.occurredAt {
                         Text("·")
                         Text(collectionRelativeTime(time))
@@ -558,8 +563,7 @@ private struct CollectionItemDetail: View {
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
                     }
-                    if item.action == "ignore" || item.action == "create"
-                        || item.action == "append" || item.action == "failed" {
+                    if hasItemActions {
                         Menu {
                             if item.action == "ignore" {
                                 Button("重新判断") { store.reprocessCollectionItem(item) }
@@ -567,7 +571,7 @@ private struct CollectionItemDetail: View {
                             if item.action == "failed" {
                                 Button("立即重试") { store.reprocessCollectionItem(item) }
                             }
-                            if item.action == "create" || item.action == "append" {
+                            if canAmendTodoWrite {
                                 Button("修正标题、项目和优先级") { showingCorrection = true }
                                 Button("撤销自动处理", role: .destructive) { confirmingRevert = true }
                             }
@@ -642,12 +646,31 @@ private struct CollectionItemDetail: View {
         }
     }
 
+    /// 修正和撤销都改写这条记录写出去的 Todo，一旦那个 Todo 已经完成或废弃就没有意义了：
+    /// 撤销的语义是「这次采集判断错了，把它建的任务废掉」，而不是把做完的事重新废一遍。
+    /// 已了结的记录仍可「打开 Todo」，从任务侧自行处理。
+    private var canAmendTodoWrite: Bool {
+        (item.action == "create" || item.action == "append") && !item.todoClosed
+    }
+
+    /// 菜单只有真的有动作时才画，否则会出现一个点开是空的省略号。
+    private var hasItemActions: Bool {
+        item.action == "ignore" || item.action == "failed" || canAmendTodoWrite
+    }
+
     private var collectionActionBadgeTitle: String {
         let actionTitle = collectionActionTitle(item.action)
-        if let todoID = item.todoID, !todoID.isEmpty {
-            return "\(actionTitle)到 \(todoID)"
+        guard let todoID = item.todoID, !todoID.isEmpty else { return actionTitle }
+        var title = "\(actionTitle)到 \(todoID)"
+        if let status = item.todoStatus, !status.isEmpty {
+            title += " · " + ATMTodoStatusStyle.label(forStatus: status)
         }
-        return actionTitle
+        // Archived Todos have left the working set, so 打开 Todo lands on a task the
+        // 任务 workspace no longer lists. Saying so beats looking broken.
+        if item.todoArchived == true {
+            title += " · 已归档"
+        }
+        return title
     }
 
     private var decisionSummary: some View {

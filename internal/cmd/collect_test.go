@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,6 +82,79 @@ func TestCollectSourceAndStatusCommandsExposeAuditContract(t *testing.T) {
 		len(status.Sources) != 1 || status.Items == nil || len(status.ConnectorHealth) != 1 ||
 		status.ConnectorHealth[0].Status != "not_checked" {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+// Status is where someone asks what collection still owes them, so the Todos it
+// filed have to be counted by whether they are still open — not by the fact that
+// a record was written once.
+func TestCollectStatusReportsWhetherFiledTodosAreStillOpen(t *testing.T) {
+	withTempAtmDir(t)
+	oldJSON, oldLimit := jsonOutput, collectLimit
+	t.Cleanup(func() { jsonOutput, collectLimit = oldJSON, oldLimit })
+	if err := seedTodos(
+		store.Todo{ID: "t1", Title: "修部署脚本", Priority: "P1", Status: store.TodoStatusDone, Created: store.Today()},
+		store.Todo{ID: "t2", Title: "补额度看板", Priority: "P2", Status: store.TodoStatusOpen, Created: store.Today()},
+	); err != nil {
+		t.Fatalf("seed todos: %v", err)
+	}
+
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-followups", Priority: "P2", Enabled: true,
+	})
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	for _, item := range []store.CollectionItem{
+		{SourceID: source.ID, Connector: "test", Fingerprint: "done-one", MessageIDs: []string{"m1"},
+			Action: "create", Title: "修部署脚本", TodoID: "t1", Status: "processed"},
+		{SourceID: source.ID, Connector: "test", Fingerprint: "open-one", MessageIDs: []string{"m2"},
+			Action: "create", Title: "补额度看板", TodoID: "t2", Status: "processed"},
+	} {
+		if _, _, err := store.PutCollectionItem(db, item); err != nil {
+			db.Close()
+			t.Fatalf("put item: %v", err)
+		}
+	}
+	db.Close()
+
+	jsonOutput, collectLimit = false, 20
+	text := captureStdout(t, func() {
+		if err := collectStatusCmd.RunE(collectStatusCmd, nil); err != nil {
+			t.Fatalf("collect status: %v", err)
+		}
+	})
+	if !strings.Contains(text, "Filed Todos: 2 · 1 still open") {
+		t.Fatalf("status did not report filed todos:\n%s", text)
+	}
+
+	jsonOutput = true
+	statusJSON := captureStdout(t, func() {
+		if err := collectStatusCmd.RunE(collectStatusCmd, nil); err != nil {
+			t.Fatalf("collect status --json: %v", err)
+		}
+	})
+	var status struct {
+		Summary store.CollectionSummary `json:"summary"`
+		Items   []store.CollectionItem  `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+		t.Fatalf("decode status: %v\n%s", err, statusJSON)
+	}
+	if status.Summary.Followups != 2 || status.Summary.FollowupsClosed != 1 {
+		t.Fatalf("unexpected follow-up counts: %+v", status.Summary)
+	}
+	byTodo := map[string]store.CollectionItem{}
+	for _, item := range status.Items {
+		byTodo[item.TodoID] = item
+	}
+	if byTodo["t1"].TodoStatus != store.TodoStatusDone || byTodo["t2"].TodoStatus != store.TodoStatusOpen {
+		t.Fatalf("items did not carry their todo status: %+v", status.Items)
 	}
 }
 

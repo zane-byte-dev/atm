@@ -83,6 +83,92 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 	}
 }
 
+// The ledger records what collection decided; whether that decision is still
+// outstanding belongs to the Todo it wrote to. Nothing writes the Todo's state
+// back into the ledger, so every read has to derive it — including for the
+// records that were already there before this existed.
+func TestCollectionItemsFollowTheirTodoThroughItsLifecycle(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "处理收集到的部署报错"))
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-lifecycle",
+		Name: "研发群", Priority: "P1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	filed, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-lifecycle", Fingerprint: "filed", MessageIDs: []string{"m1"},
+		Action: "create", Title: "处理收集到的部署报错", TodoID: "t1", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put filed item: %v", err)
+	}
+	unlinked, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-lifecycle", Fingerprint: "noise", MessageIDs: []string{"m2"},
+		Action: "ignore", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put unlinked item: %v", err)
+	}
+	if filed.TodoStatus != TodoStatusOpen || filed.TodoArchived || CollectionItemTodoClosed(filed) {
+		t.Fatalf("open todo did not reach its record: %+v", filed)
+	}
+	if unlinked.TodoStatus != "" || CollectionItemTodoClosed(unlinked) {
+		t.Fatalf("record without a todo invented one: %+v", unlinked)
+	}
+
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		todo := FindTodo(state.Todos, "t1")
+		if todo == nil {
+			return TodoNotFoundError(state.Todos, "t1")
+		}
+		todo.Status = TodoStatusDone
+		return nil
+	}); err != nil {
+		t.Fatalf("finish todo: %v", err)
+	}
+
+	// Every read path, because the App reads the overview and the collector reads
+	// single records — one of them silently missing the join would be worse than
+	// none of them having it.
+	reread, err := GetCollectionItem(db, filed.ID)
+	if err != nil || reread.TodoStatus != TodoStatusDone || !CollectionItemTodoClosed(reread) {
+		t.Fatalf("get after done = %+v, %v", reread, err)
+	}
+	listed, err := ListCollectionItems(db, source.ID, 20)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("list items = %+v, %v", listed, err)
+	}
+	for _, item := range listed {
+		if item.ID == filed.ID && item.TodoStatus != TodoStatusDone {
+			t.Fatalf("list after done = %+v", item)
+		}
+	}
+	overview, err := LoadCollectionOverview(db, 20)
+	if err != nil {
+		t.Fatalf("load overview: %v", err)
+	}
+	if overview.Summary.Followups != 1 || overview.Summary.FollowupsClosed != 1 {
+		t.Fatalf("unexpected follow-up counts: %+v", overview.Summary)
+	}
+
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		_, err := state.ArchiveTodos([]string{"t1"})
+		return err
+	}); err != nil {
+		t.Fatalf("archive todo: %v", err)
+	}
+	archived, err := GetCollectionItem(db, filed.ID)
+	if err != nil || archived.TodoStatus != TodoStatusDone || !archived.TodoArchived {
+		t.Fatalf("get after archive = %+v, %v", archived, err)
+	}
+}
+
 func TestCollectionSourceValidation(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()

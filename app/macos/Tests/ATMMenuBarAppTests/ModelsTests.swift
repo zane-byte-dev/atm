@@ -66,7 +66,17 @@ final class ModelsTests: XCTestCase {
                         "sender":"测试发送人","occurred_at":99,"raw_context":"想做自动收集",
                         "action":"create","title":"实现自动收集","item_type":"requirement",
                         "project":"atm","priority":"P1","reason":"明确需求","confidence":0.95,
-                        "todo_id":"t1","status":"processed","created_at":100,"updated_at":101}],
+                        "todo_id":"t1","todo_status":"open",
+                        "status":"processed","created_at":100,"updated_at":101},
+                       {"id":"ci2","source_id":"cs1","connector":"example",
+                        "conversation_id":"channel-1","fingerprint":"fp2","message_ids":["m2"],
+                        "action":"create","title":"修好部署脚本","item_type":"bug",
+                        "todo_id":"t2","todo_status":"done","todo_archived":true,
+                        "status":"processed","created_at":102,"updated_at":103},
+                       {"id":"ci3","source_id":"cs1","connector":"example",
+                        "conversation_id":"channel-1","fingerprint":"fp3","message_ids":["m3"],
+                        "action":"create","title":"没有回流状态的旧记录",
+                        "todo_id":"t3","status":"processed","created_at":104,"updated_at":105}],
               "digests":[]
             }
             """.utf8
@@ -87,6 +97,17 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.connectorHealth.first?.status, "ready")
         XCTAssertEqual(overview.items.first?.todoID, "t1")
         XCTAssertEqual(overview.items.first?.messageIDs, ["m1"])
+        // A record is only settled once the Todo it filed is: the open one stays in
+        // the main list, the finished one folds away with the insights and noise.
+        XCTAssertEqual(overview.items.first?.todoClosed, false)
+        XCTAssertEqual(overview.items.first?.shouldCollapseInCollection, false)
+        XCTAssertEqual(overview.items[1].todoClosed, true)
+        XCTAssertEqual(overview.items[1].shouldCollapseInCollection, true)
+        XCTAssertEqual(overview.items[1].todoArchived, true)
+        // Written before the CLI derived the Todo's state: absent, not closed.
+        XCTAssertNil(overview.items[2].todoStatus)
+        XCTAssertNil(overview.items[2].todoArchived)
+        XCTAssertEqual(overview.items[2].shouldCollapseInCollection, false)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "run"]), 300)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "item", "reprocess", "ci1"]), 180)
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)

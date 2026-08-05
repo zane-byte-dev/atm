@@ -185,6 +185,12 @@ var collectStatusCmd = &cobra.Command{
 			fmt.Printf("Synced chat: %d messages · %d conversations%s · %s\n",
 				value.Messages.Total, value.Messages.Conversations,
 				collectionArchiveSpan(value.Messages), collectionRetentionText(value.RetentionDays))
+			if value.Summary.Followups > 0 {
+				// A record that filed a Todo is only really finished when that Todo
+				// is: the whole point of collecting was to get it done.
+				fmt.Printf("Filed Todos: %d · %d still open\n", value.Summary.Followups,
+					value.Summary.Followups-value.Summary.FollowupsClosed)
+			}
 			if pending := collectionPendingProposals(value.Items); pending > 0 {
 				// Proposals wait on a person; without a count they are easy to forget.
 				fmt.Printf("Awaiting confirmation: %d · atm collect item promote <item-id>\n", pending)

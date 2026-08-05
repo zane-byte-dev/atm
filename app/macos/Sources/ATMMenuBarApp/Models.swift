@@ -404,6 +404,10 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     let error: String?
     let createdAt: Int64
     let updatedAt: Int64
+    /// The linked Todo's state as of this read. The CLI derives it from the Todo
+    /// itself on every query, so it stays true no matter who closed the Todo.
+    let todoStatus: String?
+    let todoArchived: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, connector, fingerprint, sender, action, title, summary, project,
@@ -417,6 +421,8 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
         case todoID = "todo_id"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+        case todoStatus = "todo_status"
+        case todoArchived = "todo_archived"
     }
 }
 
@@ -470,12 +476,21 @@ enum ATMCollectionItemType: String, CaseIterable, Identifiable {
 }
 
 extension ATMCollectionItem {
+    /// True once the Todo this record filed has been finished or dropped. The
+    /// request that came in from the source has been answered, so the record is
+    /// done too — whoever closed the Todo, and whenever.
+    var todoClosed: Bool {
+        todoStatus == "done" || todoStatus == "dropped"
+    }
+
     /// The main list is what you glance at, and that means work: things ATM filed
     /// or wants filed. An insight is deliberately not work — its readable form is
     /// the day's digest in the knowledge base — so it collapses alongside noise
-    /// rather than competing with Todos for attention.
+    /// rather than competing with Todos for attention. A record whose Todo is
+    /// already closed is no longer work either: keeping it up here turned the
+    /// workspace into a history feed, where twelve of twenty rows wanted nothing.
     var shouldCollapseInCollection: Bool {
-        action == "ignore" || action == "insight"
+        action == "ignore" || action == "insight" || todoClosed
     }
 }
 
