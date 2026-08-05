@@ -97,3 +97,29 @@ To report a service-level failure with exit status zero, return:
 Provider failures are warnings and do not hide healthy built-in or other
 provider cards. Credentials, network access, freshness policy, and any native
 browser bridge remain the provider's responsibility.
+
+## Missing readings
+
+Returning `"cards": []` means "nothing to report right now" — a daily quota
+before the day's first observation, a bridge that is not running. That is not an
+error and produces no warning, including when `visible_metrics` is set.
+
+ATM remembers the last cards each provider returned in
+`~/.atm/quota_provider_cards.json`. While a provider reports nothing or fails,
+those cards stay on screen as placeholders instead of disappearing: same agent,
+provider, title, period, and `observed_at`, with empty `metrics`, no `source`,
+and
+
+```json
+{"unavailable": true, "unavailable_reason": "empty"}
+```
+
+added by ATM — `"error"` when the provider could not be run. Providers cannot set
+either field; ATM strips both from a response. The CLI prints `no data (…)` where
+the numbers would be and labels the timestamp `Last observed`. The App renders
+暂无数据 / 读取失败 on the card and keeps it out of the menu bar and its tooltip,
+which report readings only.
+
+A provider's first successful run is what puts its card on screen: before that
+there is nothing to hold in place. Placeholders stop after seven days without a
+reading, and removing a provider from `config.json` drops its cards at once.

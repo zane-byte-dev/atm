@@ -2972,16 +2972,23 @@ private struct DesktopUsageContent: View, Equatable {
                 .foregroundStyle(ATMTheme.secondary)
                 .lineLimit(1)
 
-            ForEach(payload.metrics) { metric in
-                providerQuotaMetric(metric)
+            if payload.isUnavailable {
+                providerQuotaEmptyState(payload)
+            } else {
+                ForEach(payload.metrics) { metric in
+                    providerQuotaMetric(metric)
+                }
             }
 
             Spacer(minLength: 0)
 
             HStack(spacing: 6) {
                 if !payload.observedAt.isEmpty {
-                    Label(payload.observedTimeLabel, systemImage: "clock")
-                        .lineLimit(1)
+                    Label(
+                        payload.isUnavailable ? "上次 \(payload.observedTimeLabel)" : payload.observedTimeLabel,
+                        systemImage: "clock"
+                    )
+                    .lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 if let sourceLabel = card.sourceLabel {
@@ -3002,9 +3009,26 @@ private struct DesktopUsageContent: View, Equatable {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border))
         .help(
             "\(label) · \(card.providerLabel) · \(payload.title)："
-                + payload.metrics.map { "\($0.label) \(String(format: "%.1f", $0.usedPercent))%" }
-                    .joined(separator: "，")
+                + (payload.isUnavailable
+                    ? payload.unavailableText
+                    : payload.metrics.map { "\($0.label) \(String(format: "%.1f", $0.usedPercent))%" }
+                        .joined(separator: "，"))
         )
+    }
+
+    /// A provider with nothing to report keeps its card and loses its numbers.
+    /// Dropping the card instead read as "this quota no longer exists" — for a
+    /// daily quota that is only observed when its page is open, that happened
+    /// every morning. The reading is the only thing missing, so say so and let
+    /// the timestamp below show how old the last one is.
+    private func providerQuotaEmptyState(_ payload: ATMProviderQuotaPayload) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "clock.arrow.circlepath")
+            Text(payload.unavailableText)
+        }
+        .font(ATMFont.footnote)
+        .foregroundStyle(ATMTheme.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func providerQuotaMetric(_ metric: ATMProviderQuotaMetric) -> some View {

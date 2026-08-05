@@ -21,6 +21,8 @@ func TestQuotaProviderHelperProcess(t *testing.T) {
 		}
 	}
 	switch mode {
+	case "empty":
+		fmt.Fprint(os.Stdout, `{"version":1,"cards":[]}`)
 	case "invalid":
 		fmt.Fprint(os.Stdout, `{"version":1,"cards":[{"id":"daily","agent":"claude","title":"Plan","observed_at":"2026-08-04T03:28:37Z","metrics":[{"id":"count","label":"Count","used":1,"limit":0}]}]}`)
 	case "error":
@@ -67,6 +69,18 @@ func TestCallQuotaProviderFiltersVisibleMetrics(t *testing.T) {
 	}
 	if len(cards) != 1 || len(cards[0].Metrics) != 1 || cards[0].Metrics[0].ID != "amount" {
 		t.Fatalf("filtered cards = %#v", cards)
+	}
+}
+
+// A provider with nothing to report is not a misconfigured one: this printed a
+// visible_metrics warning on every run until the day's first observation landed.
+func TestCallQuotaProviderAcceptsAnEmptyResponseWithVisibleMetrics(t *testing.T) {
+	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
+	providerConfig := quotaProviderHelperConfig("empty")
+	providerConfig.VisibleMetrics = []string{"amount"}
+	cards, err := callQuotaProvider(context.Background(), "example", providerConfig)
+	if err != nil || len(cards) != 0 {
+		t.Fatalf("cards = %#v, err = %v", cards, err)
 	}
 }
 

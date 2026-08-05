@@ -512,6 +512,61 @@ final class ModelsTests: XCTestCase {
         XCTAssertTrue(quota.tooltipText?.contains("Claude Example 每日金额 22%") == true)
     }
 
+    /// ATM keeps the last card a provider returned and marks it unavailable once
+    /// the provider reports nothing, so a daily quota that has not been observed
+    /// today leaves a card with no reading instead of a hole in the grid.
+    func testQuotaKeepsAProviderCardThatHasNoReadingLeft() throws {
+        let data = Data(
+            """
+            {
+              "claude":{
+                "provider_cards":[{
+                  "id":"daily","provider":"example","title":"Team plan","period":"今日",
+                  "observed_at":"2026-08-04T03:28:37Z","metrics":[],
+                  "unavailable":true,"unavailable_reason":"empty"
+                }]
+              }
+            }
+            """.utf8
+        )
+        let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: data)
+        let card = try XCTUnwrap(quota.providerCards.first)
+        XCTAssertTrue(card.payload.isUnavailable)
+        XCTAssertEqual(card.payload.unavailableText, "暂无数据")
+        // The card holds its place without claiming a reading: the 额度 module
+        // renders, and nothing feeds the menu bar or its tooltip.
+        XCTAssertFalse(quota.isEmpty)
+        XCTAssertNil(quota.menuBarSuffix)
+        XCTAssertNil(quota.tooltipText)
+    }
+
+    func testProviderCardObservedLabelIsLocalAndDatesOlderObservations() throws {
+        func payload(observedAt: String) throws -> ATMProviderQuotaPayload {
+            let data = Data(
+                """
+                {"claude":{"provider_cards":[{"id":"daily","provider":"example",
+                "title":"Team plan","observed_at":"\(observedAt)","metrics":[]}]}}
+                """.utf8
+            )
+            let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: data)
+            return try XCTUnwrap(quota.providerCards.first).payload
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd HH:mm"
+        let stale = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-04T03:28:37Z"))
+        // The timestamp is UTC, so slicing "HH:mm" out of the string reported a
+        // card observed at 11:28 Beijing time as 03:28, undated.
+        XCTAssertEqual(
+            try payload(observedAt: "2026-08-04T03:28:37Z").observedTimeLabel,
+            formatter.string(from: stale)
+        )
+
+        let today = ISO8601DateFormatter().string(from: Date())
+        XCTAssertEqual(try payload(observedAt: today).observedTimeLabel.count, 5)
+    }
+
     func testQuotaTranslatesLegacyDailyQuotaIntoProviderCard() throws {
         let data = Data(
             """

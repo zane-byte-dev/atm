@@ -50,6 +50,10 @@ type quotaProviderCard struct {
 	ObservedAt string                `json:"observed_at"`
 	Source     string                `json:"source,omitempty"`
 	Metrics    []quotaProviderMetric `json:"metrics"`
+	// Set by ATM, never by a provider: this is the last card the provider
+	// returned, held in place with no reading behind it. See quota_provider_cache.go.
+	Unavailable       bool   `json:"unavailable,omitempty"`
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 type quotaProviderMetric struct {
@@ -120,16 +124,38 @@ func loadQuotaProviderCards(ctx context.Context) (map[string][]quotaProviderCard
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].provider < ordered[j].provider })
 
+	// A provider that reports nothing keeps its card: what went missing is the
+	// reading, not the quota. quota_provider_cache.go remembers the last cards
+	// each provider returned and turns them into placeholders.
+	now := time.Now()
+	cache := loadQuotaProviderCache()
+	cacheChanged := pruneQuotaProviderCache(&cache, names)
 	cardsByAgent := map[string][]quotaProviderCard{}
 	var errs []error
 	for _, result := range ordered {
-		if result.err != nil {
+		providerID := normalizeQuotaProviderID(result.provider)
+		cards := result.cards
+		reason := ""
+		switch {
+		case result.err != nil:
 			errs = append(errs, result.err)
-			continue
+			reason = quotaProviderReasonError
+		case len(cards) == 0:
+			reason = quotaProviderReasonEmpty
 		}
-		for _, card := range result.cards {
+		if reason == "" {
+			if rememberQuotaProviderCards(&cache, providerID, cards, now) {
+				cacheChanged = true
+			}
+		} else {
+			cards = quotaProviderPlaceholders(cache, providerID, reason, now)
+		}
+		for _, card := range cards {
 			cardsByAgent[card.Agent] = append(cardsByAgent[card.Agent], card)
 		}
+	}
+	if cacheChanged {
+		saveQuotaProviderCache(cache)
 	}
 	for agent := range cardsByAgent {
 		sort.Slice(cardsByAgent[agent], func(i, j int) bool {
@@ -212,7 +238,12 @@ func callQuotaProvider(parent context.Context, providerID string,
 // stable; cards with no selected metrics disappear instead of rendering empty.
 func filterQuotaProviderMetrics(providerID string, visible []string,
 	cards []quotaProviderCard) ([]quotaProviderCard, error) {
-	if len(visible) == 0 {
+	// A provider that returned no cards at all is saying "nothing to report right
+	// now", which is not a configuration problem. Reporting it as one printed a
+	// warning about visible_metrics every time a daily quota had not been
+	// observed yet. Only cards that survived with no selected metric mean the
+	// setting itself is wrong.
+	if len(visible) == 0 || len(cards) == 0 {
 		return cards, nil
 	}
 	wanted := make(map[string]bool, len(visible))
@@ -275,6 +306,10 @@ func normalizeQuotaProviderCards(providerID string, cards []quotaProviderCard) e
 		card.Title = strings.TrimSpace(card.Title)
 		card.Period = strings.TrimSpace(card.Period)
 		card.Source = strings.TrimSpace(card.Source)
+		// ATM owns these two: a provider reports data or reports nothing, and
+		// cannot hand out a card that claims to be its own placeholder.
+		card.Unavailable = false
+		card.UnavailableReason = ""
 		if card.Title == "" || len(card.Metrics) == 0 {
 			return fmt.Errorf("quota provider %s card %s requires title and metrics", providerID, card.ID)
 		}

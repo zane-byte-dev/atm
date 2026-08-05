@@ -3827,15 +3827,61 @@ struct ATMProviderQuotaPayload: Decodable, Equatable, Identifiable {
     let observedAt: String
     let source: String?
     let metrics: [ATMProviderQuotaMetric]
+    /// Set by ATM, never by the provider: the last card it returned, held in
+    /// place with no reading behind it because the provider reported nothing or
+    /// could not be reached. `unavailable_reason` is "empty" or "error".
+    let unavailable: Bool?
+    let unavailableReason: String?
 
     enum CodingKeys: String, CodingKey {
-        case id, provider, title, period, source, metrics
+        case id, provider, title, period, source, metrics, unavailable
         case observedAt = "observed_at"
+        case unavailableReason = "unavailable_reason"
     }
 
+    /// A card with no metrics counts too, so an ATM build that predates the flag
+    /// still renders the empty state instead of a card with a title and nothing else.
+    var isUnavailable: Bool { unavailable == true || metrics.isEmpty }
+
+    var unavailableText: String {
+        unavailableReason == "error" ? "读取失败" : "暂无数据"
+    }
+
+    /// Local wall clock — the raw timestamp is UTC, so slicing "HH:mm" out of it
+    /// put a card observed at 22:48 Beijing time at 14:48. The date joins it once
+    /// the observation is not from today: on a placeholder holding yesterday's
+    /// card, a bare time reads as fresh.
     var observedTimeLabel: String {
-        guard let separator = observedAt.firstIndex(of: "T") else { return observedAt }
-        return String(observedAt[observedAt.index(after: separator)...].prefix(5))
+        guard let date = ATMProviderQuotaPayload.parse(observedAt) else {
+            guard let separator = observedAt.firstIndex(of: "T") else { return observedAt }
+            return String(observedAt[observedAt.index(after: separator)...].prefix(5))
+        }
+        let sameDay = Calendar.current.isDateInToday(date)
+        return (sameDay ? ATMProviderQuotaPayload.timeFormatter : ATMProviderQuotaPayload.dateTimeFormatter)
+            .string(from: date)
+    }
+
+    private static let fractionalParser: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    private static let parser = ISO8601DateFormatter()
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+    private static let dateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter
+    }()
+
+    private static func parse(_ value: String) -> Date? {
+        fractionalParser.date(from: value) ?? parser.date(from: value)
     }
 }
 
@@ -3896,7 +3942,9 @@ private struct ATMLegacyDailyQuota: Decodable, Equatable {
                     id: "amount", label: "每日金额", used: amount.used, limit: amount.limit,
                     usedPercent: amount.usedPercent, unit: nil, currency: amount.currency, precision: 2
                 )
-            ]
+            ],
+            unavailable: nil,
+            unavailableReason: nil
         )
     }
 }
