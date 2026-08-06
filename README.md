@@ -314,7 +314,7 @@ App 无法在自己崩溃时写日志，因此用一个「上次是否正常退�
 继续各自演进，任一额度源读取失败也只影响自己的卡片。
 
 Todo 使用一套生命周期状态：`open/in_progress/waiting/review/blocked/done/dropped`。
-`lane` 表示工作、个人等领域，`maintenance` 是标签而不是状态。当前会话通过 session↔todo
+`maintenance` 是标签而不是状态。当前会话通过 session↔todo
 绑定表达焦点；待开始队列由 `open` todo 的优先级和创建时间推导，不再单独保存
 `focus/queued`。v4 的 `attention` 字段会在读取时自动迁移，并在下次保存时移除；`atm now`
 会在一个兼容版本内附带旧视图字段，支持 CLI 与 macOS App 分步升级。

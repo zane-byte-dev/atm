@@ -12,8 +12,6 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
-var nowLaneFlag string
-
 type nowSummary struct {
 	Open        int `json:"open"`
 	InProgress  int `json:"in_progress"`
@@ -36,7 +34,6 @@ type nowView struct {
 }
 
 func init() {
-	nowCmd.Flags().StringVar(&nowLaneFlag, "lane", "", "show one work lane (for example: work, personal)")
 	rootCmd.AddCommand(nowCmd)
 }
 
@@ -47,30 +44,21 @@ var nowCmd = &cobra.Command{
 }
 
 func runNow(cmd *cobra.Command, args []string) error {
-	lane := ""
-	if nowLaneFlag != "" {
-		var err error
-		lane, err = normalizeLane(nowLaneFlag)
-		if err != nil {
-			return err
-		}
-	}
-
 	tf, err := store.LoadTodosReadOnly()
 	if err != nil {
 		return err
 	}
-	view := buildNowView(tf, lane, time.Now().In(config.Loc))
+	view := buildNowView(tf, time.Now().In(config.Loc))
 
 	if jsonOutput {
 		output.JSON(view)
 		return nil
 	}
-	printNow(view, lane)
+	printNow(view)
 	return nil
 }
 
-func buildNowView(tf *store.TodoFile, lane string, now time.Time) nowView {
+func buildNowView(tf *store.TodoFile, now time.Time) nowView {
 	today := now.Format("2006-01-02")
 	view := nowView{
 		GeneratedAt: now.Format(time.RFC3339),
@@ -83,7 +71,7 @@ func buildNowView(tf *store.TodoFile, lane string, now time.Time) nowView {
 	}
 
 	for _, t := range tf.Items {
-		if !store.TodoIsActive(t) || (lane != "" && t.Lane != lane) {
+		if !store.TodoIsActive(t) {
 			continue
 		}
 		switch t.Status {
@@ -109,7 +97,7 @@ func buildNowView(tf *store.TodoFile, lane string, now time.Time) nowView {
 	}
 	maintenance := 0
 	for _, t := range tf.Items {
-		if store.TodoIsActive(t) && (lane == "" || t.Lane == lane) && store.TodoHasTag(t, store.TodoTagMaintenance) {
+		if store.TodoIsActive(t) && store.TodoHasTag(t, store.TodoTagMaintenance) {
 			maintenance++
 		}
 	}
@@ -146,12 +134,8 @@ func sortTodosForWork(items []store.Todo) {
 	})
 }
 
-func printNow(view nowView, lane string) {
-	title := "ATM Now"
-	if lane != "" {
-		title += " · " + lane
-	}
-	fmt.Printf("%s  (%s)\n", title, view.GeneratedAt)
+func printNow(view nowView) {
+	fmt.Printf("ATM Now  (%s)\n", view.GeneratedAt)
 	fmt.Println(strings.Repeat("=", 64))
 
 	fmt.Printf("\nWorking (%d)\n", len(view.Working))

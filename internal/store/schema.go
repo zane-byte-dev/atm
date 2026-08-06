@@ -31,14 +31,21 @@ import (
 // so "who filed this" becomes a field that can be filtered and counted, instead
 // of a guess read out of the free-text source. v34 adds
 // collection_items.attempts so a batch the classifier cannot process stops
-// being retried forever. Keep min at 21 while
+// being retried forever. v35 drops todos.lane: the work/personal lane was a
+// second, weaker classification living alongside the tag table — nothing
+// branched on it, the value was derived rather than chosen (the app took the
+// dominant lane of the project, the collector hardcoded "work"), and the only
+// reader was an optional --lane filter. v35 also drops todos.feature_path, which
+// no code has read or written for as long as it has existed — it survived only
+// because dropping it alone did not justify a schema bump, and this one is
+// already paid for. Keep min at 21 while
 // those upgrade steps exist; after the live database has been upgraded,
 // raise this to SchemaVersion and delete the steps. Note what a hard
 // reject costs: session tables rebuild from agent logs on the next `atm sync`,
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 34
+	SchemaVersion        = 35
 	minUpgradableVersion = 21
 )
 
@@ -192,7 +199,6 @@ func createSchema(tx *sql.Tx) error {
 			status            TEXT NOT NULL CHECK (status IN
 				('open','in_progress','waiting','review','blocked','done','dropped')),
 			project           TEXT NOT NULL DEFAULT '',
-			lane              TEXT NOT NULL DEFAULT '',
 			wake_condition    TEXT NOT NULL DEFAULT '',
 			review_at         TEXT NOT NULL DEFAULT ''
 				CHECK (review_at='' OR review_at GLOB '` + datePattern + `'),
@@ -209,11 +215,6 @@ func createSchema(tx *sql.Tx) error {
 			closed            TEXT
 				CHECK (closed IS NULL OR closed='' OR closed GLOB '` + datePattern + `'),
 			closed_reason     TEXT,
-			-- Vestigial: nothing reads or writes this. Dropping it would mean a
-			-- schema bump, and minUpgradableVersion == SchemaVersion, so every
-			-- existing index would be rejected and have to be rebuilt from
-			-- scratch. Not worth that for one unused column.
-			feature_path      TEXT,
 			on_done           TEXT NOT NULL DEFAULT '',
 			start_ts          INTEGER,
 			done_ts           INTEGER,

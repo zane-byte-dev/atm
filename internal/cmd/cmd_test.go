@@ -585,7 +585,7 @@ func TestPrintNowShowsWaitingWakeCondition(t *testing.T) {
 			WakeCondition: "waiting for todos: t79",
 		}},
 	}
-	out := captureStdout(t, func() { printNow(view, "") })
+	out := captureStdout(t, func() { printNow(view) })
 	if !strings.Contains(out, "Waiting (1)") || !strings.Contains(out, "wake=waiting for todos: t79") {
 		t.Fatalf("now waiting output = %q", out)
 	}
@@ -667,12 +667,10 @@ func TestRunTodoAddReadsDescriptionFromFileOrStdin(t *testing.T) {
 	oldJSON := jsonOutput
 	oldPriority, oldProject := todoAddPriorityFlag, todoAddProjectFlag
 	oldSource, oldDesc, oldDescFile := todoSourceFlag, todoDescFlag, todoDescFileFlag
-	oldLane := todoAddLaneFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		todoAddPriorityFlag, todoAddProjectFlag = oldPriority, oldProject
 		todoSourceFlag, todoDescFlag, todoDescFileFlag = oldSource, oldDesc, oldDescFile
-		todoAddLaneFlag = oldLane
 		todoAddCmd.SetIn(os.Stdin)
 		todoAddCmd.SetErr(os.Stderr)
 	})
@@ -682,7 +680,6 @@ func TestRunTodoAddReadsDescriptionFromFileOrStdin(t *testing.T) {
 	todoAddProjectFlag = "atm"
 	todoSourceFlag = "test-suite"
 	todoDescFlag = ""
-	todoAddLaneFlag = ""
 	todoAddCmd.SetErr(io.Discard)
 
 	todoDescFileFlag = "-"
@@ -1058,36 +1055,30 @@ func TestTodoShowNamesBoundSessionsWithoutStoredSummary(t *testing.T) {
 func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 	withTempAtmDir(t)
 	oldJSON := jsonOutput
-	oldFocusLane := todoFocusLaneFlag
-	oldWaitLane, oldWaitWake, oldWaitReview := todoWaitLaneFlag, todoWaitWakeFlag, todoWaitReviewAtFlag
-	oldMaintainLane, oldMaintainLimit := todoMaintainLaneFlag, todoMaintainLimitFlag
-	oldNowLane := nowLaneFlag
+	oldWaitWake, oldWaitReview := todoWaitWakeFlag, todoWaitReviewAtFlag
+	oldMaintainLimit := todoMaintainLimitFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
-		todoFocusLaneFlag = oldFocusLane
-		todoWaitLaneFlag, todoWaitWakeFlag, todoWaitReviewAtFlag = oldWaitLane, oldWaitWake, oldWaitReview
-		todoMaintainLaneFlag, todoMaintainLimitFlag = oldMaintainLane, oldMaintainLimit
-		nowLaneFlag = oldNowLane
+		todoWaitWakeFlag, todoWaitReviewAtFlag = oldWaitWake, oldWaitReview
+		todoMaintainLimitFlag = oldMaintainLimit
 	})
 
 	todos := []store.Todo{
-		{ID: "t1", Title: "New work", Priority: "P0", Status: store.TodoStatusOpen, Lane: "work", Created: store.Today()},
-		{ID: "t2", Title: "Waiting work", Priority: "P1", Status: store.TodoStatusInProgress, Lane: "work", Created: store.Today()},
-		{ID: "t3", Title: "Personal maintenance", Priority: "P2", Status: store.TodoStatusOpen, Lane: "personal", Created: store.Today()},
+		{ID: "t1", Title: "New work", Priority: "P0", Status: store.TodoStatusOpen, Created: store.Today()},
+		{ID: "t2", Title: "Waiting work", Priority: "P1", Status: store.TodoStatusInProgress, Created: store.Today()},
+		{ID: "t3", Title: "Personal maintenance", Priority: "P2", Status: store.TodoStatusOpen, Created: store.Today()},
 	}
 	if err := seedTodos(todos...); err != nil {
 		t.Fatalf("save todos: %v", err)
 	}
 
 	jsonOutput = true
-	todoFocusLaneFlag = "work"
 	var commandErr error
 	captureStdout(t, func() { commandErr = runTodoFocus(todoFocusCmd, []string{"t1"}) })
 	if commandErr != nil {
 		t.Fatalf("focus: %v", commandErr)
 	}
 
-	todoWaitLaneFlag = "work"
 	todoWaitWakeFlag = "new business input"
 	todoWaitReviewAtFlag = time.Now().In(config.Loc).AddDate(0, 0, 2).Format("2006-01-02")
 	captureStdout(t, func() { commandErr = runTodoWait(todoWaitCmd, []string{"t2"}) })
@@ -1095,7 +1086,6 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 		t.Fatalf("wait: %v", commandErr)
 	}
 
-	todoMaintainLaneFlag = "personal"
 	todoMaintainLimitFlag = 2
 	captureStdout(t, func() { commandErr = runTodoMaintain(todoMaintainCmd, []string{"t3"}) })
 	if commandErr != nil {

@@ -886,7 +886,7 @@ func createDecision(batch MessageBatch, decision Decision) (string, error) {
 		todos := transaction.Todos()
 		created = store.Todo{ID: store.NextTodoID(todos), Title: decision.Title,
 			Description: todoDescription(decision, relatedTodoID), Priority: decision.Priority,
-			Status: store.TodoStatusOpen, Project: decision.Project, Lane: "work",
+			Status: store.TodoStatusOpen, Project: decision.Project,
 			Created: store.Today(), Source: connectorSource(batch),
 			Creator: store.TodoCreatorCollect}
 		todos.Items = append(todos.Items, created)

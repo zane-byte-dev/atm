@@ -1068,7 +1068,7 @@ final class ModelsTests: XCTestCase {
               "working": [
                 {
                   "id": "t1", "title": "Personal focus", "priority": "P0",
-                  "status": "in_progress", "project": "atm", "lane": "personal",
+                  "status": "in_progress", "project": "atm",
                   "created": "2026-07-13"
                 }
               ],
@@ -1076,7 +1076,7 @@ final class ModelsTests: XCTestCase {
               "review": [],
               "blocked": [{
                 "id": "t2", "title": "Blocked", "priority": "P1", "status": "blocked",
-                "project": "demo", "lane": "work", "created": "2026-07-13"
+                "project": "demo", "created": "2026-07-13"
               }],
               "due": [], "waiting": [],
               "summary": {
@@ -2059,6 +2059,45 @@ final class ModelsTests: XCTestCase {
         )
         XCTAssertNil(legacy.creator)
         XCTAssertNil(ATMTodoCreator.label(legacy.creator, ownerName: "墨水"))
+
+        // The row form drops the nickname — it is the same on every row it shows
+        // up on — but keeps everything that distinguishes one creator from another.
+        XCTAssertEqual(ATMTodoCreator.shortLabel(filedByMe.creator), "我")
+        XCTAssertEqual(ATMTodoCreator.shortLabel(collected.creator), "收集")
+        XCTAssertEqual(ATMTodoCreator.shortLabel(byAgent.creator), "codex")
+        XCTAssertNil(ATMTodoCreator.shortLabel(legacy.creator))
+
+        // Icons come from the sidebar's vocabulary: a 收集-filed todo wears the
+        // 收集 section's tray, an agent-filed one the Agent section's cpu.
+        XCTAssertEqual(ATMTodoCreator.icon(filedByMe.creator), "person.fill")
+        XCTAssertEqual(ATMTodoCreator.icon(collected.creator), ATMDesktopSection.collection.icon)
+        XCTAssertEqual(ATMTodoCreator.icon(byAgent.creator), ATMDesktopSection.agents.icon)
+        // No creator, no icon — a placeholder glyph would claim provenance the
+        // record does not have.
+        XCTAssertNil(ATMTodoCreator.icon(legacy.creator))
+        XCTAssertNil(ATMTodoCreator.icon("   "))
+    }
+
+    /// The list row spends no width on the priority — it tints the id instead — so
+    /// the color is the only thing carrying it there. P0 and P1 have to stay
+    /// distinct from each other and from the unset/low case.
+    func testTodoPriorityStyleKeepsUrgencyDistinctByColor() throws {
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P0"), ATMTheme.danger)
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P1"), ATMTheme.accent)
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P2"), ATMTheme.secondary)
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P3"), ATMTheme.secondary)
+        XCTAssertNotEqual(ATMTodoPriorityStyle.color(for: "P0"), ATMTodoPriorityStyle.color(for: "P1"))
+        XCTAssertNotEqual(ATMTodoPriorityStyle.color(for: "P0"), ATMTodoPriorityStyle.color(for: "P2"))
+        // An unknown priority must not borrow P0's red and claim to be urgent.
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: ""), ATMTheme.secondary)
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P9"), ATMTheme.secondary)
+
+        // Words for the tooltip and the pickers, since the color says nothing on
+        // its own to hover or to a screen reader.
+        XCTAssertEqual(ATMTodoPriorityStyle.label("P0"), "P0 · 紧急")
+        XCTAssertEqual(ATMTodoPriorityStyle.label("P1"), "P1 · 高")
+        XCTAssertEqual(ATMTodoPriorityStyle.label("P2"), "P2 · 普通")
+        XCTAssertEqual(ATMTodoPriorityStyle.label("P3"), "P3 · 低")
     }
 
     func testTodoCommandArgumentsPreserveBusinessCLI() throws {
@@ -2066,7 +2105,7 @@ final class ModelsTests: XCTestCase {
             """
             {
               "id":"t8","title":"Ship menu app","priority":"P1","status":"open",
-              "project":"atm","lane":"personal","created":"2026-07-13"
+              "project":"atm","created":"2026-07-13"
             }
             """.utf8
         )
@@ -2198,15 +2237,15 @@ final class ModelsTests: XCTestCase {
 
         XCTAssertEqual(
             ATMCommandBuilder.addTodo(
-                ATMTodoDraft(text: "New task", project: "atm", priority: "P0", lane: "work")
+                ATMTodoDraft(text: "New task", project: "atm", priority: "P0")
             ),
-            ["todo", "add", "New task", "--priority", "P0", "--project", "atm", "--lane", "work", "--json"]
+            ["todo", "add", "New task", "--priority", "P0", "--project", "atm", "--json"]
         )
         // Everything after the first line is the description, so one composer can
         // file a task and its details in a single call.
         XCTAssertEqual(
             ATMCommandBuilder.addTodo(
-                ATMTodoDraft(text: "New task\n\nWhy it matters", project: "", priority: "P1", lane: "")
+                ATMTodoDraft(text: "New task\n\nWhy it matters", project: "", priority: "P1")
             ),
             ["todo", "add", "New task", "--priority", "P1", "--desc", "Why it matters", "--json"]
         )
@@ -2229,7 +2268,6 @@ final class ModelsTests: XCTestCase {
             description: "More context",
             priority: "P2",
             project: "atm",
-            lane: "personal",
             status: "review",
             wakeCondition: "",
             reviewAt: "2026-07-20",
@@ -2243,7 +2281,6 @@ final class ModelsTests: XCTestCase {
                 "--desc", "More context",
                 "--priority", "P2",
                 "--project", "atm",
-                "--lane", "personal",
                 "--status", "review",
                 "--wake", "",
                 "--review-at", "2026-07-20",
@@ -2265,11 +2302,11 @@ final class ModelsTests: XCTestCase {
             """
             {
               "id":"t9","title":"Inspect details","description":"Full task context",
-              "priority":"P0","status":"waiting","project":"atm","lane":"personal",
+              "priority":"P0","status":"waiting","project":"atm",
               "tags":["maintenance"],"wake_condition":"Review completed","review_at":"2026-07-15",
               "maintenance_limit":3,"created":"2026-07-14","source":"Codex",
               "links":[{"url":"https://example.com/review","kind":"review","title":"Review"}],
-              "featurePath":"docs/task.md","on_done":"notify","start_ts":1783992000
+              "on_done":"notify","start_ts":1783992000
             }
             """.utf8
         )
@@ -2280,7 +2317,6 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(todo.reviewAt, "2026-07-15")
         XCTAssertEqual(todo.maintenanceLimit, 3)
         XCTAssertEqual(todo.links?.first?.title, "Review")
-        XCTAssertEqual(todo.featurePath, "docs/task.md")
         XCTAssertEqual(todo.onDone, "notify")
     }
 
@@ -2461,7 +2497,7 @@ final class ModelsTests: XCTestCase {
             """
             {
               "id":"t10","title":"完成原生通知","priority":"P1","status":"in_progress",
-              "project":"atm","lane":"personal","created":"2026-07-14",
+              "project":"atm","created":"2026-07-14",
               "start_ts":1783992000
             }
             """.utf8
@@ -2540,9 +2576,9 @@ final class ModelsTests: XCTestCase {
         let data = Data(
             """
             [
-              {"id":"t1","title":"Work ATM","description":"desktop window","priority":"P1","status":"in_progress","project":"atm","lane":"personal","created":"2026-07-14"},
-              {"id":"t2","title":"Review API","priority":"P0","status":"review","project":"maigc","lane":"work","created":"2026-07-14"},
-              {"id":"t3","title":"Wait input","priority":"P2","status":"waiting","project":"wanda","lane":"work","created":"2026-07-14"}
+              {"id":"t1","title":"Work ATM","description":"desktop window","priority":"P1","status":"in_progress","project":"atm","created":"2026-07-14"},
+              {"id":"t2","title":"Review API","priority":"P0","status":"review","project":"maigc","created":"2026-07-14"},
+              {"id":"t3","title":"Wait input","priority":"P2","status":"waiting","project":"wanda","created":"2026-07-14"}
             ]
             """.utf8
         )
@@ -3356,7 +3392,6 @@ final class ModelsTests: XCTestCase {
     private func makeTodo(
         id: String,
         project: String?,
-        lane: String?,
         created: String,
         priority: String = "P1",
         status: String = "open"
@@ -3369,7 +3404,6 @@ final class ModelsTests: XCTestCase {
             "\"created\":\"\(created)\"",
         ]
         if let project { fields.append("\"project\":\"\(project)\"") }
-        if let lane { fields.append("\"lane\":\"\(lane)\"") }
         return try JSONDecoder().decode(ATMTodo.self, from: Data("{\(fields.joined(separator: ","))}".utf8))
     }
 
@@ -3377,35 +3411,33 @@ final class ModelsTests: XCTestCase {
         let draft = ATMTodoDraft(
             text: "\n  收敛用量面板  \n\n按 client / project 拆视角\n还要带费用\n",
             project: " atm ",
-            priority: "P1",
-            lane: "work"
+            priority: "P1"
         )
 
         XCTAssertEqual(draft.title, "收敛用量面板")
         XCTAssertEqual(draft.description, "按 client / project 拆视角\n还要带费用")
         XCTAssertEqual(draft.project, "atm")
         XCTAssertTrue(draft.isSubmittable)
-        XCTAssertFalse(ATMTodoDraft(text: "   \n  ", project: "", priority: "P1", lane: "").isSubmittable)
+        XCTAssertFalse(ATMTodoDraft(text: "   \n  ", project: "", priority: "P1").isSubmittable)
     }
 
     func testTodoSuggestionPrefersProjectNamedInTheText() throws {
         let todos = [
-            try makeTodo(id: "t1", project: "atm", lane: "work", created: "2026-07-20"),
-            try makeTodo(id: "t2", project: "wanda", lane: "personal", created: "2026-07-27"),
+            try makeTodo(id: "t1", project: "atm", created: "2026-07-20"),
+            try makeTodo(id: "t2", project: "wanda", created: "2026-07-27"),
         ]
 
         let suggestion = ATMTodoSuggestion.infer(text: "atm 的用量面板要拆视角", todos: todos)
 
         XCTAssertEqual(suggestion.project, "atm")
         XCTAssertEqual(suggestion.projectReason, "文本提到 atm")
-        XCTAssertEqual(suggestion.lane, "work")
         XCTAssertEqual(suggestion.priority, "P1")
     }
 
     func testTodoSuggestionFallsBackToTheLiveSessionThenRecentProject() throws {
         let todos = [
-            try makeTodo(id: "t1", project: "atm", lane: "work", created: "2026-07-20"),
-            try makeTodo(id: "t2", project: "wanda", lane: "personal", created: "2026-07-27"),
+            try makeTodo(id: "t1", project: "atm", created: "2026-07-20"),
+            try makeTodo(id: "t2", project: "wanda", created: "2026-07-27"),
         ]
         let live = ATMLiveSession(
             tool: "claude",
@@ -3424,7 +3456,6 @@ final class ModelsTests: XCTestCase {
         // With no session at all, the most recently used project wins.
         let fromHistory = ATMTodoSuggestion.infer(text: "修一下详情页", todos: todos)
         XCTAssertEqual(fromHistory.project, "wanda")
-        XCTAssertEqual(fromHistory.lane, "personal")
         XCTAssertEqual(ATMTodoSuggestion.infer(text: "", todos: []), .empty)
     }
 
@@ -3573,7 +3604,6 @@ final class ModelsTests: XCTestCase {
         let todo = try makeTodo(
             id: "t161",
             project: "atm",
-            lane: "personal",
             created: "2026-07-31"
         )
         let store = ATMDataStore()
@@ -3621,7 +3651,6 @@ final class ModelsTests: XCTestCase {
         let todo = try makeTodo(
             id: "t162",
             project: "atm",
-            lane: "personal",
             created: "2026-07-31",
             status: "review"
         )

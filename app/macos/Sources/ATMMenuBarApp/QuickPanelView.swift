@@ -249,7 +249,7 @@ struct QuickPanelView: View {
                 empty("当前没有工作中的任务")
             } else {
                 ForEach(store.snapshot.work.working) { todo in
-                    quickTodoRow(todo, caption: todo.lane == "work" ? "工作" : "个人")
+                    quickTodoRow(todo, caption: "工作中")
                 }
             }
         }
@@ -265,7 +265,7 @@ struct QuickPanelView: View {
 
     /// Capturing a task is the one write the panel offers, so it sits next to the
     /// only other action rather than inside the glance content. The card itself is
-    /// the desktop window's — 300pt has no room for the project/priority/lane
+    /// the desktop window's — 300pt has no room for the project/priority
     /// chips, and two composers would drift apart.
     private var actionBar: some View {
         HStack(spacing: 4) {
@@ -323,21 +323,17 @@ struct QuickPanelView: View {
                     .foregroundStyle(ATMTheme.secondary)
             }
         }
-        .contextMenu {
-            Button {
+        .atmRightClickMenu {
+            ATMMenuItem("用 VS Code 打开项目", systemImage: "chevron.left.forwardslash.chevron.right") {
                 store.openTodoProjectInVSCode(todo)
-            } label: {
-                Label("用 VS Code 打开项目", systemImage: "chevron.left.forwardslash.chevron.right")
             }
             if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                Button {
+                ATMMenuItem("复制启动提示", systemImage: "doc.on.doc") {
                     Task {
                         guard let prompt = await store.launchPrompt(for: todo) else { return }
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.setString(prompt, forType: .string)
                     }
-                } label: {
-                    Label("复制启动提示", systemImage: "doc.on.doc")
                 }
             }
         }
@@ -351,7 +347,9 @@ struct QuickPanelView: View {
         case "waiting": status = "到期"
         default: status = "需处理"
         }
-        return "\(status) · \(todo.project ?? "未分项目")"
+        // Status only: quickTodoRow appends the project itself, so returning it
+        // here printed it twice ("待验收 · atm · atm").
+        return status
     }
 
     private func quickCard<Content: View>(

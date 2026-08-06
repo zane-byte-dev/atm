@@ -26,14 +26,12 @@ var (
 	todoListPriorityFlag   string
 	todoStatusFlag         string
 	todoProjectFlag        string
-	todoListLaneFlag       string
 	todoListQueryFlag      string
 	todoListCreatorFlag    string
 	todoListLimitFlag      int
 	todoListOffsetFlag     int
 	todoAddPriorityFlag    string
 	todoAddProjectFlag     string
-	todoAddLaneFlag        string
 	todoAddStatusFlag      string
 	todoAddWakeFlag        string
 	todoAddReviewAtFlag    string
@@ -50,7 +48,6 @@ var (
 	todoEditPriorityFlag   string
 	todoEditProjectFlag    string
 	todoEditSourceFlag     string
-	todoEditLaneFlag       string
 	todoEditStatusFlag     string
 	todoEditWakeFlag       string
 	todoEditReviewAtFlag   string
@@ -62,11 +59,8 @@ var (
 	todoOnDoneFlag         string
 	todoCaptureProjectFlag string
 	todoPromptCopyFlag     bool
-	todoFocusLaneFlag      string
-	todoWaitLaneFlag       string
 	todoWaitWakeFlag       string
 	todoWaitReviewAtFlag   string
-	todoMaintainLaneFlag   string
 	todoMaintainLimitFlag  int
 	todoContextCWD         string
 	todoSubmitReasonFlag   string
@@ -76,7 +70,6 @@ func init() {
 	todoListCmd.Flags().StringVar(&todoListPriorityFlag, "priority", "", "filter by priority: P0, P1, P2")
 	todoListCmd.Flags().StringVar(&todoStatusFlag, "status", "", "filter by status: open, in_progress, waiting, review, blocked, done, dropped, archived, all (default: active)")
 	todoListCmd.Flags().StringVar(&todoProjectFlag, "project", "", "filter by project name")
-	todoListCmd.Flags().StringVar(&todoListLaneFlag, "lane", "", "filter by work lane (for example: work, personal)")
 	todoListCmd.Flags().StringVar(&todoListQueryFlag, "query", "", "filter by id, title, description, project, source, or todo document")
 	todoListCmd.Flags().StringVar(&todoListCreatorFlag, "creator", "", "filter by creator: "+strings.Join(store.TodoCreatorVocabulary, ", "))
 	todoListCmd.Flags().IntVar(&todoListLimitFlag, "limit", 0, "maximum number of todos (0 means all)")
@@ -84,7 +77,6 @@ func init() {
 
 	todoAddCmd.Flags().StringVar(&todoAddPriorityFlag, "priority", "P1", "priority: P0, P1, P2")
 	todoAddCmd.Flags().StringVar(&todoAddProjectFlag, "project", "", "project name")
-	todoAddCmd.Flags().StringVar(&todoAddLaneFlag, "lane", "", "work lane (for example: work, personal)")
 	todoAddCmd.Flags().StringVar(&todoAddStatusFlag, "status", store.TodoStatusOpen, "initial status: open, in_progress, waiting, review, blocked")
 	todoAddCmd.Flags().StringVar(&todoAddWakeFlag, "wake", "", "condition that should wake a waiting todo")
 	todoAddCmd.Flags().StringVar(&todoAddReviewAtFlag, "review-at", "", "next review date (YYYY-MM-DD)")
@@ -107,7 +99,6 @@ func init() {
 	todoEditCmd.Flags().StringVar(&todoEditPriorityFlag, "priority", "", "new priority: P0, P1, P2")
 	todoEditCmd.Flags().StringVar(&todoEditProjectFlag, "project", "", "new project name")
 	todoEditCmd.Flags().StringVar(&todoEditSourceFlag, "source", "", "new source")
-	todoEditCmd.Flags().StringVar(&todoEditLaneFlag, "lane", "", "new work lane")
 	todoEditCmd.Flags().StringVar(&todoEditStatusFlag, "status", "", "new status: open, in_progress, waiting, review, blocked")
 	todoEditCmd.Flags().StringVar(&todoEditWakeFlag, "wake", "", "new wake condition (empty clears it)")
 	todoEditCmd.Flags().StringVar(&todoEditReviewAtFlag, "review-at", "", "new review date YYYY-MM-DD (empty clears it)")
@@ -128,11 +119,8 @@ func init() {
 
 	todoPromptCmd.Flags().BoolVar(&todoPromptCopyFlag, "copy", false, "copy the prompt to the clipboard")
 
-	todoFocusCmd.Flags().StringVar(&todoFocusLaneFlag, "lane", "", "work lane")
-	todoWaitCmd.Flags().StringVar(&todoWaitLaneFlag, "lane", "", "work lane")
 	todoWaitCmd.Flags().StringVar(&todoWaitWakeFlag, "wake", "", "condition that should wake the todo")
 	todoWaitCmd.Flags().StringVar(&todoWaitReviewAtFlag, "review-at", "", "next review date (YYYY-MM-DD)")
-	todoMaintainCmd.Flags().StringVar(&todoMaintainLaneFlag, "lane", "", "work lane")
 	todoMaintainCmd.Flags().IntVar(&todoMaintainLimitFlag, "limit", 3, "maximum items in this maintenance batch")
 	for _, contextCmd := range []*cobra.Command{todoContextCmd, todoReviewContextCmd} {
 		contextCmd.Flags().StringVar(&todoContextCWD, "cwd", "", "Git worktree to inspect (required when active todo bindings use multiple worktrees)")
@@ -337,14 +325,6 @@ var todoUnarchiveCmd = &cobra.Command{
 	RunE:  runTodoUnarchive,
 }
 
-func normalizeLane(value string) (string, error) {
-	lane := strings.ToLower(strings.TrimSpace(value))
-	if strings.ContainsAny(lane, " \t\r\n") {
-		return "", fmt.Errorf("lane must not contain whitespace: %q", value)
-	}
-	return lane, nil
-}
-
 func validateWorkStatus(value string) error {
 	switch value {
 	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusWaiting,
@@ -362,18 +342,6 @@ func validateReviewAt(value string) error {
 	if _, err := time.ParseInLocation("2006-01-02", value, config.Loc); err != nil {
 		return fmt.Errorf("invalid review date %q (use YYYY-MM-DD)", value)
 	}
-	return nil
-}
-
-func applyLane(t *store.Todo, laneFlag string, changed bool) error {
-	if !changed {
-		return nil
-	}
-	lane, err := normalizeLane(laneFlag)
-	if err != nil {
-		return err
-	}
-	t.Lane = lane
 	return nil
 }
 
@@ -490,13 +458,6 @@ func todoMatchesQuery(todo store.Todo, rawQuery string) bool {
 }
 
 func runTodoList(cmd *cobra.Command, args []string) error {
-	if todoListLaneFlag != "" {
-		lane, err := normalizeLane(todoListLaneFlag)
-		if err != nil {
-			return err
-		}
-		todoListLaneFlag = lane
-	}
 	tf, err := store.LoadTodosReadOnly()
 	if err != nil {
 		return err
@@ -537,9 +498,6 @@ func runTodoList(cmd *cobra.Command, args []string) error {
 		if todoProjectFlag != "" && t.Project != todoProjectFlag {
 			continue
 		}
-		if todoListLaneFlag != "" && t.Lane != todoListLaneFlag {
-			continue
-		}
 		if creator != "" && t.Creator != creator {
 			continue
 		}
@@ -566,17 +524,17 @@ func runTodoList(cmd *cobra.Command, args []string) error {
 	// The creator column shows the stored token, not the display name: it is the
 	// vocabulary `--creator` takes, and it keeps the column ASCII-width so the
 	// table stays aligned.
-	fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-10s %-16s %s\n", "ID", "Pri", "Status", "Lane", "Created", "Creator", "Project", "Title")
-	fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-10s %-16s %s\n",
+	fmt.Printf("  %-6s %-4s %-12s %-12s %-10s %-16s %s\n", "ID", "Pri", "Status", "Created", "Creator", "Project", "Title")
+	fmt.Printf("  %-6s %-4s %-12s %-12s %-10s %-16s %s\n",
 		strings.Repeat("-", 6), strings.Repeat("-", 4), strings.Repeat("-", 12),
-		strings.Repeat("-", 12), strings.Repeat("-", 12), strings.Repeat("-", 10),
+		strings.Repeat("-", 12), strings.Repeat("-", 10),
 		strings.Repeat("-", 16), strings.Repeat("-", 30))
 	for _, t := range filtered {
 		id := t.ID
 		if store.TodoDocExists(t.ID) {
 			id += "*"
 		}
-		fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-10s %-16s %s\n", id, t.Priority, t.Status, t.Lane, t.Created,
+		fmt.Printf("  %-6s %-4s %-12s %-12s %-10s %-16s %s\n", id, t.Priority, t.Status, t.Created,
 			emptyAs(t.Creator, "-"), t.Project, t.Title)
 	}
 	return nil
@@ -632,9 +590,6 @@ func listArchived(creator string) error {
 		if todoProjectFlag != "" && t.Project != todoProjectFlag {
 			continue
 		}
-		if todoListLaneFlag != "" && t.Lane != todoListLaneFlag {
-			continue
-		}
 		if creator != "" && t.Creator != creator {
 			continue
 		}
@@ -675,7 +630,6 @@ type batchInput struct {
 	Source   string      `yaml:"source" json:"source"`
 	Creator  string      `yaml:"creator" json:"creator"`
 	Priority string      `yaml:"priority" json:"priority"`
-	Lane     string      `yaml:"lane" json:"lane"`
 	Status   string      `yaml:"status" json:"status"`
 	Items    []batchItem `yaml:"items" json:"items"`
 }
@@ -687,7 +641,6 @@ type batchItem struct {
 	Project       string `yaml:"project" json:"project"`
 	Source        string `yaml:"source" json:"source"`
 	Creator       string `yaml:"creator" json:"creator"`
-	Lane          string `yaml:"lane" json:"lane"`
 	Status        string `yaml:"status" json:"status"`
 	WakeCondition string `yaml:"wake" json:"wake"`
 	ReviewAt      string `yaml:"review_at" json:"review_at"`
@@ -710,10 +663,6 @@ func runTodoAdd(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: title is very short (%d chars), consider being more descriptive\n", len([]rune(title)))
 	}
 
-	lane, err := normalizeLane(todoAddLaneFlag)
-	if err != nil {
-		return err
-	}
 	status := todoAddStatusFlag
 	if err := validateWorkStatus(status); err != nil {
 		return err
@@ -750,7 +699,6 @@ func runTodoAdd(cmd *cobra.Command, args []string) error {
 			Priority:      todoAddPriorityFlag,
 			Status:        status,
 			Project:       todoAddProjectFlag,
-			Lane:          lane,
 			WakeCondition: todoAddWakeFlag,
 			ReviewAt:      todoAddReviewAtFlag,
 			Created:       store.Today(),
@@ -857,10 +805,6 @@ func runTodoBatchAdd() error {
 	if todoAddProjectFlag != "" {
 		defaultProject = todoAddProjectFlag
 	}
-	defaultLane := batch.Lane
-	if todoAddLaneFlag != "" {
-		defaultLane = todoAddLaneFlag
-	}
 	defaultStatus := batch.Status
 	if defaultStatus == "" {
 		defaultStatus = store.TodoStatusOpen
@@ -914,15 +858,6 @@ func runTodoBatchAdd() error {
 				}
 				creator = normalized
 			}
-			lane := defaultLane
-			if item.Lane != "" {
-				lane = item.Lane
-			}
-			var err error
-			lane, err = normalizeLane(lane)
-			if err != nil {
-				return fmt.Errorf("item %q: %w", item.Title, err)
-			}
 			status := defaultStatus
 			if item.Status != "" {
 				status = item.Status
@@ -944,7 +879,6 @@ func runTodoBatchAdd() error {
 				Priority:      priority,
 				Status:        status,
 				Project:       project,
-				Lane:          lane,
 				WakeCondition: item.WakeCondition,
 				ReviewAt:      item.ReviewAt,
 				Created:       store.Today(),
@@ -1025,12 +959,6 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 			t.Source = todoEditSourceFlag
 			changed = true
 		}
-		if cmd.Flags().Changed("lane") {
-			if err := applyLane(t, todoEditLaneFlag, true); err != nil {
-				return err
-			}
-			changed = true
-		}
 		if cmd.Flags().Changed("status") {
 			if err := validateWorkStatus(todoEditStatusFlag); err != nil {
 				return err
@@ -1050,7 +978,7 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 			changed = true
 		}
 		if !changed {
-			return fmt.Errorf("nothing to update, use --title, --desc, --priority, --project, --source, --lane, --status, --wake, or --review-at")
+			return fmt.Errorf("nothing to update, use --title, --desc, --priority, --project, --source, --status, --wake, or --review-at")
 		}
 		if t.Status == store.TodoStatusWaiting && t.WakeCondition == "" && t.ReviewAt == "" && len(t.DependsOn) == 0 {
 			return fmt.Errorf("waiting todos require --wake or --review-at")
@@ -1077,7 +1005,7 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 }
 
 func runTodoFocus(cmd *cobra.Command, args []string) error {
-	tf, t, err := startTodo(args[0], todoFocusLaneFlag)
+	tf, t, err := startTodo(args[0])
 	if err != nil {
 		return err
 	}
@@ -1092,13 +1020,6 @@ func runTodoWait(cmd *cobra.Command, args []string) error {
 	tf, t, err := mutateTodo(id, func(t *store.Todo, _ *store.TodoFile, transaction *workapp.Transaction) error {
 		if !store.TodoIsActive(*t) {
 			return fmt.Errorf("cannot wait todo %s with status %s", t.ID, t.Status)
-		}
-		if todoWaitLaneFlag != "" {
-			lane, err := normalizeLane(todoWaitLaneFlag)
-			if err != nil {
-				return err
-			}
-			t.Lane = lane
 		}
 		if todoWaitWakeFlag != "" {
 			t.WakeCondition = todoWaitWakeFlag
@@ -1147,13 +1068,6 @@ func runTodoMaintain(cmd *cobra.Command, args []string) error {
 		if !store.TodoIsActive(*t) {
 			return fmt.Errorf("cannot maintain todo %s with status %s", t.ID, t.Status)
 		}
-		if todoMaintainLaneFlag != "" {
-			lane, err := normalizeLane(todoMaintainLaneFlag)
-			if err != nil {
-				return err
-			}
-			t.Lane = lane
-		}
 		store.AddTodoTag(t, store.TodoTagMaintenance)
 		t.MaintenanceLimit = todoMaintainLimitFlag
 		return nil
@@ -1191,24 +1105,18 @@ func runTodoMove(cmd *cobra.Command, args []string) error {
 }
 
 func runTodoStart(cmd *cobra.Command, args []string) error {
-	tf, t, err := startTodo(args[0], "")
+	tf, t, err := startTodo(args[0])
 	if err != nil {
 		return err
 	}
 	return finishTodoMutation(tf, t, fmt.Sprintf("Started %s: %s", t.ID, t.Title))
 }
 
-// startTodo backs both `todo start` and its deprecated alias `todo focus`, which
-// differed only in accepting --lane. An empty laneFlag leaves the lane alone.
-func startTodo(id, laneFlag string) (*store.TodoFile, *store.Todo, error) {
+// startTodo backs both `todo start` and its deprecated alias `todo focus`. The
+// two differed only in that focus accepted --lane, which no longer exists, so
+// the alias is now the same command under an older name.
+func startTodo(id string) (*store.TodoFile, *store.Todo, error) {
 	return mutateTodo(id, func(t *store.Todo, _ *store.TodoFile, _ *workapp.Transaction) error {
-		if laneFlag != "" {
-			lane, err := normalizeLane(laneFlag)
-			if err != nil {
-				return err
-			}
-			t.Lane = lane
-		}
 		// Starting a closed todo is an explicit reopen. Its previous lifecycle
 		// timestamps must not leak into the new run: otherwise session linking
 		// spans the completed attempt and duration can end before the new start.
@@ -1761,9 +1669,6 @@ func runTodoShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Status:   %s\n", t.Status)
 	if len(t.Tags) > 0 {
 		fmt.Printf("Tags:     %s\n", strings.Join(t.Tags, ", "))
-	}
-	if t.Lane != "" {
-		fmt.Printf("Lane:     %s\n", t.Lane)
 	}
 	if t.WakeCondition != "" {
 		fmt.Printf("Wake:     %s\n", t.WakeCondition)

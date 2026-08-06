@@ -181,6 +181,11 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 34
+		case 34:
+			if err := migrateV34ToV35(db); err != nil {
+				return err
+			}
+			version = 35
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -762,6 +767,50 @@ func migrateV33ToV34(db *sql.DB) error {
 		}
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 34`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV34ToV35 drops two columns from todos: lane and feature_path.
+//
+// The work/personal lane never earned a
+// column: nothing branched on it, the value was derived rather than chosen (the
+// desktop app filled in whichever lane already dominated the project, the
+// collector hardcoded "work"), and the only reader was an optional --lane
+// filter on `todo list` and `now`. Todos already have a tag table for
+// cross-cutting marks, so the lane was a second, weaker copy of it.
+//
+// The existing labels are dropped rather than migrated into tags: within the
+// one project holding most of the todos they disagreed with each other for the
+// same kind of work, so there is no classification in them worth carrying
+// forward.
+//
+// feature_path is the other half: nothing has read or written it for as long as
+// it has existed, so every row holds NULL. It outlived its usefulness only
+// because dropping one unused column did not justify a schema bump on its own.
+//
+// Neither column appears in an index, view, or constraint, so both go without
+// rewriting the table.
+func migrateV34ToV35(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, column := range []string{"lane", "feature_path"} {
+		hasColumn, err := tableHasColumn(tx, "todos", column)
+		if err != nil {
+			return err
+		}
+		if !hasColumn {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE todos DROP COLUMN ` + column); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 35`); err != nil {
 		return err
 	}
 	return tx.Commit()

@@ -19,10 +19,7 @@ struct DesktopCollectionView: View {
     @State private var showingIgnoredItems = false
 
     private var filteredItems: [ATMCollectionItem] {
-        guard let sourceID = navigation.selectedCollectionSourceID else {
-            return store.collectionOverview.items
-        }
-        return store.collectionOverview.items.filter { $0.sourceID == sourceID }
+        store.collectionOverview.items
     }
 
     private var selectedItem: ATMCollectionItem? {
@@ -45,27 +42,16 @@ struct DesktopCollectionView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider()
-            dailySummary
-            Divider()
-            HStack(spacing: 0) {
-                sourceColumn
-                    .frame(width: 190)
-                Divider()
+            HSplitView {
                 itemColumn
-                    .frame(width: 330)
-                Divider()
+                    .frame(minWidth: 340, idealWidth: 420, maxWidth: 500)
                 detailColumn
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(ATMTheme.canvas)
         .onAppear {
             store.refreshCollection()
-            selectDefaultItem()
-        }
-        .onChange(of: navigation.selectedCollectionSourceID) { _ in
-            showingIgnoredItems = false
             selectDefaultItem()
         }
         .onChange(of: store.collectionOverview.items.map(\.id)) { _ in selectDefaultItem() }
@@ -103,6 +89,9 @@ struct DesktopCollectionView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
+                    Text("工作台")
+                        .font(ATMFont.font(.caption, weight: .semibold))
+                        .foregroundStyle(ATMTheme.secondary)
                     Text("收集")
                         .font(ATMFont.font(.title2, weight: .bold))
                     Text("把外部消息转成可追溯任务")
@@ -111,6 +100,7 @@ struct DesktopCollectionView: View {
                 }
                 Spacer()
                 collectionHealthPill
+                sourceManagementMenu
                 Toggle(
                     "自动收集",
                     isOn: Binding(
@@ -131,6 +121,8 @@ struct DesktopCollectionView: View {
                 .disabled(store.isCollecting || store.collectionOverview.summary.enabledSources == 0)
             }
 
+            dailySummary
+
             if let error = store.collectionErrorMessage, !error.isEmpty {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -146,7 +138,51 @@ struct DesktopCollectionView: View {
             }
         }
         .padding(.horizontal, 24)
-        .padding(.vertical, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 14)
+        .background(ATMTheme.elevated)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(ATMTheme.border)
+                .frame(height: 1)
+        }
+    }
+
+    private var sourceManagementMenu: some View {
+        Menu {
+            Button {
+                showingAddSource = true
+            } label: {
+                Label("添加来源", systemImage: "plus")
+            }
+
+            if !store.collectionOverview.sources.isEmpty {
+                Divider()
+                ForEach(store.collectionOverview.sources) { source in
+                    Menu(source.displayName) {
+                        Button("查看聊天记录") {
+                            historyRequest = CollectionHistoryRequest(source: source, item: nil)
+                        }
+                        Button("编辑") { editingSource = source }
+                        Button(source.enabled ? "暂停" : "启用") {
+                            store.setCollectionSource(source, enabled: !source.enabled)
+                        }
+                        Divider()
+                        Button("删除", role: .destructive) { deleteCandidate = source }
+                    }
+                }
+            }
+        } label: {
+            Label("来源", systemImage: "tray.2")
+                .font(ATMFont.font(.footnote, weight: .medium))
+                .padding(.horizontal, 8)
+                .frame(height: 24)
+                .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("添加或管理收集来源")
     }
 
     private var collectionHealthPill: some View {
@@ -214,9 +250,7 @@ struct DesktopCollectionView: View {
         }
         .font(ATMFont.footnote)
         .foregroundStyle(ATMTheme.secondary)
-        .padding(.horizontal, 24)
-        .frame(height: 42)
-        .background(ATMTheme.controlFill.opacity(0.35))
+        .padding(.top, 2)
     }
 
     private static let digestDayFormatter: DateFormatter = {
@@ -282,22 +316,23 @@ struct DesktopCollectionView: View {
                             $0.sourceID == source.id && !$0.shouldCollapseInCollection
                         }.count
                     )
-                    .contextMenu {
-                        Button("查看聊天记录") {
+                    .atmRightClickMenu {
+                        ATMMenuItem("查看聊天记录") {
                             historyRequest = CollectionHistoryRequest(source: source, item: nil)
                         }
-                        Button("编辑") { editingSource = source }
-                        Button(source.enabled ? "暂停" : "启用") {
+                        ATMMenuItem("编辑") { editingSource = source }
+                        ATMMenuItem(source.enabled ? "暂停" : "启用") {
                             store.setCollectionSource(source, enabled: !source.enabled)
                         }
-                        Button("删除", role: .destructive) { deleteCandidate = source }
+                        ATMMenuSeparator()
+                        ATMMenuItem("删除", destructive: true) { deleteCandidate = source }
                     }
                 }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
         }
-        .background(ATMTheme.sidebar)
+        .background(ATMTheme.listPane)
     }
 
     private func sourceRow(
@@ -393,7 +428,7 @@ struct DesktopCollectionView: View {
         }
         // 中栏 surface / 右栏 canvas —— 和任务、Agent、知识一致。此前中栏也是 canvas，
         // 与详情栏同色，三栏之间只剩一根 Divider。
-        .background(ATMTheme.surface)
+        .background(ATMTheme.listPane)
         // 记录的删除确认挂在中栏而不是根视图：来源删除已经占了根视图的
         // confirmationDialog，同一层挂两个在 macOS 上会互相顶掉。
         .confirmationDialog(
@@ -430,17 +465,17 @@ struct DesktopCollectionView: View {
         .listRowBackground(Color.clear)
         // 右键只放导航和删除。重新处理、修正、撤销这些要看记录状态才知道能不能做，
         // 判定在详情栏（见 CollectionItemDetail），在这儿抄一遍就是抄两套规则。
-        .contextMenu {
+        .atmRightClickMenu {
             if let source = source(for: item) {
-                Button("查看聊天记录") {
+                ATMMenuItem("查看聊天记录") {
                     historyRequest = CollectionHistoryRequest(source: source, item: item)
                 }
             }
             if item.todoID != nil {
-                Button("打开 Todo") { openTodo(item) }
+                ATMMenuItem("打开 Todo") { openTodo(item) }
             }
-            Divider()
-            Button("删除记录", role: .destructive) { deleteItemCandidate = item }
+            ATMMenuSeparator()
+            ATMMenuItem("删除记录", destructive: true) { deleteItemCandidate = item }
         }
     }
 
@@ -675,7 +710,11 @@ private struct CollectionItemDetail: View {
                 }
                 .font(ATMFont.font(.body, weight: .medium))
             }
-            .padding(22)
+            .padding(18)
+            .atmWorkspaceCard()
+            .padding(20)
+            .frame(maxWidth: 880, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .sheet(isPresented: $showingCorrection) {
             CollectionCorrectionSheet(item: item) { title, project, priority in
@@ -761,12 +800,6 @@ private struct CollectionItemDetail: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(alignment: .leading) {
-            Capsule()
-                .fill(collectionActionColor(item.action, retryStopped: retryStopped))
-                .frame(width: 3)
-                .padding(.vertical, 8)
-        }
     }
 
     private var classificationSummary: some View {
@@ -1577,12 +1610,7 @@ private struct AddCollectionSourceSheet: View {
     }
 
     private func priorityLabel(_ value: String) -> String {
-        switch value {
-        case "P0": return "P0 · 紧急"
-        case "P1": return "P1 · 高"
-        case "P3": return "P3 · 低"
-        default: return "P2 · 普通"
-        }
+        ATMTodoPriorityStyle.label(value)
     }
 
     private var subtitle: String {

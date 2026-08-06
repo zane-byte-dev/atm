@@ -15,7 +15,6 @@ import (
 var (
 	todoBulkProjectFlag string
 	todoBulkStatusFlag  string
-	todoBulkLaneFlag    string
 	todoBulkReasonFlag  string
 )
 
@@ -29,7 +28,6 @@ var todoBulkCmd = &cobra.Command{
 func init() {
 	todoBulkCmd.Flags().StringVar(&todoBulkProjectFlag, "project", "", "target project for move/edit")
 	todoBulkCmd.Flags().StringVar(&todoBulkStatusFlag, "status", "", "target status for edit")
-	todoBulkCmd.Flags().StringVar(&todoBulkLaneFlag, "lane", "", "target lane for edit")
 	todoBulkCmd.Flags().StringVar(&todoBulkReasonFlag, "reason", "", "reason recorded for done/drop")
 	todoCmd.AddCommand(todoBulkCmd)
 }
@@ -43,19 +41,11 @@ func runTodoBulk(cmd *cobra.Command, args []string) error {
 	if action == "move" && strings.TrimSpace(todoBulkProjectFlag) == "" {
 		return fmt.Errorf("bulk move requires --project")
 	}
-	if action == "edit" && strings.TrimSpace(todoBulkProjectFlag) == "" && strings.TrimSpace(todoBulkStatusFlag) == "" && !cmd.Flags().Changed("lane") {
-		return fmt.Errorf("bulk edit requires --project, --status, or --lane")
+	if action == "edit" && strings.TrimSpace(todoBulkProjectFlag) == "" && strings.TrimSpace(todoBulkStatusFlag) == "" {
+		return fmt.Errorf("bulk edit requires --project or --status")
 	}
 	if todoBulkStatusFlag != "" {
 		if err := validateWorkStatus(todoBulkStatusFlag); err != nil {
-			return err
-		}
-	}
-	lane := todoBulkLaneFlag
-	if cmd.Flags().Changed("lane") {
-		var err error
-		lane, err = normalizeLane(todoBulkLaneFlag)
-		if err != nil {
 			return err
 		}
 	}
@@ -126,9 +116,6 @@ func runTodoBulk(cmd *cobra.Command, args []string) error {
 				if todo.Status != store.TodoStatusWaiting {
 					todo.WakeCondition = ""
 					todo.ReviewAt = ""
-				}
-				if cmd.Flags().Changed("lane") {
-					todo.Lane = lane
 				}
 			}
 		}

@@ -210,7 +210,6 @@ func lintTodoDocMetadata(todo *Todo, content string) []TodoLintIssue {
 		{"状态", todoStatusDisplay(todo.Status)},
 		{"优先级", todo.Priority},
 		{"标签", strings.Join(todo.Tags, ", ")},
-		{"领域", todo.Lane},
 		{"项目", todo.Project},
 		{"创建", todo.Created},
 		{"创建者", TodoCreatorDocLabel(todo.Creator)},

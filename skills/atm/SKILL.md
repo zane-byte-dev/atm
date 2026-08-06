@@ -36,7 +36,7 @@ ATM 是跨项目、跨 Agent 工作状态的事实源。使用它恢复“现在
 atm now --json
 ```
 
-按工作/个人 lane 查询时使用 `--lane`。需要进一步确认任务详情，再使用 `atm todo show`、`atm todo list` 或对应 session 查询。`atm now` 是全局仪表盘，不是常规 SessionStart 上下文。
+需要进一步确认任务详情，再使用 `atm todo show`、`atm todo list` 或对应 session 查询。`atm now` 是全局仪表盘，不是常规 SessionStart 上下文。
 
 TODO 只使用一套生命周期状态，不再维护独立的 attention 状态：
 
@@ -181,7 +181,7 @@ atm todo wait --wake "<可观察的唤醒条件>"
 
 `done`、`drop` 和 `wait` 会自动解除关联会话，避免下次启动沿用失效任务。
 
-主线、优先级、lane、状态或维护范围发生变化时，使用 `start`、`edit --status` 或 `maintain`。不要只在回复里描述状态变化而不更新 ATM。
+主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status` 或 `maintain`。不要只在回复里描述状态变化而不更新 ATM。
 
 永久删除是破坏性操作。除非用户明确要求删除错误数据，否则优先使用 `done` 或 `drop` 保留历史。
 

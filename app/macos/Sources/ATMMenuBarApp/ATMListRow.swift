@@ -24,7 +24,7 @@ enum ATMRowSurface {
 
     var selectedFillOpacity: Double {
         switch self {
-        case .content: return 0.11
+        case .content: return 1
         case .navigation: return 0.12
         case .nestedNavigation: return 0.09
         }
@@ -71,6 +71,11 @@ private struct ATMRowSurfaceModifier: ViewModifier {
                 alignment: .leading
             )
             .background(fill, in: RoundedRectangle(cornerRadius: surface.cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: surface.cornerRadius, style: .continuous)
+                    .stroke(selectionBorder)
+            }
+            .shadow(color: selectionShadow, radius: 9, y: 3)
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
             .accessibilityValue(isSelected ? "已选择" : "")
@@ -79,9 +84,21 @@ private struct ATMRowSurfaceModifier: ViewModifier {
 
     /// 选中优先于 hover——否则悬停在已选中行上会叠成第三种颜色。
     private var fill: Color {
-        if isSelected { return ATMTheme.accent.opacity(surface.selectedFillOpacity) }
+        if isSelected {
+            return surface == .content
+                ? ATMTheme.elevated
+                : ATMTheme.accent.opacity(surface.selectedFillOpacity)
+        }
         if isHovered { return ATMTheme.primary.opacity(0.04) }
         return .clear
+    }
+
+    private var selectionBorder: Color {
+        isSelected && surface == .content ? ATMTheme.borderStrong : .clear
+    }
+
+    private var selectionShadow: Color {
+        isSelected && surface == .content ? Color.black.opacity(0.08) : .clear
     }
 }
 

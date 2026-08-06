@@ -653,7 +653,6 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
     let priority: String
     let status: String
     let project: String?
-    let lane: String?
     let tags: [String]?
     let wakeCondition: String?
     let reviewAt: String?
@@ -667,14 +666,13 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
     let creator: String?
     let closed: String?
     let closedReason: String?
-    let featurePath: String?
     let onDone: String?
     let startTS: Int64?
     let doneTS: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, description, priority, status, project, lane, tags, links, created, source
-        case closed, featurePath, creator
+        case id, title, description, priority, status, project, tags, links, created, source
+        case closed, creator
         case closedReason = "closed_reason"
         case wakeCondition = "wake_condition"
         case reviewAt = "review_at"
@@ -716,7 +714,6 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         priority = todo.priority
         self.status = status
         project = todo.project
-        lane = todo.lane
         tags = todo.tags
         self.wakeCondition = wakeCondition
         self.reviewAt = reviewAt
@@ -728,7 +725,6 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         creator = todo.creator
         closed = todo.closed
         closedReason = todo.closedReason
-        featurePath = todo.featurePath
         onDone = todo.onDone
         startTS = todo.startTS
         doneTS = todo.doneTS
@@ -743,7 +739,6 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         status = try values.decode(String.self, forKey: .status)
         let decodedTags = try values.decodeIfPresent([String].self, forKey: .tags) ?? []
         project = try values.decodeIfPresent(String.self, forKey: .project)
-        lane = try values.decodeIfPresent(String.self, forKey: .lane)
         tags = decodedTags.isEmpty ? nil : decodedTags.sorted()
         wakeCondition = try values.decodeIfPresent(String.self, forKey: .wakeCondition)
         reviewAt = try values.decodeIfPresent(String.self, forKey: .reviewAt)
@@ -755,7 +750,6 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         creator = try values.decodeIfPresent(String.self, forKey: .creator)
         closed = try values.decodeIfPresent(String.self, forKey: .closed)
         closedReason = try values.decodeIfPresent(String.self, forKey: .closedReason)
-        featurePath = try values.decodeIfPresent(String.self, forKey: .featurePath)
         onDone = try values.decodeIfPresent(String.self, forKey: .onDone)
         startTS = try values.decodeIfPresent(Int64.self, forKey: .startTS)
         doneTS = try values.decodeIfPresent(Int64.self, forKey: .doneTS)
@@ -769,8 +763,7 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
 /// nothing to show and a placeholder would imply the creator was lost.
 enum ATMTodoCreator {
     static func label(_ creator: String?, ownerName: String) -> String? {
-        guard let creator = creator?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !creator.isEmpty else { return nil }
+        guard let creator = normalized(creator) else { return nil }
         switch creator {
         case "me":
             let name = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -780,6 +773,33 @@ enum ATMTodoCreator {
         default:
             return creator
         }
+    }
+
+    /// The list-row form. Same rendering as `label` except it drops the owner's
+    /// nickname: it is identical on every row it appears on, so in a row it is
+    /// width spent on nothing. The detail header still shows the full name.
+    static func shortLabel(_ creator: String?) -> String? {
+        label(creator, ownerName: "")
+    }
+
+    /// Icon per creator kind, so provenance reads at a glance instead of by
+    /// reading the name. Deliberately borrowed from `ATMDesktopSection`: a todo
+    /// filed by 收集 carries the same tray as the 收集 section, and one filed by
+    /// an agent the same cpu as the Agent section, so the icon points at where
+    /// the todo came from. Nil whenever `label` is nil — no creator, no icon.
+    static func icon(_ creator: String?) -> String? {
+        guard let creator = normalized(creator) else { return nil }
+        switch creator {
+        case "me": return "person.fill"
+        case "collect": return "tray.full"
+        default: return "cpu"
+        }
+    }
+
+    private static func normalized(_ creator: String?) -> String? {
+        guard let creator = creator?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !creator.isEmpty else { return nil }
+        return creator
     }
 }
 

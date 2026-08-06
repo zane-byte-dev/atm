@@ -23,18 +23,18 @@ func withoutAgentEnvironment(t *testing.T) {
 func withTodoAddFlags(t *testing.T) {
 	t.Helper()
 	oldJSON := jsonOutput
-	oldPriority, oldProject, oldLane := todoAddPriorityFlag, todoAddProjectFlag, todoAddLaneFlag
+	oldPriority, oldProject := todoAddPriorityFlag, todoAddProjectFlag
 	oldStatus, oldCreator := todoAddStatusFlag, todoAddCreatorFlag
 	oldSource, oldDesc, oldDescFile := todoSourceFlag, todoDescFlag, todoDescFileFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
-		todoAddPriorityFlag, todoAddProjectFlag, todoAddLaneFlag = oldPriority, oldProject, oldLane
+		todoAddPriorityFlag, todoAddProjectFlag = oldPriority, oldProject
 		todoAddStatusFlag, todoAddCreatorFlag = oldStatus, oldCreator
 		todoSourceFlag, todoDescFlag, todoDescFileFlag = oldSource, oldDesc, oldDescFile
 		todoAddCmd.SetErr(os.Stderr)
 	})
 	jsonOutput = false
-	todoAddPriorityFlag, todoAddProjectFlag, todoAddLaneFlag = "P1", "atm", ""
+	todoAddPriorityFlag, todoAddProjectFlag = "P1", "atm"
 	todoAddStatusFlag, todoAddCreatorFlag = store.TodoStatusOpen, ""
 	todoSourceFlag, todoDescFlag, todoDescFileFlag = "", "", ""
 	todoAddCmd.SetErr(io.Discard)
@@ -122,15 +122,15 @@ func TestRunTodoListFiltersByCreator(t *testing.T) {
 
 	oldJSON, oldCreator := jsonOutput, todoListCreatorFlag
 	oldStatus, oldPriority := todoStatusFlag, todoListPriorityFlag
-	oldProject, oldLane, oldQuery := todoProjectFlag, todoListLaneFlag, todoListQueryFlag
+	oldProject, oldQuery := todoProjectFlag, todoListQueryFlag
 	t.Cleanup(func() {
 		jsonOutput, todoListCreatorFlag = oldJSON, oldCreator
 		todoStatusFlag, todoListPriorityFlag = oldStatus, oldPriority
-		todoProjectFlag, todoListLaneFlag, todoListQueryFlag = oldProject, oldLane, oldQuery
+		todoProjectFlag, todoListQueryFlag = oldProject, oldQuery
 	})
 	jsonOutput = true
 	todoStatusFlag, todoListPriorityFlag = "", ""
-	todoProjectFlag, todoListLaneFlag, todoListQueryFlag = "", "", ""
+	todoProjectFlag, todoListQueryFlag = "", ""
 
 	// The Chinese alias filters the same rows as the stored token.
 	todoListCreatorFlag = "收集"

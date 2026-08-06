@@ -6,7 +6,6 @@
 
 ```bash
 atm now --json
-atm now --lane work --json
 atm session status --json
 atm session list --days 7 --json
 atm session list --days 7 --project <repo> --json
@@ -53,7 +52,6 @@ atm todo list --json
 atm todo list --status all --json
 atm todo list --project <repo> --json
 atm todo list --status waiting --json
-atm todo list --lane personal --json
 atm todo list --creator collect --json        # who filed it: me, collect, or an agent name
 atm todo show <id> --json
 # `bindings` 历史中的 unbound_at/reason 是 Todo 状态迁移的结构化审计证据
@@ -82,8 +80,8 @@ atm todo log <id> "<details>" --section 分析              # route investigatio
 atm todo done <id> --reason "<result>"
 atm todo wait <id> --wake "<condition>"
 atm todo wait <id> --review-at YYYY-MM-DD
-atm todo maintain <id> --lane <lane> --limit 3
-atm todo edit <id> --priority P1 --lane <lane> --status <state>
+atm todo maintain <id> --limit 3
+atm todo edit <id> --priority P1 --status <state>
 atm todo move <id> --project <repo>
 atm todo drop <id>
 atm todo depend add <id> <dependency-id>   # <id> waits for <dependency-id>

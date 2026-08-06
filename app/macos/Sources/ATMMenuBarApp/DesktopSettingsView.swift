@@ -23,6 +23,15 @@ struct DesktopSettingsView: View {
             case .connectors: return "连接器"
             }
         }
+
+        var systemImage: String {
+            switch self {
+            case .general: return "slider.horizontal.3"
+            case .notch: return "rectangle.topthird.inset.filled"
+            case .todo: return "checklist"
+            case .connectors: return "link"
+            }
+        }
     }
 
     @ObservedObject var store: ATMDataStore
@@ -77,26 +86,7 @@ struct DesktopSettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 18) {
-                Text("设置")
-                    .font(ATMFont.font(.title2, weight: .bold))
-
-                Picker("设置分类", selection: $selectedTab) {
-                    ForEach(SettingsTab.allCases) { tab in
-                        Text(tab.title).tag(tab)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 400)
-
-                Spacer()
-            }
-            .padding(.horizontal, 24)
-            .padding(.top, 22)
-            .padding(.bottom, 14)
-
-            Divider()
+            settingsHeader
 
             switch selectedTab {
             case .general:
@@ -109,7 +99,50 @@ struct DesktopSettingsView: View {
                 connectorSettings
             }
         }
-        .background(ATMTheme.canvas)
+        .background(ATMTheme.listPane)
+    }
+
+    private var settingsHeader: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("设置")
+                    .font(ATMFont.font(.title2, weight: .bold))
+                Text("调整外观、提醒、任务偏好与外部连接")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+
+            HStack(spacing: 22) {
+                ForEach(SettingsTab.allCases) { tab in
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        Label(tab.title, systemImage: tab.systemImage)
+                            .font(ATMFont.font(.body, weight: selectedTab == tab ? .semibold : .medium))
+                            .foregroundStyle(selectedTab == tab ? ATMTheme.accent : ATMTheme.secondary)
+                            .padding(.horizontal, 2)
+                            .padding(.bottom, 11)
+                            .overlay(alignment: .bottom) {
+                                if selectedTab == tab {
+                                    Capsule()
+                                        .fill(ATMTheme.accent)
+                                        .frame(height: 2)
+                                }
+                            }
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 18)
+        .background(ATMTheme.elevated)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(ATMTheme.border)
+                .frame(height: 1)
+        }
     }
 
     private var generalSettings: some View {
@@ -788,10 +821,9 @@ struct DesktopSettingsView: View {
 
     private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content()
-            .padding(16)
+            .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border, lineWidth: 1))
+            .atmWorkspaceCard()
     }
 
     private func collectionSettingsRelativeTime(_ timestamp: Int64) -> String {

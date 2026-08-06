@@ -71,13 +71,19 @@ struct DesktopAgentsView: View {
     private var agentList: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
+                Text("工作台")
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(ATMTheme.secondary)
                 HStack(alignment: .firstTextBaseline) {
                     HStack(spacing: 8) {
                         Text("活跃 Agent")
-                            .font(ATMFont.font(.title2, weight: .semibold))
+                            .font(ATMFont.font(.title2, weight: .bold))
                         Text("\(sessions.filter(\.isCurrentlyActive).count)")
                             .font(ATMFont.mono(.footnote, .semibold))
                             .foregroundStyle(ATMTheme.success)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 2)
+                            .background(ATMTheme.successFill, in: Capsule())
                     }
                     Spacer()
                     if !store.snapshot.liveStatus.time.isEmpty {
@@ -92,7 +98,7 @@ struct DesktopAgentsView: View {
                     .lineLimit(1)
             }
             .padding(.horizontal, 14)
-            .frame(height: 72)
+            .frame(height: 88)
 
             Divider()
 
@@ -132,14 +138,18 @@ struct DesktopAgentsView: View {
                                     .listRowBackground(Color.clear)
                                 }
                             } header: {
-                                HStack {
+                                HStack(spacing: 7) {
+                                    Circle()
+                                        .fill(state.tint)
+                                        .frame(width: 6, height: 6)
                                     Text(state.title)
                                     Spacer()
-                                    // 状态色画在分区计数上，而不是每行一颗圆点：同一分区里
-                                    // 每行的颜色必然相同，逐行画等于把分区标题又说一遍。
                                     Text("\(values.count)")
                                         .font(ATMFont.mono(.caption, .semibold))
-                                        .foregroundStyle(state.tint)
+                                        .foregroundStyle(ATMTheme.secondary)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(ATMTheme.controlFill, in: Capsule())
                                 }
                             }
                         }
@@ -160,7 +170,7 @@ struct DesktopAgentsView: View {
                     .help("这些会话有显式绑定但当前没有实时活动，因此不计入活跃 Agent。")
             }
         }
-        .background(ATMTheme.surface)
+        .background(ATMTheme.listPane)
     }
 
     private var activeAgentSummary: String {
@@ -453,7 +463,7 @@ private struct DesktopAgentPresenceDetail: View {
 
     private var detailContent: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
                 if session.presenceState == .attention {
                     attentionBanner
                 }
@@ -471,9 +481,9 @@ private struct DesktopAgentPresenceDetail: View {
                 }
                 technicalDetails
             }
-            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: 820, alignment: .leading)
             .padding(.horizontal, 24)
-            .padding(.bottom, 24)
+            .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -491,9 +501,13 @@ private struct DesktopAgentPresenceDetail: View {
                     .font(ATMFont.font(.bodyLarge, weight: .medium))
             }
         }
-        .padding(.vertical, 15)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .bottom) { Divider() }
+        .background(ATMTheme.dangerFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(ATMTheme.danger.opacity(0.18))
+        }
     }
 
     private func latestUserInput(_ text: String) -> some View {
@@ -602,7 +616,8 @@ private struct DesktopAgentPresenceDetail: View {
         }
         .font(ATMFont.footnote)
         .foregroundStyle(ATMTheme.secondary)
-        .padding(.vertical, 16)
+        .padding(16)
+        .atmWorkspaceCard()
     }
 
     private var attentionText: String {
@@ -627,9 +642,9 @@ private struct DesktopAgentPresenceDetail: View {
                 .font(ATMFont.font(.body, weight: .semibold))
             content()
         }
-        .padding(.vertical, 18)
+        .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(alignment: .bottom) { Divider() }
+        .atmWorkspaceCard()
     }
 
     private func infoRow(_ label: String, _ value: String) -> some View {

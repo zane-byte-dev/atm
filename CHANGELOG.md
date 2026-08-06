@@ -85,6 +85,24 @@ a database from a much older version. `atm backup` exists for exactly that case.
   自动接管。**这是 Qoder 提示过于频繁的正解**：此前刘海只能每 3 秒 diff 一次会话记录，而
   Qoder 一轮里会写好几条回复，每条都被读成一次「已完成」。
 
+### Removed
+
+- **Todo 不再有「工作 / 个人」领域（lane）。** 它从来没有驱动任何行为：没有分组、没有排序、
+  没有默认值，唯一的读者是 `atm todo list --lane` 和 `atm now --lane` 两个可选过滤，而 1787
+  行 shell history 里 `--lane` 只出现过一次。值也不是人选的——App 填的是「同项目里占多数的那
+  个 lane」，兜底 personal，收集链路则一律写死 `work`；于是占全部 Todo 六成的 `atm` 项目里，
+  同一类开发工作 55 条标着 personal、31 条标着 work，日期区间还互相重叠。真正的横切标记早就
+  有 `todo_tags` 这张表（目前装着 `maintenance`），lane 只是并排放着的第二套、更弱的分类。已
+  有的标注不迁进 tag：它们在同一个项目内部就自相矛盾，没有值得留下的分类信息。schema v35 去
+  掉 `todos.lane` 列，`--lane` 从 `list`、`now`、`add`、`edit`、`wait`、`maintain`、`bulk` 和
+  批量输入的 YAML/JSON 里一并消失，`atm todo list` 的表格少一列，`atm todo show` 少一行；任务
+  文档的 `- **领域**:` 行会在下次元数据同步时被清掉，和当年退役的 `注意力` 一样。App 的任务详
+  情属性区变成三格，添加任务卡少一个 chip，快速面板「工作中」那行的说明文字改成状态。
+- **`todos.feature_path` 死列一并删掉。** 有史以来没有任何代码读或写过它，每一行都是 NULL；
+  它活到现在的唯一理由是「为一个没人用的列单独 bump 一次 schema 不值得」，而 v35 这次 bump
+  已经付过了。App 侧同时删掉对应的 `featurePath` 字段和任务详情里的「关联路径」卡片——CLI 从
+  不输出这个键，那张卡因此永远不可能渲染出来。
+
 ### Changed
 
 - **一段讨论里的同一件事只留一条 Todo。** 收集每 5 分钟判定一批消息，而一个群会在几十分钟
@@ -125,6 +143,10 @@ a database from a much older version. `atm backup` exists for exactly that case.
   destroys every record that has nowhere to rebuild from.
 
 ### Fixed
+
+- **快速面板「需处理」不再把项目名印两遍。** 每行的说明文字渲染成「待验收 · atm · atm」：
+  `attentionCaption` 返回的是「状态 · 项目」，而行本身又在后面追加了一次项目。说明文字现在
+  只给状态，项目由行统一负责——「工作中」那组一直是这么走的，两组从此一致。
 
 - **A dashboard contract mismatch says which side to upgrade.** It surfaced as
   `Unsupported ATM dashboard schema 7` wrapped in a "some data did not refresh"

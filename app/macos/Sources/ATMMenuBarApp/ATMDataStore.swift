@@ -591,7 +591,6 @@ struct ATMTodoEdit: Equatable {
     let description: String
     let priority: String
     let project: String
-    let lane: String
     let status: String
     let wakeCondition: String
     let reviewAt: String
@@ -642,7 +641,6 @@ enum ATMCommandBuilder {
         var arguments = ["todo", "add", draft.title, "--priority", draft.priority]
         if !draft.description.isEmpty { arguments += ["--desc", draft.description] }
         if !draft.project.isEmpty { arguments += ["--project", draft.project] }
-        if !draft.lane.isEmpty { arguments += ["--lane", draft.lane] }
         // JSON so the desktop can select the new id after create succeeds.
         arguments.append("--json")
         return arguments
@@ -674,7 +672,6 @@ enum ATMCommandBuilder {
             "--desc", edit.description,
             "--priority", edit.priority,
             "--project", edit.project,
-            "--lane", edit.lane,
             "--status", edit.status,
             "--wake", edit.wakeCondition,
             "--review-at", edit.reviewAt,
@@ -1716,7 +1713,6 @@ final class ATMDataStore: ObservableObject {
                     description: edit.description.trimmingCharacters(in: .whitespacesAndNewlines),
                     priority: edit.priority,
                     project: edit.project.trimmingCharacters(in: .whitespacesAndNewlines),
-                    lane: edit.lane.trimmingCharacters(in: .whitespacesAndNewlines),
                     status: edit.status,
                     wakeCondition: edit.wakeCondition.trimmingCharacters(in: .whitespacesAndNewlines),
                     reviewAt: edit.reviewAt.trimmingCharacters(in: .whitespacesAndNewlines),
