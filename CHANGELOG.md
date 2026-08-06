@@ -17,6 +17,13 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **Todo deletion is now recoverable.** The App's 删除 action moves a task
+  straight to 回收站 without interrupting with a confirmation dialog. The task
+  keeps its lifecycle state, Markdown, progress, dependencies, and history, and
+  can be restored from the new trash view; only 永久删除 inside that view asks
+  for confirmation. The same flow is available as `atm todo trash`, `atm todo
+  list --status trashed`, and `atm todo restore`. Existing `archive/unarchive`
+  commands remain compatible for completed-task cold storage.
 - **A collection processing record can be deleted.** `atm collect item delete
   <item-id>`, and in the App a right-click on any record in 处理记录, plus a
   「删除记录」 entry in the record's own menu. Until now the ledger only grew:

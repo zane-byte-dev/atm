@@ -900,6 +900,55 @@ func TestRunTodoDeleteConfirmationAndYesFlag(t *testing.T) {
 	}
 }
 
+func TestRunTodoTrashRestoreAndPermanentDelete(t *testing.T) {
+	withTempAtmDir(t)
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Recover me", Priority: "P1", Status: "open", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	trashOut := captureStdout(t, func() {
+		if err := runTodoTrash(todoTrashCmd, []string{"t1"}); err != nil {
+			t.Fatalf("trash: %v", err)
+		}
+	})
+	if trashOut != "Trashed t1\n" {
+		t.Fatalf("trash output = %q", trashOut)
+	}
+	archived, err := store.LoadArchivedTodos()
+	if err != nil || len(archived) != 1 || archived[0].Status != "open" {
+		t.Fatalf("trash contents = %#v, err=%v", archived, err)
+	}
+
+	restoreOut := captureStdout(t, func() {
+		if err := runTodoRestore(todoRestoreCmd, []string{"t1"}); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+	})
+	if restoreOut != "Restored t1\n" {
+		t.Fatalf("restore output = %q", restoreOut)
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil || store.FindTodo(todos, "t1") == nil {
+		t.Fatalf("restored working set = %#v, err=%v", todos, err)
+	}
+
+	if err := runTodoTrash(todoTrashCmd, []string{"t1"}); err != nil {
+		t.Fatal(err)
+	}
+	oldYes := todoDeleteYesFlag
+	t.Cleanup(func() { todoDeleteYesFlag = oldYes })
+	todoDeleteYesFlag = true
+	if err := runTodoDelete(todoDeleteCmd, []string{"t1"}); err != nil {
+		t.Fatalf("delete from trash: %v", err)
+	}
+	archived, err = store.LoadArchivedTodos()
+	if err != nil || len(archived) != 0 {
+		t.Fatalf("trash after permanent delete = %#v, err=%v", archived, err)
+	}
+}
+
 func TestTodoHelpIncludesBatchAndDependencyExamples(t *testing.T) {
 	if !strings.Contains(todoAddCmd.Example, "atm todo add --batch") || !strings.Contains(todoAddCmd.Example, "--desc-file -") {
 		t.Fatalf("todo add examples = %q", todoAddCmd.Example)

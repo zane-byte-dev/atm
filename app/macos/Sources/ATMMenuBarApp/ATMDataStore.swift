@@ -458,6 +458,11 @@ enum ATMTodoAction: Equatable {
     case start
     case complete
     case drop
+    /// Recoverable removal from the working set.
+    case trash
+    /// Bring a recoverably removed todo back with its lifecycle state intact.
+    case restore
+    /// Irreversible removal, exposed only from the trash.
     case delete
     /// Park for later: `todo wait --wake 暂不处理`.
     case deferLater
@@ -614,9 +619,13 @@ enum ATMCommandBuilder {
             return ["todo", "done", todo.id, "--reason", "通过 ATM 菜单栏\(todo.completionVerb)"]
         case .drop:
             return ["todo", "drop", todo.id, "--reason", "通过 ATM 菜单栏放弃"]
+        case .trash:
+            return ["todo", "trash", todo.id]
+        case .restore:
+            return ["todo", "restore", todo.id]
         case .delete:
-            // --yes because the desktop already ran its own confirmation dialog;
-            // without it the CLI waits on a stdin nobody can answer.
+            // Permanent deletion exists only inside the trash, after the desktop
+            // confirmation dialog. The CLI has no interactive stdin.
             return ["todo", "delete", todo.id, "--yes"]
         case .deferLater:
             return ["todo", "wait", todo.id, "--wake", ATMTodoDeferred.wakeCondition]
@@ -813,6 +822,7 @@ final class ATMDataStore: ObservableObject {
     private(set) var isLoading = false
     @Published private(set) var isSyncing = false
     @Published private(set) var isActing = false
+    @Published private(set) var trashedTodos: [ATMTodo] = []
     @Published private(set) var knowledgeCollections: [ATMKnowledgeCollection] = []
     @Published private(set) var isKnowledgeCatalogLoading = false
     @Published var knowledgeErrorMessage: String?
@@ -855,6 +865,9 @@ final class ATMDataStore: ObservableObject {
     /// their absence. This prevents an older in-flight refresh from restoring a
     /// row after the CLI has already removed it.
     private var optimisticallyDeletedTodoIDs: Set<String> = []
+    /// Keeps an older in-flight trash listing from resurrecting a row after the
+    /// irreversible delete command has succeeded.
+    private var optimisticallyPermanentlyDeletedTodoIDs: Set<String> = []
     private var optimisticallyUpdatedTodos: [String: ATMTodo] = [:]
     /// Prior id→status map for human-facing notifications. nil until first
     /// successful dashboard load (baseline, no historical flood).
@@ -1489,7 +1502,15 @@ final class ATMDataStore: ObservableObject {
                     runner,
                     arguments: ["quota", "--json"]
                 )
-                let (dashboard, quotaOutcome) = await (dashboardTask, quotaTask)
+                async let trashTask: ATMCommandOutcome<[ATMTodo]> = decodeCommand(
+                    runner,
+                    arguments: ["todo", "list", "--status", "trashed", "--json"]
+                )
+                let (dashboard, quotaOutcome, trashOutcome) = await (
+                    dashboardTask,
+                    quotaTask,
+                    trashTask
+                )
 
                 var nextState = dashboardState
                 if let error = dashboard.error {
@@ -1498,8 +1519,29 @@ final class ATMDataStore: ObservableObject {
                 if let error = quotaOutcome.error {
                     warnings.append("配额：\(error)")
                 }
+                if let error = trashOutcome.error {
+                    warnings.append("回收站：\(error)")
+                }
                 if let value = quotaOutcome.value {
                     nextState.quota = value
+                }
+                if let value = trashOutcome.value {
+                    let permanentlyDeletedIDs = optimisticallyPermanentlyDeletedTodoIDs
+                    let restoringIDs = Set(optimisticallyUpdatedTodos.keys)
+                    var incomingTrash = value.filter {
+                        !permanentlyDeletedIDs.contains($0.id) && !restoringIDs.contains($0.id)
+                    }
+                    // A listing that started before `todo trash` may not include
+                    // the newly moved row. Preserve the optimistic copy until the
+                    // dashboard has observed that it left the working set.
+                    incomingTrash.append(contentsOf: trashedTodos.filter { optimistic in
+                        optimisticallyDeletedTodoIDs.contains(optimistic.id)
+                            && !incomingTrash.contains(where: { $0.id == optimistic.id })
+                    })
+                    trashedTodos = incomingTrash
+                    optimisticallyPermanentlyDeletedTodoIDs.formIntersection(
+                        Set(value.map(\.id))
+                    )
                 }
                 if let value = dashboard.value {
                     let deletedIDs = optimisticallyDeletedTodoIDs
@@ -1617,14 +1659,42 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
-    /// The CLI mutation is authoritative, so deletion should disappear from the
-    /// UI immediately and lifecycle actions should move to their destination
-    /// section without waiting for a complete dashboard reload. A queued refresh
-    /// reconciles every other field and eventually clears the optimistic state.
+    /// The CLI mutation is authoritative, so removal should update the working
+    /// set and trash immediately while a queued refresh reconciles other fields.
     func applySuccessfulTodoAction(_ action: ATMTodoAction, on todo: ATMTodo) {
-        if action == .delete {
+        if action == .trash {
             let deletedIDs: Set<String> = [todo.id]
             optimisticallyDeletedTodoIDs.insert(todo.id)
+            optimisticallyUpdatedTodos.removeValue(forKey: todo.id)
+            updateDashboardState {
+                $0.allTodos.removeAll { $0.id == todo.id }
+                $0.snapshot = $0.snapshot.removingTodos(withIDs: deletedIDs)
+            }
+            progressByTodoID.removeValue(forKey: todo.id)
+            if !trashedTodos.contains(where: { $0.id == todo.id }) {
+                trashedTodos.insert(todo, at: 0)
+            }
+            return
+        }
+
+        if action == .restore {
+            trashedTodos.removeAll { $0.id == todo.id }
+            optimisticallyDeletedTodoIDs.remove(todo.id)
+            optimisticallyUpdatedTodos[todo.id] = todo
+            updateDashboardState {
+                if !$0.allTodos.contains(where: { $0.id == todo.id }) {
+                    $0.allTodos.append(todo)
+                }
+                $0.snapshot = $0.snapshot.replacingTodo(todo)
+            }
+            return
+        }
+
+        if action == .delete {
+            trashedTodos.removeAll { $0.id == todo.id }
+            let deletedIDs: Set<String> = [todo.id]
+            optimisticallyDeletedTodoIDs.insert(todo.id)
+            optimisticallyPermanentlyDeletedTodoIDs.insert(todo.id)
             optimisticallyUpdatedTodos.removeValue(forKey: todo.id)
             updateDashboardState {
                 $0.allTodos.removeAll { $0.id == todo.id }
@@ -1649,7 +1719,7 @@ final class ATMDataStore: ObservableObject {
             )
         case .returnToOpen:
             updated = todo.replacingLifecycle(status: "open")
-        case .delete:
+        case .trash, .restore, .delete:
             return
         }
         optimisticallyUpdatedTodos[todo.id] = updated

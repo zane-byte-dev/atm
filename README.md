@@ -64,7 +64,7 @@ atm session forget  <session-id> [-y]                    # 永久移除源文件
 # 待办与工作状态
 atm now                                     # 工作中、等待中、待验收、阻塞和到期复查
 atm dashboard --json                       # 一次返回带 schema_version 的桌面聚合快照
-atm todo    [list|add|start|submit|done|drop|show|context|edit|move|log|doc|prompt]
+atm todo    [list|add|start|submit|done|drop|trash|restore|show|context|edit|move|log|doc|prompt]
 atm todo start <id>                         # 进入工作中；done/dropped 会重新开始
 atm todo context [id] --json                # 临时、只读汇总 Todo、Session 与 Git 上下文
 atm todo submit [id] --reason "实现及证据"   # 显式提交待确认，不直接标记 done
@@ -92,7 +92,10 @@ atm todo lint <id>                      # 检查冗长动态、无效 tID 和文
 atm todo add "<title>" --desc-file <path>  # - 表示从 stdin 读取多行描述
 atm todo add --batch                       # 从 YAML/JSON stdin 批量创建；示例见 --help
 id=$(atm todo add "<title>")               # 非 JSON 模式 stdout 仅输出新 ID
-atm todo delete <id> -y                    # 非交互永久删除；默认会要求确认
+atm todo trash <id>                        # 移到回收站，不确认、可恢复
+atm todo list --status trashed             # 查看回收站（archived 仍是兼容别名）
+atm todo restore <id>                      # 从回收站恢复原状态
+atm todo delete <id> -y                    # 永久删除；默认确认，通常只在回收站使用
 
 # 报告与系统
 atm report  [date]     [--agent X]               # 每日活动报告
@@ -286,6 +289,9 @@ Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事
 
 `atm todo archive <id>` 把已完结的 Todo 移出工作集：行仍然保留，所以它的 ID 不会被复用，
 依赖和进展记录仍可引用它；`atm todo list --status archived` 查看，`atm todo unarchive` 取回。
+面向日常删除使用 `atm todo trash <id>`：任何状态都能无确认移入回收站，活跃 Session Binding
+会安全关闭，但任务状态、Markdown、进展、依赖和历史都保留；`atm todo restore <id>` 恢复。
+菜单栏 App 的普通删除走这条可恢复路径，只有回收站里的永久删除才要求确认。
 
 失败会落盘到 `~/.atm/logs/`：CLI 写 `cli.log`，菜单栏 App 写 `app.log`，一行一个 JSON 事件，
 单文件封顶 5 MB 并保留一个轮转。**只记失败和进程启停**，不记会话正文、Todo/记忆/知识内容、凭据，

@@ -549,9 +549,8 @@ struct DesktopKnowledgeView: View {
                 )
 
             }
-            .padding(20)
-            .atmWorkspaceCard()
-            .padding(24)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
             .frame(maxWidth: 900, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -657,9 +656,8 @@ struct DesktopKnowledgeView: View {
 
                 ATMMarkdownContentView(source: memory.content)
             }
-            .padding(20)
-            .atmWorkspaceCard()
-            .padding(24)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
             .frame(maxWidth: 900, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }

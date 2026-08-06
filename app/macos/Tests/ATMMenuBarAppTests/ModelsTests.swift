@@ -2132,8 +2132,16 @@ final class ModelsTests: XCTestCase {
             ATMCommandBuilder.arguments(for: .deferLater, todo: todo),
             ["todo", "wait", "t8", "--wake", ATMTodoDeferred.wakeCondition]
         )
-        // Must carry --yes: the CLI prompt would otherwise read an unanswerable
-        // stdin and cancel, leaving the todo alive with no error surfaced.
+        XCTAssertEqual(
+            ATMCommandBuilder.arguments(for: .trash, todo: todo),
+            ["todo", "trash", "t8"]
+        )
+        XCTAssertEqual(
+            ATMCommandBuilder.arguments(for: .restore, todo: todo),
+            ["todo", "restore", "t8"]
+        )
+        // Permanent deletion is only offered from the trash, after the App has
+        // confirmed it. The CLI still needs --yes because it has no stdin.
         XCTAssertEqual(
             ATMCommandBuilder.arguments(for: .delete, todo: todo),
             ["todo", "delete", "t8", "--yes"]
@@ -3600,7 +3608,7 @@ final class ModelsTests: XCTestCase {
     }
 
     @MainActor
-    func testSuccessfulDeleteImmediatelyRemovesTodoFromDashboardState() throws {
+    func testSuccessfulTrashImmediatelyMovesTodoOutOfDashboardState() throws {
         let todo = try makeTodo(
             id: "t161",
             project: "atm",
@@ -3639,11 +3647,17 @@ final class ModelsTests: XCTestCase {
         )
         store.applyDashboardRefresh(state)
 
-        store.applySuccessfulTodoAction(.delete, on: todo)
+        store.applySuccessfulTodoAction(.trash, on: todo)
 
         XCTAssertTrue(store.allTodos.isEmpty)
         XCTAssertTrue(store.snapshot.work.open.isEmpty)
         XCTAssertEqual(store.snapshot.work.summary.open, 0)
+        XCTAssertEqual(store.trashedTodos.map(\.id), [todo.id])
+
+        store.applySuccessfulTodoAction(.restore, on: todo)
+
+        XCTAssertEqual(store.allTodos.map(\.id), [todo.id])
+        XCTAssertTrue(store.trashedTodos.isEmpty)
     }
 
     @MainActor

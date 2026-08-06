@@ -183,7 +183,7 @@ atm todo wait --wake "<可观察的唤醒条件>"
 
 主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status` 或 `maintain`。不要只在回复里描述状态变化而不更新 ATM。
 
-永久删除是破坏性操作。除非用户明确要求删除错误数据，否则优先使用 `done` 或 `drop` 保留历史。
+普通删除使用无确认、可恢复的 `atm todo trash`，需要时以 `atm todo restore` 取回。永久删除是破坏性操作；除非用户明确要求删除错误数据，否则优先使用 `trash`、`done` 或 `drop` 保留历史。
 
 ## 4. 在 ATM 任务中执行代码 Review
 

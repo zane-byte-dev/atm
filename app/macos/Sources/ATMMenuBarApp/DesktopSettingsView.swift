@@ -217,7 +217,9 @@ struct DesktopSettingsView: View {
                 }
             }
         }
-        .background(ATMTheme.listPane)
+        // 设置内容是阅读/编辑画布，和任务、Agent 的详情栏一样保持白色；
+        // 灰色 listPane 只属于左侧分类抽屉。
+        .background(ATMTheme.elevated)
     }
 
     private var generalSettings: some View {
@@ -234,7 +236,13 @@ struct DesktopSettingsView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
-                        HStack(alignment: .top, spacing: 14) {
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 14)
+                            ],
+                            alignment: .leading,
+                            spacing: 14
+                        ) {
                             ForEach(ATMThemeMode.allCases) { mode in
                                 ATMThemeChoiceButton(
                                     mode: mode,
@@ -265,7 +273,7 @@ struct DesktopSettingsView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
-                        .frame(width: 420)
+                        .frame(maxWidth: 520)
                     }
                 }
 
@@ -898,7 +906,14 @@ struct DesktopSettingsView: View {
         content()
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .atmWorkspaceCard()
+            .background(
+                ATMTheme.elevated,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(ATMTheme.border, lineWidth: 1)
+            }
     }
 
     private func collectionSettingsRelativeTime(_ timestamp: Int64) -> String {
@@ -966,6 +981,7 @@ private struct ATMThemeChoiceButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
         .accessibilityLabel("\(mode.label)主题")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -983,7 +999,8 @@ private struct ATMThemePreview: View {
                 previewHalf(isDark: mode == .dark, isSplit: false)
             }
         }
-        .frame(width: 184, height: 108)
+        .frame(maxWidth: .infinity)
+        .aspectRatio(184.0 / 108.0, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 

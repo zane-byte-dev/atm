@@ -403,6 +403,80 @@ func TestArchiveRejectsActiveTodos(t *testing.T) {
 	}
 }
 
+func TestTrashAndRestorePreserveActiveTodoAndCloseBinding(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "Recoverable"))
+
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		if _, err := state.BindSession(TodoSessionBinding{
+			SessionID: "session-1", TodoID: "t1", Agent: "codex",
+		}); err != nil {
+			return err
+		}
+		trashed, err := state.TrashTodos([]string{"t1"})
+		if err != nil {
+			return err
+		}
+		if len(trashed) != 1 || FindTodo(state.Todos, "t1") != nil {
+			t.Fatalf("trashed = %#v, todo still live = %v", trashed, FindTodo(state.Todos, "t1") != nil)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	bindings, err := ListTodoSessionBindings("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0].UnboundAt == nil || bindings[0].Reason != "todo moved to trash" {
+		t.Fatalf("binding after trash = %#v", bindings)
+	}
+	archived, err := LoadArchivedTodos()
+	if err != nil || len(archived) != 1 || archived[0].Status != TodoStatusOpen {
+		t.Fatalf("trash contents = %#v, err=%v", archived, err)
+	}
+
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		_, err := state.RestoreTodos([]string{"t1"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	todos, err := LoadTodosReadOnly()
+	if err != nil || len(todos.Items) != 1 || todos.Items[0].Status != TodoStatusOpen {
+		t.Fatalf("restored todos = %#v, err=%v", todos, err)
+	}
+}
+
+func TestPermanentlyDeleteArchivedTodo(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "Disposable"))
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		_, err := state.TrashTodos([]string{"t1"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		_, err := state.PermanentlyDeleteTodos([]string{"t1"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := LoadArchivedTodos()
+	if err != nil || len(archived) != 0 {
+		t.Fatalf("trash after permanent delete = %#v, err=%v", archived, err)
+	}
+	todos, err := LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next := NextTodoID(todos); next != "t1" {
+		t.Fatalf("next todo after permanent delete = %s, want t1", next)
+	}
+}
+
 // Archived todos are absent from the snapshot, so an edit of the live set must
 // not be mistaken for their deletion.
 func TestEditingLiveTodosDoesNotDeleteArchivedOnes(t *testing.T) {

@@ -68,7 +68,7 @@ var (
 
 func init() {
 	todoListCmd.Flags().StringVar(&todoListPriorityFlag, "priority", "", "filter by priority: P0, P1, P2")
-	todoListCmd.Flags().StringVar(&todoStatusFlag, "status", "", "filter by status: open, in_progress, waiting, review, blocked, done, dropped, archived, all (default: active)")
+	todoListCmd.Flags().StringVar(&todoStatusFlag, "status", "", "filter by status: open, in_progress, waiting, review, blocked, done, dropped, archived, trashed, all (default: active)")
 	todoListCmd.Flags().StringVar(&todoProjectFlag, "project", "", "filter by project name")
 	todoListCmd.Flags().StringVar(&todoListQueryFlag, "query", "", "filter by id, title, description, project, source, or todo document")
 	todoListCmd.Flags().StringVar(&todoListCreatorFlag, "creator", "", "filter by creator: "+strings.Join(store.TodoCreatorVocabulary, ", "))
@@ -126,7 +126,7 @@ func init() {
 		contextCmd.Flags().StringVar(&todoContextCWD, "cwd", "", "Git worktree to inspect (required when active todo bindings use multiple worktrees)")
 	}
 
-	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
+	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
 	rootCmd.AddCommand(todoCmd)
 }
 
@@ -325,6 +325,23 @@ var todoUnarchiveCmd = &cobra.Command{
 	RunE:  runTodoUnarchive,
 }
 
+var todoTrashCmd = &cobra.Command{
+	Use:   "trash <id>...",
+	Short: "Move todos to the trash without deleting them",
+	Long: `Move todos out of the working set without deleting their rows, markdown,
+progress, dependencies, or history. No confirmation is required because the
+operation is reversible with ` + "`atm todo restore`" + `.`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runTodoTrash,
+}
+
+var todoRestoreCmd = &cobra.Command{
+	Use:   "restore <id>...",
+	Short: "Restore todos from the trash",
+	Args:  cobra.MinimumNArgs(1),
+	RunE:  runTodoRestore,
+}
+
 func validateWorkStatus(value string) error {
 	switch value {
 	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusWaiting,
@@ -407,6 +424,9 @@ func runTodoDelete(cmd *cobra.Command, args []string) error {
 			found = true
 		}
 	}
+	if _, archived := store.ArchivedStatus(tf, id); archived {
+		found = true
+	}
 	if !found {
 		return store.TodoNotFoundError(tf, id)
 	}
@@ -419,15 +439,9 @@ func runTodoDelete(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
-		var updated []store.Todo
-		for _, todo := range transaction.Todos().Items {
-			if todo.ID != id {
-				updated = append(updated, todo)
-			}
-		}
 		// Comments and session bindings go with the todo via ON DELETE CASCADE.
-		transaction.Todos().Items = updated
-		return nil
+		_, err := transaction.PermanentlyDeleteTodos([]string{id})
+		return err
 	})
 	if err != nil {
 		return err
@@ -474,13 +488,13 @@ func runTodoList(cmd *cobra.Command, args []string) error {
 	if status == "all" {
 		status = ""
 		activeOnly = false
-	} else if status != "" && status != "archived" && status != store.TodoStatusDone && status != store.TodoStatusDropped {
+	} else if status != "" && status != "archived" && status != "trashed" && status != store.TodoStatusDone && status != store.TodoStatusDropped {
 		if err := validateWorkStatus(status); err != nil {
 			return err
 		}
 	}
 
-	if status == "archived" {
+	if status == "archived" || status == "trashed" {
 		return listArchived(creator)
 	}
 
@@ -551,6 +565,20 @@ func runTodoUnarchive(cmd *cobra.Command, args []string) error {
 	return runTodoArchiveMove(args, "unarchived", "Unarchived",
 		func(transaction *workapp.Transaction, ids []string) ([]string, error) {
 			return transaction.UnarchiveTodos(ids)
+		})
+}
+
+func runTodoTrash(cmd *cobra.Command, args []string) error {
+	return runTodoArchiveMove(args, "trashed", "Trashed",
+		func(transaction *workapp.Transaction, ids []string) ([]string, error) {
+			return transaction.TrashTodos(ids)
+		})
+}
+
+func runTodoRestore(cmd *cobra.Command, args []string) error {
+	return runTodoArchiveMove(args, "restored", "Restored",
+		func(transaction *workapp.Transaction, ids []string) ([]string, error) {
+			return transaction.RestoreTodos(ids)
 		})
 }
 

@@ -866,6 +866,7 @@ private struct DesktopTasksView: View {
     @ObservedObject var navigation: ATMDesktopNavigation
 
     @State private var deleteCandidate: ATMTodo?
+    @State private var showingTrash = false
     @AppStorage("ATMCollapsedTaskGroups")
     private var collapsedGroupsRaw = "done,deferred,dropped,history"
     @AppStorage("ATMDidApplyDefaultCollapsedTaskGroups") private var didApplyDefaultCollapsedGroups = false
@@ -909,6 +910,7 @@ private struct DesktopTasksView: View {
 
     private func groupAccent(_ id: String) -> Color {
         switch id {
+        case "trash": return ATMTheme.secondary
         case "review": return ATMTodoStatusStyle.color(forStatus: "review")
         case "working": return ATMTodoStatusStyle.color(forStatus: "in_progress")
         case "waiting": return ATMTodoStatusStyle.color(forStatus: "waiting")
@@ -919,11 +921,12 @@ private struct DesktopTasksView: View {
     }
 
     private var todos: [ATMTodo] {
-        store.allTodos
+        showingTrash ? store.trashedTodos : store.allTodos
     }
 
     private var visibleTodos: [ATMTodo] {
-        ATMTaskQuery.visibleTodos(from: todos, showsDropped: showsDropped)
+        if showingTrash { return todos }
+        return ATMTaskQuery.visibleTodos(from: todos, showsDropped: showsDropped)
     }
 
     private var selectedTodo: ATMTodo? {
@@ -932,7 +935,10 @@ private struct DesktopTasksView: View {
     }
 
     private var groups: [ATMTaskGroup] {
-        ATMTaskQuery.groups(from: visibleTodos).map {
+        if showingTrash {
+            return [ATMTaskGroup(id: "trash", title: "已删除", todos: visibleTodos)]
+        }
+        return ATMTaskQuery.groups(from: visibleTodos).map {
             ATMTaskGroup(id: $0.id, title: $0.title, todos: $0.todos)
         }
     }
@@ -944,7 +950,7 @@ private struct DesktopTasksView: View {
 
             Group {
                 if let todo = selectedTodo {
-                    DesktopTodoDetail(todo: todo, store: store)
+                    DesktopTodoDetail(todo: todo, store: store, isTrashed: showingTrash)
                         // Identity is the Todo id alone. Folding title / description /
                         // status into it recreated the view on every background sync
                         // that touched them, which reset the selected tab and threw
@@ -954,10 +960,10 @@ private struct DesktopTasksView: View {
                         .id(todo.id)
                 } else {
                     VStack(spacing: 10) {
-                        Image(systemName: "checklist")
+                        Image(systemName: showingTrash ? "trash" : "checklist")
                             .font(ATMFont.font(.display, weight: .light))
                             .foregroundStyle(ATMTheme.secondary)
-                        Text("选择一个任务")
+                        Text(showingTrash ? "选择一个已删除任务" : "选择一个任务")
                             .font(ATMFont.font(.title3, weight: .semibold))
                         Text("从左侧列表查看详情、编辑 Markdown 或执行快捷操作。")
                             .font(ATMFont.body)
@@ -981,21 +987,41 @@ private struct DesktopTasksView: View {
         // reveal stays on selection change / first appear.
         .onChange(of: todos.map(\.id)) { _ in selectFirstIfNeeded() }
         .onChange(of: showsDropped) { _ in selectFirstIfNeeded() }
+        .onChange(of: showingTrash) { _ in selectFirstIfNeeded() }
         .onChange(of: navigation.selectedTodoID) { _ in revealSelectedGroup() }
     }
 
     private var taskList: some View {
         VStack(spacing: 0) {
-            ATMDrawerHeader(title: "我的任务", count: visibleTodos.count) {
-                Button {
-                    navigation.showAddTodo = true
-                } label: {
-                    Label("新建", systemImage: "plus")
+            ATMDrawerHeader(title: showingTrash ? "回收站" : "我的任务", count: visibleTodos.count) {
+                if showingTrash {
+                    Button {
+                        showingTrash = false
+                    } label: {
+                        Label("返回任务", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        showingTrash = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("回收站")
+
+                    Button {
+                        navigation.showAddTodo = true
+                    } label: {
+                        Label("新建", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help("添加任务 (⌘N)")
+                    .keyboardShortcut("n", modifiers: .command)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .help("添加任务 (⌘N)")
-                .keyboardShortcut("n", modifiers: .command)
             }
 
             if let error = store.errorMessage {
@@ -1045,7 +1071,7 @@ private struct DesktopTasksView: View {
                     VStack(spacing: 7) {
                         Image(systemName: "magnifyingglass")
                             .font(ATMFont.font(.title2, weight: .light))
-                        Text("没有匹配的任务")
+                        Text(showingTrash ? "回收站为空" : "没有匹配的任务")
                             .font(ATMFont.font(.body, weight: .medium))
                     }
                     .foregroundStyle(ATMTheme.secondary)
@@ -1055,7 +1081,7 @@ private struct DesktopTasksView: View {
         }
         .background(ATMTheme.listPane)
         .confirmationDialog(
-            "删除 \(deleteCandidate?.id.uppercased() ?? "")？",
+            "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
             isPresented: Binding(
                 get: { deleteCandidate != nil },
                 set: { if !$0 { deleteCandidate = nil } }
@@ -1070,49 +1096,59 @@ private struct DesktopTasksView: View {
             }
             Button("取消", role: .cancel) { deleteCandidate = nil }
         } message: {
-            Text(deleteCandidate?.title ?? "").font(ATMFont.body)
+            Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
         }
     }
 
     @ATMMenuBuilder
     private func todoMenuEntries(for todo: ATMTodo) -> [ATMMenuEntry] {
-        ATMMenuItem("用 VS Code 打开项目", systemImage: "chevron.left.forwardslash.chevron.right") {
-            store.openTodoProjectInVSCode(todo)
-        }
-        ATMMenuSeparator()
-        for item in ATMTodoStatusActions.items(for: todo) {
-            ATMMenuItem(item.title, systemImage: item.systemImage) {
-                store.perform(item.action, on: todo)
+        if showingTrash {
+            ATMMenuItem("恢复", systemImage: "arrow.uturn.backward") {
+                store.perform(.restore, on: todo)
             }
-        }
-        if let links = todo.links, !links.isEmpty {
             ATMMenuSeparator()
-            ATMMenuSubmenu("打开链接") {
-                for link in links {
-                    ATMMenuItem(link.title ?? link.url) {
-                        if let url = URL(string: link.url) {
-                            NSWorkspace.shared.open(url)
+            ATMMenuItem("永久删除…", destructive: true) { deleteCandidate = todo }
+        } else {
+            ATMMenuItem("用 VS Code 打开项目", systemImage: "chevron.left.forwardslash.chevron.right") {
+                store.openTodoProjectInVSCode(todo)
+            }
+            ATMMenuSeparator()
+            for item in ATMTodoStatusActions.items(for: todo) {
+                ATMMenuItem(item.title, systemImage: item.systemImage) {
+                    store.perform(item.action, on: todo)
+                }
+            }
+            if let links = todo.links, !links.isEmpty {
+                ATMMenuSeparator()
+                ATMMenuSubmenu("打开链接") {
+                    for link in links {
+                        ATMMenuItem(link.title ?? link.url) {
+                            if let url = URL(string: link.url) {
+                                NSWorkspace.shared.open(url)
+                            }
                         }
                     }
                 }
             }
-        }
-        ATMMenuSeparator()
-        ATMMenuItem("复制 ID") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(todo.id, forType: .string)
-        }
-        if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-            ATMMenuItem("复制启动提示") {
-                Task {
-                    guard let prompt = await store.launchPrompt(for: todo) else { return }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(prompt, forType: .string)
+            ATMMenuSeparator()
+            ATMMenuItem("复制 ID") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(todo.id, forType: .string)
+            }
+            if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
+                ATMMenuItem("复制启动提示") {
+                    Task {
+                        guard let prompt = await store.launchPrompt(for: todo) else { return }
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(prompt, forType: .string)
+                    }
                 }
             }
+            ATMMenuSeparator()
+            ATMMenuItem("移到回收站", systemImage: "trash") {
+                store.perform(.trash, on: todo)
+            }
         }
-        ATMMenuSeparator()
-        ATMMenuItem("删除…", destructive: true) { deleteCandidate = todo }
     }
 
     private func selectFirstIfNeeded() {
@@ -1245,6 +1281,7 @@ struct DesktopTodoDetail: View {
 
     let todo: ATMTodo
     @ObservedObject var store: ATMDataStore
+    let isTrashed: Bool
 
     @State private var isEditing = false
     @State private var selectedTab: DetailTab = .detail
@@ -1284,12 +1321,14 @@ struct DesktopTodoDetail: View {
             }
         }
         .background(ATMTheme.canvas)
-        .onAppear { store.loadBoundSessions(for: todo.id) }
+        .onAppear {
+            if !isTrashed { store.loadBoundSessions(for: todo.id) }
+        }
         .onChange(of: store.snapshot.refreshedAt) { _ in
-            store.loadBoundSessions(for: todo.id)
+            if !isTrashed { store.loadBoundSessions(for: todo.id) }
         }
         .confirmationDialog(
-            "删除 \(deleteCandidate?.id.uppercased() ?? "")？",
+            "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
             isPresented: Binding(
                 get: { deleteCandidate != nil },
                 set: { if !$0 { deleteCandidate = nil } }
@@ -1304,14 +1343,16 @@ struct DesktopTodoDetail: View {
             }
             Button("取消", role: .cancel) { deleteCandidate = nil }
         } message: {
-            Text(deleteCandidate?.title ?? "").font(ATMFont.body)
+            Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
         }
     }
 
     private var detailTabs: some View {
         HStack(spacing: 22) {
             detailTabButton(.detail, title: "任务描述", icon: "doc.text")
-            detailTabButton(.sessions, title: sessionTabTitle, icon: "terminal")
+            if !isTrashed {
+                detailTabButton(.sessions, title: sessionTabTitle, icon: "terminal")
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 24)
@@ -1398,22 +1439,45 @@ struct DesktopTodoDetail: View {
     @ViewBuilder
     private var detailActions: some View {
         HStack(spacing: 3) {
-            let inline = ATMTodoStatusActions.inlineItems(for: todo)
-            let overflow = ATMTodoStatusActions.overflowItems(for: todo)
-            ForEach(inline) { item in
-                actionButton(item.systemImage, help: item.help) {
-                    store.perform(item.action, on: todo)
+            if isTrashed {
+                actionButton("arrow.uturn.backward", help: "恢复任务") {
+                    store.perform(.restore, on: todo)
                 }
-            }
-            if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                actionButton(
-                    copiedPrompt ? "checkmark" : "doc.on.doc",
-                    help: copiedPrompt ? "已复制启动提示" : "复制启动提示"
-                ) {
-                    copyLaunchPrompt(for: todo)
+                Menu {
+                    Button(role: .destructive) {
+                        deleteCandidate = todo
+                    } label: {
+                        Label("永久删除…", systemImage: "trash.slash")
+                    }
+                } label: {
+                    ATMIconMenuLabel(
+                        systemImage: "ellipsis",
+                        help: "更多操作",
+                        chrome: .chip,
+                        isEnabled: !store.isActing,
+                        side: 26,
+                        iconTier: .body
+                    )
                 }
+                .menuStyle(.borderlessButton)
+            } else {
+                let inline = ATMTodoStatusActions.inlineItems(for: todo)
+                let overflow = ATMTodoStatusActions.overflowItems(for: todo)
+                ForEach(inline) { item in
+                    actionButton(item.systemImage, help: item.help) {
+                        store.perform(item.action, on: todo)
+                    }
+                }
+                if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
+                    actionButton(
+                        copiedPrompt ? "checkmark" : "doc.on.doc",
+                        help: copiedPrompt ? "已复制启动提示" : "复制启动提示"
+                    ) {
+                        copyLaunchPrompt(for: todo)
+                    }
+                }
+                overflowMenu(overflow: overflow, todo: todo)
             }
-            overflowMenu(overflow: overflow, todo: todo)
         }
     }
 
@@ -1480,8 +1544,10 @@ struct DesktopTodoDetail: View {
                     }
                 }
 
-                detailCard("动态", icon: "clock.arrow.circlepath") {
-                    TodoProgressView(todo: todo, store: store)
+                if !isTrashed {
+                    detailCard("动态", icon: "clock.arrow.circlepath") {
+                        TodoProgressView(todo: todo, store: store)
+                    }
                 }
 
                 if let links = todo.links, !links.isEmpty {
@@ -1823,10 +1889,10 @@ struct DesktopTodoDetail: View {
                 }
             }
             Divider()
-            Button(role: .destructive) {
-                deleteCandidate = todo
+            Button {
+                store.perform(.trash, on: todo)
             } label: {
-                Label("删除…", systemImage: "trash")
+                Label("移到回收站", systemImage: "trash")
             }
         } label: {
             ATMIconMenuLabel(
@@ -1853,10 +1919,14 @@ struct DesktopTodoDetail: View {
     }
 
     private var statusBadge: some View {
-        let color = ATMTodoStatusStyle.color(for: todo)
+        let color = isTrashed ? ATMTheme.secondary : ATMTodoStatusStyle.color(for: todo)
         return HStack(spacing: 3) {
-            ATMTodoStatusGlyph(todo: todo, tier: .caption)
-            Text(ATMTodoStatusStyle.label(for: todo))
+            if isTrashed {
+                Image(systemName: "trash")
+            } else {
+                ATMTodoStatusGlyph(todo: todo, tier: .caption)
+            }
+            Text(isTrashed ? "已删除" : ATMTodoStatusStyle.label(for: todo))
                 .font(ATMFont.mono(.caption, .semibold))
         }
         .foregroundStyle(color)

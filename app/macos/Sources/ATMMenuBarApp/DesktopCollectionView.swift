@@ -593,7 +593,7 @@ private struct CollectionItemDetail: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
                         Label(collectionActionBadgeTitle, systemImage: collectionActionIcon(item.action, retryStopped: retryStopped))
@@ -656,12 +656,16 @@ private struct CollectionItemDetail: View {
                     .fixedSize()
                 }
 
+                detailDivider
                 decisionSummary
 
+                detailDivider
                 classificationSummary
 
+                detailDivider
                 sourceSummary
 
+                detailDivider
                 DisclosureGroup("运行与原始上下文", isExpanded: $showingTechnicalDetails) {
                     VStack(alignment: .leading, spacing: 12) {
                         if let run = store.collectionOverview.runs.first(where: { $0.sourceID == item.sourceID }) {
@@ -671,6 +675,7 @@ private struct CollectionItemDetail: View {
                                 detailLine("读取", "\(run.fetchedCount) 条")
                                 detailLine("处理", "新增 \(run.createdCount) · 补充 \(run.appendedCount) · 沉淀 \(run.insightCount) · 无需处理 \(run.ignoredCount)")
                             }
+                            Divider()
                         }
 
                         detailCard("判断信息") {
@@ -680,6 +685,8 @@ private struct CollectionItemDetail: View {
                                 item.confidence.map { String(format: "%.0f%%", $0 * 100) } ?? "—"
                             )
                         }
+
+                        Divider()
 
                         detailCard("原始聊天上下文") {
                             Text(item.rawContext ?? "无上下文")
@@ -693,9 +700,8 @@ private struct CollectionItemDetail: View {
                 }
                 .font(ATMFont.font(.body, weight: .medium))
             }
-            .padding(18)
-            .atmWorkspaceCard()
-            .padding(20)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
             .frame(maxWidth: 880, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
@@ -780,9 +786,7 @@ private struct CollectionItemDetail: View {
                 }
             }
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var classificationSummary: some View {
@@ -804,9 +808,7 @@ private struct CollectionItemDetail: View {
                 .foregroundStyle(ATMTheme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.controlFill.opacity(0.5), in: RoundedRectangle(cornerRadius: 9))
     }
 
     private func metadataLabel(_ text: String, systemImage: String) -> some View {
@@ -837,7 +839,6 @@ private struct CollectionItemDetail: View {
                 .font(ATMFont.caption)
                 .foregroundStyle(ATMTheme.secondary)
             }
-            .layoutPriority(1)
             Spacer()
             if source != nil {
                 // The context here is only the few lines around this item;
@@ -845,6 +846,8 @@ private struct CollectionItemDetail: View {
                 Button("查看聊天记录", action: openHistory)
                     .buttonStyle(.link)
                     .font(ATMFont.footnote)
+                    .fixedSize()
+                    .layoutPriority(1)
             }
         }
         .padding(.vertical, 2)
@@ -859,9 +862,12 @@ private struct CollectionItemDetail: View {
                 .font(ATMFont.font(.body, weight: .semibold))
             content()
         }
-        .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var detailDivider: some View {
+        Divider()
+            .padding(.vertical, 20)
     }
 
     private func detailLine(_ label: String, _ value: String) -> some View {

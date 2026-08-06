@@ -382,6 +382,19 @@ func (state *WorkStateTx) UnbindSession(sessionID, reason string) (bool, error) 
 // ID is never reused — so this updates archived_at directly and drops the todos
 // from the snapshot, which is what loadTodos would return from now on.
 func (state *WorkStateTx) ArchiveTodos(ids []string) ([]string, error) {
+	return state.moveTodosOutOfWorkingSet(ids, true, "todo archived")
+}
+
+// TrashTodos moves todos of any lifecycle status out of the working set. Unlike
+// ArchiveTodos this is the recoverable counterpart of Delete: the lifecycle
+// state is preserved so RestoreTodos can put the exact task back. Any live
+// session binding is closed because an invisible todo must not remain the
+// session's current focus.
+func (state *WorkStateTx) TrashTodos(ids []string) ([]string, error) {
+	return state.moveTodosOutOfWorkingSet(ids, false, "todo moved to trash")
+}
+
+func (state *WorkStateTx) moveTodosOutOfWorkingSet(ids []string, requireClosed bool, unbindReason string) ([]string, error) {
 	now := time.Now().In(config.Loc).Unix()
 	archived := []string{}
 	for _, id := range ids {
@@ -389,8 +402,11 @@ func (state *WorkStateTx) ArchiveTodos(ids []string) ([]string, error) {
 		if todo == nil {
 			return nil, TodoNotFoundError(state.Todos, id)
 		}
-		if TodoIsActive(*todo) {
+		if requireClosed && TodoIsActive(*todo) {
 			return nil, fmt.Errorf("cannot archive %s with status %s: finish or drop it first", id, todo.Status)
+		}
+		if _, err := state.UnbindTodoSessions(id, unbindReason); err != nil {
+			return nil, err
 		}
 		if _, err := state.tx.Exec(`UPDATE todos SET archived_at=? WHERE id=?`, now, id); err != nil {
 			return nil, err
@@ -418,6 +434,32 @@ func (state *WorkStateTx) UnarchiveTodos(ids []string) ([]string, error) {
 	return restored, nil
 }
 
+// RestoreTodos is the product-language counterpart of UnarchiveTodos. Both
+// restore the same retained row; keeping the alias lets existing archive users
+// continue to use the older command vocabulary.
+func (state *WorkStateTx) RestoreTodos(ids []string) ([]string, error) {
+	return state.UnarchiveTodos(ids)
+}
+
+// PermanentlyDeleteTodos removes live or archived rows. Callers are responsible
+// for obtaining explicit confirmation before reaching this irreversible layer.
+func (state *WorkStateTx) PermanentlyDeleteTodos(ids []string) ([]string, error) {
+	deleted := []string{}
+	for _, id := range ids {
+		if FindTodo(state.Todos, id) == nil {
+			if _, archived := ArchivedStatus(state.Todos, id); !archived {
+				return nil, TodoNotFoundError(state.Todos, id)
+			}
+		}
+		if _, err := state.tx.Exec(`DELETE FROM todos WHERE id=?`, id); err != nil {
+			return nil, err
+		}
+		state.Todos.forgetPermanently(id)
+		deleted = append(deleted, id)
+	}
+	return deleted, nil
+}
+
 // forget drops a todo from the snapshot without scheduling a delete: the row
 // still exists, it just left the working set.
 func (file *TodoFile) forget(id, status string) {
@@ -433,6 +475,18 @@ func (file *TodoFile) forget(id, status string) {
 		file.archived = map[string]string{}
 	}
 	file.archived[id] = status
+}
+
+func (file *TodoFile) forgetPermanently(id string) {
+	kept := file.Items[:0]
+	for _, todo := range file.Items {
+		if todo.ID != id {
+			kept = append(kept, todo)
+		}
+	}
+	file.Items = kept
+	delete(file.baseline, id)
+	delete(file.archived, id)
 }
 
 func (state *WorkStateTx) UnbindTodoSessions(todoID, reason string) (int, error) {
