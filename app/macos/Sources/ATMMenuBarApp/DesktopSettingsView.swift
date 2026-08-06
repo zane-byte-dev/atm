@@ -32,6 +32,15 @@ struct DesktopSettingsView: View {
             case .connectors: return "link"
             }
         }
+
+        var subtitle: String {
+            switch self {
+            case .general: return "主题、字号与快捷键"
+            case .notch: return "状态提醒与声音反馈"
+            case .todo: return "任务列表与默认行为"
+            case .connectors: return "自动收集与外部来源"
+            }
+        }
     }
 
     @ObservedObject var store: ATMDataStore
@@ -85,64 +94,130 @@ struct DesktopSettingsView: View {
         """
 
     var body: some View {
-        VStack(spacing: 0) {
-            settingsHeader
+        HSplitView {
+            settingsSidebar
+                .frame(minWidth: 240, idealWidth: 270, maxWidth: 310)
 
-            switch selectedTab {
-            case .general:
-                generalSettings
-            case .notch:
-                notchSettings
-            case .todo:
-                todoSettings
-            case .connectors:
-                connectorSettings
-            }
+            settingsContent
+                .frame(minWidth: 580, maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(ATMTheme.listPane)
     }
 
-    private var settingsHeader: some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
+                Text("工作台")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
                 Text("设置")
                     .font(ATMFont.font(.title2, weight: .bold))
-                Text("调整外观、提醒、任务偏好与外部连接")
+                Text("应用偏好与外部连接")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
             }
+            .padding(.horizontal, 20)
+            .padding(.top, 24)
+            .padding(.bottom, 18)
 
-            HStack(spacing: 22) {
+            Divider()
+
+            VStack(spacing: 4) {
                 ForEach(SettingsTab.allCases) { tab in
                     Button {
                         selectedTab = tab
                     } label: {
-                        Label(tab.title, systemImage: tab.systemImage)
-                            .font(ATMFont.font(.body, weight: selectedTab == tab ? .semibold : .medium))
-                            .foregroundStyle(selectedTab == tab ? ATMTheme.accent : ATMTheme.secondary)
-                            .padding(.horizontal, 2)
-                            .padding(.bottom, 11)
-                            .overlay(alignment: .bottom) {
-                                if selectedTab == tab {
-                                    Capsule()
-                                        .fill(ATMTheme.accent)
-                                        .frame(height: 2)
-                                }
-                            }
+                        settingsSidebarRow(tab)
                     }
                     .buttonStyle(.plain)
                 }
+            }
+            .padding(8)
+
+            Spacer(minLength: 0)
+        }
+        .background(ATMTheme.listPane)
+    }
+
+    private func settingsSidebarRow(_ tab: SettingsTab) -> some View {
+        let isSelected = selectedTab == tab
+
+        return HStack(spacing: 12) {
+            Image(systemName: tab.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isSelected ? ATMTheme.accent : ATMTheme.secondary)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(isSelected ? ATMTheme.accent.opacity(0.12) : ATMTheme.surface)
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tab.title)
+                    .font(ATMFont.font(.body, weight: .semibold))
+                    .foregroundStyle(ATMTheme.primary)
+                Text(tab.subtitle)
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+
+            Spacer(minLength: 4)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary.opacity(0.65))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .contentShape(Rectangle())
+        .atmRowSurface(isSelected: isSelected)
+    }
+
+    private var settingsContent: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 13) {
+                Image(systemName: selectedTab.systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(ATMTheme.accent)
+                    .frame(width: 36, height: 36)
+                    .background(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(ATMTheme.accent.opacity(0.12))
+                    )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(selectedTab.title)
+                        .font(ATMFont.font(.title2, weight: .bold))
+                    Text(selectedTab.subtitle)
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+
                 Spacer()
             }
+            .padding(.horizontal, 24)
+            .frame(height: 86)
+            .background(ATMTheme.elevated)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(ATMTheme.border)
+                    .frame(height: 1)
+            }
+
+            Group {
+                switch selectedTab {
+                case .general:
+                    generalSettings
+                case .notch:
+                    notchSettings
+                case .todo:
+                    todoSettings
+                case .connectors:
+                    connectorSettings
+                }
+            }
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 18)
-        .background(ATMTheme.elevated)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(ATMTheme.border)
-                .frame(height: 1)
-        }
+        .background(ATMTheme.listPane)
     }
 
     private var generalSettings: some View {

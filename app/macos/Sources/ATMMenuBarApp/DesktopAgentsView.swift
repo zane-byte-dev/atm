@@ -6,6 +6,22 @@ struct DesktopAgentsView: View {
     @ObservedObject var navigation: ATMDesktopNavigation
 
     @State private var launchError: String?
+    @AppStorage("ATMCollapsedAgentGroups") private var collapsedGroupsRaw = ""
+
+    private var collapsedGroups: Set<String> {
+        Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private func expandedBinding(for state: ATMAgentPresenceState) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedGroups.contains(state.id) },
+            set: { expanded in
+                var set = collapsedGroups
+                if expanded { set.remove(state.id) } else { set.insert(state.id) }
+                collapsedGroupsRaw = set.sorted().joined(separator: ",")
+            }
+        )
+    }
 
     private var sessions: [ATMLiveSession] {
         store.snapshot.liveStatus.sessions
@@ -31,7 +47,7 @@ struct DesktopAgentsView: View {
     var body: some View {
         HSplitView {
             agentList
-                .frame(minWidth: 285, idealWidth: 325, maxWidth: 420)
+                .frame(minWidth: 260, idealWidth: 330, maxWidth: 420)
 
             Group {
                 if let session = selectedSession {
@@ -51,10 +67,12 @@ struct DesktopAgentsView: View {
         }
         .onAppear {
             selectFirstIfNeeded()
+            revealSelectedGroup()
             store.startLiveStatusPolling()
         }
         .onDisappear { store.stopLiveStatusPolling() }
         .onChange(of: sessions.map(\.id)) { _ in selectFirstIfNeeded() }
+        .onChange(of: navigation.selectedAgentID) { _ in revealSelectedGroup() }
         .alert(
             "无法打开来源会话",
             isPresented: Binding(
@@ -70,37 +88,15 @@ struct DesktopAgentsView: View {
 
     private var agentList: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("工作台")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                HStack(alignment: .firstTextBaseline) {
-                    HStack(spacing: 8) {
-                        Text("活跃 Agent")
-                            .font(ATMFont.font(.title2, weight: .bold))
-                        Text("\(sessions.filter(\.isCurrentlyActive).count)")
-                            .font(ATMFont.mono(.footnote, .semibold))
-                            .foregroundStyle(ATMTheme.success)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(ATMTheme.successFill, in: Capsule())
-                    }
-                    Spacer()
-                    if !store.snapshot.liveStatus.time.isEmpty {
-                        Text(store.snapshot.liveStatus.time)
-                            .font(ATMFont.mono(.caption, .medium))
-                            .foregroundStyle(ATMTheme.secondary)
-                    }
-                }
-                Text(activeAgentSummary)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .lineLimit(1)
+            ATMDrawerHeader(
+                title: "Agent",
+                count: sessions.count
+            ) {
+                Circle()
+                    .fill(sessions.contains(where: { $0.presenceState == .attention }) ? ATMTheme.warning : ATMTheme.success)
+                    .frame(width: 8, height: 8)
+                    .help(activeAgentSummary)
             }
-            .padding(.horizontal, 14)
-            .frame(height: 88)
-
-            Divider()
 
             if sessions.isEmpty {
                 VStack(spacing: 9) {
@@ -120,37 +116,44 @@ struct DesktopAgentsView: View {
                     ForEach(ATMAgentPresenceState.allCases) { state in
                         let values = sessions.filter { $0.presenceState == state }
                         if !values.isEmpty {
+                            let expanded = expandedBinding(for: state)
                             Section {
-                                ForEach(values) { session in
-                                    Button {
-                                        navigation.selectedAgentID = session.id
-                                    } label: {
-                                        DesktopAgentPresenceRow(
-                                            session: session,
-                                            isSelected: navigation.selectedAgentID == session.id,
-                                            showsOrigin: originLabel(session) != dominantOrigin
-                                        )
+                                if expanded.wrappedValue {
+                                    ForEach(values) { session in
+                                        Button {
+                                            navigation.selectedAgentID = session.id
+                                        } label: {
+                                            DesktopAgentPresenceRow(
+                                                session: session,
+                                                isSelected: navigation.selectedAgentID == session.id,
+                                                showsOrigin: originLabel(session) != dominantOrigin
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        // 行里不再逐张画来源，tooltip 兜住完整来源。
+                                        .help(originLabel(session))
+                                        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+                                        .listRowBackground(Color.clear)
                                     }
-                                    .buttonStyle(.plain)
-                                    // 行里不再逐张画来源，tooltip 兜住完整来源。
-                                    .help(originLabel(session))
-                                    .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-                                    .listRowBackground(Color.clear)
                                 }
                             } header: {
-                                HStack(spacing: 7) {
-                                    Circle()
-                                        .fill(state.tint)
-                                        .frame(width: 6, height: 6)
-                                    Text(state.title)
-                                    Spacer()
-                                    Text("\(values.count)")
-                                        .font(ATMFont.mono(.caption, .semibold))
-                                        .foregroundStyle(ATMTheme.secondary)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(ATMTheme.controlFill, in: Capsule())
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                        expanded.wrappedValue.toggle()
+                                    }
+                                } label: {
+                                    HStack {
+                                        ATMDrawerDisclosureLabel(
+                                            title: state.title,
+                                            count: values.count,
+                                            tint: state.tint,
+                                            isExpanded: expanded.wrappedValue
+                                        )
+                                        Spacer()
+                                    }
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
@@ -171,6 +174,13 @@ struct DesktopAgentsView: View {
             }
         }
         .background(ATMTheme.listPane)
+    }
+
+    private func revealSelectedGroup() {
+        guard let session = selectedSession else { return }
+        var set = collapsedGroups
+        guard set.remove(session.presenceState.id) != nil else { return }
+        collapsedGroupsRaw = set.sorted().joined(separator: ",")
     }
 
     private var activeAgentSummary: String {

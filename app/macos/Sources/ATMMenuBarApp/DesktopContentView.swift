@@ -893,24 +893,15 @@ private struct DesktopTasksView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.15)) { expanded.wrappedValue.toggle() }
         } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "chevron.right")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                    .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
-                Circle()
-                    .fill(groupAccent(group.id))
-                    .frame(width: 6, height: 6)
-                Text(group.title)
-                Text("\(group.todos.count)")
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(ATMTheme.controlFill, in: Capsule())
+            HStack {
+                ATMDrawerDisclosureLabel(
+                    title: group.title,
+                    count: group.todos.count,
+                    tint: groupAccent(group.id),
+                    isExpanded: expanded.wrappedValue
+                )
                 Spacer()
             }
-            .font(ATMFont.font(.footnote, weight: .semibold))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -995,20 +986,7 @@ private struct DesktopTasksView: View {
 
     private var taskList: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .bottom, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("工作台")
-                        .font(ATMFont.font(.caption, weight: .semibold))
-                        .foregroundStyle(ATMTheme.secondary)
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Text("我的任务")
-                            .font(ATMFont.font(.title2, weight: .semibold))
-                        Text("\(visibleTodos.count)")
-                            .font(ATMFont.mono(.footnote, .semibold))
-                            .foregroundStyle(ATMTheme.secondary)
-                    }
-                }
-                Spacer()
+            ATMDrawerHeader(title: "我的任务", count: visibleTodos.count) {
                 Button {
                     navigation.showAddTodo = true
                 } label: {
@@ -1019,9 +997,6 @@ private struct DesktopTasksView: View {
                 .help("添加任务 (⌘N)")
                 .keyboardShortcut("n", modifiers: .command)
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 18)
-            .padding(.bottom, 14)
 
             if let error = store.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle.fill")

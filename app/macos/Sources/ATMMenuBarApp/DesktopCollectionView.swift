@@ -17,6 +17,22 @@ struct DesktopCollectionView: View {
     @State private var deleteItemCandidate: ATMCollectionItem?
     @State private var historyRequest: CollectionHistoryRequest?
     @State private var showingIgnoredItems = false
+    @AppStorage("ATMCollapsedCollectionSourceGroups") private var collapsedSourceGroupsRaw = ""
+
+    private var collapsedSourceGroups: Set<String> {
+        Set(collapsedSourceGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private func expandedBinding(for id: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedSourceGroups.contains(id) },
+            set: { expanded in
+                var set = collapsedSourceGroups
+                if expanded { set.remove(id) } else { set.insert(id) }
+                collapsedSourceGroupsRaw = set.sorted().joined(separator: ",")
+            }
+        )
+    }
 
     private var filteredItems: [ATMCollectionItem] {
         store.collectionOverview.items
@@ -40,22 +56,25 @@ struct DesktopCollectionView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            HSplitView {
+        HSplitView {
+            VStack(spacing: 0) {
+                header
                 itemColumn
-                    .frame(minWidth: 340, idealWidth: 420, maxWidth: 500)
-                detailColumn
-                    .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
             }
+            .frame(minWidth: 260, idealWidth: 330, maxWidth: 420)
+
+            detailColumn
+                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(ATMTheme.canvas)
         .onAppear {
             store.refreshCollection()
             selectDefaultItem()
+            revealSelectedSourceGroup()
         }
         .onChange(of: store.collectionOverview.items.map(\.id)) { _ in selectDefaultItem() }
         .onChange(of: showingIgnoredItems) { _ in selectDefaultItem() }
+        .onChange(of: navigation.selectedCollectionItemID) { _ in revealSelectedSourceGroup() }
         .sheet(isPresented: $showingAddSource) {
             AddCollectionSourceSheet(store: store) { showingAddSource = false }
         }
@@ -86,42 +105,27 @@ struct DesktopCollectionView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("工作台")
-                        .font(ATMFont.font(.caption, weight: .semibold))
-                        .foregroundStyle(ATMTheme.secondary)
-                    Text("收集")
-                        .font(ATMFont.font(.title2, weight: .bold))
-                    Text("把外部消息转成可追溯任务")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer()
-                collectionHealthPill
-                sourceManagementMenu
-                Toggle(
-                    "自动收集",
-                    isOn: Binding(
-                        get: { store.collectionOverview.enabled },
-                        set: { store.setCollectionEnabled($0) }
-                    )
-                )
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .help("每 \(store.collectionOverview.intervalMinutes) 分钟自动收集")
-                Button {
-                    store.runCollectionNow()
-                } label: {
-                    Label(store.isCollecting ? "收集中" : "立即收集", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(store.isCollecting || store.collectionOverview.summary.enabledSources == 0)
-            }
+        VStack(alignment: .leading, spacing: 0) {
+            ATMDrawerHeader(title: "收集", count: primaryItems.count) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(collectionHealthColor)
+                        .frame(width: 8, height: 8)
+                        .help("\(collectionHealthText) · \(collectionSummaryHelp)")
 
-            dailySummary
+                    sourceManagementMenu
+
+                    Button {
+                        store.runCollectionNow()
+                    } label: {
+                        Label("收集", systemImage: store.isCollecting ? "hourglass" : "arrow.clockwise")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help(store.isCollecting ? "正在收集" : "立即收集")
+                    .disabled(store.isCollecting || store.collectionOverview.summary.enabledSources == 0)
+                }
+            }
 
             if let error = store.collectionErrorMessage, !error.isEmpty {
                 HStack(alignment: .top, spacing: 8) {
@@ -133,23 +137,25 @@ struct DesktopCollectionView: View {
                         .textSelection(.enabled)
                     Spacer()
                 }
-                .padding(9)
-                .background(ATMTheme.warningFill, in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
             }
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 16)
-        .padding(.bottom, 14)
-        .background(ATMTheme.elevated)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(ATMTheme.border)
-                .frame(height: 1)
         }
     }
 
     private var sourceManagementMenu: some View {
         Menu {
+            Button {
+                store.setCollectionEnabled(!store.collectionOverview.enabled)
+            } label: {
+                Label(
+                    store.collectionOverview.enabled ? "关闭自动收集" : "开启自动收集",
+                    systemImage: store.collectionOverview.enabled ? "pause.circle" : "play.circle"
+                )
+            }
+
+            Divider()
+
             Button {
                 showingAddSource = true
             } label: {
@@ -185,21 +191,6 @@ struct DesktopCollectionView: View {
         .help("添加或管理收集来源")
     }
 
-    private var collectionHealthPill: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(collectionHealthColor)
-                .frame(width: 7, height: 7)
-            Text(collectionHealthText)
-                .lineLimit(1)
-        }
-        .font(ATMFont.footnote)
-        .foregroundStyle(collectionHealthColor)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(collectionHealthColor.opacity(0.10), in: Capsule())
-    }
-
     private var collectionHealthText: String {
         if store.isCollecting { return "正在收集" }
         if store.collectionErrorMessage?.isEmpty == false { return "运行异常" }
@@ -217,40 +208,21 @@ struct DesktopCollectionView: View {
         return ATMTheme.secondary
     }
 
-    private var dailySummary: some View {
+    private var collectionSummaryHelp: String {
         let summary = store.collectionOverview.summary
-        return HStack(spacing: 12) {
-            Text("今日")
-                .font(ATMFont.font(.footnote, weight: .semibold))
-            // 与 collectionActionColor 一一对应，同一个动作在汇总和记录行里同色。
-            summaryMetric("新建", value: summary.createdToday, color: collectionActionColor("create"))
-            summaryMetric("补充", value: summary.appendedToday, color: collectionActionColor("append"))
-            summaryMetric("沉淀", value: summary.insightToday, color: collectionActionColor("insight"))
-            // 这里不再放失败数。绝大多数失败会自愈：游标不前移（collector 的
-            // `checkpoint was not advanced`）、失败消息不进 HandledCollectionMessageIDs、
-            // 失败 item 不在跳过分支里——下一轮连着原始上下文重新分析，人不用做任何事。
-            // 而且这个数是按 run 累加的：同一条失败 3 次会显示成「3」，读起来像 3 条待处理。
-            // 真正要人出手的只有重试预算用尽的那些，所以只报它，且为 0 时一个字都不说。
-            if let stopped = summary.retryStopped, stopped > 0 {
-                Text("\(stopped) 条重试已停止")
-                    .foregroundStyle(ATMTheme.danger)
-                    .help("自动重试已用尽，打开记录后用「重试」再试一次")
-            }
-            Spacer()
-            if let digest = todaysDigest {
-                // The digest is the readable form of everything filed as an
-                // insight; without naming it, "沉淀 12" has nowhere to lead.
-                Text("已写入知识库 \(digest)")
-                    .help("atm collect digest 按来源每天写一篇，当天内容变多就原地重写")
-            } else if summary.ignoredToday > 0 {
-                Text("另有 \(summary.ignoredToday) 条无需处理")
-            }
-            Text("读取 \(summary.fetchedToday) 条")
-                .help("拉取结果可能包含时间窗口重叠的消息")
+        var parts = [
+            "今日新建 \(summary.createdToday) · 补充 \(summary.appendedToday) · 沉淀 \(summary.insightToday)",
+            "读取 \(summary.fetchedToday) 条"
+        ]
+        if let digest = todaysDigest {
+            parts.append("已写入知识库 \(digest)")
+        } else if summary.ignoredToday > 0 {
+            parts.append("另有 \(summary.ignoredToday) 条无需处理")
         }
-        .font(ATMFont.footnote)
-        .foregroundStyle(ATMTheme.secondary)
-        .padding(.top, 2)
+        if let stopped = summary.retryStopped, stopped > 0 {
+            parts.append("\(stopped) 条已停止自动重试")
+        }
+        return parts.joined(separator: " · ")
     }
 
     private static let digestDayFormatter: DateFormatter = {
@@ -273,118 +245,8 @@ struct DesktopCollectionView: View {
         return Array(Set(collections)).sorted().joined(separator: "、")
     }
 
-    private func summaryMetric(_ title: String, value: Int, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Circle().fill(color).frame(width: 6, height: 6)
-            Text("\(title) \(value)")
-                .lineLimit(1)
-        }
-        .foregroundStyle(value > 0 ? color : ATMTheme.secondary)
-    }
-
-    private var sourceColumn: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("来源")
-                    .font(ATMFont.font(.body, weight: .semibold))
-                Spacer()
-                Button { showingAddSource = true } label: {
-                    Image(systemName: "plus")
-                }
-                .buttonStyle(.plain)
-                .help("添加收集来源")
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 44)
-            Divider()
-
-            List {
-                sourceRow(
-                    id: nil,
-                    name: "全部来源",
-                    icon: "tray.full",
-                    enabled: true,
-                    count: store.collectionOverview.items.filter { !shouldCollapse($0) }.count
-                )
-                ForEach(store.collectionOverview.sources) { source in
-                    sourceRow(
-                        id: source.id,
-                        name: source.displayName,
-                        icon: source.symbolName,
-                        enabled: source.enabled,
-                        count: store.collectionOverview.items.filter {
-                            $0.sourceID == source.id && !$0.shouldCollapseInCollection
-                        }.count
-                    )
-                    .atmRightClickMenu {
-                        ATMMenuItem("查看聊天记录") {
-                            historyRequest = CollectionHistoryRequest(source: source, item: nil)
-                        }
-                        ATMMenuItem("编辑") { editingSource = source }
-                        ATMMenuItem(source.enabled ? "暂停" : "启用") {
-                            store.setCollectionSource(source, enabled: !source.enabled)
-                        }
-                        ATMMenuSeparator()
-                        ATMMenuItem("删除", destructive: true) { deleteCandidate = source }
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-        }
-        .background(ATMTheme.listPane)
-    }
-
-    private func sourceRow(
-        id: String?,
-        name: String,
-        icon: String,
-        enabled: Bool,
-        count: Int
-    ) -> some View {
-        let selected = navigation.selectedCollectionSourceID == id
-        return Button {
-            navigation.selectedCollectionSourceID = id
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .frame(width: 18)
-                    .foregroundStyle(enabled ? ATMTheme.primary : ATMTheme.secondary)
-                Text(name)
-                    .lineLimit(1)
-                Spacer()
-                if !enabled {
-                    Image(systemName: "pause.circle")
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Text(String(count))
-                    .font(ATMFont.mono(.caption))
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-            .font(ATMFont.font(.body, weight: selected ? .semibold : .medium))
-            .foregroundStyle(selected ? ATMTheme.accent : ATMTheme.primary)
-            .atmRowSurface(.navigation, isSelected: selected)
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .listRowInsets(EdgeInsets(top: 1, leading: 8, bottom: 1, trailing: 8))
-        .listRowBackground(Color.clear)
-    }
-
     private var itemColumn: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("处理记录")
-                    .font(ATMFont.font(.body, weight: .semibold))
-                Spacer()
-                Text(String(primaryItems.count))
-                    .font(ATMFont.mono(.caption))
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-            .padding(.horizontal, 14)
-            .frame(height: 44)
-            Divider()
-
             if filteredItems.isEmpty {
                 CollectionEmptyState(
                     title: "暂无处理记录",
@@ -393,32 +255,66 @@ struct DesktopCollectionView: View {
                 )
             } else {
                 List {
-                    ForEach(primaryItems) { item in
-                        itemRow(item)
+                    ForEach(store.collectionOverview.sources) { source in
+                        let items = primaryItems.filter { $0.sourceID == source.id }
+                        if !items.isEmpty {
+                            let expanded = expandedBinding(for: source.id)
+                            Section {
+                                if expanded.wrappedValue {
+                                    ForEach(items) { item in
+                                        itemRow(item)
+                                    }
+                                }
+                            } header: {
+                                sourceSectionHeader(source, count: items.count, expanded: expanded)
+                            }
+                        }
                     }
+
+                    let unknownItems = primaryItems.filter { source(for: $0) == nil }
+                    if !unknownItems.isEmpty {
+                        let expanded = expandedBinding(for: "__unknown__")
+                        Section {
+                            if expanded.wrappedValue {
+                                ForEach(unknownItems) { item in
+                                    itemRow(item)
+                                }
+                            }
+                        } header: {
+                            genericSourceSectionHeader(
+                                "其他来源",
+                                systemImage: "questionmark.folder",
+                                count: unknownItems.count,
+                                expanded: expanded
+                            )
+                        }
+                    }
+
                     if !ignoredItems.isEmpty {
                         Section {
-                            Button {
-                                showingIgnoredItems.toggle()
-                            } label: {
-                                HStack(spacing: 7) {
-                                    Image(systemName: showingIgnoredItems ? "chevron.down" : "chevron.right")
-                                    Text("沉淀与已了结")
-                                    Spacer()
-                                    Text(String(ignoredItems.count))
-                                        .font(ATMFont.mono(.caption))
-                                }
-                                .font(ATMFont.footnote)
-                                .foregroundStyle(ATMTheme.secondary)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-
                             if showingIgnoredItems {
                                 ForEach(ignoredItems) { item in
                                     itemRow(item).opacity(0.78)
                                 }
                             }
+                        } header: {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.15)) {
+                                    showingIgnoredItems.toggle()
+                                }
+                            } label: {
+                                HStack {
+                                    ATMDrawerDisclosureLabel(
+                                        title: "沉淀与已了结",
+                                        count: ignoredItems.count,
+                                        tint: ATMTheme.secondary,
+                                        isExpanded: showingIgnoredItems
+                                    )
+                                    Spacer()
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -447,6 +343,85 @@ struct DesktopCollectionView: View {
         } message: {
             Text(deleteItemCandidate.map(collectionDeleteWarning(for:)) ?? "")
         }
+    }
+
+    private func sourceSectionHeader(
+        _ source: ATMCollectionSource,
+        count: Int,
+        expanded: Binding<Bool>
+    ) -> some View {
+        HStack(spacing: 7) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    expanded.wrappedValue.toggle()
+                }
+            } label: {
+                ATMDrawerDisclosureLabel(
+                    title: source.displayName,
+                    count: count,
+                    tint: source.enabled ? ATMTheme.accent : ATMTheme.secondary,
+                    isExpanded: expanded.wrappedValue,
+                    systemImage: source.symbolName
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if !source.enabled {
+                Text("已暂停")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            Spacer()
+            Menu {
+                Button("查看聊天记录") {
+                    historyRequest = CollectionHistoryRequest(source: source, item: nil)
+                }
+                Button("编辑") { editingSource = source }
+                Button(source.enabled ? "暂停" : "启用") {
+                    store.setCollectionSource(source, enabled: !source.enabled)
+                }
+                Divider()
+                Button("删除", role: .destructive) { deleteCandidate = source }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .frame(width: 20, height: 20)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+        .textCase(nil)
+    }
+
+    private func genericSourceSectionHeader(
+        _ title: String,
+        systemImage: String,
+        count: Int,
+        expanded: Binding<Bool>
+    ) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                expanded.wrappedValue.toggle()
+            }
+        } label: {
+            HStack {
+                ATMDrawerDisclosureLabel(
+                    title: title,
+                    count: count,
+                    tint: ATMTheme.secondary,
+                    isExpanded: expanded.wrappedValue,
+                    systemImage: systemImage
+                )
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(ATMTheme.secondary)
+        .textCase(nil)
     }
 
     private func itemRow(_ item: ATMCollectionItem) -> some View {
@@ -518,6 +493,14 @@ struct DesktopCollectionView: View {
     private func selectDefaultItem() {
         guard !displayedItems.contains(where: { $0.id == navigation.selectedCollectionItemID }) else { return }
         navigation.selectedCollectionItemID = displayedItems.first?.id
+    }
+
+    private func revealSelectedSourceGroup() {
+        guard let item = selectedItem, !shouldCollapse(item) else { return }
+        let groupID = source(for: item)?.id ?? "__unknown__"
+        var set = collapsedSourceGroups
+        guard set.remove(groupID) != nil else { return }
+        collapsedSourceGroupsRaw = set.sorted().joined(separator: ",")
     }
 }
 
