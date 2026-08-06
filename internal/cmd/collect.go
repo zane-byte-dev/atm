@@ -1138,33 +1138,55 @@ var collectItemRevertCmd = &cobra.Command{
 }
 
 var collectItemDeleteCmd = &cobra.Command{
-	Use:   "delete <item-id>",
-	Short: "Delete a processing record while keeping the Todo it wrote",
-	Long: "Delete one collection processing record. The Todo it created or appended to " +
-		"is kept: the record is collection's own note about a decision, not the work " +
+	Use:   "delete <item-id>...",
+	Short: "Delete processing records while keeping the Todos they wrote",
+	Long: "Delete collection processing records. The Todos they created or appended to " +
+		"are kept: a record is collection's own note about a decision, not the work " +
 		"itself. Use `atm collect item revert` when the Todo write is what was wrong.\n\n" +
+		"Several ids delete as one transaction, which is what clearing a whole group in " +
+		"the App does: either every named record goes or none does, and an id that is " +
+		"already gone stops the batch instead of half-clearing it.\n\n" +
 		"A record whose messages still fall inside the next run's re-read window can be " +
 		"rebuilt by that run; older records are gone for good.",
-	Args: cobra.ExactArgs(1),
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		confirmed, err := confirmDestructive(cmd, collectYes, "Delete collection item "+args[0]+"?")
+		ids := uniqueStrings(args)
+		prompt := "Delete collection item " + ids[0] + "?"
+		if len(ids) > 1 {
+			prompt = fmt.Sprintf("Delete %d collection items?", len(ids))
+		}
+		confirmed, err := confirmDestructive(cmd, collectYes, prompt)
 		if err != nil || !confirmed {
 			return err
 		}
 		return withDB(false, func(db *sql.DB) error {
-			item, err := store.DeleteCollectionItem(db, args[0])
+			items, err := store.DeleteCollectionItems(db, ids)
 			if err != nil {
 				return err
 			}
 			if jsonOutput {
-				output.JSON(map[string]any{"id": item.ID, "deleted": true, "todo_id": item.TodoID})
+				deleted := make([]map[string]any, 0, len(items))
+				for _, item := range items {
+					deleted = append(deleted, map[string]any{"id": item.ID, "todo_id": item.TodoID})
+				}
+				output.JSON(map[string]any{"deleted": deleted, "count": len(deleted)})
 				return nil
 			}
-			fmt.Printf("Deleted collection item %s\n", item.ID)
-			// The Todo outliving its record is the one surprise here, so it is
+			if len(items) == 1 {
+				fmt.Printf("Deleted collection item %s\n", items[0].ID)
+			} else {
+				fmt.Printf("Deleted %d collection items\n", len(items))
+			}
+			// The Todos outliving their records is the one surprise here, so it is
 			// said out loud rather than left to be discovered.
-			if item.TodoID != "" {
-				fmt.Printf("  todo %s kept\n", item.TodoID)
+			kept := []string{}
+			for _, item := range items {
+				if item.TodoID != "" {
+					kept = append(kept, item.TodoID)
+				}
+			}
+			if len(kept) > 0 {
+				fmt.Printf("  todos kept: %s\n", strings.Join(kept, ", "))
 			}
 			return nil
 		})

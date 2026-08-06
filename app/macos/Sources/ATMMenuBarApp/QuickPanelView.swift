@@ -277,7 +277,9 @@ struct QuickPanelView: View {
                 tier: .footnote,
                 action: addTodo
             )
-            .keyboardShortcut("n", modifiers: .command)
+            // ⌘N 归主菜单「文件 → 新建任务」，面板不再自己声明一遍：菜单键等价先被
+            // 匹配，两个声明里这一个永远不会触发，只会看着像还有人管。
+
             ATMHoverLabelButton(
                 title: "主窗口",
                 systemImage: "macwindow",

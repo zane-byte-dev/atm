@@ -337,17 +337,50 @@ func DeleteCollectionSource(db *sql.DB, id string) error {
 // whose messages still fall inside the next run's re-read window can be rebuilt
 // by that run. Anything older than the window is gone for good.
 func DeleteCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
-	item, err := GetCollectionItem(db, id)
-	if err == sql.ErrNoRows {
-		return CollectionItem{}, fmt.Errorf("collection item not found: %s", id)
-	}
+	items, err := DeleteCollectionItems(db, []string{id})
 	if err != nil {
 		return CollectionItem{}, err
 	}
-	if _, err := db.Exec(`DELETE FROM collection_items WHERE id=?`, id); err != nil {
-		return CollectionItem{}, err
+	return items[0], nil
+}
+
+// DeleteCollectionItems drops several records in one transaction and returns
+// them in the order they were named, which is what clearing a whole group needs:
+// either the group empties or nothing moves. A half-cleared group would leave
+// someone re-reading the list to work out which rows they still have to chase,
+// and an unknown id is a stale snapshot rather than a reason to delete part of
+// the batch.
+//
+// Same contract as one record at a time (see DeleteCollectionItem): the Todos
+// stay, and the released messages let the next run rebuild anything still inside
+// its re-read window.
+func DeleteCollectionItems(db *sql.DB, ids []string) ([]CollectionItem, error) {
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("no collection item given")
 	}
-	return item, nil
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	deleted := make([]CollectionItem, 0, len(ids))
+	for _, id := range ids {
+		item, err := scanCollectionItem(tx.QueryRow(collectionItemSelect+` WHERE i.id=?`, id))
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("collection item not found: %s", id)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(`DELETE FROM collection_items WHERE id=?`, id); err != nil {
+			return nil, err
+		}
+		deleted = append(deleted, item)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return deleted, nil
 }
 
 func GetCollectionCheckpoint(db *sql.DB, sourceID string) (CollectionCheckpoint, error) {

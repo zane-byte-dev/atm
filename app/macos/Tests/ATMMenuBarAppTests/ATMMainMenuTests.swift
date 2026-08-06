@@ -36,22 +36,56 @@ final class ATMMainMenuTests: XCTestCase {
 
     func testMainMenuHasAppAndWindowSections() {
         let main = ATMMainMenu.make(appName: "ATM Dev")
-        XCTAssertEqual(main.items.map(\.title), ["ATM Dev", "编辑", "窗口"])
+        XCTAssertEqual(main.items.map(\.title), ["ATM Dev", "文件", "编辑", "窗口"])
         XCTAssertEqual(main.item(withTitle: "ATM Dev")?.submenu?.item(withTitle: "退出 ATM Dev")?.keyEquivalent, "q")
         XCTAssertEqual(main.item(withTitle: "窗口")?.submenu?.item(withTitle: "关闭")?.keyEquivalent, "w")
     }
 
-    /// ⌘S saves knowledge, ⌘K opens search, ⌘N adds a task — the menu must not
-    /// steal them from the views that own them.
+    /// ⌘S saves knowledge and ⌘K opens search: both belong to something that is on
+    /// screen whatever the selected section is — the focused editor, the permanent
+    /// sidebar — so the menu must not steal them from the views that own them.
     func testMainMenuDoesNotClaimViewLevelShortcuts() throws {
+        XCTAssertFalse(commandShortcuts().contains("s"))
+        XCTAssertFalse(commandShortcuts().contains("k"))
+    }
+
+    /// ⌘N is the exception, and the menu owning it is the point: the add-task card
+    /// covers the whole window, but the shortcut used to hang off 任务's 新建
+    /// button, so it died the moment someone was reading 收集 or 知识. A menu key
+    /// equivalent holds in every section and in the quick panel.
+    func testFileMenuOwnsTheAddTaskShortcut() throws {
+        let file = try XCTUnwrap(ATMMainMenu.make(appName: "ATM").item(withTitle: "文件")?.submenu)
+        let item = try XCTUnwrap(file.item(withTitle: "新建任务"), "缺少「新建任务」菜单项")
+        XCTAssertEqual(item.keyEquivalent, "n")
+        XCTAssertEqual(item.keyEquivalentModifierMask, .command)
+        XCTAssertEqual(item.action, #selector(AppDelegate.newTodoFromMenu(_:)))
+        // nil target so AppKit walks the responder chain out to NSApp's delegate:
+        // the menu is installed before the status bar controller exists.
+        XCTAssertNil(item.target)
+    }
+
+    /// The nil target only works because AppKit's search for a responder ends at
+    /// NSApp's delegate. Nothing else in the app is reachable that way, so this is
+    /// the one place where losing it would leave a menu item that greys itself out.
+    @MainActor
+    func testTheAddTaskActionReachesTheAppDelegate() {
+        let application = NSApplication.shared
+        let previous = application.delegate
+        let delegate = AppDelegate()
+        application.delegate = delegate
+        addTeardownBlock { @MainActor in application.delegate = previous }
+
+        let target = application.target(forAction: #selector(AppDelegate.newTodoFromMenu(_:)))
+        XCTAssertTrue(target as? AppDelegate === delegate)
+    }
+
+    private func commandShortcuts() -> Set<String> {
         var claimed: Set<String> = []
         for section in ATMMainMenu.make(appName: "ATM").items {
             for item in section.submenu?.items ?? [] where !item.keyEquivalent.isEmpty {
                 if item.keyEquivalentModifierMask == .command { claimed.insert(item.keyEquivalent) }
             }
         }
-        XCTAssertFalse(claimed.contains("s"))
-        XCTAssertFalse(claimed.contains("k"))
-        XCTAssertFalse(claimed.contains("n"))
+        return claimed
     }
 }

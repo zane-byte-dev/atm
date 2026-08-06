@@ -1384,7 +1384,16 @@ final class ATMDataStore: ObservableObject {
     /// the Todo this record wrote stays, so a clean-up here never quietly takes
     /// work with it.
     func deleteCollectionItem(_ item: ATMCollectionItem) {
-        runCollectionItemAction(["delete", item.id, "--yes"])
+        deleteCollectionItems([item])
+    }
+
+    /// Clears a whole group in one CLI call rather than one per record: a group
+    /// runs to dozens of rows, and the command deletes them as a single
+    /// transaction — a half-cleared group is indistinguishable on screen from one
+    /// that was never cleared.
+    func deleteCollectionItems(_ items: [ATMCollectionItem]) {
+        guard !items.isEmpty else { return }
+        runCollectionItemAction(["delete"] + items.map(\.id) + ["--yes"])
     }
 
     private func collectionItemArguments(

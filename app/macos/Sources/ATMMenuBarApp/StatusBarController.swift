@@ -248,6 +248,13 @@ final class StatusBarController {
     /// Right-click is the only add-task entry that works without first pulling
     /// the quick panel open.
     @objc func addTodoFromMenu() { openDesktop(showAddTodo: true) }
+    /// ⌘N，来自主菜单，所以在主窗口的任何页签和快速面板上都成立。停在哪个页签就在那儿
+    /// 弹卡：卡片本来就覆盖整个窗口，先把人拽到「任务」再弹，等于顺手换掉了他正在看的
+    /// 东西——提交后才会跳到新建的任务上。面板上按的话先把面板收起来，输入卡在主窗口。
+    @objc func addTodoFromShortcut() {
+        closePanel()
+        openDesktop(showAddTodo: true, section: desktopNavigation.section)
+    }
     @objc func openQuickPanelFromMenu() { openPanel() }
     @objc func syncFromMenu() { store.refresh(sync: true) }
     @objc func quitFromMenu() { NSApp.terminate(nil) }

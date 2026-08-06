@@ -7,6 +7,32 @@ private struct CollectionHistoryRequest: Identifiable {
     var id: String { item?.id ?? "source:\(source.id)" }
 }
 
+/// 一次待确认的记录删除。单条删除和分组清空共用一个请求，因为它们做的是同一件事，
+/// 只有措辞不同：分组清空要说清是哪一组、有多少条，单条删除要说清它写出的那个 Todo。
+private struct CollectionItemDeletion {
+    let items: [ATMCollectionItem]
+    /// 分组清空时是分组名；单条删除为 nil。
+    var groupName: String? = nil
+
+    var title: String {
+        guard let groupName else { return "删除这条处理记录？" }
+        return "清空「\(groupName)」的 \(items.count) 条记录？"
+    }
+
+    var confirmLabel: String {
+        groupName == nil ? "删除记录" : "清空 \(items.count) 条"
+    }
+
+    var message: String {
+        guard groupName != nil else {
+            return items.first.map(collectionDeleteWarning(for:)) ?? ""
+        }
+        let kept = items.compactMap(\.todoID).filter { !$0.isEmpty }.count
+        let todos = kept > 0 ? "，其中 \(kept) 条写出的 Todo 保留" : ""
+        return "\(items.count) 条记录会从本地删除\(todos)。刚收集到的记录可能在下一轮重新出现，更早的删掉就不会再回来。"
+    }
+}
+
 struct DesktopCollectionView: View {
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
@@ -14,7 +40,7 @@ struct DesktopCollectionView: View {
     @State private var showingAddSource = false
     @State private var editingSource: ATMCollectionSource?
     @State private var deleteCandidate: ATMCollectionSource?
-    @State private var deleteItemCandidate: ATMCollectionItem?
+    @State private var itemDeletion: CollectionItemDeletion?
     @State private var historyRequest: CollectionHistoryRequest?
     @State private var showingIgnoredItems = false
     @AppStorage("ATMCollapsedCollectionSourceGroups") private var collapsedSourceGroupsRaw = ""
@@ -266,7 +292,7 @@ struct DesktopCollectionView: View {
                                     }
                                 }
                             } header: {
-                                sourceSectionHeader(source, count: items.count, expanded: expanded)
+                                sourceSectionHeader(source, items: items, expanded: expanded)
                             }
                         }
                     }
@@ -285,7 +311,8 @@ struct DesktopCollectionView: View {
                                 "其他来源",
                                 systemImage: "questionmark.folder",
                                 count: unknownItems.count,
-                                expanded: expanded
+                                expanded: expanded,
+                                clear: { requestClear("其他来源", items: unknownItems) }
                             )
                         }
                     }
@@ -298,23 +325,12 @@ struct DesktopCollectionView: View {
                                 }
                             }
                         } header: {
-                            Button {
-                                withAnimation(.easeInOut(duration: 0.15)) {
-                                    showingIgnoredItems.toggle()
-                                }
-                            } label: {
-                                HStack {
-                                    ATMDrawerDisclosureLabel(
-                                        title: "沉淀与已了结",
-                                        count: ignoredItems.count,
-                                        tint: ATMTheme.secondary,
-                                        isExpanded: showingIgnoredItems
-                                    )
-                                    Spacer()
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
+                            genericSourceSectionHeader(
+                                "沉淀与已了结",
+                                count: ignoredItems.count,
+                                expanded: $showingIgnoredItems,
+                                clear: { requestClear("沉淀与已了结", items: ignoredItems) }
+                            )
                         }
                     }
                 }
@@ -326,28 +342,34 @@ struct DesktopCollectionView: View {
         // 与详情栏同色，三栏之间只剩一根 Divider。
         .background(ATMTheme.listPane)
         // 记录的删除确认挂在中栏而不是根视图：来源删除已经占了根视图的
-        // confirmationDialog，同一层挂两个在 macOS 上会互相顶掉。
+        // confirmationDialog，同一层挂两个在 macOS 上会互相顶掉。单条删除和分组清空
+        // 因此也共用这一个（措辞由 CollectionItemDeletion 决定）。
         .confirmationDialog(
-            "删除这条处理记录？",
+            itemDeletion?.title ?? "",
             isPresented: Binding(
-                get: { deleteItemCandidate != nil },
-                set: { if !$0 { deleteItemCandidate = nil } }
+                get: { itemDeletion != nil },
+                set: { if !$0 { itemDeletion = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("删除记录", role: .destructive) {
-                if let item = deleteItemCandidate { store.deleteCollectionItem(item) }
-                deleteItemCandidate = nil
+            Button(itemDeletion?.confirmLabel ?? "删除记录", role: .destructive) {
+                if let deletion = itemDeletion { store.deleteCollectionItems(deletion.items) }
+                itemDeletion = nil
             }
-            Button("取消", role: .cancel) { deleteItemCandidate = nil }
+            Button("取消", role: .cancel) { itemDeletion = nil }
         } message: {
-            Text(deleteItemCandidate.map(collectionDeleteWarning(for:)) ?? "")
+            Text(itemDeletion?.message ?? "")
         }
+    }
+
+    private func requestClear(_ groupName: String, items: [ATMCollectionItem]) {
+        guard !items.isEmpty else { return }
+        itemDeletion = CollectionItemDeletion(items: items, groupName: groupName)
     }
 
     private func sourceSectionHeader(
         _ source: ATMCollectionSource,
-        count: Int,
+        items: [ATMCollectionItem],
         expanded: Binding<Bool>
     ) -> some View {
         HStack(spacing: 7) {
@@ -358,7 +380,7 @@ struct DesktopCollectionView: View {
             } label: {
                 ATMDrawerDisclosureLabel(
                     title: source.displayName,
-                    count: count,
+                    count: items.count,
                     tint: source.enabled ? ATMTheme.accent : ATMTheme.secondary,
                     isExpanded: expanded.wrappedValue,
                     systemImage: source.symbolName
@@ -373,7 +395,7 @@ struct DesktopCollectionView: View {
                     .foregroundStyle(ATMTheme.secondary)
             }
             Spacer()
-            Menu {
+            sectionActionMenu {
                 Button("查看聊天记录") {
                     historyRequest = CollectionHistoryRequest(source: source, item: nil)
                 }
@@ -382,32 +404,30 @@ struct DesktopCollectionView: View {
                     store.setCollectionSource(source, enabled: !source.enabled)
                 }
                 Divider()
-                Button("删除", role: .destructive) { deleteCandidate = source }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                    .frame(width: 20, height: 20)
+                // 两条销毁动作紧挨着，所以都点明销毁的是什么：清空动的是这一组记录、
+                // 来源留着继续收；删除动的是来源配置、记录留着。
+                Button("清空记录", role: .destructive) {
+                    requestClear(source.displayName, items: items)
+                }
+                Button("删除来源", role: .destructive) { deleteCandidate = source }
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
         }
         .textCase(nil)
     }
 
     private func genericSourceSectionHeader(
         _ title: String,
-        systemImage: String,
+        systemImage: String? = nil,
         count: Int,
-        expanded: Binding<Bool>
+        expanded: Binding<Bool>,
+        clear: (() -> Void)? = nil
     ) -> some View {
-        Button {
-            withAnimation(.easeInOut(duration: 0.15)) {
-                expanded.wrappedValue.toggle()
-            }
-        } label: {
-            HStack {
+        HStack(spacing: 7) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    expanded.wrappedValue.toggle()
+                }
+            } label: {
                 ATMDrawerDisclosureLabel(
                     title: title,
                     count: count,
@@ -415,13 +435,34 @@ struct DesktopCollectionView: View {
                     isExpanded: expanded.wrappedValue,
                     systemImage: systemImage
                 )
-                Spacer()
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            Spacer()
+            if let clear {
+                sectionActionMenu {
+                    Button("清空记录", role: .destructive, action: clear)
+                }
+            }
         }
-        .buttonStyle(.plain)
         .foregroundStyle(ATMTheme.secondary)
         .textCase(nil)
+    }
+
+    /// 分组标题右侧的省略号菜单。三种分组（来源、其他来源、沉淀与已了结）用同一个，
+    /// 免得每加一项动作就有一处漏改样式。
+    private func sectionActionMenu<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        Menu {
+            content()
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+                .frame(width: 20, height: 20)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     private func itemRow(_ item: ATMCollectionItem) -> some View {
@@ -450,7 +491,9 @@ struct DesktopCollectionView: View {
                 ATMMenuItem("打开 Todo") { openTodo(item) }
             }
             ATMMenuSeparator()
-            ATMMenuItem("删除记录", destructive: true) { deleteItemCandidate = item }
+            ATMMenuItem("删除记录", destructive: true) {
+                itemDeletion = CollectionItemDeletion(items: [item])
+            }
         }
     }
 

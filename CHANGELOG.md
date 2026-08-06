@@ -34,6 +34,23 @@ a database from a much older version. `atm backup` exists for exactly that case.
   revert` is still what says the write itself was wrong. Deleting frees the
   record's messages, so one whose messages are still inside the next run's
   re-read window can be rebuilt by that run; both confirmations say so.
+- **A whole group of processing records can be cleared.** Each group header in
+  收集's middle column — a source, 其他来源, 沉淀与已了结 — offers 清空记录 in its
+  ellipsis menu, which deletes the records that group currently lists. Sources and
+  the Todos those records filed stay, which is why the source menu now names its
+  two destructive entries 清空记录 and 删除来源 rather than one of them 删除. The
+  confirmation says how many records go and how many Todos stay. `atm collect item
+  delete` takes several ids for this and deletes them as one transaction: a group
+  either empties or nothing moves, because a half-cleared group reads exactly like
+  one that was never cleared. `--json` reports `{"deleted": [...], "count": n}` for
+  one id as well as many.
+- **⌘N adds a task from any section.** It used to hang off the 新建 button in 任务,
+  so it did nothing while someone was reading 收集 or 知识 — the card it opens
+  covers the whole window, but the shortcut disappeared with the section. It now
+  belongs to the main menu (文件 → 新建任务), which also puts it somewhere visible,
+  and the card opens over whatever section you are in rather than pulling the
+  window to 任务 first. ⌘S and ⌘K are unchanged: both belong to something that is
+  on screen in every section anyway.
 - **Todos record who filed them.** A new `creator` field holds `me`, `collect`,
   or an agent name, and is detected at creation: an agent session in the
   environment names the agent, connector collection names itself, and anything

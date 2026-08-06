@@ -195,6 +195,8 @@ atm collect search "<关键词>" [--source <id|来源名>] [--sender <发送者>
 
 # 处理记录本身的增删：删除只清收集侧的记录，它写出的 Todo 保留
 atm collect item delete <item-id> -y --json
+# 多个 id 走一个事务：要么全删，要么一条都不动（某个 id 已经没了就整批报错）
+atm collect item delete <item-id> <item-id> ... -y --json
 ```
 
 来源 ID 由连接器定义。连接器支持搜索时，先 `source search`，把候选连同 `detail`

@@ -135,7 +135,7 @@ atm collect item reprocess <item-id>               # 重新判断失败、已忽
 atm collect item promote <item-id> [--title X]     # 将忽略/沉淀/失败记录显式转成 Todo
 atm collect item correct <item-id> [--title X] [--project X] [--priority P1]
 atm collect item revert <item-id> -y               # 撤销误创建/误补充，保留审计轨迹
-atm collect item delete <item-id> -y               # 删除处理记录本身；它写出的 Todo 保留
+atm collect item delete <item-id>... -y            # 删除处理记录本身；它写出的 Todo 保留（多个 id 一个事务，用于清空一整组）
 # history 和 run 拉到的聊天原文都会同步进 ~/.atm/atm.db，默认保留 90 天：
 #   atm config set collection_message_retention_days 30   # 改成 30 天
 #   atm config set collection_message_retention_days 0    # 0 = 永久保留

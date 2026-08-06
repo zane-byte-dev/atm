@@ -1019,8 +1019,9 @@ private struct DesktopTasksView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
+                    // ⌘N 归主菜单「文件 → 新建任务」，不挂在这个按钮上：挂在这儿的话
+                    // 快捷键跟着「任务」页一起消失，切到收集或知识就按不动了。
                     .help("添加任务 (⌘N)")
-                    .keyboardShortcut("n", modifiers: .command)
                 }
             }
 

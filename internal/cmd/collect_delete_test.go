@@ -8,6 +8,20 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
+type collectionDeletion struct {
+	Count   int `json:"count"`
+	Deleted []struct {
+		ID     string `json:"id"`
+		TodoID string `json:"todo_id"`
+	} `json:"deleted"`
+}
+
+func decodeCollectionDeletion(payload string) (collectionDeletion, error) {
+	var deletion collectionDeletion
+	err := json.Unmarshal([]byte(payload), &deletion)
+	return deletion, err
+}
+
 // The App deletes with --yes because it already asked, so the flag has to be the
 // only thing standing between the command and the row. Without stdin a prompt
 // would otherwise fail, and the record would look undeletable from the desktop —
@@ -47,15 +61,12 @@ func TestCollectItemDeleteRemovesTheRecordAndKeepsItsTodo(t *testing.T) {
 			t.Fatalf("collect item delete: %v", err)
 		}
 	})
-	var deleted struct {
-		ID      string `json:"id"`
-		Deleted bool   `json:"deleted"`
-		TodoID  string `json:"todo_id"`
-	}
-	if err := json.Unmarshal([]byte(deletedJSON), &deleted); err != nil {
+	deleted, err := decodeCollectionDeletion(deletedJSON)
+	if err != nil {
 		t.Fatalf("decode delete: %v\n%s", err, deletedJSON)
 	}
-	if deleted.ID != item.ID || !deleted.Deleted || deleted.TodoID != "t1" {
+	if deleted.Count != 1 || len(deleted.Deleted) != 1 ||
+		deleted.Deleted[0].ID != item.ID || deleted.Deleted[0].TodoID != "t1" {
 		t.Fatalf("unexpected delete result: %+v", deleted)
 	}
 
@@ -67,4 +78,78 @@ func TestCollectItemDeleteRemovesTheRecordAndKeepsItsTodo(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "collection item not found") {
 		t.Fatalf("deleting a missing record = %v", err)
 	}
+}
+
+// Clearing a group in the App hands the whole batch to one command, so the ids
+// have to go together: a per-record loop would spawn a process per row, and a
+// batch that stops halfway would leave a group nobody can tell apart from one
+// that was never cleared.
+func TestCollectItemDeleteClearsAGroupInOneTransaction(t *testing.T) {
+	withTempAtmDir(t)
+	oldJSON, oldYes := jsonOutput, collectYes
+	t.Cleanup(func() { jsonOutput, collectYes = oldJSON, oldYes })
+
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-clear", Priority: "P2", Enabled: true,
+	})
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	ids := []string{}
+	for _, fingerprint := range []string{"one", "two", "three"} {
+		item, _, err := store.PutCollectionItem(db, store.CollectionItem{SourceID: source.ID,
+			Connector: "test", Fingerprint: fingerprint, MessageIDs: []string{"m-" + fingerprint},
+			Action: "ignore", Title: fingerprint, Status: "processed"})
+		if err != nil {
+			db.Close()
+			t.Fatalf("put item %s: %v", fingerprint, err)
+		}
+		ids = append(ids, item.ID)
+	}
+	db.Close()
+
+	jsonOutput, collectYes = true, true
+	// A stale id anywhere in the batch leaves every other record in place.
+	err = collectItemDeleteCmd.RunE(collectItemDeleteCmd, []string{ids[0], "nope", ids[1]})
+	if err == nil || !strings.Contains(err.Error(), "collection item not found") {
+		t.Fatalf("clearing with a stale id = %v", err)
+	}
+	if remaining := countCollectionItems(t); remaining != 3 {
+		t.Fatalf("a failed clear deleted %d of 3 records", 3-remaining)
+	}
+
+	clearedJSON := captureStdout(t, func() {
+		if err := collectItemDeleteCmd.RunE(collectItemDeleteCmd, ids); err != nil {
+			t.Fatalf("collect item delete: %v", err)
+		}
+	})
+	cleared, err := decodeCollectionDeletion(clearedJSON)
+	if err != nil {
+		t.Fatalf("decode clear: %v\n%s", err, clearedJSON)
+	}
+	if cleared.Count != 3 || len(cleared.Deleted) != 3 {
+		t.Fatalf("unexpected clear result: %+v", cleared)
+	}
+	if remaining := countCollectionItems(t); remaining != 0 {
+		t.Fatalf("clearing the group left %d records", remaining)
+	}
+}
+
+func countCollectionItems(t *testing.T) int {
+	t.Helper()
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	items, err := store.ListCollectionItems(db, "", 500)
+	if err != nil {
+		t.Fatalf("list items: %v", err)
+	}
+	return len(items)
 }
