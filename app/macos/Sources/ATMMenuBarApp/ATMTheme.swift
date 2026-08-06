@@ -87,6 +87,20 @@ enum ATMTheme {
 }
 
 extension View {
+    /// ATM keeps its scroll bars out of sight. The panes are dense — nested cards,
+    /// list columns, Markdown descriptions — and an overlay scroller drew a grey
+    /// stripe down the edge of nearly every one of them, on top of a layout whose
+    /// job is to be read at a glance.
+    ///
+    /// Applied at each window / panel / sheet root: the setting reaches every
+    /// scroll view inside, so individual `ScrollView`s and `List`s stay clean.
+    /// Horizontal bars inside Markdown code blocks and tables opt back in with
+    /// `.scrollIndicators(.visible, axes: .horizontal)` — there the bar is the only
+    /// hint that the content continues past the edge.
+    func atmHidesScrollBars() -> some View {
+        scrollIndicators(.hidden)
+    }
+
     /// Shared raised surface for the desktop workspaces. Keeping this in one
     /// place prevents Collection, Agent, Knowledge and Settings from drifting
     /// into four subtly different card styles.

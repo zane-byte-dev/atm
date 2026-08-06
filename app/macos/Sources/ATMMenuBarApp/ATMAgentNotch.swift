@@ -1377,6 +1377,7 @@ private struct ATMAgentNotchView: View {
         // a false exit whenever the panel expands. See ATMAgentNotchHover.
         .accessibilityElement(children: .contain)
         .accessibilityLabel("ATM Agent")
+        .atmHidesScrollBars()
     }
 
     @ViewBuilder

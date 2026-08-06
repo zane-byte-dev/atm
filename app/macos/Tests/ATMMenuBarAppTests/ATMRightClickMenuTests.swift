@@ -10,12 +10,12 @@ import XCTest
 final class ATMRightClickMenuTests: XCTestCase {
     func testEntriesBecomeItemsInOrderWithSeparators() {
         let menu = ATMRightClickMenu.make {
-            ATMMenuItem("查看聊天记录") {}
+            ATMMenuItem("打开 Todo") {}
             ATMMenuSeparator()
             ATMMenuItem("删除记录", destructive: true) {}
         }
 
-        XCTAssertEqual(menu.items.map(\.title), ["查看聊天记录", "", "删除记录"])
+        XCTAssertEqual(menu.items.map(\.title), ["打开 Todo", "", "删除记录"])
         XCTAssertTrue(menu.items[1].isSeparatorItem)
     }
 

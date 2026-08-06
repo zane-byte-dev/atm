@@ -94,12 +94,20 @@ struct DesktopSettingsView: View {
         """
 
     var body: some View {
-        HSplitView {
+        // The settings sidebar holds four short rows and no user content, so it
+        // starts narrower than the task / knowledge lists: the space is worth more
+        // to the settings forms on the right.
+        ATMSplitColumn(
+            id: "settings",
+            defaultWidth: 232,
+            minWidth: 208,
+            maxWidth: 310,
+            detailMinWidth: 560
+        ) {
             settingsSidebar
-                .frame(minWidth: 240, idealWidth: 270, maxWidth: 310)
-
+        } detail: {
             settingsContent
-                .frame(minWidth: 580, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(ATMTheme.listPane)
     }

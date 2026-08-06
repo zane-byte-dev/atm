@@ -1,12 +1,5 @@
 import SwiftUI
 
-private struct CollectionHistoryRequest: Identifiable {
-    let source: ATMCollectionSource
-    let item: ATMCollectionItem?
-
-    var id: String { item?.id ?? "source:\(source.id)" }
-}
-
 /// 一次待确认的记录删除。单条删除和分组清空共用一个请求，因为它们做的是同一件事，
 /// 只有措辞不同：分组清空要说清是哪一组、有多少条，单条删除要说清它写出的那个 Todo。
 private struct CollectionItemDeletion {
@@ -41,7 +34,7 @@ struct DesktopCollectionView: View {
     @State private var editingSource: ATMCollectionSource?
     @State private var deleteCandidate: ATMCollectionSource?
     @State private var itemDeletion: CollectionItemDeletion?
-    @State private var historyRequest: CollectionHistoryRequest?
+    @State private var historySource: ATMCollectionSource?
     @State private var showingIgnoredItems = false
     @AppStorage("ATMCollapsedCollectionSourceGroups") private var collapsedSourceGroupsRaw = ""
 
@@ -82,15 +75,20 @@ struct DesktopCollectionView: View {
     }
 
     var body: some View {
-        HSplitView {
+        ATMSplitColumn(
+            id: "collection",
+            defaultWidth: 330,
+            minWidth: 260,
+            maxWidth: 420,
+            detailMinWidth: 420
+        ) {
             VStack(spacing: 0) {
                 header
                 itemColumn
             }
-            .frame(minWidth: 260, idealWidth: 330, maxWidth: 420)
-
+        } detail: {
             detailColumn
-                .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(ATMTheme.canvas)
         .onAppear {
@@ -107,9 +105,9 @@ struct DesktopCollectionView: View {
         .sheet(item: $editingSource) { source in
             AddCollectionSourceSheet(store: store, source: source) { editingSource = nil }
         }
-        .sheet(item: $historyRequest) { request in
-            CollectionHistorySheet(store: store, source: request.source, focusedItem: request.item) {
-                historyRequest = nil
+        .sheet(item: $historySource) { source in
+            CollectionHistorySheet(store: store, source: source) {
+                historySource = nil
             }
         }
         .confirmationDialog(
@@ -193,7 +191,7 @@ struct DesktopCollectionView: View {
                 ForEach(store.collectionOverview.sources) { source in
                     Menu(source.displayName) {
                         Button("查看聊天记录") {
-                            historyRequest = CollectionHistoryRequest(source: source, item: nil)
+                            historySource = source
                         }
                         Button("编辑") { editingSource = source }
                         Button(source.enabled ? "暂停" : "启用") {
@@ -397,7 +395,7 @@ struct DesktopCollectionView: View {
             Spacer()
             sectionActionMenu {
                 Button("查看聊天记录") {
-                    historyRequest = CollectionHistoryRequest(source: source, item: nil)
+                    historySource = source
                 }
                 Button("编辑") { editingSource = source }
                 Button(source.enabled ? "暂停" : "启用") {
@@ -482,11 +480,6 @@ struct DesktopCollectionView: View {
         // 右键只放导航和删除。重新处理、修正、撤销这些要看记录状态才知道能不能做，
         // 判定在详情栏（见 CollectionItemDetail），在这儿抄一遍就是抄两套规则。
         .atmRightClickMenu {
-            if let source = source(for: item) {
-                ATMMenuItem("查看聊天记录") {
-                    historyRequest = CollectionHistoryRequest(source: source, item: item)
-                }
-            }
             if item.todoID != nil {
                 ATMMenuItem("打开 Todo") { openTodo(item) }
             }
@@ -503,11 +496,7 @@ struct DesktopCollectionView: View {
             CollectionItemDetail(
                 store: store,
                 item: item,
-                source: source(for: item),
-                openHistory: {
-                    guard let source = source(for: item) else { return }
-                    historyRequest = CollectionHistoryRequest(source: source, item: item)
-                }
+                source: source(for: item)
             ) {
                 openTodo(item)
             }
@@ -616,17 +605,17 @@ private struct CollectionItemRow: View {
     }
 }
 
+/// 一条处理记录要说清四件事：消息从哪儿来、ATM 为什么这样处理、结论是什么、关联到
+/// 哪个 Todo。原文放最后，因为一段长聊天放在前面会把这四件事顶出屏幕。
 private struct CollectionItemDetail: View {
     @ObservedObject var store: ATMDataStore
     let item: ATMCollectionItem
     let source: ATMCollectionSource?
-    let openHistory: () -> Void
     let openTodo: () -> Void
 
     @State private var showingCorrection = false
     @State private var confirmingRevert = false
     @State private var confirmingDelete = false
-    @State private var showingTechnicalDetails = false
 
     private var itemType: ATMCollectionItemType {
         ATMCollectionItemType.resolve(item.itemType)
@@ -637,111 +626,19 @@ private struct CollectionItemDetail: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(collectionActionBadgeTitle, systemImage: collectionActionIcon(item.action, retryStopped: retryStopped))
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(collectionActionColor(item.action, retryStopped: retryStopped))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(
-                                collectionActionColor(item.action, retryStopped: retryStopped).opacity(0.10),
-                                in: Capsule()
-                            )
-                        Text(item.title?.isEmpty == false ? item.title! : "未生成标题")
-                            .font(ATMFont.font(.title3, weight: .bold))
-                            .textSelection(.enabled)
-                    }
-                    Spacer()
-                    if item.todoID != nil {
-                        Button("打开 Todo", action: openTodo)
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                    }
-                    if item.action == "ignore" {
-                        Button("转成 Todo") { store.promoteCollectionItem(item) }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                    }
-                    // 撤销过的 item 状态回落成 `processed`（见 collector 的 revert），它的消息
-                    // 因此进了 handled 名单、再也不会被自动重新收集——这个按钮是它唯一的回头路，
-                    // 所以留在主位。重试已停止的失败项同理：不点它就真的没有下一轮了。还在预算
-                    // 内的失败正相反，下一轮自己会重来，于是降级进菜单，只服务「刚修好连接器、
-                    // 不想等下一轮」这种情况。
-                    if item.action == "reverted" {
-                        Button("重新处理") { store.reprocessCollectionItem(item) }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                    } else if retryStopped {
-                        Button("重试") { store.reprocessCollectionItem(item) }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                    }
-                    // 其余条目要看状态才知道能不能做，删除对任何一条记录都成立，所以
-                    // 菜单不再需要「有没有动作」那道门——它永远至少有一项。
-                    Menu {
-                        if item.action == "ignore" {
-                            Button("重新判断") { store.reprocessCollectionItem(item) }
-                        }
-                        if item.action == "failed", !retryStopped {
-                            Button("立即重试") { store.reprocessCollectionItem(item) }
-                        }
-                        if canAmendTodoWrite {
-                            Button("修正标题、项目和优先级") { showingCorrection = true }
-                            Button("撤销自动处理", role: .destructive) { confirmingRevert = true }
-                            Divider()
-                        }
-                        Button("删除记录", role: .destructive) { confirmingDelete = true }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                }
-
-                detailDivider
-                decisionSummary
-
-                detailDivider
-                classificationSummary
+                header
 
                 detailDivider
                 sourceSummary
 
                 detailDivider
-                DisclosureGroup("运行与原始上下文", isExpanded: $showingTechnicalDetails) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if let run = store.collectionOverview.runs.first(where: { $0.sourceID == item.sourceID }) {
-                            detailCard("最近运行") {
-                                detailLine("状态", run.status)
-                                detailLine("时间", collectionRelativeTime(run.startedAt))
-                                detailLine("读取", "\(run.fetchedCount) 条")
-                                detailLine("处理", "新增 \(run.createdCount) · 补充 \(run.appendedCount) · 沉淀 \(run.insightCount) · 无需处理 \(run.ignoredCount)")
-                            }
-                            Divider()
-                        }
+                decisionSummary
 
-                        detailCard("判断信息") {
-                            detailLine("原始类型", item.itemType ?? "未分类")
-                            detailLine(
-                                "置信度",
-                                item.confidence.map { String(format: "%.0f%%", $0 * 100) } ?? "—"
-                            )
-                        }
+                detailDivider
+                outcomeSummary
 
-                        Divider()
-
-                        detailCard("原始聊天上下文") {
-                            Text(item.rawContext ?? "无上下文")
-                                .font(ATMFont.mono(.footnote))
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .textSelection(.enabled)
-                        }
-                    }
-                    .padding(.top, 10)
-                }
-                .font(ATMFont.font(.body, weight: .medium))
+                detailDivider
+                rawContextSummary
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 20)
@@ -789,28 +686,121 @@ private struct CollectionItemDetail: View {
         (item.action == "create" || item.action == "append") && !item.todoClosed
     }
 
-    private var collectionActionBadgeTitle: String {
-        let actionTitle = collectionActionTitle(item.action, retryStopped: retryStopped)
-        guard let todoID = item.todoID, !todoID.isEmpty else { return actionTitle }
-        var title = "\(actionTitle)到 \(todoID)"
-        if let status = item.todoStatus, !status.isEmpty {
-            title += " · " + ATMTodoStatusStyle.label(forStatus: status)
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Label(
+                    collectionActionTitle(item.action, retryStopped: retryStopped),
+                    systemImage: collectionActionIcon(item.action, retryStopped: retryStopped)
+                )
+                .font(ATMFont.footnote)
+                .foregroundStyle(collectionActionColor(item.action, retryStopped: retryStopped))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(
+                    collectionActionColor(item.action, retryStopped: retryStopped).opacity(0.10),
+                    in: Capsule()
+                )
+                Text(item.title?.isEmpty == false ? item.title! : "未生成标题")
+                    .font(ATMFont.font(.title3, weight: .bold))
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            if item.todoID != nil {
+                Button("打开 Todo", action: openTodo)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+            if item.action == "ignore" {
+                Button("转成 Todo") { store.promoteCollectionItem(item) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+            // 撤销过的 item 状态回落成 `processed`（见 collector 的 revert），它的消息
+            // 因此进了 handled 名单、再也不会被自动重新收集——这个按钮是它唯一的回头路，
+            // 所以留在主位。重试已停止的失败项同理：不点它就真的没有下一轮了。还在预算
+            // 内的失败正相反，下一轮自己会重来，于是降级进菜单，只服务「刚修好连接器、
+            // 不想等下一轮」这种情况。
+            if item.action == "reverted" {
+                Button("重新处理") { store.reprocessCollectionItem(item) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            } else if retryStopped {
+                Button("重试") { store.reprocessCollectionItem(item) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+            }
+            // 其余条目要看状态才知道能不能做，删除对任何一条记录都成立，所以
+            // 菜单不再需要「有没有动作」那道门——它永远至少有一项。
+            Menu {
+                if item.action == "ignore" {
+                    Button("重新判断") { store.reprocessCollectionItem(item) }
+                }
+                if item.action == "failed", !retryStopped {
+                    Button("立即重试") { store.reprocessCollectionItem(item) }
+                }
+                if canAmendTodoWrite {
+                    Button("修正标题、项目和优先级") { showingCorrection = true }
+                    Button("撤销自动处理", role: .destructive) { confirmingRevert = true }
+                    Divider()
+                }
+                Button("删除记录", role: .destructive) { confirmingDelete = true }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
         }
-        // Archived Todos have left the working set, so 打开 Todo lands on a task the
-        // 任务 workspace no longer lists. Saying so beats looking broken.
-        if item.todoArchived == true {
-            title += " · 已归档"
+    }
+
+    private var sourceSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("来源")
+            HStack(spacing: 10) {
+                Image(systemName: collectionKindSymbol(source?.kind))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .frame(width: 28, height: 28)
+                    .background(ATMTheme.controlFill, in: Circle())
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source?.displayName ?? item.sourceID)
+                        .font(ATMFont.body)
+                        .lineLimit(1)
+                    Text(sourceDetailLine)
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
         }
-        return title
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var sourceDetailLine: String {
+        var parts = [item.connector]
+        if let sender = item.sender, !sender.isEmpty {
+            parts.append(sender)
+        }
+        parts.append("\(item.messageIDs.count) 条消息")
+        if let time = item.occurredAt {
+            parts.append(collectionRelativeTime(time))
+        }
+        return parts.joined(separator: " · ")
     }
 
     private var decisionSummary: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("为什么这样处理")
-                .font(ATMFont.font(.body, weight: .semibold))
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                sectionTitle("为什么这样处理")
+                Spacer()
+                if let confidence = item.confidence {
+                    Text("置信度 " + String(format: "%.0f%%", confidence * 100))
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+            }
             Text(item.reason?.isEmpty == false ? item.reason! : "暂无判断说明。")
                 .font(ATMFont.body)
-                .foregroundStyle(ATMTheme.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             if let error = item.error, !error.isEmpty {
@@ -822,8 +812,8 @@ private struct CollectionItemDetail: View {
                     .textSelection(.enabled)
                 if item.action == "failed" {
                     Text(retryStopped
-                        ? "已连续失败 \(item.attempts ?? 0) 次，自动重试已停止。修掉原因后用「立即重试」。"
-                        : "下一轮收集会自动重试，通常不用管。")
+                        ? "已连续失败 \(item.attempts ?? 0) 次，自动重试已停止。"
+                        : "下一轮自动重试。")
                         .font(ATMFont.caption)
                         .foregroundStyle(ATMTheme.secondary)
                 }
@@ -832,13 +822,14 @@ private struct CollectionItemDetail: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var classificationSummary: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 8) {
-                Label(itemType.title, systemImage: itemType.systemImage)
-                    .font(ATMFont.font(.body, weight: .semibold))
-                    .foregroundStyle(ATMTheme.accent)
+    /// 结论：这批消息最后落成了什么。`summary` 是分类器留下的正文——create 时是建出的
+    /// Todo 写了什么，append 时是这次补充加了什么，insight 时是沉淀进知识库的内容。
+    private var outcomeSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                sectionTitle("结论")
                 Spacer()
+                metadataLabel(itemType.title, systemImage: itemType.systemImage)
                 if let project = item.project, !project.isEmpty {
                     metadataLabel(project, systemImage: "folder")
                 }
@@ -846,12 +837,48 @@ private struct CollectionItemDetail: View {
                     metadataLabel(priority, systemImage: "flag")
                 }
             }
-            Text(itemType.explanation)
-                .font(ATMFont.footnote)
-                .foregroundStyle(ATMTheme.secondary)
+            Text(item.summary?.isEmpty == false ? item.summary! : "暂无内容摘要。")
+                .font(ATMFont.body)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if let todoID = item.todoID, !todoID.isEmpty {
+                Text(todoRelationLine(todoID))
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 关联的 Todo 及其当前状态。归档要点出来：`打开 Todo` 会落到任务台不再列出的
+    /// 任务上，说一句比看着像坏了好。
+    private func todoRelationLine(_ todoID: String) -> String {
+        var parts = ["关联 \(todoID)"]
+        if let status = item.todoStatus, !status.isEmpty {
+            parts.append(ATMTodoStatusStyle.label(forStatus: status))
+        }
+        if item.todoArchived == true {
+            parts.append("已归档")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private var rawContextSummary: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("原始聊天")
+            Text(item.rawContext?.isEmpty == false ? item.rawContext! : "未保存原始聊天上下文。")
+                .font(ATMFont.mono(.footnote))
+                .foregroundStyle(ATMTheme.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text)
+            .font(ATMFont.font(.body, weight: .semibold))
     }
 
     private func metadataLabel(_ text: String, systemImage: String) -> some View {
@@ -861,68 +888,9 @@ private struct CollectionItemDetail: View {
             .lineLimit(1)
     }
 
-    private var sourceSummary: some View {
-        HStack(spacing: 10) {
-            Image(systemName: collectionKindSymbol(source?.kind))
-                .foregroundStyle(ATMTheme.secondary)
-                .frame(width: 28, height: 28)
-                .background(ATMTheme.controlFill, in: Circle())
-            VStack(alignment: .leading, spacing: 2) {
-                Text(source?.displayName ?? item.sourceID)
-                    .font(ATMFont.font(.body, weight: .semibold))
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    Text(item.connector)
-                    if let sender = item.sender, !sender.isEmpty {
-                        Text("· \(sender)")
-                            .lineLimit(1)
-                    }
-                    Text("· \(item.messageIDs.count) 条消息")
-                }
-                .font(ATMFont.caption)
-                .foregroundStyle(ATMTheme.secondary)
-            }
-            Spacer()
-            if source != nil {
-                // The context here is only the few lines around this item;
-                // the full conversation lives in the connector-backed archive.
-                Button("查看聊天记录", action: openHistory)
-                    .buttonStyle(.link)
-                    .font(ATMFont.footnote)
-                    .fixedSize()
-                    .layoutPriority(1)
-            }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func detailCard<Content: View>(
-        _ title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(ATMFont.font(.body, weight: .semibold))
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
     private var detailDivider: some View {
         Divider()
             .padding(.vertical, 20)
-    }
-
-    private func detailLine(_ label: String, _ value: String) -> some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(label)
-                .foregroundStyle(ATMTheme.secondary)
-                .frame(width: 64, alignment: .leading)
-            Text(value)
-                .textSelection(.enabled)
-            Spacer()
-        }
-        .font(ATMFont.body)
     }
 }
 
@@ -1702,7 +1670,6 @@ private struct AddCollectionSourceSheet: View {
 private struct CollectionHistorySheet: View {
     @ObservedObject var store: ATMDataStore
     let source: ATMCollectionSource
-    let focusedItem: ATMCollectionItem?
     let onClose: () -> Void
 
     @State private var messages: [ATMCollectionMessage] = []
@@ -1719,7 +1686,7 @@ private struct CollectionHistorySheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(source.displayName)
                         .font(ATMFont.font(.title3, weight: .bold))
-                    Text(subtitle)
+                    Text(recentSubtitle)
                         .font(ATMFont.footnote)
                         .foregroundStyle(isStale ? .orange : ATMTheme.secondary)
                 }
@@ -1742,40 +1709,6 @@ private struct CollectionHistorySheet: View {
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.danger)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let focusedItem {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Text("本次处理记录")
-                            .font(ATMFont.font(.body, weight: .semibold))
-                        Spacer()
-                        Text("\(focusedItem.messageIDs.count) 条新消息")
-                            .font(ATMFont.mono(.caption))
-                            .foregroundStyle(ATMTheme.secondary)
-                    }
-                    ScrollView {
-                        Text(focusedItem.rawContext?.isEmpty == false
-                            ? focusedItem.rawContext!
-                            : "未保存原始聊天上下文")
-                            .font(ATMFont.mono(.footnote))
-                            .fixedSize(horizontal: false, vertical: true)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .frame(maxHeight: 210)
-                }
-                .padding(12)
-                .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
-
-                HStack(alignment: .firstTextBaseline) {
-                    Text("最近消息")
-                        .font(ATMFont.font(.body, weight: .semibold))
-                    Spacer()
-                    Text(recentSubtitle)
-                        .font(ATMFont.caption)
-                        .foregroundStyle(isStale ? .orange : ATMTheme.secondary)
-                }
             }
 
             ScrollView {
@@ -1805,7 +1738,7 @@ private struct CollectionHistorySheet: View {
                     }
                 }
             }
-            .frame(height: focusedItem == nil ? 380 : 240)
+            .frame(height: 380)
 
             HStack {
                 Spacer()
@@ -1816,13 +1749,6 @@ private struct CollectionHistorySheet: View {
         .padding(24)
         .frame(width: 560)
         .task { await load() }
-    }
-
-    private var subtitle: String {
-        if let focusedItem {
-            return "优先显示当时参与判断的上下文 · \(focusedItem.messageIDs.count) 条新消息"
-        }
-        return recentSubtitle
     }
 
     private var recentSubtitle: String {

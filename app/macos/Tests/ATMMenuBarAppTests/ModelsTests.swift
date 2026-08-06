@@ -125,7 +125,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMCollectionItemType.resolve(nil), .unknown)
 
         for itemType in ATMCollectionItemType.allCases {
-            XCTAssertFalse(itemType.explanation.isEmpty)
+            XCTAssertFalse(itemType.title.isEmpty)
             XCTAssertFalse(itemType.systemImage.isEmpty)
         }
     }
@@ -2153,15 +2153,17 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(submitted.completionVerb, "验收")
         XCTAssertEqual(todo.completionVerb, "完成")
 
-        // One lifecycle set for every open todo; only the wording changes at the
-        // review gate, and only what the todo is already in drops out.
+        // One lifecycle set for every open todo; at the review gate only the
+        // closing verb changes wording (验收), and only what the todo is already
+        // in drops out. Sending it back stays plain 回到待办 — the App does not
+        // ask anyone to pronounce a 验收不通过 verdict to move a task back.
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: submitted).map(\.action),
             [.start, .complete, .returnToOpen, .deferLater, .drop]
         )
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: submitted).map(\.title),
-            ["开始", "验收", "验收不通过（重新到待办）", "暂不处理", "放弃"]
+            ["开始", "验收", "回到待办", "暂不处理", "放弃"]
         )
         XCTAssertFalse(ATMTodoStatusActions.showsLaunchPrompt(for: submitted))
         XCTAssertTrue(ATMTodoStatusActions.showsLaunchPrompt(for: todo))

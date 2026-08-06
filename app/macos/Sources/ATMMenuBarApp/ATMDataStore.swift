@@ -520,8 +520,9 @@ enum ATMTodoStatusActions {
                 ),
             ]
         }
-        // Review is the human gate, so closing it is 验收 rather than 完成 and
-        // sending it back is a rejection. Same two actions, different words.
+        // Review is the human gate, so closing it is 验收 rather than 完成. Sending
+        // it back needs no such wording: 回到待办 already says what happens, and
+        // 「验收不通过」 only added a verdict nobody has to pronounce.
         let isReview = todo.status == "review"
         var actions: [ATMTodoLifecycleItem] = []
         if todo.status != "in_progress" {
@@ -539,8 +540,8 @@ enum ATMTodoStatusActions {
             actions.append(
                 item(
                     .returnToOpen,
-                    title: isReview ? "验收不通过（重新到待办）" : "回到待办",
-                    help: isReview ? "验收不通过，重新到待办" : "回到待办",
+                    title: "回到待办",
+                    help: "回到待办",
                     icon: "arrow.uturn.backward"
                 )
             )

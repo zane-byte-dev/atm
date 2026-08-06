@@ -351,6 +351,9 @@ final class ATMDesktopNavigation: ObservableObject {
     /// Add-task modal is owned at the desktop root so the dimmed backdrop
     /// covers the sidebar and centers over the whole window.
     @Published var showAddTodo = false
+    /// A todo id whose detail pane should open directly in its edit form, set by
+    /// the task row's right-click 编辑任务 and cleared once the form is open.
+    @Published var editTodoID: String?
 }
 
 struct ATMCollectionRef: Identifiable, Equatable {
@@ -446,6 +449,7 @@ struct DesktopContentView: View {
         }
         .background(ATMTheme.canvas)
         .frame(minWidth: 880, minHeight: 620)
+        .atmHidesScrollBars()
         .onChange(of: store.knowledgeCollections.map(\.id)) { _ in
             selectDefaultKnowledgeLibraryIfNeeded()
         }
@@ -944,13 +948,23 @@ private struct DesktopTasksView: View {
     }
 
     var body: some View {
-        HSplitView {
+        ATMSplitColumn(
+            id: "tasks",
+            defaultWidth: 330,
+            minWidth: 260,
+            maxWidth: 420,
+            detailMinWidth: 400
+        ) {
             taskList
-                .frame(minWidth: 260, idealWidth: 330, maxWidth: 420)
-
+        } detail: {
             Group {
                 if let todo = selectedTodo {
-                    DesktopTodoDetail(todo: todo, store: store, isTrashed: showingTrash)
+                    DesktopTodoDetail(
+                        todo: todo,
+                        store: store,
+                        navigation: navigation,
+                        isTrashed: showingTrash
+                    )
                         // Identity is the Todo id alone. Folding title / description /
                         // status into it recreated the view on every background sync
                         // that touched them, which reset the selected tab and threw
@@ -972,7 +986,7 @@ private struct DesktopTasksView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ATMTheme.canvas)
         }
         .onAppear {
@@ -1101,55 +1115,19 @@ private struct DesktopTasksView: View {
         }
     }
 
-    @ATMMenuBuilder
     private func todoMenuEntries(for todo: ATMTodo) -> [ATMMenuEntry] {
-        if showingTrash {
-            ATMMenuItem("恢复", systemImage: "arrow.uturn.backward") {
-                store.perform(.restore, on: todo)
-            }
-            ATMMenuSeparator()
-            ATMMenuItem("永久删除…", destructive: true) { deleteCandidate = todo }
-        } else {
-            ATMMenuItem("用 VS Code 打开项目", systemImage: "chevron.left.forwardslash.chevron.right") {
-                store.openTodoProjectInVSCode(todo)
-            }
-            ATMMenuSeparator()
-            for item in ATMTodoStatusActions.items(for: todo) {
-                ATMMenuItem(item.title, systemImage: item.systemImage) {
-                    store.perform(item.action, on: todo)
-                }
-            }
-            if let links = todo.links, !links.isEmpty {
-                ATMMenuSeparator()
-                ATMMenuSubmenu("打开链接") {
-                    for link in links {
-                        ATMMenuItem(link.title ?? link.url) {
-                            if let url = URL(string: link.url) {
-                                NSWorkspace.shared.open(url)
-                            }
-                        }
-                    }
-                }
-            }
-            ATMMenuSeparator()
-            ATMMenuItem("复制 ID") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(todo.id, forType: .string)
-            }
-            if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                ATMMenuItem("复制启动提示") {
-                    Task {
-                        guard let prompt = await store.launchPrompt(for: todo) else { return }
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(prompt, forType: .string)
-                    }
-                }
-            }
-            ATMMenuSeparator()
-            ATMMenuItem("移到回收站", systemImage: "trash") {
-                store.perform(.trash, on: todo)
-            }
-        }
+        ATMTodoMenu.entries(
+            for: todo,
+            store: store,
+            isTrashed: showingTrash,
+            // Editing lives in the detail pane's form, so the row menu selects the
+            // todo and asks the detail to open straight into it.
+            onEdit: {
+                navigation.selectedTodoID = todo.id
+                navigation.editTodoID = todo.id
+            },
+            onPermanentDelete: { deleteCandidate = todo }
+        )
     }
 
     private func selectFirstIfNeeded() {
@@ -1282,6 +1260,7 @@ struct DesktopTodoDetail: View {
 
     let todo: ATMTodo
     @ObservedObject var store: ATMDataStore
+    @ObservedObject var navigation: ATMDesktopNavigation
     let isTrashed: Bool
 
     @State private var isEditing = false
@@ -1324,7 +1303,12 @@ struct DesktopTodoDetail: View {
         .background(ATMTheme.canvas)
         .onAppear {
             if !isTrashed { store.loadBoundSessions(for: todo.id) }
+            // Selecting another row rebuilds this view (`.id(todo.id)`), so a
+            // request aimed at a not-yet-selected todo arrives here rather than in
+            // onChange.
+            consumeEditRequest()
         }
+        .onChange(of: navigation.editTodoID) { _ in consumeEditRequest() }
         .onChange(of: store.snapshot.refreshedAt) { _ in
             if !isTrashed { store.loadBoundSessions(for: todo.id) }
         }
@@ -1402,15 +1386,20 @@ struct DesktopTodoDetail: View {
             .font(ATMFont.footnote)
             .foregroundStyle(ATMTheme.secondary)
 
-            HStack(alignment: .top, spacing: 10) {
-                statusBadge
-                    .padding(.top, 2)
+            // Status sits on its own line above the title. Beside it, a wrapped
+            // title pushed the badge off the first line's baseline and left a
+            // ragged notch in the text block; stacked, the title gets the full
+            // width and the badge reads as a label for the whole header.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    statusBadge
+                    if store.isActing { ProgressView().controlSize(.small) }
+                }
                 Text(todo.title)
                     .font(ATMFont.font(.title1, weight: .semibold))
                     .foregroundStyle(ATMTheme.primary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
-                if store.isActing { ProgressView().controlSize(.small) }
             }
 
             LazyVGrid(
@@ -1813,6 +1802,16 @@ struct DesktopTodoDetail: View {
         source = todo.source ?? ""
         isEditingSource = false
         isEditing = true
+    }
+
+    /// Opens the edit form when the task row's 编辑任务 pointed at this todo. The
+    /// request is cleared on the way in so re-selecting the same row later does not
+    /// drop the user back into an edit form.
+    private func consumeEditRequest() {
+        guard navigation.editTodoID == todo.id else { return }
+        navigation.editTodoID = nil
+        guard !isTrashed, !isEditing else { return }
+        beginEditing()
     }
 
     private var editValue: ATMTodoEdit {

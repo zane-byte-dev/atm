@@ -466,17 +466,6 @@ enum ATMCollectionItemType: String, CaseIterable, Identifiable {
         }
     }
 
-    var explanation: String {
-        switch self {
-        case .requirement: return "明确提出要新增、调整或优化一项能力。"
-        case .bug: return "现有行为不符合预期，需要定位并修复。"
-        case .investigation: return "需要先查明原因、验证现状或评估方案。"
-        case .followUp: return "已有事项的后续动作、补充信息或待确认结果。"
-        case .conversation: return "背景交流、动态或尚不足以形成任务的讨论。"
-        case .unknown: return "当前记录没有足够信息形成稳定分类。"
-        }
-    }
-
     var systemImage: String {
         switch self {
         case .requirement: return "sparkles"
@@ -505,6 +494,163 @@ extension ATMCollectionItem {
     /// workspace into a history feed, where twelve of twenty rows wanted nothing.
     var shouldCollapseInCollection: Bool {
         action == "ignore" || action == "insight" || todoClosed
+    }
+}
+
+/// 一条处理记录的原始聊天，解析成能当聊天渲染的样子。collector 写出的每一行是
+/// `[新消息] 2026-08-06 15:04:05 [张三] 内容`（见 formatMessageContext），按需分析没有
+/// 标记前缀。三件事决定了这个解析器的形状：消息正文自己可能换行，所以认不出头部的行
+/// 算上一条的续行；[新消息] 不一定连续（被关键词排除的消息会夹在中间当上下文），所以
+/// 分界线只认第一条新消息的位置，不假设新旧各成一段；格式完全认不出来时退回原文，
+/// 显示得糙一点也比丢内容好。
+struct ATMCollectionTranscript: Equatable {
+    /// 连续、同一发送者、同一新旧归属的消息合成一块，头部只出现一次——逐行重复
+    /// 「谁在几点几分几秒说」是这段原文里最多的冗余。
+    struct Block: Identifiable, Equatable {
+        let id: Int
+        let sender: String
+        /// 已经按需带上日期：同一天只留 `15:04`，跨天才补 `08-06 15:04`。
+        let time: String
+        let isFresh: Bool
+        let lines: [String]
+        /// 这一块之前要不要画「新消息」分界线。整段都是新消息时没有分界线可画。
+        let startsFresh: Bool
+    }
+
+    let blocks: [Block]
+    /// 一行都没解析出来时的原文兜底。
+    let fallback: String?
+
+    static let empty = ATMCollectionTranscript(blocks: [], fallback: nil)
+
+    static func parse(_ raw: String?) -> ATMCollectionTranscript {
+        let text = raw ?? ""
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .empty }
+
+        var messages: [ParsedMessage] = []
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = String(rawLine)
+            if let message = ParsedMessage(line: line) {
+                messages.append(message)
+            } else if var last = messages.popLast() {
+                last.text += "\n" + line
+                messages.append(last)
+            } else {
+                // 开头就不是消息行：这不是 collector 写的格式，整段原样交出去。
+                return ATMCollectionTranscript(blocks: [], fallback: text)
+            }
+        }
+        guard !messages.isEmpty else { return ATMCollectionTranscript(blocks: [], fallback: text) }
+        return ATMCollectionTranscript(blocks: blocks(from: messages), fallback: nil)
+    }
+
+    private static func blocks(from messages: [ParsedMessage]) -> [Block] {
+        let firstFreshIndex = messages.firstIndex(where: \.isFresh)
+        var blocks: [Block] = []
+        var current: [ParsedMessage] = []
+        var previousDate = ""
+
+        func flush() {
+            guard let first = current.first else { return }
+            let time = first.date == previousDate
+                ? first.time
+                : "\(first.date.suffix(5)) \(first.time)"
+            previousDate = first.date
+            // 分界线画在含第一条新消息的那一块前面，而不是每遇到新消息就画一条。
+            let startsFresh = !blocks.isEmpty
+                && firstFreshIndex != nil
+                && current.contains { $0.index == firstFreshIndex }
+            blocks.append(
+                Block(
+                    id: blocks.count,
+                    sender: first.sender,
+                    time: time,
+                    isFresh: first.isFresh,
+                    lines: current.map { $0.text.trimmedTrailingWhitespace },
+                    startsFresh: startsFresh
+                )
+            )
+            current = []
+        }
+
+        for message in messages {
+            if let previous = current.last,
+               previous.sender != message.sender
+                || previous.isFresh != message.isFresh
+                || previous.date != message.date {
+                flush()
+            }
+            current.append(message)
+        }
+        flush()
+        return blocks
+    }
+
+    /// 一行解析出来的消息。`isFresh` 在没有标记前缀时为 true：按需分析里每一行都参与了
+    /// 判断，没有「上面这些只是背景」这回事，也就没有分界线。
+    private struct ParsedMessage {
+        static var counter = 0
+
+        let index: Int
+        let isFresh: Bool
+        let date: String
+        let time: String
+        let sender: String
+        var text: String
+
+        init?(line: String) {
+            var rest = Substring(line)
+            var isFresh = true
+            if rest.hasPrefix(ATMCollectionTranscript.freshMarker) {
+                rest = rest.dropFirst(ATMCollectionTranscript.freshMarker.count)
+            } else if rest.hasPrefix(ATMCollectionTranscript.contextMarker) {
+                isFresh = false
+                rest = rest.dropFirst(ATMCollectionTranscript.contextMarker.count)
+            }
+            guard let stamp = ATMCollectionTranscript.leadingStamp(rest) else { return nil }
+            rest = rest.dropFirst(stamp.count)
+            guard rest.hasPrefix(" [") else { return nil }
+            rest = rest.dropFirst(2)
+            guard let close = rest.firstIndex(of: "]") else { return nil }
+            self.index = -1
+            self.isFresh = isFresh
+            self.date = String(stamp.prefix(10))
+            self.time = String(stamp.dropFirst(11).prefix(5))
+            self.sender = String(rest[rest.startIndex..<close])
+            var content = rest[close...].dropFirst()
+            if content.hasPrefix(" ") { content = content.dropFirst() }
+            self.text = String(content)
+        }
+    }
+
+    private static let freshMarker = "[新消息] "
+    private static let contextMarker = "[上下文] "
+
+    /// `2006-01-02 15:04:05`，正好 19 个字符。按位校验而不是上正则：这段每条记录都要跑，
+    /// 而且要认的只有 collector 自己写出来的这一种格式。
+    private static func leadingStamp(_ text: Substring) -> Substring? {
+        guard text.count >= 19 else { return nil }
+        let stamp = text.prefix(19)
+        let digits = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18]
+        let dashes = [4, 7]
+        let colons = [13, 16]
+        for (offset, character) in stamp.enumerated() {
+            if digits.contains(offset), !character.isNumber { return nil }
+            if dashes.contains(offset), character != "-" { return nil }
+            if colons.contains(offset), character != ":" { return nil }
+            if offset == 10, character != " " { return nil }
+        }
+        return stamp
+    }
+}
+
+private extension String {
+    var trimmedTrailingWhitespace: String {
+        var text = self
+        while let last = text.last, last.isWhitespace || last.isNewline {
+            text.removeLast()
+        }
+        return text
     }
 }
 

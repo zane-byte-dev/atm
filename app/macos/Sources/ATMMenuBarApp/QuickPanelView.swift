@@ -29,6 +29,7 @@ struct QuickPanelView: View {
         .background(ATMTheme.canvas.opacity(0.98))
         .ignoresSafeArea()
         .frame(minWidth: 340, minHeight: 290)
+        .atmHidesScrollBars()
     }
 
     @ViewBuilder
@@ -325,20 +326,10 @@ struct QuickPanelView: View {
                     .foregroundStyle(ATMTheme.secondary)
             }
         }
-        .atmRightClickMenu {
-            ATMMenuItem("用 VS Code 打开项目", systemImage: "chevron.left.forwardslash.chevron.right") {
-                store.openTodoProjectInVSCode(todo)
-            }
-            if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                ATMMenuItem("复制启动提示", systemImage: "doc.on.doc") {
-                    Task {
-                        guard let prompt = await store.launchPrompt(for: todo) else { return }
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(prompt, forType: .string)
-                    }
-                }
-            }
-        }
+        // Same menu as the task list, minus 编辑任务: the edit form only exists in
+        // the desktop detail pane, and the quick panel is not where you would go
+        // looking for it.
+        .atmRightClickMenu { ATMTodoMenu.entries(for: todo, store: store) }
     }
 
     private func attentionCaption(_ todo: ATMTodo) -> String {

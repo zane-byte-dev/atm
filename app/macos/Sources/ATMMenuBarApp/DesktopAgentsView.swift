@@ -45,10 +45,15 @@ struct DesktopAgentsView: View {
     }
 
     var body: some View {
-        HSplitView {
+        ATMSplitColumn(
+            id: "agents",
+            defaultWidth: 330,
+            minWidth: 260,
+            maxWidth: 420,
+            detailMinWidth: 440
+        ) {
             agentList
-                .frame(minWidth: 260, idealWidth: 330, maxWidth: 420)
-
+        } detail: {
             Group {
                 if let session = selectedSession {
                     DesktopAgentPresenceDetail(
@@ -63,7 +68,7 @@ struct DesktopAgentsView: View {
                     emptyDetail
                 }
             }
-            .frame(minWidth: 440, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
             selectFirstIfNeeded()

@@ -63,12 +63,17 @@ struct DesktopKnowledgeView: View {
     private var hasUnsavedChanges: Bool { editContent != originalEditContent }
 
     var body: some View {
-        HSplitView {
+        ATMSplitColumn(
+            id: "knowledge",
+            defaultWidth: 316,
+            minWidth: 260,
+            maxWidth: 410,
+            detailMinWidth: 400
+        ) {
             itemList
-                .frame(minWidth: 260, idealWidth: 316, maxWidth: 410)
-
+        } detail: {
             detailPane
-                .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(ATMTheme.canvas)
         }
         .task {

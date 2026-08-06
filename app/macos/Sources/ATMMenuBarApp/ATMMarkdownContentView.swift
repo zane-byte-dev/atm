@@ -79,18 +79,22 @@ struct ATMMarkdownContentView: View {
                                 .font(ATMFont.mono(.caption, .semibold))
                                 .foregroundStyle(ATMTheme.secondary)
                         }
-                        ScrollView(.horizontal, showsIndicators: true) {
+                        ScrollView(.horizontal) {
                             Text(content)
                                 .font(.system(size: bodySize, design: .monospaced))
                                 .fixedSize(horizontal: true, vertical: true)
                                 .textSelection(.enabled)
                                 .padding(10)
                         }
+                        // Opts out of the app-wide hidden scroll bars: a code line
+                        // clipped at the card edge looks like the whole line, so
+                        // here the bar is the only sign there is more to the right.
+                        .scrollIndicators(.visible, axes: .horizontal)
                         .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 7))
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                     }
                 case .table(let headers, let alignments, let rows):
-                    ScrollView(.horizontal, showsIndicators: true) {
+                    ScrollView(.horizontal) {
                         Grid(horizontalSpacing: 0, verticalSpacing: 0) {
                             markdownTableRow(
                                 headers,
@@ -106,6 +110,8 @@ struct ATMMarkdownContentView: View {
                             }
                         }
                     }
+                    // As with code blocks: a table cut off mid-column needs to say so.
+                    .scrollIndicators(.visible, axes: .horizontal)
                     .clipShape(RoundedRectangle(cornerRadius: 7))
                     .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                 }
