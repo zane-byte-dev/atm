@@ -564,6 +564,7 @@ private struct CollectionItemDetail: View {
 
     @State private var showingCorrection = false
     @State private var confirmingRevert = false
+    @State private var confirmingDelete = false
     @State private var showingTechnicalDetails = false
 
     private var itemType: ATMCollectionItemType {
@@ -697,6 +698,16 @@ private struct CollectionItemDetail: View {
             Text(item.action == "create"
                  ? "ATM 会将这条采集自动创建的 Todo 标记为已废弃，并保留审计记录。"
                  : "ATM 会追加一条撤销说明；原补充保留供审计，不会改写历史。")
+        }
+        .confirmationDialog(
+            "删除这条处理记录？",
+            isPresented: $confirmingDelete,
+            titleVisibility: .visible
+        ) {
+            Button("删除记录", role: .destructive) { store.deleteCollectionItem(item) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(collectionDeleteWarning(for: item))
         }
     }
 

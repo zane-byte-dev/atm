@@ -191,6 +191,9 @@ atm collect history "<source-id>" --local --json     # 只读已同步的，不�
 
 # 搜本地已同步的聊天（不打网络）
 atm collect search "<关键词>" [--source <id|来源名>] [--sender <发送者>] [--since 2026-07-28] --json
+
+# 处理记录本身的增删：删除只清收集侧的记录，它写出的 Todo 保留
+atm collect item delete <item-id> -y --json
 ```
 
 来源 ID 由连接器定义。连接器支持搜索时，先 `source search`，把候选连同 `detail`
@@ -201,6 +204,11 @@ atm collect search "<关键词>" [--source <id|来源名>] [--sender <发送者>
 **在配置层被限制为只能 `insight`/`ignore`**——模型判成 create/append 也会被降级成 insight，
 所以闲聊群不可能替别人建任务。人显式 `collect item promote` 不受这个限制。
 增量处理会把已处理消息作为 `[上下文]` 提供给模型，但只有 `[新消息]` 能触发新决策。
+
+一段讨论会在几分钟内反复回到同一件事，每次回来都是新的一批。同一件事的新信息走
+`append`，写进目标 Todo 的 `补充` 段，不再新建一条；只有确实是另一件事才 `create`，
+这时 `related_todo_id` 只作上下文关联。`append` 只能落在**这个会话自己建过的** Todo 上：
+手写的 Todo 或别的群的 Todo 不会被聊天改写，目标已关闭或不属于本会话时退回新建。
 
 沉淀内容只在 `collect digest` 跑过之后才在知识库里可读；App 常驻时会跟着每次收集调用 `--due`。
 需要完整聊天时仍用 `collect history`；已添加的来源可以直接用它的名字或 source-id，不必再搜一次。

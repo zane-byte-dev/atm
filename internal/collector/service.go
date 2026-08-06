@@ -444,6 +444,23 @@ func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decis
 			return item, err
 		}
 		item.TodoID, item.Status = todoID, "processed"
+	case "append":
+		todoID, err := appendDecision(batch, decision)
+		if err != nil {
+			return item, err
+		}
+		// The target was closed, deleted, or does not belong to this conversation.
+		// Filing the batch as its own Todo is the wrong answer the classifier was
+		// trying to avoid, but it is still better than marking the batch handled
+		// with nothing written anywhere.
+		if todoID == "" {
+			todoID, err = createDecision(batch, decision)
+			if err != nil {
+				return item, err
+			}
+			item.Action = "create"
+		}
+		item.TodoID, item.Status = todoID, "processed"
 	default:
 		return item, fmt.Errorf("unsupported collection decision: %s", decision.Action)
 	}
@@ -542,10 +559,18 @@ func (service Service) Promote(itemID string, correction ItemCorrection) (store.
 	if item.ProposedAction != "" {
 		reason = "用户确认按需分析的建议"
 	}
-	decision := normalizeDecision(Decision{Action: "create", Title: title,
+	// Confirming a proposed append has to append. Promoting it into a new Todo
+	// would produce exactly the duplicate the proposal was avoiding, and the
+	// target's own guardrails still get to refuse — applyDecision falls back to
+	// creating if the Todo has since been closed or belongs to another thread.
+	action, relatedTodoID := "create", ""
+	if item.ProposedAction == "append" && item.TodoID != "" {
+		action, relatedTodoID = "append", item.TodoID
+	}
+	decision := normalizeDecision(Decision{Action: action, Title: title,
 		Summary:  empty(strings.TrimSpace(item.Summary), strings.TrimSpace(item.RawContext)),
 		ItemType: itemType, Project: project, Priority: priority,
-		Reason: reason, Confidence: 1}, source)
+		RelatedTodoID: relatedTodoID, Reason: reason, Confidence: 1}, source)
 	item, err = applyDecision(batch, item, decision)
 	if err != nil {
 		markItemFailed(db, &item, err)
@@ -876,6 +901,44 @@ func createDecision(batch MessageBatch, decision Decision) (string, error) {
 	return created.ID, nil
 }
 
+// appendDecision records what a batch adds to work an existing Todo already
+// tracks, and reports which Todo it wrote to. An empty ID means the append could
+// not be carried out and the caller has to fall back to creating.
+//
+// The target must be a Todo this same conversation filed. The classifier reads
+// untrusted chat, so the one write it can direct at an existing record is held to
+// the thread that produced it: a hand-written Todo, or one belonging to another
+// group, cannot be edited by whatever a message claims to relate to.
+func appendDecision(batch MessageBatch, decision Decision) (string, error) {
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		return "", err
+	}
+	target := store.FindTodo(todos, decision.RelatedTodoID)
+	if target == nil || !store.TodoIsActive(*target) {
+		return "", nil
+	}
+	prefix := conversationSourcePrefix(batch)
+	if prefix == "" || !strings.HasPrefix(target.Source, prefix) {
+		return "", nil
+	}
+	// 补充 rather than 进展: this is context the chat added, not a milestone the
+	// person working the Todo reached. It is also where Revert writes its
+	// compensating note, so an append and its undo read as one thread.
+	//
+	// The fingerprint goes in an HTML comment because the App strips exactly this
+	// shape out of the task timeline (ATMTodoProgressEntry.displayText): the entry
+	// reads as the one sentence the chat added, and the marker stays on disk to tie
+	// it back to the collection item. The literal 钉钉采集 is what that reader
+	// matches on, so it does not vary with the connector.
+	note := strings.TrimSpace(decision.Summary) +
+		"\n\n<!-- [钉钉采集:" + shortFingerprint(batch.Fingerprint) + "] -->"
+	if _, err := store.AppendTodoLog(target, note, "补充"); err != nil {
+		return "", err
+	}
+	return target.ID, nil
+}
+
 func todoDescription(decision Decision, relatedTodoID string) string {
 	description := strings.TrimSpace(decision.Summary)
 	if relatedTodoID == "" {
@@ -886,6 +949,20 @@ func todoDescription(decision Decision, relatedTodoID string) string {
 		return relation
 	}
 	return description + "\n\n" + relation
+}
+
+// conversationSourcePrefix is the Todo source marker every Todo filed from this
+// batch's conversation starts with. connectorSource pins the message too, which
+// identifies one batch; this identifies the thread.
+func conversationSourcePrefix(batch MessageBatch) string {
+	conversation := batch.Source.ExternalID
+	if len(batch.Messages) > 0 && batch.Messages[0].ConversationID != "" {
+		conversation = batch.Messages[0].ConversationID
+	}
+	if batch.Source.Connector == "" || conversation == "" {
+		return ""
+	}
+	return batch.Source.Connector + ":" + conversation + ":"
 }
 
 func connectorSource(batch MessageBatch) string {

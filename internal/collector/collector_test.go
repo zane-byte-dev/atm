@@ -185,6 +185,116 @@ func TestServiceRelatedWorkCreatesNewTodoAndKeepsExistingTodoUntouched(t *testin
 	}
 }
 
+// A group returns to the same topic every few minutes, and each return is its own
+// batch. Filing every one of them buries the single item somebody has to act on,
+// so a follow-up lands on the Todo this same conversation already filed.
+func TestServiceAppendsFollowUpToTheTodoTheSameChatFiled(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m1", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 10_000, Content: "技能批测会命中默认 SKILL"}}, newest: 10_000}
+	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "排查技能命中默认 SKILL",
+		Summary: "批测有概率命中默认 SKILL", ItemType: "investigation", Project: "atm",
+		Priority: "P1", Reason: "明确排查项", Confidence: 0.95}}
+	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	if _, err := service.Run(context.Background(), source.ID); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 {
+		t.Fatalf("first run should file one Todo: %+v", todos.Items)
+	}
+	filed := todos.Items[0].ID
+
+	// 40 minutes later the group is still on the same topic, with a new finding.
+	fetcher.messages = []Message{{ID: "m2", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 12_400, Content: "新结论：只注入了 definition，没在 prompt 里触发"}}
+	fetcher.newest = 12_400
+	extractor.decision = Decision{Action: "append", Title: "补充技能激活排查结论",
+		Summary: "只注入了 skill definition，未在 prompt 里真正触发激活", ItemType: "investigation",
+		Project: "atm", Priority: "P1", RelatedTodoID: filed, Reason: "同一件事的新进展", Confidence: 0.93}
+	second, err := service.Run(context.Background(), source.ID)
+	if err != nil || second.Runs[0].AppendedCount != 1 || second.Runs[0].CreatedCount != 0 {
+		t.Fatalf("append run=%+v err=%v", second, err)
+	}
+	todos, _ = store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 {
+		t.Fatalf("follow-up filed a duplicate Todo: %+v", todos.Items)
+	}
+	doc, err := store.ReadTodoDoc(filed)
+	if err != nil {
+		t.Fatalf("read Todo doc: %v", err)
+	}
+	if !strings.Contains(doc, "## 补充") ||
+		!strings.Contains(doc, "只注入了 skill definition，未在 prompt 里真正触发激活") {
+		t.Fatalf("append did not reach the Todo's 补充 section:\n%s", doc)
+	}
+	// The App strips exactly this marker out of the task timeline and keeps it on
+	// disk to tie the entry back to its collection item.
+	if !strings.Contains(doc, "<!-- [钉钉采集:") {
+		t.Fatalf("append lost its traceability marker:\n%s", doc)
+	}
+	// The requirement is generated from the description on every metadata sync, so
+	// an append must not have gone there.
+	if todos.Items[0].Description != "批测有概率命中默认 SKILL" {
+		t.Fatalf("append rewrote the Todo description: %q", todos.Items[0].Description)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 2 {
+		t.Fatalf("expected one item per batch: %+v", items)
+	}
+	appended := items[0]
+	if appended.Action != "append" || appended.TodoID != filed || appended.Status != "processed" {
+		t.Fatalf("append item=%+v", appended)
+	}
+}
+
+// The classifier reads untrusted chat, so the one write it can aim at an existing
+// record is held to the thread that produced it. A Todo somebody wrote by hand is
+// not editable by whatever a message claims to relate to — and the batch is filed
+// rather than dropped, because a decision recorded nowhere is the worse failure.
+func TestServiceRefusesToAppendOutsideTheConversationThatFiledTheTodo(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{{ID: "t9", Title: "手写的任务", Priority: "P1",
+			Status: store.TodoStatusOpen, Project: "atm", Created: store.Today()}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m2", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 11_000, Content: "顺带说一下手写任务的事"}}, newest: 11_000}
+	extractor := &fakeExtractor{decision: Decision{Action: "append", Title: "补充手写任务",
+		Summary: "群里提到的补充信息", ItemType: "follow_up", Project: "atm", Priority: "P1",
+		RelatedTodoID: "t9", Reason: "自称与 t9 有关", Confidence: 0.9}}
+	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].CreatedCount != 1 || report.Runs[0].AppendedCount != 0 {
+		t.Fatalf("refused append run=%+v err=%v", report, err)
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 2 {
+		t.Fatalf("refused append should still file the batch: %+v", todos.Items)
+	}
+	if store.TodoDocExists("t9") {
+		doc, _ := store.ReadTodoDoc("t9")
+		if strings.Contains(doc, "群里提到的补充信息") {
+			t.Fatalf("collector edited a Todo outside its conversation:\n%s", doc)
+		}
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	// The record has to say what happened, not what was asked for: the run counted
+	// a create, and Revert drops a Todo rather than writing a compensating note.
+	if len(items) != 1 || items[0].Action != "create" {
+		t.Fatalf("refused append item=%+v", items)
+	}
+}
+
 func TestServiceDoesNotRegroupHandledMessagesWhenConversationExpands(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
@@ -695,6 +805,67 @@ func TestExpandedBatchRetiresTheFailedItemItAbsorbs(t *testing.T) {
 	}
 }
 
+// An on-demand analysis holds its decisions for a person, and confirming a
+// proposed append has to append. Promoting it into a new Todo would produce
+// exactly the duplicate the proposal was avoiding.
+func TestPromoteCarriesOutAProposedAppend(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{{ID: "t9", Title: "排查技能命中默认 SKILL",
+			Description: "批测有概率命中默认 SKILL", Priority: "P1", Status: store.TodoStatusOpen,
+			Project: "atm", Created: store.Today(), Source: "test:cid-product:m1",
+			Creator: store.TodoCreatorCollect}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	messages := []Message{{ID: "m2", ConversationID: source.ExternalID, Sender: "测试用户",
+		CreatedAt: 11_000, Content: "新结论：没在 prompt 里触发激活"}}
+	db, _ := store.Open()
+	if _, err := store.PutCollectionMessages(db, CollectionMessagesFor(source, messages)); err != nil {
+		t.Fatalf("seed messages: %v", err)
+	}
+	db.Close()
+	extractor := &fakeExtractor{decision: Decision{Action: "append", Title: "补充激活排查结论",
+		Summary: "未在 prompt 里真正触发激活", ItemType: "investigation", Project: "atm",
+		Priority: "P1", RelatedTodoID: "t9", Reason: "同一件事的新进展", Confidence: 0.9}}
+	service := Service{Extractor: extractor, Now: tickingClock()}
+
+	report, err := service.Analyze(context.Background(), source.ID, AnalyzeOptions{Local: true})
+	if err != nil || report.Proposed != 1 || report.Applied != 0 {
+		t.Fatalf("analyze report=%+v err=%v", report, err)
+	}
+	proposal := report.Items[0]
+	// The target has to survive the wait: TodoID carries it, ProposedAction is what
+	// still says nothing has been written.
+	if proposal.ProposedAction != "append" || proposal.TodoID != "t9" || proposal.Action != "pending" {
+		t.Fatalf("proposal lost its append target: %+v", proposal)
+	}
+	if store.TodoDocExists("t9") {
+		doc, _ := store.ReadTodoDoc("t9")
+		if strings.Contains(doc, "未在 prompt 里真正触发激活") {
+			t.Fatalf("analysis wrote before it was confirmed:\n%s", doc)
+		}
+	}
+
+	promoted, err := service.Promote(proposal.ID, ItemCorrection{})
+	if err != nil {
+		t.Fatalf("promote proposed append: %v", err)
+	}
+	if promoted.Action != "append" || promoted.TodoID != "t9" || promoted.ProposedAction != "" {
+		t.Fatalf("promoted item=%+v", promoted)
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 {
+		t.Fatalf("promoting an append filed a duplicate Todo: %+v", todos.Items)
+	}
+	doc, err := store.ReadTodoDoc("t9")
+	if err != nil || !strings.Contains(doc, "未在 prompt 里真正触发激活") {
+		t.Fatalf("confirmed append did not reach the Todo: err=%v\n%s", err, doc)
+	}
+}
+
 func TestFetcherFailurePreservesExistingCheckpoint(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
@@ -814,6 +985,79 @@ func TestRunArchivesFetchedChatWhateverTheDecisionIs(t *testing.T) {
 	stats, err := store.CollectionMessageStatsFor(db)
 	if err != nil || stats.Total != 2 {
 		t.Fatalf("archive stats after re-run = %+v, err=%v", stats, err)
+	}
+}
+
+// What the classifier is allowed to do, and which candidates it can tell apart,
+// is decided entirely by this prompt. A rolling discussion filed four separate
+// Todos for one topic while append was absent from it.
+func TestCollectionPromptOffersAppendAndMarksThisChatsOwnTodos(t *testing.T) {
+	source := store.CollectionSource{Connector: "dingtalk", ExternalID: "cid-wanda",
+		Name: "Project Wanda", Project: "wanda", Priority: "P2", Strategy: store.CollectionStrategyTasks}
+	batch := MessageBatch{Source: source,
+		Messages:   []Message{{ID: "m9", ConversationID: "cid-wanda"}},
+		RawContext: "[新消息] 2026-08-06 [先酉] 还是有概率命中默认 SKILL"}
+	prompt := collectionPrompt(batch, []store.Todo{
+		{ID: "t210", Title: "排查技能命中默认 SKILL", Status: store.TodoStatusOpen, Project: "wanda",
+			Description: "先酉反馈批测仍有概率命中默认 SKILL", Source: "dingtalk:cid-wanda:m1"},
+		{ID: "t80", Title: "别的群的任务", Status: store.TodoStatusOpen, Project: "wanda",
+			Source: "dingtalk:cid-other:m4"},
+		{ID: "t70", Title: "已完成的任务", Status: store.TodoStatusDone, Source: "dingtalk:cid-wanda:m0"},
+	})
+	if !strings.Contains(prompt, "- append:") {
+		t.Fatalf("prompt does not offer append:\n%s", prompt)
+	}
+	// The flag is the whole point: without it the classifier cannot tell "the group
+	// is still on the same bug" from "a new bug was just reported".
+	if !strings.Contains(prompt, `"id":"t210"`) ||
+		!strings.Contains(prompt, `"status":"open","from_this_chat":true`) {
+		t.Fatalf("this conversation's own Todo is not marked:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, `"id":"t80"`) ||
+		!strings.Contains(prompt, `"status":"open","from_this_chat":false`) {
+		t.Fatalf("another conversation's Todo is marked as this chat's:\n%s", prompt)
+	}
+	// Sameness cannot be judged from a title alone, so the description travels too.
+	if !strings.Contains(prompt, "先酉反馈批测仍有概率命中默认 SKILL") {
+		t.Fatalf("candidate summary missing:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "t70") {
+		t.Fatalf("closed Todo offered as a candidate:\n%s", prompt)
+	}
+}
+
+// An append whose target or payload is missing writes nothing, and the batch would
+// be marked handled having recorded nothing anywhere.
+func TestValidateDecisionRequiresAnAppendTargetAndPayload(t *testing.T) {
+	complete := Decision{Action: "append", Title: "补充结论", Summary: "新的排查结论",
+		RelatedTodoID: "t210"}
+	if err := validateDecision(complete); err != nil {
+		t.Fatalf("complete append rejected: %v", err)
+	}
+	noTarget := complete
+	noTarget.RelatedTodoID = ""
+	if err := validateDecision(noTarget); err == nil {
+		t.Fatal("append without related_todo_id accepted")
+	}
+	noPayload := complete
+	noPayload.Summary = " "
+	if err := validateDecision(noPayload); err == nil {
+		t.Fatal("append without a summary accepted")
+	}
+}
+
+// An observation source may not reach the Todo list at all. Adding append reopened
+// that door, and the clamp is what keeps it shut.
+func TestObservationSourceClampsAppendToInsight(t *testing.T) {
+	observe := store.CollectionSource{Strategy: store.CollectionStrategyObserve}
+	clamped := clampToStrategy(Decision{Action: "append", Title: "补充", Summary: "内容",
+		ItemType: "follow_up", RelatedTodoID: "t210"}, observe)
+	if clamped.Action != "insight" || clamped.RelatedTodoID != "" {
+		t.Fatalf("observation append was not clamped: %+v", clamped)
+	}
+	prompt := collectionPrompt(MessageBatch{Source: observe}, nil)
+	if strings.Contains(prompt, "- append:") {
+		t.Fatalf("observation prompt offers append:\n%s", prompt)
 	}
 }
 

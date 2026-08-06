@@ -48,10 +48,10 @@ type CollectionSource struct {
 	// so this is what keeps a feed's events from swallowing each other.
 	DecisionUnit    string `json:"decision_unit"`
 	IntervalMinutes int    `json:"interval_minutes"`
-	Priority            string `json:"priority"`
-	Enabled             bool   `json:"enabled"`
-	CreatedAt           int64  `json:"created_at"`
-	UpdatedAt           int64  `json:"updated_at"`
+	Priority        string `json:"priority"`
+	Enabled         bool   `json:"enabled"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
 }
 
 // CollectionDigest records the knowledge document one source's insights for one

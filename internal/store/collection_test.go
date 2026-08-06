@@ -169,6 +169,52 @@ func TestCollectionItemsFollowTheirTodoThroughItsLifecycle(t *testing.T) {
 	}
 }
 
+// Deleting a record is tidying the ledger, not undoing the work: the Todo it
+// filed belongs to whoever has been acting on it. Its messages do come back out
+// of the handled set, which is what lets a re-read rebuild the record.
+func TestDeleteCollectionItemKeepsItsTodoAndReleasesItsMessages(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "处理收集到的部署报错"))
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-delete",
+		Name: "研发群", Priority: "P1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	filed, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-delete", Fingerprint: "filed", MessageIDs: []string{"m1"},
+		Action: "create", Title: "处理收集到的部署报错", TodoID: "t1", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put item: %v", err)
+	}
+
+	deleted, err := DeleteCollectionItem(db, filed.ID)
+	if err != nil || deleted.ID != filed.ID || deleted.TodoID != "t1" {
+		t.Fatalf("delete item = %+v, %v", deleted, err)
+	}
+	if _, err := GetCollectionItem(db, filed.ID); err == nil {
+		t.Fatalf("record survived its deletion")
+	}
+	todos, err := LoadTodosReadOnly()
+	if err != nil || FindTodo(todos, "t1") == nil {
+		t.Fatalf("deleting a record took its Todo with it: %v", err)
+	}
+	handled, err := HandledCollectionMessageIDs(db, source.ID)
+	if err != nil || len(handled) != 0 {
+		t.Fatalf("handled message ids = %v, %v", handled, err)
+	}
+	if _, err := DeleteCollectionItem(db, filed.ID); err == nil {
+		t.Fatalf("deleting a missing record reported success")
+	}
+}
+
 func TestCollectionSourceValidation(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()

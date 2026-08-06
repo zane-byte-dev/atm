@@ -17,6 +17,16 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **A collection processing record can be deleted.** `atm collect item delete
+  <item-id>`, and in the App a right-click on any record in 处理记录, plus a
+  「删除记录」 entry in the record's own menu. Until now the ledger only grew:
+  deleting a source kept its records, and nothing removed a record itself, so a
+  misread batch stayed on screen for good. The Todo a record filed is kept —
+  someone may have been working on it for days, and tidying away the note that
+  explains where it came from must not take the work with it; `atm collect item
+  revert` is still what says the write itself was wrong. Deleting frees the
+  record's messages, so one whose messages are still inside the next run's
+  re-read window can be rebuilt by that run; both confirmations say so.
 - **Todos record who filed them.** A new `creator` field holds `me`, `collect`,
   or an agent name, and is detected at creation: an agent session in the
   environment names the agent, connector collection names itself, and anything
@@ -77,6 +87,16 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Changed
 
+- **一段讨论里的同一件事只留一条 Todo。** 收集每 5 分钟判定一批消息，而一个群会在几十分钟
+  里反复回到同一个话题，每次回来都是新的一批。此前分类器被明确要求「相关也只能新建」，于是
+  钉钉里一次技能激活的排查，从 09:52 到 10:11 连着建了 t210、t211、t212、t213 四条——四条都
+  写着「相关历史 Todo：t210」，说明模型每次都认出了这是同一件事，只是不许合并。同一件事的
+  新信息现在走 `append`：写进目标 Todo 的 `补充` 段（App 的任务动态里读作一条补充），Todo
+  本体的需求正文不动，真正的新工作才 `create`，`related_todo_id` 仍只作上下文关联。分类器
+  同时拿到了判断依据——每个候选带上需求摘要，以及「这条是不是本会话自己建的」。补充只能落在
+  **这个会话自己建过的** Todo 上：聊天是不可信输入，手写的 Todo 和别的群的 Todo 不会被它改
+  写，目标已关闭或不属于本会话时退回新建，因为记不下来比记错地方更糟。`observe` 来源依旧一
+  条都碰不到，`collect analyze` 的建议由 `collect item promote` 按原样落地。
 - **Qoder 和 Pi 的会话现在带得上 hook 事件。** 两者的 live 会话此前只有截断到 8 位的
   session ID，而 hook 上报的是完整 UUID，事件因此永远匹配不到任何一行——Pi 的扩展装了也等
   于没装。完整 ID 现在存在 `resume_id` 里，刘海按会话（而不是按目录）把事件对上行，同一个
