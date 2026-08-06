@@ -17,6 +17,16 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **Todos record who filed them.** A new `creator` field holds `me`, `collect`,
+  or an agent name, and is detected at creation: an agent session in the
+  environment names the agent, connector collection names itself, and anything
+  else is the human. It is a closed vocabulary, unlike the free-text `source`
+  that says why the work exists — which is what makes `atm todo list --creator
+  collect` a question with an answer. `atm config set owner_name <nickname>`
+  decides how your own todos are displayed (default 我); the stored value stays
+  `me`, so renaming yourself never rewrites a record. Todos created before this
+  have no creator and were not backfilled: the old `source` says where a request
+  came from, not who typed it.
 - **`atm backup` and `atm restore`.** Todos, memory, knowledge, the collection
   ledger and the review cursor are this database's own records; nothing else
   holds a copy. The archive carries them plus the plain-file records under

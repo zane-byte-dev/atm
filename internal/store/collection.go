@@ -76,6 +76,20 @@ type CollectionCheckpoint struct {
 	UpdatedAt  int64  `json:"updated_at"`
 }
 
+// MaxCollectionAttempts is how many times automatic collection will try one
+// batch before it stops on its own. Three covers what the retry is actually for
+// — a connector or model that was unavailable for a minute — while a batch that
+// fails deterministically costs three model calls instead of one per run until
+// someone notices. There is no backoff on purpose: the schedule already spaces
+// attempts a run apart, and a ceiling this low makes a growing delay pointless.
+const MaxCollectionAttempts = 3
+
+// CollectionRetriesExhausted reports whether an item has stopped being retried
+// automatically and is now waiting for someone to reprocess it.
+func CollectionRetriesExhausted(item CollectionItem) bool {
+	return item.Status == "failed" && item.Attempts >= MaxCollectionAttempts
+}
+
 type CollectionRun struct {
 	ID            string `json:"id"`
 	Connector     string `json:"connector"`
@@ -116,9 +130,18 @@ type CollectionItem struct {
 	Confidence     float64 `json:"confidence,omitempty"`
 	TodoID         string  `json:"todo_id,omitempty"`
 	Status         string  `json:"status"`
-	Error          string  `json:"error,omitempty"`
-	CreatedAt      int64   `json:"created_at"`
-	UpdatedAt      int64   `json:"updated_at"`
+	// Attempts counts how many times processing this batch has been tried.
+	// Automatic retries stop at MaxCollectionAttempts; see
+	// CollectionRetriesExhausted.
+	Attempts int `json:"attempts,omitempty"`
+	// RetryStopped is Attempts read against the ceiling, derived on every query
+	// so that what "failed" means for a reader — comes back on its own, or waits
+	// for a person — is decided here instead of by every caller keeping its own
+	// copy of the limit.
+	RetryStopped bool   `json:"retry_stopped,omitempty"`
+	Error        string `json:"error,omitempty"`
+	CreatedAt    int64  `json:"created_at"`
+	UpdatedAt    int64  `json:"updated_at"`
 	// TodoStatus and TodoArchived are the linked Todo's current lifecycle state,
 	// read back on every query rather than stored. A Todo can be finished,
 	// dropped or archived from the CLI, the App or any agent, and none of those
@@ -145,6 +168,11 @@ type CollectionSummary struct {
 	// are the unit, not Todos: two records may legitimately name the same Todo.
 	Followups       int `json:"followups"`
 	FollowupsClosed int `json:"followups_closed"`
+	// RetryStopped counts the items whose automatic retry has run out, over the
+	// whole ledger rather than today. Bounding the retry means a broken batch now
+	// goes quiet instead of failing loudly every run, so something has to say it
+	// is still there — otherwise the fix trades a noisy problem for a silent one.
+	RetryStopped int `json:"retry_stopped"`
 }
 
 type CollectionOverview struct {
@@ -297,6 +325,31 @@ func DeleteCollectionSource(db *sql.DB, id string) error {
 	return err
 }
 
+// DeleteCollectionItem drops one processing record and returns what went, so a
+// caller can report it without reading the row again.
+//
+// The Todo the record wrote to is left alone. The record is collection's own
+// note about a decision, not the work itself: someone may have been acting on
+// that Todo for days, and tidying away the note that explains where it came from
+// must not take the work with it. Revert is what says the write was wrong.
+//
+// Deleting also releases the record's messages from the handled set, so a record
+// whose messages still fall inside the next run's re-read window can be rebuilt
+// by that run. Anything older than the window is gone for good.
+func DeleteCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
+	item, err := GetCollectionItem(db, id)
+	if err == sql.ErrNoRows {
+		return CollectionItem{}, fmt.Errorf("collection item not found: %s", id)
+	}
+	if err != nil {
+		return CollectionItem{}, err
+	}
+	if _, err := db.Exec(`DELETE FROM collection_items WHERE id=?`, id); err != nil {
+		return CollectionItem{}, err
+	}
+	return item, nil
+}
+
 func GetCollectionCheckpoint(db *sql.DB, sourceID string) (CollectionCheckpoint, error) {
 	checkpoint := CollectionCheckpoint{SourceID: sourceID}
 	err := db.QueryRow(`SELECT cursor_time,cursor,updated_at FROM collection_checkpoints WHERE source_id=?`, sourceID).
@@ -354,12 +407,12 @@ func PutCollectionItem(db *sql.DB, item CollectionItem) (CollectionItem, bool, e
 	result, err := db.Exec(`INSERT INTO collection_items
 		(id,source_id,connector,conversation_id,fingerprint,message_ids,sender,occurred_at,
 		 raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,todo_id,
-		 status,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
+		 status,attempts,error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
 		item.ID, item.SourceID, item.Connector, item.ConversationID, item.Fingerprint,
 		string(messageIDs), item.Sender, item.OccurredAt, item.RawContext, item.Action,
 		item.ProposedAction, item.Title, item.Summary, item.ItemType, item.Project, item.Priority, item.Reason,
-		item.Confidence, nullableString(item.TodoID), item.Status, item.Error, item.CreatedAt, item.UpdatedAt)
+		item.Confidence, nullableString(item.TodoID), item.Status, item.Attempts, item.Error, item.CreatedAt, item.UpdatedAt)
 	if err != nil {
 		return CollectionItem{}, false, err
 	}
@@ -379,10 +432,10 @@ func UpdateCollectionItem(db *sql.DB, item CollectionItem) error {
 	item.UpdatedAt = time.Now().In(config.Loc).Unix()
 	_, err = db.Exec(`UPDATE collection_items SET conversation_id=?,message_ids=?,sender=?,occurred_at=?,
 		raw_context=?,action=?,proposed_action=?,title=?,summary=?,item_type=?,project=?,priority=?,reason=?,confidence=?,
-		todo_id=?,status=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
+		todo_id=?,status=?,attempts=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
 		item.Sender, item.OccurredAt, item.RawContext, item.Action, item.ProposedAction, item.Title, item.Summary,
 		item.ItemType, item.Project, item.Priority, item.Reason, item.Confidence,
-		nullableString(item.TodoID), item.Status, item.Error, item.UpdatedAt, item.ID)
+		nullableString(item.TodoID), item.Status, item.Attempts, item.Error, item.UpdatedAt, item.ID)
 	return err
 }
 
@@ -400,9 +453,16 @@ func GetCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
 // decision. Collection fetches deliberately overlap their checkpoint window;
 // filtering by these message IDs before regrouping is what keeps an expanding
 // conversation from becoming a brand-new batch on every run.
+//
+// A batch that used up its retry budget counts as handled too. Not because it
+// succeeded, but because leaving it out means every later run rebuilds the same
+// batch and refuses it again, which is what kept the checkpoint pinned and the
+// re-read window growing. Its messages are archived and the item is still there
+// to reprocess.
 func HandledCollectionMessageIDs(db *sql.DB, sourceID string) (map[string]struct{}, error) {
 	rows, err := db.Query(`SELECT message_ids FROM collection_items
-		WHERE source_id=? AND (status='processed' OR proposed_action<>'')`, sourceID)
+		WHERE source_id=? AND (status='processed' OR proposed_action<>''
+			OR (status='failed' AND attempts>=?))`, sourceID, MaxCollectionAttempts)
 	if err != nil {
 		return nil, err
 	}
@@ -424,6 +484,70 @@ func HandledCollectionMessageIDs(db *sql.DB, sourceID string) (map[string]struct
 		}
 	}
 	return handled, rows.Err()
+}
+
+// RetireSupersededCollectionItems stops the automatic retry of failed items whose
+// messages have all been taken over by a newer batch, and reports how many it
+// retired.
+//
+// A failed batch is retried by being rebuilt from the same messages, so its
+// identity is the message set. One more message in the same conversation makes a
+// different set, hence a different fingerprint and a different item: the newer
+// item carries the old messages forward while the old one is left behind, never
+// rebuilt again and still promising a retry that cannot happen. Retiring it says
+// so, and keeps a manual reprocess available for the narrower batch.
+func RetireSupersededCollectionItems(db *sql.DB, sourceID, keepID string, messageIDs []string) (int, error) {
+	if len(messageIDs) == 0 {
+		return 0, nil
+	}
+	covered := make(map[string]struct{}, len(messageIDs))
+	for _, messageID := range messageIDs {
+		covered[messageID] = struct{}{}
+	}
+	rows, err := db.Query(`SELECT id,message_ids FROM collection_items
+		WHERE source_id=? AND id<>? AND status='failed' AND attempts<?`,
+		sourceID, keepID, MaxCollectionAttempts)
+	if err != nil {
+		return 0, err
+	}
+	superseded := []string{}
+	for rows.Next() {
+		var id, encoded string
+		if err := rows.Scan(&id, &encoded); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		var owned []string
+		if err := json.Unmarshal([]byte(encoded), &owned); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if len(owned) == 0 {
+			continue
+		}
+		absorbed := true
+		for _, messageID := range owned {
+			if _, ok := covered[messageID]; !ok {
+				absorbed = false
+				break
+			}
+		}
+		if absorbed {
+			superseded = append(superseded, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	now := time.Now().In(config.Loc).Unix()
+	for _, id := range superseded {
+		if _, err := db.Exec(`UPDATE collection_items SET attempts=?,updated_at=? WHERE id=?`,
+			MaxCollectionAttempts, now, id); err != nil {
+			return 0, err
+		}
+	}
+	return len(superseded), nil
 }
 
 func ListCollectionItems(db *sql.DB, sourceID string, limit int) ([]CollectionItem, error) {
@@ -641,6 +765,11 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 		FROM collection_items i JOIN todos t ON t.id=i.todo_id
 		WHERE i.action IN ('create','append')`).
 		Scan(&summary.Followups, &summary.FollowupsClosed)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	err = db.QueryRow(`SELECT COUNT(*) FROM collection_items
+		WHERE status='failed' AND attempts>=?`, MaxCollectionAttempts).Scan(&summary.RetryStopped)
 	return CollectionOverview{Summary: summary, Sources: sources, Runs: runs,
 		Items: items, Digests: digests}, err
 }
@@ -650,7 +779,7 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 // created_at and updated_at exist on both sides of the join.
 const collectionItemSelect = `SELECT i.id,i.source_id,i.connector,i.conversation_id,i.fingerprint,
 	i.message_ids,i.sender,i.occurred_at,i.raw_context,i.action,i.proposed_action,i.title,i.summary,
-	i.item_type,i.project,i.priority,i.reason,i.confidence,COALESCE(i.todo_id,''),i.status,i.error,
+	i.item_type,i.project,i.priority,i.reason,i.confidence,COALESCE(i.todo_id,''),i.status,i.attempts,i.error,
 	i.created_at,i.updated_at,COALESCE(t.status,''),t.archived_at IS NOT NULL
 	FROM collection_items i LEFT JOIN todos t ON t.id=i.todo_id`
 
@@ -681,9 +810,10 @@ func scanCollectionItem(scanner collectionScanner) (CollectionItem, error) {
 	err := scanner.Scan(&item.ID, &item.SourceID, &item.Connector, &item.ConversationID,
 		&item.Fingerprint, &messageIDs, &item.Sender, &item.OccurredAt, &item.RawContext,
 		&item.Action, &item.ProposedAction, &item.Title, &item.Summary, &item.ItemType, &item.Project,
-		&item.Priority, &item.Reason, &item.Confidence, &item.TodoID, &item.Status,
+		&item.Priority, &item.Reason, &item.Confidence, &item.TodoID, &item.Status, &item.Attempts,
 		&item.Error, &item.CreatedAt, &item.UpdatedAt, &item.TodoStatus, &todoArchived)
 	item.TodoArchived = todoArchived != 0
+	item.RetryStopped = CollectionRetriesExhausted(item)
 	if err == nil {
 		err = json.Unmarshal([]byte(messageIDs), &item.MessageIDs)
 	}

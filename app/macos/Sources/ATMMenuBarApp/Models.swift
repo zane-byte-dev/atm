@@ -18,6 +18,9 @@ struct ATMCollectionSummary: Decodable, Equatable {
     let insightToday: Int
     let ignoredToday: Int
     let failedToday: Int
+    /// 自动重试已用尽、正在等人处理的记录数。按整个台账统计，不限今天：值为 0 时界面
+    /// 什么都不说，非 0 才是唯一需要人看一眼的失败信号。旧版 CLI 不返回，按 0 读。
+    let retryStopped: Int?
 
     enum CodingKeys: String, CodingKey {
         case sources
@@ -28,11 +31,13 @@ struct ATMCollectionSummary: Decodable, Equatable {
         case insightToday = "insight_today"
         case ignoredToday = "ignored_today"
         case failedToday = "failed_today"
+        case retryStopped = "retry_stopped"
     }
 
     static let empty = ATMCollectionSummary(
         sources: 0, enabledSources: 0, fetchedToday: 0, createdToday: 0,
-        appendedToday: 0, insightToday: 0, ignoredToday: 0, failedToday: 0
+        appendedToday: 0, insightToday: 0, ignoredToday: 0, failedToday: 0,
+        retryStopped: 0
     )
 }
 
@@ -401,6 +406,14 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     let confidence: Double?
     let todoID: String?
     let status: String
+    /// How many times this batch has been tried. Absent from older CLI output,
+    /// which is read as zero: a fresh budget is the safe reading, because it
+    /// describes an item the next run will pick up rather than one already
+    /// retired.
+    let attempts: Int?
+    /// Whether the automatic retry has stopped. Derived by the CLI so the
+    /// attempt ceiling lives in one place instead of being restated here.
+    let retryStopped: Bool?
     let error: String?
     let createdAt: Int64
     let updatedAt: Int64
@@ -411,7 +424,7 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, connector, fingerprint, sender, action, title, summary, project,
-             priority, reason, confidence, status, error
+             priority, reason, confidence, status, attempts, error
         case sourceID = "source_id"
         case conversationID = "conversation_id"
         case messageIDs = "message_ids"
@@ -423,6 +436,7 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
         case updatedAt = "updated_at"
         case todoStatus = "todo_status"
         case todoArchived = "todo_archived"
+        case retryStopped = "retry_stopped"
     }
 }
 
@@ -648,6 +662,9 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
     let links: [ATMTodoLink]?
     let created: String
     let source: String?
+    /// Who filed the todo: "me", "collect", or an agent name. Nil on every todo
+    /// created before the CLI had the field.
+    let creator: String?
     let closed: String?
     let closedReason: String?
     let featurePath: String?
@@ -657,7 +674,7 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case id, title, description, priority, status, project, lane, tags, links, created, source
-        case closed, featurePath
+        case closed, featurePath, creator
         case closedReason = "closed_reason"
         case wakeCondition = "wake_condition"
         case reviewAt = "review_at"
@@ -708,6 +725,7 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         links = todo.links
         created = todo.created
         source = todo.source
+        creator = todo.creator
         closed = todo.closed
         closedReason = todo.closedReason
         featurePath = todo.featurePath
@@ -734,12 +752,34 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         links = try values.decodeIfPresent([ATMTodoLink].self, forKey: .links)
         created = try values.decode(String.self, forKey: .created)
         source = try values.decodeIfPresent(String.self, forKey: .source)
+        creator = try values.decodeIfPresent(String.self, forKey: .creator)
         closed = try values.decodeIfPresent(String.self, forKey: .closed)
         closedReason = try values.decodeIfPresent(String.self, forKey: .closedReason)
         featurePath = try values.decodeIfPresent(String.self, forKey: .featurePath)
         onDone = try values.decodeIfPresent(String.self, forKey: .onDone)
         startTS = try values.decodeIfPresent(Int64.self, forKey: .startTS)
         doneTS = try values.decodeIfPresent(Int64.self, forKey: .doneTS)
+    }
+}
+
+/// Renders a todo's creator the way the CLI does, so the same record reads the
+/// same in both places. Only "me" is localised, and only the display side knows
+/// the nickname: the stored token stays "me" so renaming yourself never rewrites
+/// a record. Returns nil for a todo filed before the field existed — there is
+/// nothing to show and a placeholder would imply the creator was lost.
+enum ATMTodoCreator {
+    static func label(_ creator: String?, ownerName: String) -> String? {
+        guard let creator = creator?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !creator.isEmpty else { return nil }
+        switch creator {
+        case "me":
+            let name = ownerName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? "我" : "\(name)（我）"
+        case "collect":
+            return "收集"
+        default:
+            return creator
+        }
     }
 }
 

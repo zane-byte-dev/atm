@@ -318,6 +318,13 @@ Todo 使用一套生命周期状态：`open/in_progress/waiting/review/blocked/d
 `focus/queued`。v4 的 `attention` 字段会在读取时自动迁移，并在下次保存时移除；`atm now`
 会在一个兼容版本内附带旧视图字段，支持 CLI 与 macOS App 分步升级。
 
+`creator` 记录任务是谁建的，取值限定为 `me`、`collect` 或 agent 名，与自由文本 `source`
+（为什么/从哪来）正交——因此 `atm todo list --creator collect` 是个能回答的问题。创建时自动判定：
+环境里有 agent session 记该 agent，连接器收集记 `collect`，其余记 `me`；判定不准时用
+`atm todo add --creator <值>` 显式声明。展示 `me` 时使用 `atm config set owner_name <昵称>`
+配置的昵称（默认「我」），存储值始终是 `me`，改昵称不会改写任何记录。该字段自 schema v33 起存在，
+更早创建的 todo 保持为空，不做回填。
+
 Todo 可通过 `depends_on` 建立结构化依赖。`atm todo done` 和批量完成会在同一次原子保存中检查
 依赖图；当 waiting todo 的全部依赖都为 done 时，自动回到 open 并记录 wake 进展。依赖就绪只表示
 工作可以开始，不表示实现已经提交 review。

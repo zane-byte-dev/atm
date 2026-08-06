@@ -171,6 +171,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 32
+		case 32:
+			if err := migrateV32ToV33(db); err != nil {
+				return err
+			}
+			version = 33
+		case 33:
+			if err := migrateV33ToV34(db); err != nil {
+				return err
+			}
+			version = 34
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -699,6 +709,59 @@ func migrateV31ToV32(db *sql.DB) error {
 		}
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 32`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV32ToV33 records who filed a todo. Existing rows keep an empty creator
+// rather than a guessed one: the free-text source they carry says why the work
+// exists, not who typed it, so reading "me" or "claude" out of it would invent a
+// fact the database never had.
+func migrateV32ToV33(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	hasColumn, err := tableHasColumn(tx, "todos", "creator")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := tx.Exec(`ALTER TABLE todos ADD COLUMN creator TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 33`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV33ToV34 bounds automatic retries of a failed collection batch.
+// Existing failed items start at zero attempts rather than an invented count:
+// the ledger never recorded how many runs already tried them, and guessing high
+// would silently retire items that a working connector would now process. They
+// get a full budget from here, which costs at most MaxCollectionAttempts runs
+// once.
+func migrateV33ToV34(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	hasColumn, err := tableHasColumn(tx, "collection_items", "attempts")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := tx.Exec(`ALTER TABLE collection_items
+			ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 34`); err != nil {
 		return err
 	}
 	return tx.Commit()

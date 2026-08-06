@@ -213,6 +213,7 @@ func lintTodoDocMetadata(todo *Todo, content string) []TodoLintIssue {
 		{"领域", todo.Lane},
 		{"项目", todo.Project},
 		{"创建", todo.Created},
+		{"创建者", TodoCreatorDocLabel(todo.Creator)},
 	}
 	for _, item := range expected {
 		if got := todoDocField(content, item.label); got != item.value {

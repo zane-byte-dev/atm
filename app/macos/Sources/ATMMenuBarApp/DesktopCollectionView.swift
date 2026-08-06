@@ -14,6 +14,7 @@ struct DesktopCollectionView: View {
     @State private var showingAddSource = false
     @State private var editingSource: ATMCollectionSource?
     @State private var deleteCandidate: ATMCollectionSource?
+    @State private var deleteItemCandidate: ATMCollectionItem?
     @State private var historyRequest: CollectionHistoryRequest?
     @State private var showingIgnoredItems = false
 
@@ -189,10 +190,16 @@ struct DesktopCollectionView: View {
             summaryMetric("新建", value: summary.createdToday, color: collectionActionColor("create"))
             summaryMetric("补充", value: summary.appendedToday, color: collectionActionColor("append"))
             summaryMetric("沉淀", value: summary.insightToday, color: collectionActionColor("insight"))
-            // 这里不再放失败数。三重机制保证失败会自愈：游标不前移（collector 的
+            // 这里不再放失败数。绝大多数失败会自愈：游标不前移（collector 的
             // `checkpoint was not advanced`）、失败消息不进 HandledCollectionMessageIDs、
             // 失败 item 不在跳过分支里——下一轮连着原始上下文重新分析，人不用做任何事。
-            // 而且这个数是按 run 累加的：同一条失败 47 次会显示成「47」，读起来像 47 条待处理。
+            // 而且这个数是按 run 累加的：同一条失败 3 次会显示成「3」，读起来像 3 条待处理。
+            // 真正要人出手的只有重试预算用尽的那些，所以只报它，且为 0 时一个字都不说。
+            if let stopped = summary.retryStopped, stopped > 0 {
+                Text("\(stopped) 条重试已停止")
+                    .foregroundStyle(ATMTheme.danger)
+                    .help("自动重试已用尽，打开记录后用「重试」再试一次")
+            }
             Spacer()
             if let digest = todaysDigest {
                 // The digest is the readable form of everything filed as an
@@ -387,6 +394,24 @@ struct DesktopCollectionView: View {
         // 中栏 surface / 右栏 canvas —— 和任务、Agent、知识一致。此前中栏也是 canvas，
         // 与详情栏同色，三栏之间只剩一根 Divider。
         .background(ATMTheme.surface)
+        // 记录的删除确认挂在中栏而不是根视图：来源删除已经占了根视图的
+        // confirmationDialog，同一层挂两个在 macOS 上会互相顶掉。
+        .confirmationDialog(
+            "删除这条处理记录？",
+            isPresented: Binding(
+                get: { deleteItemCandidate != nil },
+                set: { if !$0 { deleteItemCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除记录", role: .destructive) {
+                if let item = deleteItemCandidate { store.deleteCollectionItem(item) }
+                deleteItemCandidate = nil
+            }
+            Button("取消", role: .cancel) { deleteItemCandidate = nil }
+        } message: {
+            Text(deleteItemCandidate.map(collectionDeleteWarning(for:)) ?? "")
+        }
     }
 
     private func itemRow(_ item: ATMCollectionItem) -> some View {
@@ -403,6 +428,20 @@ struct DesktopCollectionView: View {
         .focusable(false)
         .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
         .listRowBackground(Color.clear)
+        // 右键只放导航和删除。重新处理、修正、撤销这些要看记录状态才知道能不能做，
+        // 判定在详情栏（见 CollectionItemDetail），在这儿抄一遍就是抄两套规则。
+        .contextMenu {
+            if let source = source(for: item) {
+                Button("查看聊天记录") {
+                    historyRequest = CollectionHistoryRequest(source: source, item: item)
+                }
+            }
+            if item.todoID != nil {
+                Button("打开 Todo") { openTodo(item) }
+            }
+            Divider()
+            Button("删除记录", role: .destructive) { deleteItemCandidate = item }
+        }
     }
 
     @ViewBuilder
@@ -417,9 +456,7 @@ struct DesktopCollectionView: View {
                     historyRequest = CollectionHistoryRequest(source: source, item: item)
                 }
             ) {
-                guard let todoID = item.todoID else { return }
-                navigation.section = .tasks
-                navigation.selectedTodoID = todoID
+                openTodo(item)
             }
         } else {
             CollectionEmptyState(
@@ -427,6 +464,12 @@ struct DesktopCollectionView: View {
                 systemImage: "doc.text.magnifyingglass"
             )
         }
+    }
+
+    private func openTodo(_ item: ATMCollectionItem) {
+        guard let todoID = item.todoID else { return }
+        navigation.section = .tasks
+        navigation.selectedTodoID = todoID
     }
 
     private func source(for item: ATMCollectionItem) -> ATMCollectionSource? {
@@ -474,25 +517,27 @@ private struct CollectionItemRow: View {
         ATMCollectionItemType.resolve(item.itemType)
     }
 
+    private var retryStopped: Bool { item.retryStopped == true }
+
     var body: some View {
         HStack(alignment: .top, spacing: 9) {
-            Image(systemName: collectionActionIcon(item.action))
-                .foregroundStyle(collectionActionColor(item.action))
+            Image(systemName: collectionActionIcon(item.action, retryStopped: retryStopped))
+                .foregroundStyle(collectionActionColor(item.action, retryStopped: retryStopped))
                 .frame(width: 24, height: 24)
                 .background(
-                    collectionActionColor(item.action).opacity(0.10),
+                    collectionActionColor(item.action, retryStopped: retryStopped).opacity(0.10),
                     in: Circle()
                 )
             VStack(alignment: .leading, spacing: 4) {
                 Text(item.title?.isEmpty == false
                     ? item.title!
-                    : collectionActionTitle(item.action))
+                    : collectionActionTitle(item.action, retryStopped: retryStopped))
                     .font(ATMFont.font(.body, weight: .medium))
                     .lineLimit(2)
                 HStack(spacing: 5) {
                     Text(itemType.title)
                     Text("·")
-                    Text(collectionActionTitle(item.action))
+                    Text(collectionActionTitle(item.action, retryStopped: retryStopped))
                     if item.todoClosed, let todoID = item.todoID, let status = item.todoStatus {
                         Text("·")
                         Text("\(todoID) \(ATMTodoStatusStyle.label(forStatus: status))")
@@ -525,18 +570,20 @@ private struct CollectionItemDetail: View {
         ATMCollectionItemType.resolve(item.itemType)
     }
 
+    private var retryStopped: Bool { item.retryStopped == true }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Label(collectionActionBadgeTitle, systemImage: collectionActionIcon(item.action))
+                        Label(collectionActionBadgeTitle, systemImage: collectionActionIcon(item.action, retryStopped: retryStopped))
                             .font(ATMFont.footnote)
-                            .foregroundStyle(collectionActionColor(item.action))
+                            .foregroundStyle(collectionActionColor(item.action, retryStopped: retryStopped))
                             .padding(.horizontal, 9)
                             .padding(.vertical, 5)
                             .background(
-                                collectionActionColor(item.action).opacity(0.10),
+                                collectionActionColor(item.action, retryStopped: retryStopped).opacity(0.10),
                                 in: Capsule()
                             )
                         Text(item.title?.isEmpty == false ? item.title! : "未生成标题")
@@ -556,31 +603,38 @@ private struct CollectionItemDetail: View {
                     }
                     // 撤销过的 item 状态回落成 `processed`（见 collector 的 revert），它的消息
                     // 因此进了 handled 名单、再也不会被自动重新收集——这个按钮是它唯一的回头路，
-                    // 所以留在主位。失败正相反：下一轮自己会重来，于是降级进菜单，只服务
-                    // 「刚修好连接器、不想等下一轮」这种情况。
+                    // 所以留在主位。重试已停止的失败项同理：不点它就真的没有下一轮了。还在预算
+                    // 内的失败正相反，下一轮自己会重来，于是降级进菜单，只服务「刚修好连接器、
+                    // 不想等下一轮」这种情况。
                     if item.action == "reverted" {
                         Button("重新处理") { store.reprocessCollectionItem(item) }
                             .buttonStyle(.borderedProminent)
                             .controlSize(.small)
+                    } else if retryStopped {
+                        Button("重试") { store.reprocessCollectionItem(item) }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
                     }
-                    if hasItemActions {
-                        Menu {
-                            if item.action == "ignore" {
-                                Button("重新判断") { store.reprocessCollectionItem(item) }
-                            }
-                            if item.action == "failed" {
-                                Button("立即重试") { store.reprocessCollectionItem(item) }
-                            }
-                            if canAmendTodoWrite {
-                                Button("修正标题、项目和优先级") { showingCorrection = true }
-                                Button("撤销自动处理", role: .destructive) { confirmingRevert = true }
-                            }
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
+                    // 其余条目要看状态才知道能不能做，删除对任何一条记录都成立，所以
+                    // 菜单不再需要「有没有动作」那道门——它永远至少有一项。
+                    Menu {
+                        if item.action == "ignore" {
+                            Button("重新判断") { store.reprocessCollectionItem(item) }
                         }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
+                        if item.action == "failed", !retryStopped {
+                            Button("立即重试") { store.reprocessCollectionItem(item) }
+                        }
+                        if canAmendTodoWrite {
+                            Button("修正标题、项目和优先级") { showingCorrection = true }
+                            Button("撤销自动处理", role: .destructive) { confirmingRevert = true }
+                            Divider()
+                        }
+                        Button("删除记录", role: .destructive) { confirmingDelete = true }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
                     }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
 
                 decisionSummary
@@ -653,13 +707,8 @@ private struct CollectionItemDetail: View {
         (item.action == "create" || item.action == "append") && !item.todoClosed
     }
 
-    /// 菜单只有真的有动作时才画，否则会出现一个点开是空的省略号。
-    private var hasItemActions: Bool {
-        item.action == "ignore" || item.action == "failed" || canAmendTodoWrite
-    }
-
     private var collectionActionBadgeTitle: String {
-        let actionTitle = collectionActionTitle(item.action)
+        let actionTitle = collectionActionTitle(item.action, retryStopped: retryStopped)
         guard let todoID = item.todoID, !todoID.isEmpty else { return actionTitle }
         var title = "\(actionTitle)到 \(todoID)"
         if let status = item.todoStatus, !status.isEmpty {
@@ -683,10 +732,19 @@ private struct CollectionItemDetail: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
             if let error = item.error, !error.isEmpty {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
+                // 同一条报错，读法完全不同：还会自动重来的是过程信息，重试停下的才是
+                // 待办事项。前者压到次要色，避免一次抖动在详情里长成一条红杠。
+                Label(error, systemImage: retryStopped ? "exclamationmark.triangle.fill" : "arrow.clockwise")
                     .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.danger)
+                    .foregroundStyle(retryStopped ? ATMTheme.danger : ATMTheme.secondary)
                     .textSelection(.enabled)
+                if item.action == "failed" {
+                    Text(retryStopped
+                        ? "已连续失败 \(item.attempts ?? 0) 次，自动重试已停止。修掉原因后用「立即重试」。"
+                        : "下一轮收集会自动重试，通常不用管。")
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
             }
         }
         .padding(14)
@@ -694,7 +752,7 @@ private struct CollectionItemDetail: View {
         .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 10))
         .overlay(alignment: .leading) {
             Capsule()
-                .fill(collectionActionColor(item.action))
+                .fill(collectionActionColor(item.action, retryStopped: retryStopped))
                 .frame(width: 3)
                 .padding(.vertical, 8)
         }
@@ -1744,26 +1802,38 @@ private struct CollectionHistorySheet: View {
     }
 }
 
-private func collectionActionTitle(_ action: String) -> String {
+/// 删除确认里要说的两件事。一是记录和 Todo 是两回事：Todo 可能已经有人在做了，
+/// 不能因为清掉一条来源备注就跟着消失；判断本身错了该走「撤销自动处理」。二是刚
+/// 收集到的消息还在下一轮的重读窗口里，那一轮会把这条记录重新建出来——不说，看着
+/// 就像删除失败。
+private func collectionDeleteWarning(for item: ATMCollectionItem) -> String {
+    if let todoID = item.todoID, !todoID.isEmpty {
+        return "记录会从本地删除，\(todoID) 保留。如果是这次判断错了，请先用「撤销自动处理」。"
+    }
+    return "记录会从本地删除。刚收集到的记录可能在下一轮重新出现，更早的删掉就不会再回来。"
+}
+
+private func collectionActionTitle(_ action: String, retryStopped: Bool = false) -> String {
     switch action {
     case "create": return "已创建"
     case "append": return "已补充"
     case "insight": return "已沉淀"
     case "ignore": return "无需处理"
-    // 「等待重试」听着像在等人按一下；实际是下一轮 collect 自动重来。
-    case "failed": return "下轮自动重试"
+    // 「等待重试」听着像在等人按一下；实际是下一轮 collect 自动重来。重试预算用尽后
+    // 就真的没有下一轮了，这时才需要人出手，两种情况必须分开说。
+    case "failed": return retryStopped ? "重试已停止" : "下轮自动重试"
     case "reverted": return "已撤销"
     default: return "等待处理"
     }
 }
 
-private func collectionActionIcon(_ action: String) -> String {
+private func collectionActionIcon(_ action: String, retryStopped: Bool = false) -> String {
     switch action {
     case "create": return "plus.circle.fill"
     case "append": return "arrow.triangle.branch"
     case "insight": return "book.closed.fill"
     case "ignore": return "minus.circle"
-    case "failed": return "exclamationmark.triangle.fill"
+    case "failed": return retryStopped ? "exclamationmark.triangle.fill" : "arrow.clockwise"
     case "reverted": return "arrow.uturn.backward.circle.fill"
     default: return "clock"
     }
@@ -1771,13 +1841,16 @@ private func collectionActionIcon(_ action: String) -> String {
 
 /// 动作色。create / failed 是状态，走状态色；insight / reverted 是分类，走
 /// ATMTheme.palette，不再另开裸 `.purple` / `.indigo`。
-private func collectionActionColor(_ action: String) -> Color {
+///
+/// 会自己好的失败不配红色：一次连接器抖动在下一轮就没了，用 danger 画它等于把
+/// 「无需处理」喊成事故，整页扫过去只剩红点。红色留给重试已经停下、真的在等人的那一种。
+private func collectionActionColor(_ action: String, retryStopped: Bool = false) -> Color {
     switch action {
     case "create": return ATMTheme.success
     case "append": return ATMTheme.accent
     case "insight": return ATMTheme.palette[2]
     case "ignore": return ATMTheme.secondary
-    case "failed": return ATMTheme.danger
+    case "failed": return retryStopped ? ATMTheme.danger : ATMTheme.secondary
     case "reverted": return ATMTheme.palette[5]
     default: return ATMTheme.warning
     }

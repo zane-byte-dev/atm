@@ -39,11 +39,15 @@ type Todo struct {
 	Links            []TodoLink `json:"links,omitempty"`
 	Created          string     `json:"created"`
 	Source           string     `json:"source,omitempty"`
-	Closed           *string    `json:"closed"`
-	ClosedReason     *string    `json:"closed_reason"`
-	OnDone           string     `json:"on_done,omitempty"`
-	StartTS          *int64     `json:"start_ts,omitempty"`
-	DoneTS           *int64     `json:"done_ts,omitempty"`
+	// Creator is who filed the todo: "me", "collect", or an agent name. See
+	// todo_creator.go for the vocabulary and why it is separate from Source.
+	// Empty on every todo that predates the field.
+	Creator      string  `json:"creator,omitempty"`
+	Closed       *string `json:"closed"`
+	ClosedReason *string `json:"closed_reason"`
+	OnDone       string  `json:"on_done,omitempty"`
+	StartTS      *int64  `json:"start_ts,omitempty"`
+	DoneTS       *int64  `json:"done_ts,omitempty"`
 }
 
 // TodoFile is an in-memory snapshot of the live todos. baseline records the rows
@@ -120,7 +124,7 @@ func LoadArchivedTodos() ([]ArchivedTodo, error) {
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT id,title,description,priority,status,project,lane,created,source,
+	rows, err := db.Query(`SELECT id,title,description,priority,status,project,lane,created,source,creator,
 		closed,closed_reason,archived_at FROM todos
 		WHERE archived_at IS NOT NULL
 		-- Newest first. IDs sort numerically, so t9 does not outrank t10.
@@ -133,7 +137,7 @@ func LoadArchivedTodos() ([]ArchivedTodo, error) {
 	for rows.Next() {
 		var todo ArchivedTodo
 		if err := rows.Scan(&todo.ID, &todo.Title, &todo.Description, &todo.Priority, &todo.Status,
-			&todo.Project, &todo.Lane, &todo.Created, &todo.Source, &todo.Closed,
+			&todo.Project, &todo.Lane, &todo.Created, &todo.Source, &todo.Creator, &todo.Closed,
 			&todo.ClosedReason, &todo.ArchivedAt); err != nil {
 			return nil, err
 		}
@@ -243,6 +247,7 @@ func InitTodoDoc(t *Todo) (string, error) {
 - **领域**: %s
 - **项目**: %s
 - **创建**: %s
+- **创建者**: %s
 
 ## 需求
 
@@ -258,7 +263,7 @@ func InitTodoDoc(t *Todo) (string, error) {
 
 ## 备注
 `, t.Title, t.ID, todoStatusDisplay(t.Status), t.Priority, strings.Join(t.Tags, ", "), t.Lane, project, t.Created,
-		todoDocRequirementNotice, desc)
+		TodoCreatorDocLabel(t.Creator), todoDocRequirementNotice, desc)
 
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		return path, err
@@ -316,6 +321,7 @@ func SyncTodoDocMetadata(t *Todo) error {
 	content = setTodoDocField(content, "领域", t.Lane, laneAfter)
 	content = setTodoDocField(content, "项目", t.Project, "领域")
 	content = setTodoDocField(content, "创建", t.Created, "项目")
+	content = setTodoDocField(content, "创建者", TodoCreatorDocLabel(t.Creator), "创建")
 
 	closed := ""
 	if t.Closed != nil {

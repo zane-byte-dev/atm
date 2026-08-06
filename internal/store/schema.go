@@ -27,14 +27,18 @@ import (
 // base instead of forcing it into a Todo or dropping it. v31 removes the
 // service-specific source-kind constraint so registered connectors own their
 // vocabulary. v32 adds collection_sources.decision_unit so a notification feed
-// can be decided per message instead of per time window. Keep min at 21 while
+// can be decided per message instead of per time window. v33 adds todos.creator
+// so "who filed this" becomes a field that can be filtered and counted, instead
+// of a guess read out of the free-text source. v34 adds
+// collection_items.attempts so a batch the classifier cannot process stops
+// being retried forever. Keep min at 21 while
 // those upgrade steps exist; after the live database has been upgraded,
 // raise this to SchemaVersion and delete the steps. Note what a hard
 // reject costs: session tables rebuild from agent logs on the next `atm sync`,
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 32
+	SchemaVersion        = 34
 	minUpgradableVersion = 21
 )
 
@@ -196,6 +200,12 @@ func createSchema(tx *sql.Tx) error {
 			created           TEXT NOT NULL
 				CHECK (created='' OR created GLOB '` + datePattern + `'),
 			source            TEXT NOT NULL DEFAULT '',
+			-- Who filed it: 'me', 'collect', or an agent name. No CHECK: the
+			-- agent vocabulary grows with the CLIs ATM reads, and a constraint
+			-- here would make adding one a schema migration. Empty means the
+			-- todo predates the field; nothing was backfilled, because the old
+			-- free-text source cannot say who typed it.
+			creator           TEXT NOT NULL DEFAULT '',
 			closed            TEXT
 				CHECK (closed IS NULL OR closed='' OR closed GLOB '` + datePattern + `'),
 			closed_reason     TEXT,
@@ -362,6 +372,15 @@ func createSchema(tx *sql.Tx) error {
 			todo_id         TEXT REFERENCES todos(id) ON DELETE SET NULL,
 			status          TEXT NOT NULL DEFAULT 'pending'
 				CHECK (status IN ('pending','processed','failed')),
+			-- How many times processing this batch has been tried. A failed item
+			-- is deliberately left out of the handled set so the next run picks it
+			-- up again, which is right for a connector that was briefly down and
+			-- wrong for a batch that fails the same way every minute: without a
+			-- ceiling the second case spends a model call per run forever and
+			-- keeps the checkpoint from ever advancing. Reaching
+			-- MaxCollectionAttempts stops the automatic retry and leaves the item
+			-- to an explicit reprocess.
+			attempts        INTEGER NOT NULL DEFAULT 0,
 			error           TEXT NOT NULL DEFAULT '',
 			created_at      INTEGER NOT NULL,
 			updated_at      INTEGER NOT NULL,

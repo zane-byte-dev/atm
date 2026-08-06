@@ -2023,6 +2023,44 @@ final class ModelsTests: XCTestCase {
         XCTAssertGreaterThan(domain.upperBound, try XCTUnwrap(dates.last))
     }
 
+    func testTodoCreatorLabelMatchesTheCLIRendering() throws {
+        let filedByMe = try JSONDecoder().decode(
+            ATMTodo.self,
+            from: Data(
+                #"{"id":"t1","title":"Filed by hand","priority":"P1","status":"open","created":"2026-08-05","creator":"me"}"#.utf8
+            )
+        )
+        XCTAssertEqual(ATMTodoCreator.label(filedByMe.creator, ownerName: "墨水"), "墨水（我）")
+        XCTAssertEqual(ATMTodoCreator.label(filedByMe.creator, ownerName: ""), "我")
+
+        let collected = try JSONDecoder().decode(
+            ATMTodo.self,
+            from: Data(
+                #"{"id":"t2","title":"Filed by collection","priority":"P1","status":"open","created":"2026-08-05","creator":"collect"}"#.utf8
+            )
+        )
+        XCTAssertEqual(ATMTodoCreator.label(collected.creator, ownerName: "墨水"), "收集")
+
+        let byAgent = try JSONDecoder().decode(
+            ATMTodo.self,
+            from: Data(
+                #"{"id":"t3","title":"Filed by an agent","priority":"P1","status":"open","created":"2026-08-05","creator":"codex"}"#.utf8
+            )
+        )
+        XCTAssertEqual(ATMTodoCreator.label(byAgent.creator, ownerName: "墨水"), "codex")
+
+        // A todo from before the field existed has no creator, and the detail
+        // header shows nothing rather than claiming one.
+        let legacy = try JSONDecoder().decode(
+            ATMTodo.self,
+            from: Data(
+                #"{"id":"t4","title":"Filed before creator existed","priority":"P1","status":"open","created":"2026-07-01"}"#.utf8
+            )
+        )
+        XCTAssertNil(legacy.creator)
+        XCTAssertNil(ATMTodoCreator.label(legacy.creator, ownerName: "墨水"))
+    }
+
     func testTodoCommandArgumentsPreserveBusinessCLI() throws {
         let data = Data(
             """
@@ -2068,17 +2106,19 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(submitted.completionVerb, "验收")
         XCTAssertEqual(todo.completionVerb, "完成")
 
-        // Status-scoped actions: review is only accept / reject-to-backlog.
+        // One lifecycle set for every open todo; only the wording changes at the
+        // review gate, and only what the todo is already in drops out.
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: submitted).map(\.action),
-            [.complete, .returnToOpen]
+            [.start, .complete, .returnToOpen, .deferLater, .drop]
         )
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: submitted).map(\.title),
-            ["验收", "验收不通过（重新到待办）"]
+            ["开始", "验收", "验收不通过（重新到待办）", "暂不处理", "放弃"]
         )
         XCTAssertFalse(ATMTodoStatusActions.showsLaunchPrompt(for: submitted))
         XCTAssertTrue(ATMTodoStatusActions.showsLaunchPrompt(for: todo))
+        // Already open, so 回到待办 is the one thing missing here.
         XCTAssertEqual(
             ATMTodoStatusActions.primaryItems(for: todo).map(\.action),
             [.start, .complete, .deferLater]
@@ -2093,15 +2133,14 @@ final class ModelsTests: XCTestCase {
                 #"{"id":"t10","title":"Working","priority":"P1","status":"in_progress","created":"2026-07-29"}"#.utf8
             )
         )
-        // Work in progress goes back to the queue, not into the parked bucket:
-        // 暂不处理 is a backlog decision, so it is not offered here.
+        // Already running, so 开始 drops out and the rest stays.
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: inProgress).map(\.action),
-            [.complete, .returnToOpen, .drop]
+            [.complete, .returnToOpen, .deferLater, .drop]
         )
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: inProgress).map(\.title),
-            ["标记完成", "回到待办", "放弃"]
+            ["标记完成", "回到待办", "暂不处理", "放弃"]
         )
         // Not waiting, so the edit path applies — it also unbinds the sessions
         // that were working the todo.
@@ -2118,14 +2157,17 @@ final class ModelsTests: XCTestCase {
                 """.utf8
             )
         )
+        // Already parked, so 暂不处理 drops out.
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: deferred).map(\.action),
-            [.returnToOpen, .drop]
+            [.start, .complete, .returnToOpen, .drop]
         )
         XCTAssertEqual(
             ATMTodoStatusActions.primaryItems(for: deferred).map(\.title),
-            ["移出暂不处理"]
+            ["开始", "标记完成", "回到待办"]
         )
+        // Waiting has its own wake path, which clears the wake metadata that
+        // `todo edit --status` would leave behind.
         XCTAssertEqual(
             ATMCommandBuilder.arguments(for: .returnToOpen, todo: deferred),
             [
@@ -2139,6 +2181,11 @@ final class ModelsTests: XCTestCase {
             from: Data(
                 #"{"id":"t12","title":"Done","priority":"P1","status":"done","created":"2026-07-29"}"#.utf8
             )
+        )
+        // A closed todo has exactly one way forward.
+        XCTAssertEqual(
+            ATMTodoStatusActions.items(for: closed).map(\.action),
+            [.start]
         )
         XCTAssertEqual(
             ATMTodoStatusActions.primaryItems(for: closed).map(\.action),

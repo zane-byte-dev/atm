@@ -28,6 +28,7 @@ var (
 	todoProjectFlag        string
 	todoListLaneFlag       string
 	todoListQueryFlag      string
+	todoListCreatorFlag    string
 	todoListLimitFlag      int
 	todoListOffsetFlag     int
 	todoAddPriorityFlag    string
@@ -36,6 +37,7 @@ var (
 	todoAddStatusFlag      string
 	todoAddWakeFlag        string
 	todoAddReviewAtFlag    string
+	todoAddCreatorFlag     string
 	todoSourceFlag         string
 	todoDescFlag           string
 	todoDescFileFlag       string
@@ -76,6 +78,7 @@ func init() {
 	todoListCmd.Flags().StringVar(&todoProjectFlag, "project", "", "filter by project name")
 	todoListCmd.Flags().StringVar(&todoListLaneFlag, "lane", "", "filter by work lane (for example: work, personal)")
 	todoListCmd.Flags().StringVar(&todoListQueryFlag, "query", "", "filter by id, title, description, project, source, or todo document")
+	todoListCmd.Flags().StringVar(&todoListCreatorFlag, "creator", "", "filter by creator: "+strings.Join(store.TodoCreatorVocabulary, ", "))
 	todoListCmd.Flags().IntVar(&todoListLimitFlag, "limit", 0, "maximum number of todos (0 means all)")
 	todoListCmd.Flags().IntVar(&todoListOffsetFlag, "offset", 0, "number of todos to skip")
 
@@ -86,6 +89,7 @@ func init() {
 	todoAddCmd.Flags().StringVar(&todoAddWakeFlag, "wake", "", "condition that should wake a waiting todo")
 	todoAddCmd.Flags().StringVar(&todoAddReviewAtFlag, "review-at", "", "next review date (YYYY-MM-DD)")
 	todoAddCmd.Flags().StringVar(&todoSourceFlag, "source", "", "source of the task")
+	todoAddCmd.Flags().StringVar(&todoAddCreatorFlag, "creator", "", "who filed it: "+strings.Join(store.TodoCreatorVocabulary, ", ")+" (default: the agent in the environment, otherwise me)")
 	todoAddCmd.Flags().StringVar(&todoDescFlag, "desc", "", "description")
 	todoAddCmd.Flags().StringVar(&todoDescFileFlag, "desc-file", "", "read description from a file (use - for stdin)")
 	todoAddCmd.Flags().BoolVar(&todoBatchFlag, "batch", false, "read YAML/JSON batch input from stdin")
@@ -497,6 +501,13 @@ func runTodoList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	// Normalized up front so `--creator 收集` and `--creator collection` select
+	// the same rows the stored token does, and so a typo is rejected instead of
+	// quietly matching nothing.
+	creator, err := store.NormalizeTodoCreator(todoListCreatorFlag)
+	if err != nil {
+		return err
+	}
 	status := strings.TrimSpace(todoStatusFlag)
 	activeOnly := status == ""
 	if status == "all" {
@@ -509,7 +520,7 @@ func runTodoList(cmd *cobra.Command, args []string) error {
 	}
 
 	if status == "archived" {
-		return listArchived()
+		return listArchived(creator)
 	}
 
 	var filtered []store.Todo
@@ -527,6 +538,9 @@ func runTodoList(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		if todoListLaneFlag != "" && t.Lane != todoListLaneFlag {
+			continue
+		}
+		if creator != "" && t.Creator != creator {
 			continue
 		}
 		if !todoMatchesQuery(t, todoListQueryFlag) {
@@ -549,16 +563,21 @@ func runTodoList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-16s %s\n", "ID", "Pri", "Status", "Lane", "Created", "Project", "Title")
-	fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-16s %s\n",
+	// The creator column shows the stored token, not the display name: it is the
+	// vocabulary `--creator` takes, and it keeps the column ASCII-width so the
+	// table stays aligned.
+	fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-10s %-16s %s\n", "ID", "Pri", "Status", "Lane", "Created", "Creator", "Project", "Title")
+	fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-10s %-16s %s\n",
 		strings.Repeat("-", 6), strings.Repeat("-", 4), strings.Repeat("-", 12),
-		strings.Repeat("-", 12), strings.Repeat("-", 12), strings.Repeat("-", 16), strings.Repeat("-", 30))
+		strings.Repeat("-", 12), strings.Repeat("-", 12), strings.Repeat("-", 10),
+		strings.Repeat("-", 16), strings.Repeat("-", 30))
 	for _, t := range filtered {
 		id := t.ID
 		if store.TodoDocExists(t.ID) {
 			id += "*"
 		}
-		fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-16s %s\n", id, t.Priority, t.Status, t.Lane, t.Created, t.Project, t.Title)
+		fmt.Printf("  %-6s %-4s %-12s %-12s %-12s %-10s %-16s %s\n", id, t.Priority, t.Status, t.Lane, t.Created,
+			emptyAs(t.Creator, "-"), t.Project, t.Title)
 	}
 	return nil
 }
@@ -599,7 +618,7 @@ func runTodoArchiveMove(args []string, jsonKey, verb string,
 	return nil
 }
 
-func listArchived() error {
+func listArchived(creator string) error {
 	archived, err := store.LoadArchivedTodos()
 	if err != nil {
 		return err
@@ -614,6 +633,9 @@ func listArchived() error {
 			continue
 		}
 		if todoListLaneFlag != "" && t.Lane != todoListLaneFlag {
+			continue
+		}
+		if creator != "" && t.Creator != creator {
 			continue
 		}
 		if !todoMatchesQuery(t.Todo, todoListQueryFlag) {
@@ -635,14 +657,15 @@ func listArchived() error {
 		return nil
 	}
 
-	fmt.Printf("  %-6s %-4s %-8s %-12s %-12s %-16s %s\n", "ID", "Pri", "Status", "Created", "Archived", "Project", "Title")
-	fmt.Printf("  %-6s %-4s %-8s %-12s %-12s %-16s %s\n",
+	fmt.Printf("  %-6s %-4s %-8s %-12s %-12s %-10s %-16s %s\n", "ID", "Pri", "Status", "Created", "Archived", "Creator", "Project", "Title")
+	fmt.Printf("  %-6s %-4s %-8s %-12s %-12s %-10s %-16s %s\n",
 		strings.Repeat("-", 6), strings.Repeat("-", 4), strings.Repeat("-", 8),
-		strings.Repeat("-", 12), strings.Repeat("-", 12), strings.Repeat("-", 16), strings.Repeat("-", 30))
+		strings.Repeat("-", 12), strings.Repeat("-", 12), strings.Repeat("-", 10),
+		strings.Repeat("-", 16), strings.Repeat("-", 30))
 	for _, t := range filtered {
 		archivedOn := time.Unix(t.ArchivedAt, 0).In(config.Loc).Format("2006-01-02")
-		fmt.Printf("  %-6s %-4s %-8s %-12s %-12s %-16s %s\n",
-			t.ID, t.Priority, t.Status, t.Created, archivedOn, t.Project, t.Title)
+		fmt.Printf("  %-6s %-4s %-8s %-12s %-12s %-10s %-16s %s\n",
+			t.ID, t.Priority, t.Status, t.Created, archivedOn, emptyAs(t.Creator, "-"), t.Project, t.Title)
 	}
 	return nil
 }
@@ -650,6 +673,7 @@ func listArchived() error {
 type batchInput struct {
 	Project  string      `yaml:"project" json:"project"`
 	Source   string      `yaml:"source" json:"source"`
+	Creator  string      `yaml:"creator" json:"creator"`
 	Priority string      `yaml:"priority" json:"priority"`
 	Lane     string      `yaml:"lane" json:"lane"`
 	Status   string      `yaml:"status" json:"status"`
@@ -662,6 +686,7 @@ type batchItem struct {
 	Priority      string `yaml:"priority" json:"priority"`
 	Project       string `yaml:"project" json:"project"`
 	Source        string `yaml:"source" json:"source"`
+	Creator       string `yaml:"creator" json:"creator"`
 	Lane          string `yaml:"lane" json:"lane"`
 	Status        string `yaml:"status" json:"status"`
 	WakeCondition string `yaml:"wake" json:"wake"`
@@ -705,6 +730,11 @@ func runTodoAdd(cmd *cobra.Command, args []string) error {
 		source = todoSourceFromSession()
 	}
 
+	creator, err := resolveTodoCreator(todoAddCreatorFlag)
+	if err != nil {
+		return err
+	}
+
 	description, err := todoAddDescription(cmd)
 	if err != nil {
 		return err
@@ -725,6 +755,7 @@ func runTodoAdd(cmd *cobra.Command, args []string) error {
 			ReviewAt:      todoAddReviewAtFlag,
 			Created:       store.Today(),
 			Source:        source,
+			Creator:       creator,
 			Description:   description,
 			OnDone:        todoOnDoneFlag,
 		}
@@ -846,6 +877,14 @@ func runTodoBatchAdd() error {
 		defaultSource = todoSourceFromSession()
 	}
 
+	// One batch is filed by one caller, so the creator is resolved once. Items
+	// may still name their own, which is what a batch assembled from several
+	// intake paths needs.
+	defaultCreator, err := resolveTodoCreator(emptyAs(todoAddCreatorFlag, batch.Creator))
+	if err != nil {
+		return err
+	}
+
 	var tf *store.TodoFile
 	var added []store.Todo
 	var changedDocIDs []string
@@ -866,6 +905,14 @@ func runTodoBatchAdd() error {
 			source := defaultSource
 			if item.Source != "" {
 				source = item.Source
+			}
+			creator := defaultCreator
+			if item.Creator != "" {
+				normalized, err := store.NormalizeTodoCreator(item.Creator)
+				if err != nil {
+					return fmt.Errorf("item %q: %w", item.Title, err)
+				}
+				creator = normalized
 			}
 			lane := defaultLane
 			if item.Lane != "" {
@@ -902,6 +949,7 @@ func runTodoBatchAdd() error {
 				ReviewAt:      item.ReviewAt,
 				Created:       store.Today(),
 				Source:        source,
+				Creator:       creator,
 			}
 			if t.Status == store.TodoStatusWaiting && t.WakeCondition == "" && t.ReviewAt == "" {
 				return fmt.Errorf("item %q: waiting todos require wake or review_at", item.Title)
@@ -1730,6 +1778,9 @@ func runTodoShow(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Project:  %s\n", t.Project)
 	}
 	fmt.Printf("Created:  %s\n", t.Created)
+	if t.Creator != "" {
+		fmt.Printf("Creator:  %s\n", store.TodoCreatorDisplay(t.Creator))
+	}
 	if t.Source != "" {
 		fmt.Printf("Source:   %s\n", t.Source)
 	}
@@ -1882,6 +1933,12 @@ func runTodoCapture(cmd *cobra.Command, args []string) error {
 	}
 
 	source := todoSourceFromSession()
+	// This command only runs from Claude's TodoWrite hook, so the creator is
+	// known even when the hook process carries no session ID to detect it from.
+	creator := todoCreatorFromEnvironment()
+	if creator == store.TodoCreatorMe {
+		creator = "claude"
+	}
 
 	var tf *store.TodoFile
 	var added []store.Todo
@@ -1905,6 +1962,7 @@ func runTodoCapture(cmd *cobra.Command, args []string) error {
 				Project:  project,
 				Created:  store.Today(),
 				Source:   source,
+				Creator:  creator,
 			}
 			tf.Items = append(tf.Items, t)
 			added = append(added, t)

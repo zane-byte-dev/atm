@@ -55,6 +55,11 @@ private struct ATMConfigBoolValue: Decodable {
     let value: Bool
 }
 
+/// Shape of `atm config get <key> --json` for string settings.
+private struct ATMConfigStringValue: Decodable {
+    let value: String
+}
+
 private func decodeCommand<Value: Decodable>(
     _ runner: ATMCommandRunner,
     arguments: [String],
@@ -480,8 +485,14 @@ struct ATMTodoLifecycleItem: Equatable, Identifiable {
     var id: String { "\(title)-\(systemImage)" }
 }
 
-/// Status-scoped lifecycle actions. Utility items (edit, copy prompt, delete)
-/// stay available everywhere; these only cover work-state transitions.
+/// Lifecycle actions. Utility items (edit, copy prompt, delete) stay available
+/// everywhere; these only cover work-state transitions.
+///
+/// There is one set for every open todo — 开始 / 标记完成 / 回到待办 / 暂不处理 /
+/// 放弃 — minus whatever the todo is already in (no 开始 while in_progress, no
+/// 回到待办 while open, no 暂不处理 while parked). A closed todo only offers
+/// 重新开始. Per-status action sets were tried first and only made the same
+/// controls come and go for no reason the user could predict.
 enum ATMTodoStatusActions {
     static func isDeferred(_ todo: ATMTodo) -> Bool {
         todo.status == "waiting"
@@ -489,65 +500,12 @@ enum ATMTodoStatusActions {
             == ATMTodoDeferred.wakeCondition
     }
 
+    static func isClosed(_ todo: ATMTodo) -> Bool {
+        todo.status == "done" || todo.status == "dropped"
+    }
+
     static func items(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
-        if isDeferred(todo) {
-            // Unpark → open backlog, not in_progress.
-            return [
-                item(
-                    .returnToOpen,
-                    title: "移出暂不处理",
-                    help: "移出暂不处理，回到待开始",
-                    icon: "arrow.uturn.backward"
-                ),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        }
-        switch todo.status {
-        case "review":
-            // Human gate: accept the submission, or send it back to the backlog.
-            return [
-                item(.complete, title: "验收", help: "验收通过", icon: "checkmark"),
-                item(
-                    .returnToOpen,
-                    title: "验收不通过（重新到待办）",
-                    help: "验收不通过，重新到待办",
-                    icon: "arrow.uturn.backward"
-                ),
-            ]
-        case "open":
-            return [
-                item(.start, title: "开始", help: "开始此任务", icon: "play.fill"),
-                item(.complete, title: "标记完成", help: "标记完成", icon: "checkmark"),
-                item(.deferLater, title: "暂不处理", help: "暂不处理", icon: "moon.zzz"),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        case "in_progress":
-            // Stopping work in progress means putting it back in the queue, not
-            // parking it: 暂不处理 is for backlog you have decided to skip.
-            return [
-                item(.complete, title: "标记完成", help: "标记完成", icon: "checkmark"),
-                item(
-                    .returnToOpen,
-                    title: "回到待办",
-                    help: "回到待办，不再进行中",
-                    icon: "arrow.uturn.backward"
-                ),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        case "waiting":
-            return [
-                item(.start, title: "开始", help: "开始此任务", icon: "play.fill"),
-                item(.complete, title: "标记完成", help: "标记完成", icon: "checkmark"),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        case "blocked":
-            return [
-                item(.start, title: "开始", help: "开始此任务", icon: "play.fill"),
-                item(.complete, title: "标记完成", help: "标记完成", icon: "checkmark"),
-                item(.deferLater, title: "暂不处理", help: "暂不处理", icon: "moon.zzz"),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        case "done", "dropped":
+        if isClosed(todo) {
             return [
                 item(
                     .start,
@@ -556,36 +514,52 @@ enum ATMTodoStatusActions {
                     icon: "arrow.counterclockwise"
                 ),
             ]
-        default:
-            return [
-                item(.start, title: "开始", help: "开始此任务", icon: "play.fill"),
-                item(
-                    .complete,
-                    title: "标记\(todo.completionVerb)",
-                    help: "标记\(todo.completionVerb)",
-                    icon: "checkmark"
-                ),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
         }
+        // Review is the human gate, so closing it is 验收 rather than 完成 and
+        // sending it back is a rejection. Same two actions, different words.
+        let isReview = todo.status == "review"
+        var actions: [ATMTodoLifecycleItem] = []
+        if todo.status != "in_progress" {
+            actions.append(item(.start, title: "开始", help: "开始此任务", icon: "play.fill"))
+        }
+        actions.append(
+            item(
+                .complete,
+                title: isReview ? "验收" : "标记\(todo.completionVerb)",
+                help: isReview ? "验收通过" : "标记\(todo.completionVerb)",
+                icon: "checkmark"
+            )
+        )
+        if todo.status != "open" {
+            actions.append(
+                item(
+                    .returnToOpen,
+                    title: isReview ? "验收不通过（重新到待办）" : "回到待办",
+                    help: isReview ? "验收不通过，重新到待办" : "回到待办",
+                    icon: "arrow.uturn.backward"
+                )
+            )
+        }
+        if !isDeferred(todo) {
+            actions.append(item(.deferLater, title: "暂不处理", help: "暂不处理", icon: "moon.zzz"))
+        }
+        actions.append(item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false))
+        return actions
     }
 
     static func primaryItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
         items(for: todo).filter(\.isPrimary)
     }
 
-    /// Actions always visible as toolbar icon chips: start (or restart) and
+    /// Actions visible as toolbar icon chips: start (or restart) and
     /// complete/accept. These are the stable "常用" controls; everything else
-    /// drops into the `···` overflow menu. Derived from `items(for:)` so the
-    /// inline set still tracks each status gate (e.g. review offers only
-    /// 验收, done/dropped offers only 重新开始).
+    /// drops into the `···` overflow menu.
     static func inlineItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
         items(for: todo).filter { $0.action == .start || $0.action == .complete }
     }
 
-    /// Remaining status-scoped actions that go inside the `···` overflow menu:
-    /// deferLater / returnToOpen / drop, plus the non-primary seats that used
-    /// to hide in the context menu only.
+    /// The rest of the lifecycle actions, inside the `···` overflow menu:
+    /// returnToOpen / deferLater / drop.
     static func overflowItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
         items(for: todo).filter { $0.action != .start && $0.action != .complete }
     }
@@ -834,6 +808,9 @@ final class ATMDataStore: ObservableObject {
     /// Mirrors `grok_live_quota` in ~/.atm/config.json. The toggle is only a
     /// config entry point — the CLI owns fetching, caching and fallback.
     @Published private(set) var grokLiveQuotaEnabled = false
+    /// Mirrors `owner_name` in ~/.atm/config.json: how to name the human when a
+    /// todo they filed themselves is displayed. Empty falls back to 我.
+    @Published private(set) var ownerName = ""
     /// Internal refresh gate only. No view renders this flag, so publishing it
     /// needlessly rebuilt the desktop at both ends of every one-minute refresh.
     private(set) var isLoading = false
@@ -904,6 +881,7 @@ final class ATMDataStore: ObservableObject {
     func start() {
         guard timer == nil else { return }
         loadGrokLiveQuotaSetting()
+        loadOwnerNameSetting()
         refresh()
         refresh(sync: true)
         refreshCollection(runIfDue: true)
@@ -1107,6 +1085,22 @@ final class ATMDataStore: ObservableObject {
             )
             if let value = outcome.value {
                 grokLiveQuotaEnabled = value.value
+            }
+        }
+    }
+
+    /// Reads the nickname a todo's "me" creator is displayed with. Read once at
+    /// start: it changes only when the user edits config, and every task detail
+    /// needs it.
+    func loadOwnerNameSetting() {
+        Task {
+            guard let runner = try? ATMCommandRunner() else { return }
+            let outcome: ATMCommandOutcome<ATMConfigStringValue> = await decodeCommand(
+                runner,
+                arguments: ["config", "get", "owner_name", "--json"]
+            )
+            if let value = outcome.value {
+                ownerName = value.value
             }
         }
     }
@@ -1374,6 +1368,13 @@ final class ATMDataStore: ObservableObject {
 
     func revertCollectionItem(_ item: ATMCollectionItem) {
         runCollectionItemAction(["revert", item.id, "--yes"])
+    }
+
+    /// Removes one processing record. `--yes` because the desktop already asked;
+    /// the Todo this record wrote stays, so a clean-up here never quietly takes
+    /// work with it.
+    func deleteCollectionItem(_ item: ATMCollectionItem) {
+        runCollectionItemAction(["delete", item.id, "--yes"])
     }
 
     private func collectionItemArguments(

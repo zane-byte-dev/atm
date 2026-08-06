@@ -123,10 +123,12 @@ func init() {
 		command.Flags().StringVar(&collectItemPriority, "priority", "", "corrected priority: P0, P1, P2, P3")
 	}
 	collectItemRevertCmd.Flags().BoolVarP(&collectYes, "yes", "y", false, "skip confirmation")
+	collectItemDeleteCmd.Flags().BoolVarP(&collectYes, "yes", "y", false, "skip confirmation")
 
 	collectSourceCmd.AddCommand(collectSourceListCmd, collectSourceSearchCmd, collectSourceAddCmd,
 		collectSourceEnableCmd, collectSourceDisableCmd, collectSourceDeleteCmd)
-	collectItemCmd.AddCommand(collectItemReprocessCmd, collectItemPromoteCmd, collectItemCorrectCmd, collectItemRevertCmd)
+	collectItemCmd.AddCommand(collectItemReprocessCmd, collectItemPromoteCmd, collectItemCorrectCmd,
+		collectItemRevertCmd, collectItemDeleteCmd)
 	collectCmd.AddCommand(collectStatusCmd, collectRunCmd, collectDigestCmd, collectEnableCmd,
 		collectDisableCmd, collectHistoryCmd, collectSearchCmd, collectAnalyzeCmd,
 		collectSourceCmd, collectItemCmd)
@@ -1135,6 +1137,40 @@ var collectItemRevertCmd = &cobra.Command{
 	},
 }
 
+var collectItemDeleteCmd = &cobra.Command{
+	Use:   "delete <item-id>",
+	Short: "Delete a processing record while keeping the Todo it wrote",
+	Long: "Delete one collection processing record. The Todo it created or appended to " +
+		"is kept: the record is collection's own note about a decision, not the work " +
+		"itself. Use `atm collect item revert` when the Todo write is what was wrong.\n\n" +
+		"A record whose messages still fall inside the next run's re-read window can be " +
+		"rebuilt by that run; older records are gone for good.",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		confirmed, err := confirmDestructive(cmd, collectYes, "Delete collection item "+args[0]+"?")
+		if err != nil || !confirmed {
+			return err
+		}
+		return withDB(false, func(db *sql.DB) error {
+			item, err := store.DeleteCollectionItem(db, args[0])
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				output.JSON(map[string]any{"id": item.ID, "deleted": true, "todo_id": item.TodoID})
+				return nil
+			}
+			fmt.Printf("Deleted collection item %s\n", item.ID)
+			// The Todo outliving its record is the one surprise here, so it is
+			// said out loud rather than left to be discovered.
+			if item.TodoID != "" {
+				fmt.Printf("  todo %s kept\n", item.TodoID)
+			}
+			return nil
+		})
+	},
+}
+
 func collectionItemCorrection(cmd *cobra.Command) collector.ItemCorrection {
 	correction := collector.ItemCorrection{}
 	if cmd.Flags().Changed("title") {
@@ -1154,6 +1190,17 @@ func printCollectionItem(item store.CollectionItem) error {
 		output.JSON(item)
 	} else {
 		fmt.Printf("%s: %s todo=%s status=%s\n", item.ID, item.Action, emptyAs(item.TodoID, "-"), item.Status)
+		// Whether the next run will pick this up again is the one thing a person
+		// decides from here, and it is not readable from the status alone.
+		if item.Status == "failed" {
+			if store.CollectionRetriesExhausted(item) {
+				fmt.Printf("  retries: %d/%d spent; automatic retry stopped, run `atm collect item reprocess %s` after fixing the cause\n",
+					item.Attempts, store.MaxCollectionAttempts, item.ID)
+			} else {
+				fmt.Printf("  retries: %d/%d spent; the next run retries this automatically\n",
+					item.Attempts, store.MaxCollectionAttempts)
+			}
+		}
 	}
 	return nil
 }

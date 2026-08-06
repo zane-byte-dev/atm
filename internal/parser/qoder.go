@@ -20,7 +20,7 @@ func DiscoverQoder() []string {
 	}
 	defer db.Close()
 
-	rows, err := db.Query("SELECT session_id FROM chat_session")
+	rows, err := db.Query("SELECT session_id FROM chat_session" + qoderRootOnly(db))
 	if err != nil {
 		return nil
 	}
@@ -34,6 +34,103 @@ func DiscoverQoder() []string {
 		}
 	}
 	return paths
+}
+
+// qoderRootOnly is the WHERE clause that keeps subagent sessions out of the
+// session list, or the empty string on a schema that has no such concept.
+//
+// A Qoder agent run that delegates spawns a child row in chat_session with its
+// own session_id, `agent_sub` mode and the spawning session in
+// parent_session_id. Discovering those alongside the real ones indexes work the
+// user never started as a session of its own: five of sixteen rows on a live
+// database, each titled with the verbatim delegation prompt because Qoder puts
+// the task text in session_title, so they surface in `session status` and
+// `session list` as multi-hundred-character summaries and inflate the session
+// and query counts in `stats`. Their token spend is real and is rolled into the
+// parent instead — see qoderSubagentUsage.
+//
+// parent_session_id was added by an upstream migration, so its absence has to
+// degrade to the unfiltered list rather than to no sessions at all.
+func qoderRootOnly(db *sql.DB) string {
+	if !qoderHasColumn(db, "chat_session", "parent_session_id") {
+		return ""
+	}
+	return " WHERE COALESCE(parent_session_id,'') = ''"
+}
+
+func qoderHasColumn(db *sql.DB, table, column string) bool {
+	rows, err := db.Query("SELECT 1 FROM pragma_table_info(?) WHERE name = ?", table, column)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	return rows.Next()
+}
+
+func qoderIsSubagent(db *sql.DB, sid string) bool {
+	if !qoderHasColumn(db, "chat_session", "parent_session_id") {
+		return false
+	}
+	var parent string
+	if db.QueryRow("SELECT COALESCE(parent_session_id,'') FROM chat_session WHERE session_id = ?", sid).Scan(&parent) != nil {
+		return false
+	}
+	return parent != ""
+}
+
+// qoderAddSubagentUsage folds the spend of every session descended from sid into
+// usage. Nesting is walked rather than assumed to be one level deep, since a
+// delegated run may delegate again.
+//
+// Only tokens are rolled up. The transcript stays the parent's own: mixing a
+// subagent's prompts into Inputs and Outputs would report a conversation the user
+// did not have. Tool calls stay put for the same reason — the parent already
+// counts the one call that did the delegating, and the child's calls are that
+// call's internals, not additional work at this level.
+func qoderAddSubagentUsage(db *sql.DB, sid string, usage *Usage) {
+	if !qoderHasColumn(db, "chat_session", "parent_session_id") {
+		return
+	}
+	rows, err := db.Query(`WITH RECURSIVE descendants(id) AS (
+			SELECT session_id FROM chat_session WHERE parent_session_id = ?
+			UNION
+			SELECT c.session_id FROM chat_session c
+				JOIN descendants d ON c.parent_session_id = d.id
+		)
+		SELECT m.token_info, m.model_info FROM chat_message m
+			WHERE m.session_id IN (SELECT id FROM descendants)
+				AND m.token_info IS NOT NULL AND m.token_info != ''`, sid)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var tokenInfo, modelInfo sql.NullString
+		if rows.Scan(&tokenInfo, &modelInfo) != nil {
+			continue
+		}
+		var ti struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			CachedTokens     int64 `json:"cached_tokens"`
+		}
+		if json.Unmarshal([]byte(tokenInfo.String), &ti) != nil {
+			continue
+		}
+		usage.InputTokens += ti.PromptTokens - ti.CachedTokens
+		usage.OutputTokens += ti.CompletionTokens
+		usage.CacheReadTokens += ti.CachedTokens
+		usage.RequestCount++
+		if modelInfo.Valid && modelInfo.String != "" && usage.Model == "" {
+			var mi struct {
+				ModelKey string `json:"model_key"`
+			}
+			if json.Unmarshal([]byte(modelInfo.String), &mi) == nil && mi.ModelKey != "" {
+				usage.Model = "qoder-" + mi.ModelKey
+			}
+		}
+	}
 }
 
 func QoderParseFile(virtualPath string) *ParsedFile {
@@ -55,6 +152,12 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 	err = db.QueryRow("SELECT session_title, COALESCE(project_name,''), COALESCE(mode,''), gmt_create FROM chat_session WHERE session_id = ?", sid).
 		Scan(&title, &project, &mode, &gmtCreate)
 	if err != nil {
+		return nil
+	}
+	// Discovery already filters these out; this also catches a virtual path held
+	// over from an earlier scan, so a subagent row cannot come back as a session
+	// through the incremental path.
+	if qoderIsSubagent(db, sid) {
 		return nil
 	}
 
@@ -143,6 +246,12 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 		}
 	}
 
+	// The delegated work is this session's spend even though upstream books it
+	// against a row of its own, and that row is no longer indexed, so without the
+	// rollup those tokens would go unreported by every caller: 1.8M prompt tokens
+	// across five subagent rows on a live database.
+	qoderAddSubagentUsage(db, sid, &usage)
+
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 && len(inputs) == 0 {
 		return nil
 	}
@@ -182,9 +291,15 @@ func QoderLiveSessions(maxAge time.Duration) []Session {
 	defer db.Close()
 
 	cutoff := time.Now().Add(-maxAge).UnixMilli()
+	// Same exclusion as discovery: a delegated run is activity within its parent,
+	// not a session of the user's own sitting in the live list beside it.
+	subagentFilter := ""
+	if qoderHasColumn(db, "chat_session", "parent_session_id") {
+		subagentFilter = " AND COALESCE(s.parent_session_id,'') = ''"
+	}
 	rows, err := db.Query(`SELECT s.session_id, s.session_title, s.project_name, s.mode, s.gmt_create
 		FROM chat_session s
-		WHERE s.last_user_query_at > ? OR s.gmt_modified > ?
+		WHERE (s.last_user_query_at > ? OR s.gmt_modified > ?)`+subagentFilter+`
 		ORDER BY s.gmt_create DESC`, cutoff, cutoff)
 	if err != nil {
 		return nil
@@ -228,25 +343,43 @@ func QoderLiveSessions(maxAge time.Duration) []Session {
 // blob. What actually distinguishes base64 is that it is *only* base64: an
 // unbroken run of the alphabet with no spaces, punctuation or non-Latin script.
 // Prose and code always have some.
+//
+// The mark count cannot carry the decision either, in the other direction. Only
+// three of the 64 code points are `+ / =`, so a 100-character window of real
+// base64 holds two or three of them on average and a threshold of six almost
+// never trips: on a live database every one of 528 messages was an unbroken
+// base64 run and the old test recognised 3, leaving 525 ciphertext blobs indexed
+// as conversation. What separates encoded bytes from the other things that run
+// without spaces — hex digests, snake_case and camelCase identifiers, decimal
+// IDs — is that base64 either reaches outside [0-9A-Za-z] or spends all three
+// alphanumeric classes at once.
 func looksEncrypted(s string) bool {
 	runes := []rune(s)
 	if len(runes) < 20 {
 		return false
 	}
 	head := runes[:min(len(runes), 100)]
-	marks, inAlphabet := 0, 0
+	var marks, upper, lower, digit, inAlphabet int
 	for _, c := range head {
 		switch {
 		case c == '+' || c == '/' || c == '=':
 			marks++
 			inAlphabet++
-		case (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'):
+		case c >= 'A' && c <= 'Z':
+			upper++
+			inAlphabet++
+		case c >= 'a' && c <= 'z':
+			lower++
+			inAlphabet++
+		case c >= '0' && c <= '9':
+			digit++
 			inAlphabet++
 		}
 	}
-	// Every character in the alphabet, and enough padding//+ to be encoded data
-	// rather than a long identifier.
-	return marks > 5 && inAlphabet == len(head)
+	if inAlphabet != len(head) {
+		return false
+	}
+	return marks > 0 || (upper > 0 && lower > 0 && digit > 0)
 }
 
 func min(a, b int) int {

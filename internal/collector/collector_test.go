@@ -106,6 +106,11 @@ func TestServiceCreatesOnceAndAdvancesCheckpoint(t *testing.T) {
 	if todos.Items[0].Status != store.TodoStatusOpen || !strings.HasPrefix(todos.Items[0].Source, "test:cid-product:m1") {
 		t.Fatalf("created Todo is not traceable/open: %+v", todos.Items[0])
 	}
+	// Collection files work nobody asked for by hand, and the creator has to say
+	// so: it is the difference between a Todo to review and a Todo I wrote.
+	if todos.Items[0].Creator != store.TodoCreatorCollect {
+		t.Fatalf("created Todo creator = %q, want %q", todos.Items[0].Creator, store.TodoCreatorCollect)
+	}
 	if todos.Items[0].Description != "自动读取聊天并创建 Todo" ||
 		strings.Contains(todos.Items[0].Description, "我想把需求收集做成全自动的") {
 		t.Fatalf("created Todo copied raw conversation into its description: %q", todos.Items[0].Description)
@@ -559,6 +564,134 @@ func TestServiceFailureDoesNotAdvanceCheckpointAndCanRecover(t *testing.T) {
 	db.Close()
 	if checkpoint.CursorTime != 12_000 || items[0].Action != "create" || items[0].TodoID == "" {
 		t.Fatalf("failed item did not recover: checkpoint=%+v item=%+v", checkpoint, items[0])
+	}
+}
+
+// A batch that fails the same way every run must stop costing a model call, and
+// must stop holding the checkpoint: an unbounded retry turns one broken message
+// into a permanent tax on every later run.
+func TestFailedBatchStopsRetryingWhenItsAttemptBudgetRunsOut(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m9", ConversationID: source.ExternalID,
+		Sender: "测试发送人", CreatedAt: 12_000, Content: "这段内容解析不了"}}, newest: 12_000}
+	failing := &fakeExtractor{err: errors.New("model unavailable")}
+	service := Service{Fetcher: fetcher, Extractor: failing, Now: tickingClock()}
+
+	for attempt := 1; attempt <= store.MaxCollectionAttempts; attempt++ {
+		if _, err := service.Run(context.Background(), source.ID); err == nil {
+			t.Fatalf("attempt %d hid the model failure", attempt)
+		}
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	checkpoint, _ := store.GetCollectionCheckpoint(db, source.ID)
+	db.Close()
+	if len(items) != 1 || items[0].Attempts != store.MaxCollectionAttempts || !store.CollectionRetriesExhausted(items[0]) {
+		t.Fatalf("attempts were not counted: items=%+v", items)
+	}
+	if checkpoint.CursorTime != 0 {
+		t.Fatalf("checkpoint advanced while retries remained: %+v", checkpoint)
+	}
+
+	// The run after the budget is spent must be clean, not another failure, or the
+	// source stays permanently due and the re-read window keeps growing.
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil {
+		t.Fatalf("run after the budget ran out still failed: %v", err)
+	}
+	if failing.calls != store.MaxCollectionAttempts {
+		t.Fatalf("retry kept spending model calls: calls=%d", failing.calls)
+	}
+	if report.Runs[0].Status != "succeeded" || report.Runs[0].FailedCount != 0 {
+		t.Fatalf("retired item still failed the run: %+v", report.Runs[0])
+	}
+	db, _ = store.Open()
+	items, _ = store.ListCollectionItems(db, source.ID, 10)
+	checkpoint, _ = store.GetCollectionCheckpoint(db, source.ID)
+	db.Close()
+	if checkpoint.CursorTime != 12_000 {
+		t.Fatalf("retired item kept the checkpoint pinned: %+v", checkpoint)
+	}
+	if len(items) != 1 || items[0].Action != "failed" {
+		t.Fatalf("retired item was dropped from the ledger instead of kept: %+v", items)
+	}
+}
+
+// Retiring an item stops the automatic retry, not every retry: asking for one
+// explicitly is how someone says they fixed the cause.
+func TestReprocessRestoresTheAutomaticRetryBudget(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m10", ConversationID: source.ExternalID,
+		Sender: "测试发送人", CreatedAt: 12_000, Content: "连接器刚刚挂了"}}, newest: 12_000}
+	failing := &fakeExtractor{err: errors.New("model unavailable")}
+	service := Service{Fetcher: fetcher, Extractor: failing, Now: tickingClock()}
+	for attempt := 1; attempt <= store.MaxCollectionAttempts; attempt++ {
+		service.Run(context.Background(), source.ID)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 || !store.CollectionRetriesExhausted(items[0]) {
+		t.Fatalf("item was not retired before the reprocess: %+v", items)
+	}
+
+	service.Extractor = &fakeExtractor{decision: Decision{Action: "create", Title: "修好连接器后重试",
+		Summary: "重新解析", ItemType: "bug", Priority: "P1", Confidence: 0.9}}
+	item, err := service.Reprocess(context.Background(), items[0].ID)
+	if err != nil {
+		t.Fatalf("reprocess after retirement: %v", err)
+	}
+	if item.Action != "create" || item.TodoID == "" {
+		t.Fatalf("reprocess did not carry out the decision: %+v", item)
+	}
+	if store.CollectionRetriesExhausted(item) {
+		t.Fatalf("reprocess kept the item retired: %+v", item)
+	}
+}
+
+// The retry rebuilds a batch from its messages, so one more message in the same
+// conversation produces a different batch. The item left behind must not keep
+// promising a retry that will never rebuild it.
+func TestExpandedBatchRetiresTheFailedItemItAbsorbs(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m11", ConversationID: source.ExternalID,
+		Sender: "测试发送人", CreatedAt: 12_000, Content: "这个功能要改"}}, newest: 12_000}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{err: errors.New("model unavailable")},
+		Now: tickingClock()}
+	service.Run(context.Background(), source.ID)
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 || items[0].Attempts != 1 {
+		t.Fatalf("unexpected state after the first failure: %+v", items)
+	}
+	orphanID := items[0].ID
+
+	fetcher.messages = append(fetcher.messages, Message{ID: "m12", ConversationID: source.ExternalID,
+		Sender: "测试发送人", CreatedAt: 12_060, Content: "补充一下，优先级 P1"})
+	fetcher.newest = 12_060
+	service.Extractor = &fakeExtractor{decision: Decision{Action: "create", Title: "改这个功能",
+		Summary: "按补充的优先级处理", ItemType: "requirement", Priority: "P1", Confidence: 0.9}}
+	if _, err := service.Run(context.Background(), source.ID); err != nil {
+		t.Fatalf("run over the expanded conversation: %v", err)
+	}
+	db, _ = store.Open()
+	defer db.Close()
+	orphan, err := store.GetCollectionItem(db, orphanID)
+	if err != nil {
+		t.Fatalf("read the absorbed item: %v", err)
+	}
+	if !store.CollectionRetriesExhausted(orphan) {
+		t.Fatalf("absorbed item still advertises an automatic retry: %+v", orphan)
+	}
+	items, _ = store.ListCollectionItems(db, source.ID, 10)
+	if !slices.ContainsFunc(items, func(item store.CollectionItem) bool {
+		return item.ID != orphanID && item.Action == "create" && item.TodoID != ""
+	}) {
+		t.Fatalf("expanded batch did not produce its own decision: %+v", items)
 	}
 }
 

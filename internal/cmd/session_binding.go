@@ -399,6 +399,28 @@ func normalizeBindingAgent(value string) string {
 	return ""
 }
 
+// todoCreatorFromEnvironment answers "who is filing this todo" for the commands
+// that create one. An agent session in the environment means an agent is at the
+// keyboard; anything else is the human, because a plain terminal and the desktop
+// app are both the single person this installation belongs to. An agent whose
+// environment carries no session ID can still say so with --creator.
+func todoCreatorFromEnvironment() string {
+	if agent := normalizeBindingAgent(""); agent != "" {
+		return agent
+	}
+	return store.TodoCreatorMe
+}
+
+// resolveTodoCreator settles the creator of a todo about to be created: an
+// explicit --creator wins, because only the caller knows when the environment is
+// misleading, and otherwise the environment is read.
+func resolveTodoCreator(flag string) (string, error) {
+	if strings.TrimSpace(flag) != "" {
+		return store.NormalizeTodoCreator(flag)
+	}
+	return todoCreatorFromEnvironment(), nil
+}
+
 func compactTodo(todo store.Todo) compactTodoContext {
 	return compactTodoContext{ID: todo.ID, Title: todo.Title, Project: todo.Project, Status: todo.Status}
 }

@@ -195,9 +195,24 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			batchFailed = true
 			continue
 		}
+		if inserted {
+			// This batch owns its messages from now on, so any failed batch made
+			// only of them will never be rebuilt again. Retire it here rather than
+			// leave it advertising a retry that cannot arrive.
+			if _, err := store.RetireSupersededCollectionItems(db, source.ID, stored.ID, stored.MessageIDs); err != nil {
+				run.Error = err.Error()
+			}
+		}
 		// Already decided, or held by an on-demand analysis for someone to
 		// confirm. A proposal must not be carried out behind their back.
 		if !inserted && (stored.Status == "processed" || stored.ProposedAction != "") {
+			continue
+		}
+		// Out of retries: failing the same way every run is not something waiting
+		// changes, and each attempt costs a model call. The item stays visible and
+		// `atm collect item reprocess` still works, but the run must not be marked
+		// failed for it — that is what would keep the checkpoint from advancing.
+		if !inserted && store.CollectionRetriesExhausted(stored) {
 			continue
 		}
 		item = stored
@@ -464,6 +479,11 @@ func (service Service) Reprocess(ctx context.Context, itemID string) (store.Coll
 	if err != nil {
 		return item, err
 	}
+	// An explicit reprocess is a fresh start, not a fourth attempt: someone asked
+	// for this after fixing whatever broke, so the automatic retry gets its full
+	// budget back and a batch that still fails will stop on its own again.
+	item.Attempts = 0
+	item.RetryStopped = false
 	item, err = service.processBatch(ctx, batch, item)
 	if err != nil {
 		markItemFailed(db, &item, err)
@@ -800,8 +820,13 @@ func applyDecisionToItem(item *store.CollectionItem, decision Decision) {
 	item.Confidence, item.Error = decision.Confidence, ""
 }
 
+// markItemFailed records a failed attempt and spends one of the item's retries.
+// The count is what later runs read to decide whether trying again is still
+// worth a model call.
 func markItemFailed(db *sql.DB, item *store.CollectionItem, err error) {
 	item.Action, item.Status, item.Error = "failed", "failed", compactError(err)
+	item.Attempts++
+	item.RetryStopped = store.CollectionRetriesExhausted(*item)
 	_ = store.UpdateCollectionItem(db, *item)
 }
 
@@ -837,7 +862,8 @@ func createDecision(batch MessageBatch, decision Decision) (string, error) {
 		created = store.Todo{ID: store.NextTodoID(todos), Title: decision.Title,
 			Description: todoDescription(decision, relatedTodoID), Priority: decision.Priority,
 			Status: store.TodoStatusOpen, Project: decision.Project, Lane: "work",
-			Created: store.Today(), Source: connectorSource(batch)}
+			Created: store.Today(), Source: connectorSource(batch),
+			Creator: store.TodoCreatorCollect}
 		todos.Items = append(todos.Items, created)
 		return nil
 	})

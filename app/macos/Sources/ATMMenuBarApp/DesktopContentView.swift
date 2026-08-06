@@ -1309,10 +1309,15 @@ struct DesktopTodoDetail: View {
                     Label(todo.project ?? "未分项目", systemImage: "folder")
                     Label(laneLabel(todo.lane), systemImage: "person.crop.circle")
                     Text(todo.created)
+                    if let creator = ATMTodoCreator.label(todo.creator, ownerName: store.ownerName) {
+                        Label(creator, systemImage: "square.and.pencil")
+                    }
                     Spacer(minLength: 8)
                     HStack(spacing: 2) {
-                        // 固定常用外露，其余进「···」下拉；工具栏形状恒定，
-                        // 不再随 status 动态增减。顺序：开始 · 完成 · 编辑 · ···
+                        // 固定常用外露，其余进「···」下拉。顺序：
+                        // 开始 · 完成 · 复制启动提示 · ···
+                        // 编辑不是每次都要用，收进下拉；复制启动提示是交给 agent
+                        // 干活的入口，外露。
                         let inline = ATMTodoStatusActions.inlineItems(for: todo)
                         let overflow = ATMTodoStatusActions.overflowItems(for: todo)
                         ForEach(inline) { item in
@@ -1320,7 +1325,14 @@ struct DesktopTodoDetail: View {
                                 store.perform(item.action, on: todo)
                             }
                         }
-                        actionButton("pencil", help: "编辑任务") { isEditing = true }
+                        if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
+                            actionButton(
+                                copiedPrompt ? "checkmark" : "doc.on.doc",
+                                help: copiedPrompt ? "已复制启动提示" : "复制启动提示"
+                            ) {
+                                copyLaunchPrompt(for: todo)
+                            }
+                        }
                         overflowMenu(overflow: overflow, todo: todo)
                     }
                 }
@@ -1516,23 +1528,18 @@ struct DesktopTodoDetail: View {
         )
     }
 
-    /// 「···」溢出菜单：复制启动提示、剩余 lifecycle（暂不处理/回到待办/放弃等）、
-    /// 删除。形状恒定，内容随状态拼装。与 `actionButton` 同样的 chip 外观。
+    /// 「···」溢出菜单：编辑、剩余 lifecycle（暂不处理/回到待办/放弃等）、删除。
+    /// 形状恒定，内容随状态拼装。与 `actionButton` 同样的 chip 外观。
     @ViewBuilder
     private func overflowMenu(
         overflow: [ATMTodoLifecycleItem],
         todo: ATMTodo
     ) -> some View {
         Menu {
-            if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                Button {
-                    copyLaunchPrompt(for: todo)
-                } label: {
-                    Label(
-                        copiedPrompt ? "已复制启动提示" : "复制启动提示",
-                        systemImage: copiedPrompt ? "checkmark" : "doc.on.doc"
-                    )
-                }
+            Button {
+                isEditing = true
+            } label: {
+                Label("编辑任务", systemImage: "pencil")
             }
             ForEach(overflow) { item in
                 Button {

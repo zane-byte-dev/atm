@@ -36,6 +36,10 @@ var configCmd = &cobra.Command{
   atm config update-pricing   Fetch latest model pricing from OpenRouter
 
 Settable keys:
+  owner_name NAME               How to name you when a todo you filed yourself
+                                is displayed (default 我). The stored creator
+                                stays "me", so renaming yourself never rewrites
+                                a record
   grok_live_quota   true|false  Query the Grok billing API for live quota
                                 (default false: quota reads local logs only)
   collection_enabled true|false Enable connector collection in the resident App
@@ -62,6 +66,7 @@ Settable keys:
 // deliberately small: path-style settings should be edited in config.json
 // where the surrounding context is visible.
 var settableConfigKeys = map[string]func(string) (any, error){
+	"owner_name":                  parseNonEmptyStringValue,
 	"grok_live_quota":             parseBoolValue,
 	"collection_enabled":          parseBoolValue,
 	"collection_interval_minutes": parsePositiveIntValue,
@@ -136,6 +141,8 @@ var configGetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var value any
 		switch args[0] {
+		case "owner_name":
+			value = config.OwnerName
 		case "grok_live_quota":
 			value = config.GrokLiveQuota
 		case "collection_enabled":

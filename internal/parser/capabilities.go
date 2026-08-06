@@ -29,7 +29,15 @@ var capabilities = map[string]Capabilities{
 	// token or cost detail — see the known limitations in DESIGN.md. Reporting
 	// its missing usage as a problem would be reporting the upstream's design.
 	"copilot": {Messages: true, Usage: false},
-	"qoder":   {Messages: true, Usage: true},
+	// Qoder encrypts the conversation. chat_message.content holds base64 of a
+	// high-entropy payload — 7.96 bits per byte, no compression header, not
+	// decodable — for every user and assistant row on a live database, and the
+	// parser skips it rather than index ciphertext as prose. Token accounting is
+	// in a separate plaintext column and still comes through, as does
+	// session_title, so sessions and spend are reported and only the message text
+	// is missing. Same reasoning as qodercli and qoderwork: the extraction stays,
+	// the claim does not.
+	"qoder": {Messages: false, Usage: true},
 	// Qoder CLI transcripts carry no token accounting at all: across every
 	// session on a real install, no key path under message.* exists beyond
 	// content and role, and nothing anywhere names tokens, usage or cost. The

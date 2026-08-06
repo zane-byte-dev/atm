@@ -35,7 +35,7 @@ type todoRow struct {
 // accidentally list, transition, or overwrite them.
 func loadTodos(q sqlQueryer) (*TodoFile, error) {
 	rows, err := q.Query(`SELECT id,title,description,priority,status,project,lane,wake_condition,
-		review_at,maintenance_limit,created,source,closed,closed_reason,on_done,start_ts,done_ts
+		review_at,maintenance_limit,created,source,creator,closed,closed_reason,on_done,start_ts,done_ts
 		FROM todos WHERE archived_at IS NULL ORDER BY position,id`)
 	if err != nil {
 		return nil, err
@@ -48,7 +48,7 @@ func loadTodos(q sqlQueryer) (*TodoFile, error) {
 		if err := rows.Scan(
 			&todo.ID, &todo.Title, &todo.Description, &todo.Priority, &todo.Status,
 			&todo.Project, &todo.Lane, &todo.WakeCondition, &todo.ReviewAt,
-			&todo.MaintenanceLimit, &todo.Created, &todo.Source, &todo.Closed,
+			&todo.MaintenanceLimit, &todo.Created, &todo.Source, &todo.Creator, &todo.Closed,
 			&todo.ClosedReason, &todo.OnDone, &todo.StartTS, &todo.DoneTS,
 		); err != nil {
 			return nil, err
@@ -233,22 +233,22 @@ func sameTodoScalars(a, b *Todo) bool {
 func insertTodo(store sqlExecer, position int, todo *Todo) error {
 	_, err := store.Exec(`INSERT INTO todos
 		(id,position,title,description,priority,status,project,lane,wake_condition,review_at,
-		 maintenance_limit,created,source,closed,closed_reason,on_done,start_ts,done_ts)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 maintenance_limit,created,source,creator,closed,closed_reason,on_done,start_ts,done_ts)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		todo.ID, position, todo.Title, todo.Description, todo.Priority, todo.Status,
 		todo.Project, todo.Lane, todo.WakeCondition, todo.ReviewAt, todo.MaintenanceLimit,
-		todo.Created, todo.Source, todo.Closed, todo.ClosedReason,
+		todo.Created, todo.Source, todo.Creator, todo.Closed, todo.ClosedReason,
 		todo.OnDone, todo.StartTS, todo.DoneTS)
 	return err
 }
 
 func updateTodo(store sqlExecer, position int, todo *Todo) error {
 	_, err := store.Exec(`UPDATE todos SET position=?,title=?,description=?,priority=?,status=?,
-		project=?,lane=?,wake_condition=?,review_at=?,maintenance_limit=?,created=?,source=?,
+		project=?,lane=?,wake_condition=?,review_at=?,maintenance_limit=?,created=?,source=?,creator=?,
 		closed=?,closed_reason=?,on_done=?,start_ts=?,done_ts=? WHERE id=?`,
 		position, todo.Title, todo.Description, todo.Priority, todo.Status,
 		todo.Project, todo.Lane, todo.WakeCondition, todo.ReviewAt, todo.MaintenanceLimit,
-		todo.Created, todo.Source, todo.Closed, todo.ClosedReason,
+		todo.Created, todo.Source, todo.Creator, todo.Closed, todo.ClosedReason,
 		todo.OnDone, todo.StartTS, todo.DoneTS, todo.ID)
 	return err
 }

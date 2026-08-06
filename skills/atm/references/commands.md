@@ -54,6 +54,7 @@ atm todo list --status all --json
 atm todo list --project <repo> --json
 atm todo list --status waiting --json
 atm todo list --lane personal --json
+atm todo list --creator collect --json        # who filed it: me, collect, or an agent name
 atm todo show <id> --json
 # `bindings` 历史中的 unbound_at/reason 是 Todo 状态迁移的结构化审计证据
 atm todo context [id] --json                  # live, read-only Todo/session/Git context; does not run tests
@@ -71,6 +72,7 @@ atm todo submit [id] --reason "<summary/evidence>" # in_progress -> review; neve
 atm todo add "<title>" --project <repo> --priority P1 --status open --desc "<description>"
 atm todo add "<title>" --desc-file <path>  # use - to read a multiline description from stdin
 atm todo add --batch                       # read YAML/JSON items from stdin; see --help for an example
+atm todo add "<title>" --creator codex     # override the detected creator; default: agent in env, else me
 atm todo start <id>                           # done/dropped 会重开并刷新生命周期时间
 atm session bind <id>                           # bind this agent session; also starts todo
 atm session unbind --reason scope-changed
@@ -98,6 +100,8 @@ atm todo bulk move <id>... --project <repo>
 `match` 的两种用途不可互换。`--prompt` 服务启动注入，总是返回 `--limit` 条候选（同项目本身加 100 分），所以它答不了「该不该新建」。查重用 `--dedup`：跨项目搜索、要求 `query_score` 达到下限（默认 30，可用 `--min-query-score` 调整）、无匹配时明确输出「可以新建」，且忽略当前会话绑定。`--json` 同时给出 `duplicate` 布尔和每条候选的 `query_score`（query 自身得分，不含项目/状态/优先级加成）。
 
 非 JSON 模式下，单条 `atm todo add` 会把新 ID 单独写到 stdout，并把可读的 `Created <id>: <title>` 提示写到 stderr，脚本可直接使用 `id=$(atm todo add ...)`。`atm todo delete` 会永久删除并要求确认；非交互调用必须显式传 `-y/--yes`。默认不要删除。`atm todo prompt` 只输出文本，可以随时调用。
+
+`creator` 记录「谁建的」，与自由文本 `source`（为什么/从哪来）正交，取值只有 `me`、`collect` 和 agent 名。创建时自动判定：环境里有 agent session 就记该 agent，否则记 `me`；连接器收集记 `collect`。环境探测不到自己的 agent（例如 CLI 不导出 session ID）时用 `--creator <agent>` 显式声明，不要让它落成 `me`。展示时 `me` 会渲染成 `atm config set owner_name <昵称>` 配置的昵称（未配置为「我」），存储值始终是 `me`。creator 字段是 v33 新增的，之前创建的 todo 保持为空，不做回填。
 
 `atm todo log` 的默认 `进展` section 只接受单段、最多 400 个 Unicode 字符的里程碑摘要；消息里的 `tNN` 必须存在于当前或归档 todo。详细调查写入 `--section 分析`。生命周期状态、维护标签、依赖和 description 仍须用对应结构化命令更新，不能靠自由文本日志代替。`atm todo lint` 可审计历史脏数据，但不会自动改写历史动态。
 
