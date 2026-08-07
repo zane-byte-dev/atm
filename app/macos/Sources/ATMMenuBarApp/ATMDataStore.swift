@@ -604,6 +604,20 @@ struct ATMTodoEdit: Equatable {
 }
 
 enum ATMCommandBuilder {
+    /// Passing `sections: ["work"]` asks the CLI for the todos and the now-view
+    /// without the statistics, which is roughly a second of SQL aggregation that
+    /// no task row reads. See `primeWork()`.
+    static func dashboard(sections: [String] = [], sessionID: String? = nil) -> [String] {
+        var arguments = ["dashboard", "--json"]
+        if !sections.isEmpty {
+            arguments += ["--sections", sections.joined(separator: ",")]
+        }
+        if let sessionID, !sessionID.isEmpty {
+            arguments += ["--agent-session", sessionID]
+        }
+        return arguments
+    }
+
     static func todaySessionUsage(sessionID: String? = nil) -> [String] {
         var arguments = ["stats", "--by", "session-usage", "--days", "1", "--json"]
         if let sessionID, !sessionID.isEmpty {
@@ -855,6 +869,10 @@ final class ATMDataStore: ObservableObject {
     private var lastSyncAttemptAt: Date?
     private var lastLiveStatusAppliedAt: Date?
     private var lastLiveStatusPollAt: Date?
+    /// Whether a full dashboard has ever been applied. Gates `primeWork()`, whose
+    /// work-only snapshot carries no statistics and so must never land on top of
+    /// one that does.
+    private var hasLoadedFullDashboard = false
     private var activeRefreshIncludesSync = false
     private var pendingRefresh = false
     private var pendingSync = false
@@ -886,13 +904,60 @@ final class ATMDataStore: ObservableObject {
     }
 
     func applyDashboardRefresh(_ state: ATMStoreDashboardState) {
+        hasLoadedFullDashboard = true
         dashboardState = state
+    }
+
+    /// Paints the task list from the cheap half of the dashboard.
+    ///
+    /// `atm dashboard` also computes the usage statistics, which on a real
+    /// database is about a second of SQL aggregation that no task row reads —
+    /// the todos themselves are ready in a few milliseconds. Asking for the work
+    /// section first fills the window at launch rather than after the charts.
+    ///
+    /// Cold start only, and deliberately so. With nothing on screen yet the user
+    /// has had nothing to act on, so none of the optimistic-edit bookkeeping that
+    /// `refresh()` reconciles against can hold entries. That is what lets this
+    /// path assign the todos straight through instead of duplicating a
+    /// reconciliation that would then have two places to drift apart. It also
+    /// leaves `notifiedTodoStatus` alone, so the full refresh still decides which
+    /// status changes are worth a notification.
+    private func primeWork() {
+        Task {
+            let outcome: ATMCommandOutcome<ATMDashboardEnvelope>
+            do {
+                let runner = try ATMCommandRunner()
+                outcome = await decodeCommand(
+                    runner,
+                    arguments: ATMCommandBuilder.dashboard(
+                        sections: ["work"],
+                        sessionID: ATMAgentSessionContext.sessionID()
+                    )
+                )
+            } catch {
+                // The full refresh is already in flight and reports its own
+                // failures. A broken fast path only costs the head start.
+                return
+            }
+            guard let value = outcome.value else { return }
+            // The full refresh runs concurrently and is authoritative. Once it has
+            // landed, this thinner snapshot would blank the statistics it carries.
+            guard !hasLoadedFullDashboard else { return }
+            guard optimisticallyDeletedTodoIDs.isEmpty,
+                  optimisticallyUpdatedTodos.isEmpty,
+                  optimisticallyPermanentlyDeletedTodoIDs.isEmpty else { return }
+            var next = dashboardState
+            next.allTodos = value.todos
+            next.snapshot = value.makeSnapshot()
+            dashboardState = next
+        }
     }
 
     func start() {
         guard timer == nil else { return }
         loadGrokLiveQuotaSetting()
         loadOwnerNameSetting()
+        primeWork()
         refresh()
         refresh(sync: true)
         refreshCollection(runIfDue: true)
@@ -1493,13 +1558,9 @@ final class ATMDataStore: ObservableObject {
                     }
                 }
 
-                let dashboardArguments: [String] = {
-                    var arguments = ["dashboard", "--json"]
-                    if let sessionID = ATMAgentSessionContext.sessionID() {
-                        arguments += ["--agent-session", sessionID]
-                    }
-                    return arguments
-                }()
+                let dashboardArguments = ATMCommandBuilder.dashboard(
+                    sessionID: ATMAgentSessionContext.sessionID()
+                )
                 let dashboardRequestStartedAt = Date()
                 // Quota lives in the agents' own logs rather than the session
                 // index, so it is a separate command. Run it concurrently with

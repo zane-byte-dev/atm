@@ -527,6 +527,65 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.rangeData[.yesterday]?.startDate, "2026-07-23")
     }
 
+    /// The launch fast path asks for `--sections work`, so the envelope arrives
+    /// with every statistics key empty. It has to decode into a usable task list
+    /// rather than fail, because failing here means the window stays blank for
+    /// the second the full snapshot takes.
+    func testWorkOnlyDashboardEnvelopeDecodesWithoutStatistics() throws {
+        let data = Data(
+            """
+            {
+              "schema_version":6,
+              "generated_at":"2026-07-24T15:00:00+08:00",
+              "work":{
+                "generated_at":"2026-07-24T15:00:00+08:00",
+                "open":[{"id":"t1","title":"Paint before the charts","priority":"P1","status":"open","created":"2026-07-24"}],
+                "working":[],"waiting":[],"review":[],"blocked":[],"due":[],
+                "summary":{"open":1}
+              },
+              "todos":[{"id":"t1","title":"Paint before the charts","priority":"P1","status":"open","created":"2026-07-24"}],
+              "day_stats":[],"hour_stats":[],"model_day_stats":[],"model_hour_stats":[],
+              "project_day_stats":[],"project_hour_stats":[],
+              "ranges":{},
+              "live_status":{"sessions":[],"bindings":[],"time":"15:00:00"},
+              "index_health":{
+                "generated_at":"2026-07-24T07:00:00Z",
+                "index":{"path":"/tmp/atm.db","exists":true,"schema_version":12,"indexed_sessions":0},
+                "sync":{"scope":"all","status":"fresh","run_status":"succeeded","last_attempt_at":null,"last_success_at":null,"age_seconds":null,"stale_after_seconds":600,"last_error":"","last_synced_files":0}
+              }
+            }
+            """.utf8
+        )
+        let envelope = try JSONDecoder().decode(ATMDashboardEnvelope.self, from: data)
+        // Same schema version as the full snapshot: one section of one contract,
+        // not a second format the mismatch guard would have to learn.
+        XCTAssertEqual(envelope.schemaVersion, ATMDashboardContract.supportedSchemaVersion)
+        let snapshot = envelope.makeSnapshot(refreshedAt: .distantPast)
+        XCTAssertEqual(snapshot.work.summary.open, 1)
+        XCTAssertEqual(envelope.todos.first?.id, "t1")
+        XCTAssertEqual(snapshot.indexHealth?.index.schemaVersion, 12)
+        // An absent `ranges` still yields every key, so a statistics view reads an
+        // empty window instead of finding nothing there at all.
+        XCTAssertEqual(Set(snapshot.rangeData.keys), Set(ATMMetricsRange.allCases))
+        XCTAssertEqual(snapshot.rangeData[.last30Days]?.sessions.count, 0)
+        XCTAssertTrue(snapshot.dayStats.isEmpty)
+        XCTAssertTrue(snapshot.projectDayStats.isEmpty)
+    }
+
+    func testDashboardCommandRequestsOnlyTheSectionsItNeeds() {
+        XCTAssertEqual(ATMCommandBuilder.dashboard(), ["dashboard", "--json"])
+        XCTAssertEqual(
+            ATMCommandBuilder.dashboard(sections: ["work"]),
+            ["dashboard", "--json", "--sections", "work"]
+        )
+        XCTAssertEqual(
+            ATMCommandBuilder.dashboard(sections: ["work"], sessionID: "s9"),
+            ["dashboard", "--json", "--sections", "work", "--agent-session", "s9"]
+        )
+        // An empty session ID must not become a bare flag with no value.
+        XCTAssertEqual(ATMCommandBuilder.dashboard(sessionID: ""), ["dashboard", "--json"])
+    }
+
     func testTodaySessionsDecodeAndFilterIndependentlyFromDashboard() throws {
         let data = Data(
             """
