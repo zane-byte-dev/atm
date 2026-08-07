@@ -623,9 +623,6 @@ struct DesktopContentView: View {
                     Text("ATM")
                         .font(ATMFont.font(.title3, weight: .bold))
                         .foregroundStyle(ATMTheme.railPrimary)
-                    Text("工作台")
-                        .font(ATMFont.body)
-                        .foregroundStyle(ATMTheme.railSecondary)
                 }
                 .lineLimit(1)
                 Spacer(minLength: 0)

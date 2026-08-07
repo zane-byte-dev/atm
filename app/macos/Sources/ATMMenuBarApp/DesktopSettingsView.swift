@@ -139,9 +139,6 @@ struct DesktopSettingsView: View {
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("工作台")
-                    .font(ATMFont.caption)
-                    .foregroundStyle(ATMTheme.secondary)
                 Text("设置")
                     .font(ATMFont.font(.title2, weight: .bold))
                 Text("应用偏好与外部连接")

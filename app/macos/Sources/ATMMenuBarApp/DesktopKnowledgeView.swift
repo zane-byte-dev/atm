@@ -237,9 +237,6 @@ struct DesktopKnowledgeView: View {
     private var itemList: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("知识库")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
                 HStack(spacing: 8) {
                     Image(systemName: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? "brain.head.profile" : "folder")
                         .foregroundStyle(ATMTheme.accent)

@@ -16,9 +16,6 @@ struct ATMDrawerHeader<Trailing: View>: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("工作台")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(title)
                         .font(ATMFont.font(.title2, weight: .semibold))
