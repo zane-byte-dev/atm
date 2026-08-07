@@ -86,6 +86,9 @@ struct DesktopCollectionView: View {
                 header
                 itemColumn
             }
+            // 中栏 surface / 右栏 canvas —— 和任务、Agent、知识一致，标题区也算中栏，
+            // 底色铺在整根列上；只铺在列表上时标题区会漏出根视图的 canvas。
+            .background(ATMTheme.listPane)
         } detail: {
             detailColumn
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -336,9 +339,6 @@ struct DesktopCollectionView: View {
                 .scrollContentBackground(.hidden)
             }
         }
-        // 中栏 surface / 右栏 canvas —— 和任务、Agent、知识一致。此前中栏也是 canvas，
-        // 与详情栏同色，三栏之间只剩一根 Divider。
-        .background(ATMTheme.listPane)
         // 记录的删除确认挂在中栏而不是根视图：来源删除已经占了根视图的
         // confirmationDialog，同一层挂两个在 macOS 上会互相顶掉。单条删除和分组清空
         // 因此也共用这一个（措辞由 CollectionItemDeletion 决定）。

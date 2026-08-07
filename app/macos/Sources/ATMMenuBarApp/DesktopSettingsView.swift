@@ -246,7 +246,9 @@ struct DesktopSettingsView: View {
 
                         LazyVGrid(
                             columns: [
-                                GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 14)
+                                // Never below the preview's fixed 184pt artwork,
+                                // or a narrow column would clip it again.
+                                GridItem(.adaptive(minimum: 184, maximum: 220), spacing: 14)
                             ],
                             alignment: .leading,
                             spacing: 14
@@ -998,81 +1000,56 @@ private struct ATMThemeChoiceButton: View {
 private struct ATMThemePreview: View {
     let mode: ATMThemeMode
 
+    private static let designWidth: CGFloat = 184
+    private static let designHeight: CGFloat = 108
+    private static let resourceBundle: Bundle = {
+        let name = "ATMMenuBarApp_ATMMenuBarApp.bundle"
+        let candidates = [
+            Bundle.main.resourceURL,
+            Bundle.main.bundleURL,
+            Bundle.main.executableURL?.deletingLastPathComponent(),
+        ]
+        for baseURL in candidates.compactMap({ $0 }) {
+            if let bundle = Bundle(url: baseURL.appendingPathComponent(name, isDirectory: true)) {
+                return bundle
+            }
+        }
+        return Bundle.module
+    }()
+
+    private static let images: [ATMThemeMode: NSImage] = {
+        Dictionary(uniqueKeysWithValues: ATMThemeMode.allCases.compactMap { mode in
+            let resourceName: String
+            switch mode {
+            case .system: resourceName = "theme-system@2x"
+            case .light: resourceName = "theme-light@2x"
+            case .dark: resourceName = "theme-dark@2x"
+            }
+            guard let url = resourceBundle.url(
+                forResource: resourceName,
+                withExtension: "png",
+                subdirectory: "ThemePreviews"
+            ) ?? resourceBundle.url(forResource: resourceName, withExtension: "png"),
+                let image = NSImage(contentsOf: url)
+            else {
+                return nil
+            }
+            return (mode, image)
+        })
+    }()
+
     var body: some View {
-        HStack(spacing: 0) {
-            if mode == .system {
-                previewHalf(isDark: false, isSplit: true)
-                previewHalf(isDark: true, isSplit: true)
+        Group {
+            if let image = Self.images[mode] {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
             } else {
-                previewHalf(isDark: mode == .dark, isSplit: false)
+                Color(nsColor: .controlBackgroundColor)
             }
         }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(184.0 / 108.0, contentMode: .fit)
+        .frame(width: Self.designWidth, height: Self.designHeight)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func previewHalf(isDark: Bool, isSplit: Bool) -> some View {
-        let palette = ATMThemePreviewPalette(isDark: isDark)
-
-        return HStack(spacing: 0) {
-            palette.canvas
-                .overlay(palette.line.opacity(0.055))
-                .frame(width: isSplit ? 20 : 38)
-
-            VStack(alignment: .leading, spacing: 7) {
-                Capsule()
-                    .fill(palette.line.opacity(0.72))
-                    .frame(width: 45, height: 5)
-
-                VStack(alignment: .leading, spacing: 7) {
-                    Capsule()
-                        .fill(palette.line.opacity(0.55))
-                        .frame(width: 35, height: 5)
-                    Capsule()
-                        .fill(palette.line.opacity(0.34))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 4)
-                    Capsule()
-                        .fill(palette.line.opacity(0.34))
-                        .frame(width: 54, height: 4)
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(palette.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            }
-            .padding(10)
-            .background(palette.canvas)
-        }
-    }
-}
-
-/// Resolves AppKit's dynamic semantic colors against an explicit appearance.
-/// Without this, a dark preview rendered while the app is light would silently
-/// inherit the light window appearance.
-private struct ATMThemePreviewPalette {
-    let canvas: Color
-    let surface: Color
-    let line: Color
-
-    init(isDark: Bool) {
-        guard let appearance = NSAppearance(named: isDark ? .darkAqua : .aqua) else {
-            canvas = Color(nsColor: .windowBackgroundColor)
-            surface = Color(nsColor: .controlBackgroundColor)
-            line = Color(nsColor: .labelColor)
-            return
-        }
-        canvas = Self.resolve(.windowBackgroundColor, appearance: appearance)
-        surface = Self.resolve(.controlBackgroundColor, appearance: appearance)
-        line = Self.resolve(.labelColor, appearance: appearance)
-    }
-
-    private static func resolve(_ color: NSColor, appearance: NSAppearance) -> Color {
-        var resolved = color
-        appearance.performAsCurrentDrawingAppearance {
-            resolved = color.usingColorSpace(.sRGB) ?? color
-        }
-        return Color(nsColor: resolved)
     }
 }
