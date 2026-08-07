@@ -39,11 +39,29 @@ final class StatusBarController {
         if ProcessInfo.processInfo.environment["ATM_OPEN_PANEL"] == "1" {
             DispatchQueue.main.async { [weak self] in self?.openPanel() }
         }
-        ATMGlobalHotKeyManager.shared.onTrigger = { [weak self] in self?.handleGlobalHotKey() }
+        ATMGlobalHotKeyManager.shared.onPressed = { [weak self] action in
+            switch action {
+            case .launcher:
+                self?.handleGlobalHotKey()
+            case .voiceInput:
+                ATMVoiceInputCoordinator.shared.hotKeyPressed()
+            case .cancelVoice:
+                ATMVoiceInputCoordinator.shared.cancel()
+            }
+        }
+        ATMGlobalHotKeyManager.shared.onReleased = { action in
+            // Only dictation cares about the key coming back up; the launcher toggles
+            // on the way down.
+            guard action == .voiceInput else { return }
+            ATMVoiceInputCoordinator.shared.hotKeyReleased()
+        }
         ATMGlobalHotKeyManager.shared.start()
     }
 
     func stop() {
+        // Before the hot key manager goes away: an in-flight recording holds the
+        // microphone and a transient ⎋ registration, and both are its to release.
+        ATMVoiceInputCoordinator.shared.cancel()
         ATMGlobalHotKeyManager.shared.stop()
         agentNotchController?.stop()
         store.stop()
@@ -69,10 +87,6 @@ final class StatusBarController {
                 openDesktop: { [weak self] todo in
                     self?.closePanel()
                     self?.openDesktop(todo: todo)
-                },
-                addTodo: { [weak self] in
-                    self?.closePanel()
-                    self?.openDesktop(showAddTodo: true)
                 }
             )
         )

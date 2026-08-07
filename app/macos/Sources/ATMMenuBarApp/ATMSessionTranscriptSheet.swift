@@ -75,14 +75,15 @@ struct ATMSessionTranscriptSheet: View {
                     }
                     .padding(28)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if transcript.isEmpty {
+                    Text("该会话暂无可展示内容。")
+                        .font(ATMFont.body)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .padding(28)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 } else {
-                    ScrollView {
-                        Text(transcript.isEmpty ? "该会话暂无可展示内容。" : transcript)
-                            .font(ATMFont.mono(.body))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(18)
-                    }
+                    ATMTranscriptTextView(text: transcript)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .background(ATMTheme.canvas)

@@ -1257,6 +1257,7 @@ private struct DesktopTodoRow: View {
 struct DesktopTodoDetail: View {
     private enum DetailTab: String, CaseIterable {
         case detail
+        case activity
         case sessions
     }
 
@@ -1297,6 +1298,8 @@ struct DesktopTodoDetail: View {
                 detailTabs
                 if selectedTab == .detail {
                     readContent
+                } else if selectedTab == .activity {
+                    activityContent
                 } else {
                     sessionContent
                 }
@@ -1338,6 +1341,7 @@ struct DesktopTodoDetail: View {
         HStack(spacing: 22) {
             detailTabButton(.detail, title: "任务描述", icon: "doc.text")
             if !isTrashed {
+                detailTabButton(.activity, title: "动态", icon: "clock.arrow.circlepath")
                 detailTabButton(.sessions, title: sessionTabTitle, icon: "terminal")
             }
             Spacer(minLength: 0)
@@ -1526,20 +1530,9 @@ struct DesktopTodoDetail: View {
     private var readContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                if let nextAction = latestNextAction {
-                    nextActionBanner(nextAction)
-                }
-
                 if let description = nonEmpty(todo.description) {
-                    detailCard("任务描述", icon: "text.alignleft") {
-                        DesktopTodoDescription(source: description)
-                    }
-                }
-
-                if !isTrashed {
-                    detailCard("动态", icon: "clock.arrow.circlepath") {
-                        TodoProgressView(todo: todo, store: store)
-                    }
+                    ATMMarkdownContentView(source: description)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if let links = todo.links, !links.isEmpty {
@@ -1558,6 +1551,12 @@ struct DesktopTodoDetail: View {
                     }
                 }
 
+                if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false {
+                    Text("暂无任务描述。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+
             }
             .padding(16)
             .frame(maxWidth: 860, alignment: .leading)
@@ -1565,16 +1564,34 @@ struct DesktopTodoDetail: View {
         }
     }
 
-    private var sessionContent: some View {
+    /// Dynamic entries have their own destination, so the timeline no longer sits
+    /// inside a second titled card. The latest next action stays with the timeline
+    /// because it is derived from the same progress log.
+    private var activityContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                detailCard("绑定历史", icon: "terminal") {
-                    TodoSessionHistoryView(todo: todo, store: store)
+                if let nextAction = latestNextAction {
+                    nextActionBanner(nextAction)
                 }
+                TodoProgressView(todo: todo, store: store)
             }
             .padding(16)
             .frame(maxWidth: 860, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    /// No card, no section title: the tab holds nothing but the binding history and
+    /// already carries its own name, so a titled white box around the only thing on
+    /// the page was framing with nothing to frame against.
+    private var sessionContent: some View {
+        ScrollView {
+            TodoSessionHistoryView(todo: todo, store: store)
+                // 14 + the row surface's own 10 lines the rows up with the tab bar.
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: 860, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
@@ -1622,12 +1639,18 @@ struct DesktopTodoDetail: View {
     private var editContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                editSection("标题") {
-                    fieldBox {
-                        TextField("任务标题", text: $title)
-                            .textFieldStyle(.plain)
-                            .font(ATMFont.font(.body, weight: .medium))
-                    }
+                // Titles here are usually a whole sentence — the task is typed as
+                // one line and the description stays empty — so the field wraps and
+                // grows instead of showing a 40-character window of it.
+                editSection("标题", hint: "单行；⏎ 保存") {
+                    ATMGrowingTextField(
+                        text: $title,
+                        placeholder: "任务标题",
+                        font: ATMFont.nsFont(.body, weight: .medium),
+                        maxLines: 6
+                    ) { saveEdit() }
+                        .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                 }
 
                 detailCard("属性", icon: "slider.horizontal.3") {
@@ -1647,8 +1670,8 @@ struct DesktopTodoDetail: View {
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                 }
             }
-            // Capped and left-aligned: stretched across a wide detail pane, a
-            // single-line title field ran on for hundreds of points.
+            // Capped and left-aligned: stretched across a wide detail pane, the
+            // text fields ran on for hundreds of points.
             .frame(maxWidth: 620, alignment: .leading)
             .padding(.horizontal, 18)
             .padding(.vertical, 16)
@@ -1971,14 +1994,6 @@ struct DesktopTodoDetail: View {
         }
     }
 
-    private func fieldBox<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
-    }
-
     private func gridLabel(_ text: String) -> some View {
         Text(text)
             .font(ATMFont.body)
@@ -2007,91 +2022,6 @@ struct DesktopTodoDetail: View {
     private func nonEmpty(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
         return trimmed
-    }
-}
-
-/// Task descriptions written by an Agent can run to hundreds of lines. Left
-/// unbounded they push 动态 / 关联链接 off the first screen, so a long one is
-/// clipped to a reading-size-scaled height with an 展开/收起 toggle. Short
-/// descriptions render exactly as before — no toggle, no clip.
-private struct DesktopTodoDescription: View {
-    let source: String
-
-    @ObservedObject private var appearance = ATMAppearance.shared
-    @State private var isExpanded = false
-    @State private var contentHeight: CGFloat = 0
-    @State private var toggleHovered = false
-
-    /// About 14 lines of body text, so the height tracks the 正文字号 setting
-    /// instead of shrinking to a handful of lines at 大 / 特大.
-    private var collapsedMaxHeight: CGFloat {
-        (appearance.contentTextSize.pointSize + 3) * 14
-    }
-
-    /// Slack below the cap, so a description that just grazes the limit gets shown
-    /// whole rather than clipped for the sake of two pixels.
-    private var isOverflowing: Bool {
-        contentHeight > collapsedMaxHeight + 24
-    }
-
-    private var isClipped: Bool { isOverflowing && !isExpanded }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ATMMarkdownContentView(source: source)
-                // Ideal height regardless of the cap below, so what we measure is the
-                // full description and the clip can't feed back into the measurement.
-                .fixedSize(horizontal: false, vertical: true)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: DescriptionHeightKey.self, value: proxy.size.height)
-                    }
-                )
-                .frame(maxHeight: isClipped ? collapsedMaxHeight : nil, alignment: .top)
-                .clipped()
-                .overlay(alignment: .bottom) {
-                    if isClipped {
-                        LinearGradient(
-                            colors: [ATMTheme.elevated.opacity(0), ATMTheme.elevated],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 36)
-                        .allowsHitTesting(false)
-                    }
-                }
-            if isOverflowing {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.16)) { isExpanded.toggle() }
-                } label: {
-                    Label(
-                        isExpanded ? "收起描述" : "展开完整描述",
-                        systemImage: isExpanded ? "chevron.up" : "chevron.down"
-                    )
-                    .font(ATMFont.font(.footnote, weight: .semibold))
-                    .foregroundStyle(ATMTheme.accent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        ATMTheme.accent.opacity(toggleHovered ? 0.10 : 0.0),
-                        in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    )
-                }
-                .buttonStyle(.plain)
-                .help(isExpanded ? "收起长描述" : "展开完整任务描述")
-                .onHover { toggleHovered = $0 }
-            }
-        }
-        .onPreferenceChange(DescriptionHeightKey.self) { height in
-            contentHeight = height
-        }
-    }
-}
-
-private struct DescriptionHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
@@ -2147,8 +2077,9 @@ private struct DesktopAddTodoSheet: View {
             ATMComposerTextView(
                 text: $text,
                 placeholder: "要完成什么？",
-                autoFocus: true
-            ) { submit(draft) }
+                autoFocus: true,
+                onSubmit: { submit(draft) }
+            )
                 .frame(height: 150)
                 .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))

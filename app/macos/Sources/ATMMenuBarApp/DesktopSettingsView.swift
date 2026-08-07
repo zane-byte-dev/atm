@@ -9,6 +9,7 @@ enum ATMTodoListPreferences {
 struct DesktopSettingsView: View {
     private enum SettingsTab: String, CaseIterable, Identifiable {
         case general
+        case voice
         case notch
         case todo
         case connectors
@@ -18,6 +19,7 @@ struct DesktopSettingsView: View {
         var title: String {
             switch self {
             case .general: return "通用"
+            case .voice: return "语音"
             case .notch: return "刘海"
             case .todo: return "Todo"
             case .connectors: return "连接器"
@@ -27,6 +29,7 @@ struct DesktopSettingsView: View {
         var systemImage: String {
             switch self {
             case .general: return "slider.horizontal.3"
+            case .voice: return "waveform"
             case .notch: return "rectangle.topthird.inset.filled"
             case .todo: return "checklist"
             case .connectors: return "link"
@@ -36,6 +39,7 @@ struct DesktopSettingsView: View {
         var subtitle: String {
             switch self {
             case .general: return "主题、字号与快捷键"
+            case .voice: return "按住说话，松手写入"
             case .notch: return "状态提醒与声音反馈"
             case .todo: return "任务列表与默认行为"
             case .connectors: return "自动收集与外部来源"
@@ -55,6 +59,26 @@ struct DesktopSettingsView: View {
     private var globalHotKeyValue = ATMGlobalHotKeyPreferences.defaultHotKey.storageValue
     @AppStorage(ATMGlobalHotKeyPreferences.targetKey)
     private var globalHotKeyTarget = ATMGlobalHotKeyPreferences.defaultTarget.rawValue
+    @ObservedObject private var voiceInput = ATMVoiceInputCoordinator.shared
+    @ObservedObject private var senseVoiceModel = ATMSenseVoiceModelManager.shared
+    @AppStorage(ATMVoiceInputPreferences.hotKeyEnabledKey)
+    private var voiceHotKeyEnabled = ATMVoiceInputPreferences.defaultEnabled
+    @AppStorage(ATMVoiceInputPreferences.hotKeyKey)
+    private var voiceHotKeyValue = ATMVoiceInputPreferences.defaultHotKey.storageValue
+    @AppStorage(ATMVoiceInputPreferences.engineKey)
+    private var voiceEngine = ATMVoiceInputPreferences.defaultEngine.rawValue
+    @AppStorage(ATMVoiceInputPreferences.languageKey)
+    private var voiceLanguage = ATMVoiceInputPreferences.defaultLanguage.rawValue
+    @AppStorage(ATMVoiceInputPreferences.onDeviceOnlyKey)
+    private var voiceOnDeviceOnly = false
+    @AppStorage(ATMVoiceInputPreferences.removeTrailingPeriodKey)
+    private var voiceRemoveTrailingPeriod = false
+    @AppStorage(ATMVoiceInputPreferences.dictionaryKey)
+    private var voiceDictionary = ""
+    /// Permissions are read on appear rather than observed: TCC has no change
+    /// notification, and the trip to System Settings and back always passes through
+    /// this view becoming visible again.
+    @State private var voicePermissions = ATMVoicePermissionSnapshot.current()
     @AppStorage(ATMAgentNotchPreferences.enabledKey)
     private var agentNotchEnabled = ATMAgentNotchPreferences.defaultEnabled
     @AppStorage(ATMAgentNotchPreferences.retentionKey)
@@ -216,6 +240,8 @@ struct DesktopSettingsView: View {
                 switch selectedTab {
                 case .general:
                     generalSettings
+                case .voice:
+                    voiceSettings
                 case .notch:
                     notchSettings
                 case .todo:
@@ -346,7 +372,7 @@ struct DesktopSettingsView: View {
             // only symptom is a shortcut that does nothing — so say so here rather
             // than leaving it to be discovered by pressing keys.
             if globalHotKeyEnabled,
-               case .unavailable(let hotKey) = hotKeys.registration {
+               case .unavailable(let hotKey) = hotKeys.registration(for: .launcher) {
                 Text("\(hotKey.displayString) 已被系统或其他应用占用，请换一个组合。")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.warning)
@@ -361,6 +387,378 @@ struct DesktopSettingsView: View {
         Binding(
             get: { ATMHotKey(storageValue: globalHotKeyValue) ?? ATMGlobalHotKeyPreferences.defaultHotKey },
             set: { globalHotKeyValue = $0.storageValue }
+        )
+    }
+
+    // MARK: - 语音
+
+    /// The 语音 tab: hold-to-dictate. A tab of its own rather than another card in
+    /// 通用 because the recognizer, its model download, the language and the
+    /// replacement dictionary are four settings that only make sense together.
+    private var voiceSettings: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                card { voiceShortcutSection }
+                card { voiceEngineSection }
+                card { voiceTextSection }
+                card { voicePermissionSection }
+                if !voiceInput.lastTranscript.isEmpty {
+                    card { voiceLastTranscriptSection }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+            .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear { voicePermissions = ATMVoicePermissionSnapshot.current() }
+    }
+
+    private var voiceShortcutSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("语音输入快捷键")
+                        .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                    Text("在任何应用里按住不放开始说话，松手把文字写进当前光标处；说错了按 ⎋ 取消，不会写入任何东西。默认 ⌥Space。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Toggle("启用语音输入", isOn: $voiceHotKeyEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            ATMHotKeyRecorder(
+                hotKey: voiceHotKeyBinding,
+                isEnabled: voiceHotKeyEnabled,
+                defaultHotKey: ATMVoiceInputPreferences.defaultHotKey
+            )
+
+            if voiceHotKeyEnabled,
+               case .unavailable(let hotKey) = hotKeys.registration(for: .voiceInput) {
+                Text("\(hotKey.displayString) 已被系统或其他应用占用（⌥Space 常被输入法拿走），请换一个组合。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var voiceEngineSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("识别引擎")
+                    .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                Text(ATMVoiceRecognitionEngine(rawValue: voiceEngine)?.detail ?? "")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Picker("识别引擎", selection: $voiceEngine) {
+                ForEach(ATMVoiceRecognitionEngine.allCases) { engine in
+                    Text(engine.label).tag(engine.rawValue)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 420)
+
+            if voiceEngine == ATMVoiceRecognitionEngine.senseVoice.rawValue {
+                senseVoiceModelCard
+            }
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("识别语言")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("同时决定两个引擎听哪种语言。「自动」对 SenseVoice 是真的自动判别，对 Apple Speech 是跟随系统语言。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Picker("识别语言", selection: $voiceLanguage) {
+                    ForEach(ATMVoiceInputLanguage.allCases) { language in
+                        Text(language.label).tag(language.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 150)
+            }
+
+            if voiceEngine == ATMVoiceRecognitionEngine.appleSpeech.rawValue {
+                Divider()
+                HStack(alignment: .top, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("仅使用本地识别")
+                            .font(ATMFont.font(.body, weight: .semibold))
+                        Text("音频不离开这台机器。部分语言不支持设备端识别，那种情况下开着这个开关会直接报错而不是偷偷联网。")
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 12)
+                    Toggle("仅使用本地识别", isOn: $voiceOnDeviceOnly)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+            }
+        }
+    }
+
+    /// The model is 160MB, so its state is the one thing on this page worth a card of
+    /// its own — "为什么识别的是 Apple Speech" is almost always answered here.
+    @ViewBuilder
+    private var senseVoiceModelCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            switch senseVoiceModel.state {
+            case .missing:
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("模型未下载")
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            .foregroundStyle(ATMTheme.warning)
+                        Text("下载前语音输入自动使用 Apple Speech。约 160MB，解压后约 230MB。")
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("下载模型") { senseVoiceModel.downloadModel() }
+                }
+            case .downloading(let progress):
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text("正在下载模型 · \(Int(progress * 100))%")
+                            .font(ATMFont.font(.body, weight: .semibold))
+                        Spacer(minLength: 8)
+                        Button("取消") { senseVoiceModel.cancelDownload() }
+                    }
+                    ProgressView(value: progress)
+                }
+            case .installing:
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("正在校验并解压…")
+                        .font(ATMFont.body)
+                }
+            case .ready:
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("模型已就绪")
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            .foregroundStyle(ATMTheme.success)
+                        Text(senseVoiceModel.modelDirectory.path)
+                            .font(ATMFont.mono(.caption))
+                            .foregroundStyle(ATMTheme.secondary)
+                            .textSelection(.enabled)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 8)
+                    Button("删除模型") { senseVoiceModel.deleteModel() }
+                }
+            case .failed(let message):
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("模型未就绪")
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            .foregroundStyle(ATMTheme.danger)
+                        Text(message)
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 8)
+                    Button("重新下载") { senseVoiceModel.downloadModel() }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+
+    private var voiceTextSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("去掉句尾句号")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("口述多半落在聊天框、提交信息、提示词里，识别器补的那个句号每次都要手删一下。只去一个，「等一下。。。」保持原样。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Toggle("去掉句尾句号", isOn: $voiceRemoveTrailingPeriod)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("替换词典")
+                    .font(ATMFont.font(.body, weight: .semibold))
+                Text("一行一条 `原词 => 替换词`，`→` 和 `=` 也认，`#` 开头是注释。专有名词两侧都会喂给 Apple Speech 当上下文提示，让它更可能一次就说对。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                TextEditor(text: $voiceDictionary)
+                    .font(ATMFont.mono(.body))
+                    .frame(height: 120)
+                    .padding(6)
+                    .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(ATMTheme.border, lineWidth: 1)
+                    )
+                    .frame(maxWidth: 520)
+
+                Text("当前有效 \(ATMVoiceTextCleanup.parseReplacements(voiceDictionary).count) 条")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+        }
+    }
+
+    /// Three permissions, three different failure modes. Listed together because
+    /// "dictation did nothing" is otherwise indistinguishable between them — and
+    /// because ATM is signed ad hoc, so 辅助功能 genuinely does lapse after a rebuild.
+    private var voicePermissionSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("权限")
+                    .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                Text("辅助功能是用来模拟一次 ⌘V 的。没有它语音输入仍然可用，只是文字停在剪贴板上，要自己按 ⌘V。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            // Above the three rows, because in this mode none of them can be acted on:
+            // 打开设置 leads to a list that will not contain this process.
+            if !ATMAppBundle.isBundled {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(ATMTheme.warning)
+                        .font(.system(size: 12))
+                    Text("当前不是以 .app 运行（`swift run` 的裸可执行文件），系统弹不出授权框，语音输入用不了。改用 `Scripts/run-dev-app.sh`，下面这几行状态在那之后才有意义。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ATMTheme.warningFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+
+            voicePermissionRow(
+                title: "麦克风",
+                detail: "录音的前提。",
+                status: voicePermissions.microphone,
+                pane: .microphone
+            )
+            voicePermissionRow(
+                title: "语音识别",
+                detail: "只有 Apple Speech 需要；SenseVoice 不用。",
+                status: voicePermissions.speechRecognition,
+                pane: .speechRecognition
+            )
+            voicePermissionRow(
+                title: "辅助功能",
+                detail: "自动粘贴到当前应用。",
+                status: voicePermissions.accessibility,
+                pane: .accessibility
+            )
+
+            HStack(spacing: 10) {
+                Button("重新检查") { voicePermissions = ATMVoicePermissionSnapshot.current() }
+                if voicePermissions.accessibility != .granted {
+                    Button("请求辅助功能权限") {
+                        ATMTextInjector.requestAccessibilityPermission()
+                    }
+                }
+            }
+            .font(ATMFont.footnote)
+        }
+    }
+
+    private func voicePermissionRow(
+        title: String,
+        detail: String,
+        status: ATMVoicePermissions.Status,
+        pane: ATMVoicePermissions.Pane
+    ) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: status == .granted ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(status == .granted ? ATMTheme.success : ATMTheme.warning)
+                .font(.system(size: 13))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(ATMFont.font(.body, weight: .medium))
+                Text(detail)
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(statusLabel(status))
+                .font(ATMFont.caption)
+                .foregroundStyle(status == .granted ? ATMTheme.success : ATMTheme.warning)
+
+            if status != .granted {
+                Button("打开设置") { ATMVoicePermissions.openSystemSettings(pane) }
+                    .buttonStyle(.link)
+                    .font(ATMFont.footnote)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func statusLabel(_ status: ATMVoicePermissions.Status) -> String {
+        switch status {
+        case .granted: return "已授权"
+        case .denied: return "已拒绝"
+        case .notDetermined: return "未询问"
+        }
+    }
+
+    /// The last transcript, kept for copying. The reason it exists: when the paste
+    /// fails, this is the only remaining copy of what was said.
+    private var voiceLastTranscriptSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("上一次转写")
+                    .font(ATMFont.font(.body, weight: .semibold))
+                Spacer(minLength: 8)
+                Button("复制") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(voiceInput.lastTranscript, forType: .string)
+                }
+                .font(ATMFont.footnote)
+            }
+            Text(voiceInput.lastTranscript)
+                .font(ATMFont.body)
+                .foregroundStyle(ATMTheme.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var voiceHotKeyBinding: Binding<ATMHotKey> {
+        Binding(
+            get: { ATMHotKey(storageValue: voiceHotKeyValue) ?? ATMVoiceInputPreferences.defaultHotKey },
+            set: { voiceHotKeyValue = $0.storageValue }
         )
     }
 

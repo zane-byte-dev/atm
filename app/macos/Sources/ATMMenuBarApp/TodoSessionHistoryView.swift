@@ -20,10 +20,14 @@ struct TodoSessionHistoryView: View {
                 }
                 .font(ATMFont.footnote)
                 .foregroundStyle(ATMTheme.secondary)
+                // Lines the status text up with the rows it will be replaced by,
+                // which carry the row surface's own horizontal padding.
+                .padding(.horizontal, 10)
             } else if sessions.isEmpty {
                 Text("暂无显式绑定的 Agent Session。")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
+                    .padding(.horizontal, 10)
             } else {
                 ForEach(sessions) { session in
                     sessionRow(session)
@@ -52,24 +56,37 @@ struct TodoSessionHistoryView: View {
         }
     }
 
-    /// The whole row opens the transcript: what a bound session was is only
-    /// knowable from what was said in it, and the row itself has room for the
-    /// topic plus the numbers, not the conversation.
+    /// Reading a transcript is an action the row offers, not what the row *is*.
+    /// Clicking anywhere used to open it, which made every attempt to select the
+    /// session id or reach the launch button a coin flip — and it left the hover
+    /// surface wrapped around the summary alone, stopping short of the button
+    /// sitting in the same row.
     private func sessionRow(_ session: ATMBoundSession) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Button {
-                openedSession = session
-            } label: {
-                sessionSummary(session)
-                    .atmRowSurface(isSelected: false)
-            }
-            .buttonStyle(.plain)
-            .help("查看完整对话")
+            sessionSummary(session)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            sessionActions(session)
+                .padding(.top, 1)
+        }
+        .atmRowSurface(isSelected: false)
+    }
 
-            let route = ATMAgentSessionLaunchRoute.resolve(
-                for: session,
-                live: store.snapshot.liveStatus.sessions
-            )
+    private func sessionActions(_ session: ATMBoundSession) -> some View {
+        let route = ATMAgentSessionLaunchRoute.resolve(
+            for: session,
+            live: store.snapshot.liveStatus.sessions
+        )
+        return HStack(spacing: 2) {
+            ATMIconButton(
+                systemImage: "text.bubble",
+                // Nothing was ever indexed for the session, so there is no
+                // transcript to open — the row already says so.
+                help: session.indexed ? "查看完整对话" : "该会话未索引，没有可展示的对话",
+                chrome: .bare,
+                isEnabled: session.indexed
+            ) {
+                openedSession = session
+            }
             if route.isAvailable {
                 ATMIconButton(
                     systemImage: "arrow.up.forward.app",
@@ -78,7 +95,6 @@ struct TodoSessionHistoryView: View {
                 ) {
                     open(route)
                 }
-                .padding(.top, 4)
             }
         }
     }

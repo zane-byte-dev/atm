@@ -2791,6 +2791,47 @@ final class ModelsTests: XCTestCase {
         XCTAssertFalse(ATMComposerPlaceholderPolicy.shouldShow(stringIsEmpty: false, hasMarkedText: true))
     }
 
+    func testComposerSingleLineFoldsPastedNewlines() {
+        // Nothing to fold: the common case must come back untouched, including the
+        // spaces the user typed themselves.
+        XCTAssertEqual(ATMComposerText.singleLine("标题栏的编辑框只有一行"), "标题栏的编辑框只有一行")
+        XCTAssertEqual(ATMComposerText.singleLine(""), "")
+        // Pasting a paragraph into a title lands as one line.
+        XCTAssertEqual(ATMComposerText.singleLine("第一行\n第二行"), "第一行 第二行")
+        XCTAssertEqual(ATMComposerText.singleLine("a\r\nb"), "a b")
+        // A blank line is one separator, not a run of spaces.
+        XCTAssertEqual(ATMComposerText.singleLine("a\n\n\nb"), "a b")
+        // Leading and trailing breaks leave no stray space behind.
+        XCTAssertEqual(ATMComposerText.singleLine("\nabc\n"), "abc")
+        XCTAssertEqual(ATMComposerText.singleLine("\n\n"), "")
+    }
+
+    func testGrowingComposerHeightClampsBetweenMinAndMaxLines() {
+        let line: CGFloat = 16
+        let inset: CGFloat = 6
+        func height(_ content: CGFloat, minLines: Int = 1, maxLines: Int = 6) -> CGFloat {
+            ATMComposerHeight.clamped(
+                contentHeight: content,
+                lineHeight: line,
+                minLines: minLines,
+                maxLines: maxLines,
+                verticalInset: inset
+            )
+        }
+        // Empty (nothing measured yet) still reserves one line plus the insets.
+        XCTAssertEqual(height(0), line + inset * 2)
+        // Three wrapped lines: the box grows to fit them.
+        XCTAssertEqual(height(line * 3), line * 3 + inset * 2)
+        // Past the cap it stops growing and scrolls instead.
+        XCTAssertEqual(height(line * 20), line * 6 + inset * 2)
+        // A two-line floor never collapses to one.
+        XCTAssertEqual(height(0, minLines: 2), line * 2 + inset * 2)
+        // A max below the min is the min, not an inverted range.
+        XCTAssertEqual(height(line * 20, minLines: 3, maxLines: 1), line * 3 + inset * 2)
+        // Fractional layout heights round up rather than clipping the last line.
+        XCTAssertEqual(height(line * 2 + 0.4), (line * 2 + 0.4 + inset * 2).rounded(.up))
+    }
+
     func testIconButtonChromeHoverFill() {
         XCTAssertEqual(
             ATMIconButtonChrome.background(isHovered: false, isEnabled: true, chrome: .chip),

@@ -143,7 +143,7 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
     // UNUserNotificationCenter 要求进程是正规 .app bundle；
     // swift run / 裸可执行文件没有 bundle，访问会抛 NSInternalInconsistencyException。
     // 此时降级为 nil，所有通知操作变为 no-op，方便本地开发调试。
-    private let center: UNUserNotificationCenter? = Bundle.main.bundleURL.pathExtension == "app"
+    private let center: UNUserNotificationCenter? = ATMAppBundle.isBundled
         ? UNUserNotificationCenter.current()
         : nil
     private var onOpenATM: (() -> Void)?
