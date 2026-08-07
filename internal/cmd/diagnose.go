@@ -220,6 +220,7 @@ func buildDiagnoseReport() (diagnoseBundleReport, error) {
 			"session text, todo/memory/knowledge content and credentials are never collected",
 			"directories are reported by entry count and size only, never by file name",
 			fmt.Sprintf("logs are the last %d lines and record failures only, never command arguments", diagnoseLogTailLines),
+			`quoted values inside logged error messages are replaced with "…", because that is how an error embeds a title, a path or any other argument`,
 		},
 	}
 

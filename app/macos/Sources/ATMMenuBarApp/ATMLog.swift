@@ -57,10 +57,53 @@ enum ATMLog {
     private static let maxBytes = 5 << 20
     private static let queue = DispatchQueue(label: "com.atm.log")
 
-    /// Records a failure. `fields` must hold identifiers, counts and statuses —
-    /// never user content.
+    /// Records a failure. The error text is recorded with its quoted values
+    /// removed — see `redactingQuoted`. `fields` must hold identifiers, counts and
+    /// statuses — never user content.
     static func failure(_ event: String, error: String? = nil, fields: [String: String] = [:]) {
-        write(level: "error", event: event, error: error, fields: fields)
+        write(level: "error", event: event, error: error.map(redactingQuoted), fields: fields)
+    }
+
+    /// Replaces the inside of every double-quoted span with an ellipsis, matching
+    /// `logging.RedactQuoted` on the Go side.
+    ///
+    /// The App's error strings are mostly its own, but not all of them: the text
+    /// it logs for a failed refresh is whatever the CLI printed, and a CLI error
+    /// quotes titles and paths (`item "…": ...`). Since the two write to the same
+    /// directory and `atm diagnose --bundle` collects both, the rule has to hold
+    /// on both sides or the bundle's promise is only half true.
+    ///
+    /// Bytes rather than characters: quotes and backslashes are ASCII, and a
+    /// multi-byte value between them is dropped whole either way.
+    static func redactingQuoted(_ message: String) -> String {
+        guard message.contains("\"") else { return message }
+        var out = ""
+        out.reserveCapacity(message.count)
+        var index = message.startIndex
+        while index < message.endIndex {
+            guard message[index] == "\"" else {
+                out.append(message[index])
+                index = message.index(after: index)
+                continue
+            }
+            // Scan for the closing quote, stepping over backslash escapes so a
+            // value containing a quote does not end the span early.
+            var end = message.index(after: index)
+            while end < message.endIndex, message[end] != "\"" {
+                if message[end] == "\\" {
+                    end = message.index(end, offsetBy: 2, limitedBy: message.endIndex) ?? message.endIndex
+                    continue
+                }
+                end = message.index(after: end)
+            }
+            if end >= message.endIndex {
+                // Unterminated: the rest is treated as the value and dropped.
+                return out + "\"…\""
+            }
+            out += end == message.index(after: index) ? "\"\"" : "\"…\""
+            index = message.index(after: end)
+        }
+        return out
     }
 
     /// Records a process boundary. The only non-failure entries.

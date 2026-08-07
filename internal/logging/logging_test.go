@@ -176,3 +176,57 @@ func TestEveryLineIsIndependentlyParseable(t *testing.T) {
 		}
 	}
 }
+
+// The leak this closes: `atm todo add --batch` wraps its failures as
+// `item %q: ...`, root.Execute logs that error verbatim, and `atm diagnose
+// --bundle` embeds the log into a file the user attaches to a bug report. The
+// title never chose to be there.
+func TestFailureKeepsQuotedContentOutOfTheLog(t *testing.T) {
+	withTempDataDir(t)
+	title := "把 ACL 密钥换成 sifei 给的那把"
+	Failure("command_failed", "atm todo add",
+		fmt.Errorf("item %q: waiting todos require wake or review_at", title), nil)
+
+	entries := readEntries(t)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if strings.Contains(entries[0].Error, title) {
+		t.Fatalf("the todo title reached the log: %q", entries[0].Error)
+	}
+	// The sentence still has to say what went wrong, or redaction has traded one
+	// unusable log for another.
+	if !strings.Contains(entries[0].Error, "waiting todos require wake or review_at") {
+		t.Fatalf("redaction ate the diagnosis: %q", entries[0].Error)
+	}
+}
+
+func TestRedactQuoted(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"nothing quoted is left alone", "database is locked", "database is locked"},
+		{"a quoted value goes", `item "secret": bad`, `item "…": bad`},
+		{"every span goes", `"a" and "b"`, `"…" and "…"`},
+		{
+			// %q escapes an embedded quote, so the span does not end at it.
+			"an escaped quote does not end the span",
+			`item "he said \"hi\" loudly": bad`,
+			`item "…": bad`,
+		},
+		{"an empty value is not content", `project "": missing`, `project "": missing`},
+		{
+			// Truncated by a log cap, or by an error that quotes badly. Dropping
+			// the tail is the safe reading.
+			"an unterminated quote redacts to the end",
+			`item "half a tit`,
+			`item "…"`,
+		},
+		{"a quote as the last byte", `item "`, `item "…"`},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := RedactQuoted(testCase.in); got != testCase.want {
+				t.Errorf("RedactQuoted(%q) = %q, want %q", testCase.in, got, testCase.want)
+			}
+		})
+	}
+}

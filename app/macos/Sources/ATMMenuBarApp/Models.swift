@@ -699,6 +699,11 @@ struct ATMTodoProgressEntry: Identifiable, Hashable {
     let isDoneMarker: Bool
     let kind: ATMTodoActivityKind
 
+    /// Written by `collectionSupplementMarker` in internal/collector/service.go.
+    /// Kept as one constant on this side too so the pairing is visible from
+    /// either file — see displayText.
+    static let collectionSupplementMarker = "钉钉采集"
+
     var nextAction: String? {
         guard let marker = text.range(of: "下一步：") else { return nil }
         let suffix = text[marker.upperBound...]
@@ -772,11 +777,16 @@ struct ATMTodoProgressEntry: Identifiable, Hashable {
     /// supplement. Keep that audit data in collection history, but present only
     /// the extracted action in the task timeline. New entries carry the same
     /// idempotency marker in an HTML comment and take this path as well.
+    ///
+    /// The literal is `collectionSupplementMarker` in
+    /// internal/collector/service.go, which is what writes it. Change one side and
+    /// the marker stops being stripped here — it does not vary with the connector
+    /// for exactly that reason.
     private static func displayText(for body: String, kind: ATMTodoActivityKind) -> String {
         guard kind == .supplement else { return body }
         var text = body
-        let visibleMarkerPrefix = "[钉钉采集:"
-        let hiddenMarkerPrefix = "<!-- [钉钉采集:"
+        let visibleMarkerPrefix = "[\(collectionSupplementMarker):"
+        let hiddenMarkerPrefix = "<!-- [\(collectionSupplementMarker):"
         let isCollected = text.hasPrefix(visibleMarkerPrefix) || text.contains(hiddenMarkerPrefix)
         guard isCollected else { return body }
 

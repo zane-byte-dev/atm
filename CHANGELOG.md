@@ -78,9 +78,12 @@ a database from a much older version. `atm backup` exists for exactly that case.
 - **Failures are written to disk** at `~/.atm/logs` (`cli.log`, `app.log`), one
   JSON object per line, capped at 5 MB with one rotation kept. Only failures and
   process boundaries are recorded — never content, and never command arguments,
-  since `atm todo add "<title>"` carries exactly what must not be logged. The
-  App records whether the previous run exited cleanly, which is the only way a
-  crash is visible at all.
+  since `atm todo add "<title>"` carries exactly what must not be logged. Quoted
+  values inside a logged error message are replaced with `"…"` for the same
+  reason: an error wrapped as `item "<title>": …` is how an argument travels up
+  from the layer that failed, so the rule is enforced where the line is written
+  rather than trusted to every call site. The App records whether the previous
+  run exited cleanly, which is the only way a crash is visible at all.
 - **`atm doctor` reports extraction, not just discovery.** Indexed sessions with
   no messages behind them, or an agent with no token accounting where its parser
   claims to provide it, are now surfaced as warnings pointing at a likely

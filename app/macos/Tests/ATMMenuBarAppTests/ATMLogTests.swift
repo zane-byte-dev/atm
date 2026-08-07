@@ -139,4 +139,46 @@ final class ATMLogTests: XCTestCase {
             "a marker without a log is not a crash"
         )
     }
+
+    /// The App logs whatever the CLI printed for a failed refresh, and a CLI error
+    /// quotes titles and paths. `atm diagnose --bundle` collects app.log next to
+    /// cli.log, so this side has to hold the same line the Go side does.
+    func testFailureKeepsQuotedContentOutOfTheLog() throws {
+        ATMLog.failure(
+            "dashboard_refresh_failed",
+            error: "item \"把 ACL 密钥换成 sifei 给的那把\": waiting todos require wake"
+        )
+
+        let lines = loggedLines()
+        XCTAssertEqual(lines.count, 1, "expected exactly one line, got \(lines)")
+        let record = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as? [String: Any]
+        )
+        let logged = try XCTUnwrap(record["error"] as? String)
+        XCTAssertFalse(logged.contains("ACL"), "the quoted value reached the log: \(logged)")
+        XCTAssertTrue(
+            logged.contains("waiting todos require wake"),
+            "redaction ate the diagnosis: \(logged)"
+        )
+    }
+
+    /// Same table as TestRedactQuoted on the Go side: the two logs are read
+    /// together, so they must not disagree about what a redacted line looks like.
+    func testRedactingQuotedMatchesTheCLIRule() {
+        let cases: [(String, String)] = [
+            ("database is locked", "database is locked"),
+            ("item \"secret\": bad", "item \"…\": bad"),
+            ("\"a\" and \"b\"", "\"…\" and \"…\""),
+            ("item \"he said \\\"hi\\\" loudly\": bad", "item \"…\": bad"),
+            ("project \"\": missing", "project \"\": missing"),
+            ("item \"half a tit", "item \"…\""),
+            ("item \"", "item \"…\""),
+        ]
+        for (input, want) in cases {
+            XCTAssertEqual(
+                ATMLog.redactingQuoted(input), want,
+                "redactingQuoted(\(input))"
+            )
+        }
+    }
 }

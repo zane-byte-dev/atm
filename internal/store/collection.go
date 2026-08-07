@@ -354,6 +354,13 @@ func DeleteCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
 // Same contract as one record at a time (see DeleteCollectionItem): the Todos
 // stay, and the released messages let the next run rebuild anything still inside
 // its re-read window.
+//
+// A repeated id is deleted once, and appears once in the result. Naming a record
+// twice asks for the same end state as naming it once; without this the second
+// pass would find the row it just deleted missing and fail the whole batch as
+// "not found". `atm collect item delete` already uniques its arguments, so this
+// is what keeps that from being the only thing standing between a duplicated id
+// and a group that refuses to clear for no visible reason.
 func DeleteCollectionItems(db *sql.DB, ids []string) ([]CollectionItem, error) {
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("no collection item given")
@@ -364,7 +371,12 @@ func DeleteCollectionItems(db *sql.DB, ids []string) ([]CollectionItem, error) {
 	}
 	defer tx.Rollback()
 	deleted := make([]CollectionItem, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
 	for _, id := range ids {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
 		item, err := scanCollectionItem(tx.QueryRow(collectionItemSelect+` WHERE i.id=?`, id))
 		if err == sql.ErrNoRows {
 			return nil, fmt.Errorf("collection item not found: %s", id)

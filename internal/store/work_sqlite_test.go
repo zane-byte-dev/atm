@@ -785,3 +785,62 @@ func TestMigrateV30ToV31RelaxesSourceKindsAndKeepsCheckpoints(t *testing.T) {
 		t.Fatalf("checkpoint cascade was not restored: checkpoint=%+v err=%v", deletedCheckpoint, err)
 	}
 }
+
+// TestMigrateV34ToV35DropsLaneAndFeaturePath is the only test that reaches the
+// DROP COLUMN itself. Every other migration test starts from the fresh schema,
+// where these two columns no longer exist, so migrateV34ToV35 finds nothing to
+// drop and skips — the statement would first run for real against a live
+// database, which is the one place it cannot be taken back.
+func TestMigrateV34ToV35DropsLaneAndFeaturePath(t *testing.T) {
+	db := openTempDB(t)
+	// Simulate v34: put the two columns back and fill them the way v34 did.
+	statements := []string{
+		`ALTER TABLE todos ADD COLUMN lane TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE todos ADD COLUMN feature_path TEXT`,
+		`INSERT INTO todos (id,position,title,priority,status,created,lane,feature_path)
+			VALUES ('t1',0,'Filed while lanes existed','P1','open','2026-07-01','work','app/macos')`,
+		`UPDATE schema_version SET version = 34`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("simulate v34 (%s): %v", statement, err)
+		}
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate v34→v35: %v", err)
+	}
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion {
+		t.Fatalf("version = %d, want %d", version, SchemaVersion)
+	}
+	var remaining int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('todos')
+		WHERE name IN ('lane','feature_path')`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("%d of the dropped columns are still on todos", remaining)
+	}
+	// Dropping a column must not cost the row it was on: the lane label goes, the
+	// todo it labelled stays.
+	var title string
+	if err := db.QueryRow(`SELECT title FROM todos WHERE id='t1'`).Scan(&title); err != nil {
+		t.Fatalf("todo did not survive the migration: %v", err)
+	}
+	if title != "Filed while lanes existed" {
+		t.Fatalf("title = %q", title)
+	}
+	// The rest of the row has to survive too, and a Todo is read through the
+	// loader rather than the raw column list.
+	todos, err := LoadTodosReadOnly()
+	if err != nil {
+		t.Fatalf("load todos after migration: %v", err)
+	}
+	if todo := FindTodo(todos, "t1"); todo == nil || todo.Status != TodoStatusOpen {
+		t.Fatalf("migrated todo = %+v", todo)
+	}
+}

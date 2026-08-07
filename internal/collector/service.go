@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/store"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
@@ -700,7 +701,8 @@ func (service Service) Revert(itemID string) (store.CollectionItem, error) {
 		if todo == nil {
 			return item, store.TodoNotFoundError(todos, item.TodoID)
 		}
-		marker := "[撤销钉钉采集:" + shortFingerprint(item.Fingerprint) + "] 此前自动补充被用户标记为误判；原记录保留供审计。"
+		marker := "[撤销" + collectionSupplementMarker + ":" + shortFingerprint(item.Fingerprint) +
+			"] 此前自动补充被用户标记为误判；原记录保留供审计。"
 		if _, err := store.AppendTodoLog(todo, marker, "补充"); err != nil {
 			return item, err
 		}
@@ -852,7 +854,17 @@ func markItemFailed(db *sql.DB, item *store.CollectionItem, err error) {
 	item.Action, item.Status, item.Error = "failed", "failed", compactError(err)
 	item.Attempts++
 	item.RetryStopped = store.CollectionRetriesExhausted(*item)
-	_ = store.UpdateCollectionItem(db, *item)
+	// The ceiling only holds if this write lands: an attempt that fails to record
+	// itself leaves the count where it was, and the batch goes back to costing a
+	// model call every run — the exact behaviour Attempts exists to stop. Still
+	// not returned, because the caller's job is to report the failure that got us
+	// here, but no longer silent either.
+	if writeErr := store.UpdateCollectionItem(db, *item); writeErr != nil {
+		logging.Failure("collection_item_failure_not_recorded", "", writeErr, map[string]any{
+			"item":     item.ID,
+			"attempts": item.Attempts,
+		})
+	}
 }
 
 func createDecision(batch MessageBatch, decision Decision) (string, error) {
@@ -901,6 +913,19 @@ func createDecision(batch MessageBatch, decision Decision) (string, error) {
 	return created.ID, nil
 }
 
+// collectionSupplementMarker tags a 补充 that collection wrote, so the note can
+// be tied back to the item that wrote it and written again idempotently.
+//
+// Named rather than inlined because it is a contract with a second codebase: the
+// App matches this exact literal to keep the marker out of the task timeline
+// (ATMTodoProgressEntry.displayText in
+// app/macos/Sources/ATMMenuBarApp/Models.swift), and Todo documents on disk
+// already carry it. It says 钉钉 even though nothing here is DingTalk-specific —
+// that is the cost of a literal shared with documents already written, so a
+// second connector's supplements will read 钉钉采集 until both sides learn a new
+// tag and the old one stays understood.
+const collectionSupplementMarker = "钉钉采集"
+
 // appendDecision records what a batch adds to work an existing Todo already
 // tracks, and reports which Todo it wrote to. An empty ID means the append could
 // not be carried out and the caller has to fall back to creating.
@@ -927,12 +952,10 @@ func appendDecision(batch MessageBatch, decision Decision) (string, error) {
 	// compensating note, so an append and its undo read as one thread.
 	//
 	// The fingerprint goes in an HTML comment because the App strips exactly this
-	// shape out of the task timeline (ATMTodoProgressEntry.displayText): the entry
-	// reads as the one sentence the chat added, and the marker stays on disk to tie
-	// it back to the collection item. The literal 钉钉采集 is what that reader
-	// matches on, so it does not vary with the connector.
+	// shape out of the task timeline: the entry reads as the one sentence the chat
+	// added, and the marker stays on disk to tie it back to the collection item.
 	note := strings.TrimSpace(decision.Summary) +
-		"\n\n<!-- [钉钉采集:" + shortFingerprint(batch.Fingerprint) + "] -->"
+		"\n\n<!-- [" + collectionSupplementMarker + ":" + shortFingerprint(batch.Fingerprint) + "] -->"
 	if _, err := store.AppendTodoLog(target, note, "补充"); err != nil {
 		return "", err
 	}

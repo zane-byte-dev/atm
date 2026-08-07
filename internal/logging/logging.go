@@ -18,7 +18,9 @@
 //   - No content, ever. Not session text, not todo/memory/knowledge bodies, not
 //     credentials, not command arguments that could carry any of them. The log is
 //     collected by `atm diagnose --bundle` and attached to public bug reports; it
-//     holds what failed and where, never what the user was working on.
+//     holds what failed and where, never what the user was working on. Call sites
+//     cannot be trusted to hold this line on their own — a wrapped error carries
+//     whatever the layer below quoted into it — so RedactQuoted enforces it here.
 //   - Never fail the caller. A log that cannot be written is a worse outcome than
 //     no log, but it is a far better outcome than a command that refuses to run
 //     because its log directory is read-only.
@@ -29,6 +31,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,14 +74,73 @@ type entry struct {
 // has no error value, which is why the event name carries the meaning rather than
 // the message.
 //
-// Fields must hold identifiers, counts and statuses — never user content. See the
-// package comment.
+// The error message is recorded with its quoted values removed — see
+// RedactQuoted. Fields must hold identifiers, counts and statuses — never user
+// content. See the package comment.
 func Failure(event, command string, err error, fields map[string]any) {
 	message := ""
 	if err != nil {
-		message = err.Error()
+		message = RedactQuoted(err.Error())
 	}
 	write(entry{Level: "error", Event: event, Command: command, Error: message, Fields: fields})
+}
+
+// RedactQuoted replaces the inside of every double-quoted span with an ellipsis.
+//
+// The "no content" rule cannot be kept at the call sites alone. A command's own
+// error text reaches this package wrapped several layers deep — `atm todo add
+// --batch` fails with `item %q: ...`, and that %q is a todo title, which is
+// exactly the content the log must not hold. failedCommandPath already goes out
+// of its way to log the subcommand without its arguments; a wrapped error puts
+// them back.
+//
+// Quoting is the rule because %q is how Go errors embed a caller-supplied string,
+// so this catches the shape rather than the individual message — including the
+// ones nobody has written yet. It costs real diagnostic detail: `invalid todo
+// status "..."` no longer says which status. That value already went to stderr
+// for whoever ran the command; the log's job is what failed and where, and it is
+// read by people the user forwarded a support bundle to.
+//
+// Exported so the App can apply the same rule to the CLI error text it forwards
+// into app.log.
+func RedactQuoted(message string) string {
+	if !strings.Contains(message, `"`) {
+		return message
+	}
+	var out strings.Builder
+	out.Grow(len(message))
+	for i := 0; i < len(message); i++ {
+		if message[i] != '"' {
+			out.WriteByte(message[i])
+			continue
+		}
+		// Scan for the closing quote, stepping over the backslash escapes %q
+		// writes so that a value containing a quote does not end the span early.
+		end := i + 1
+		for end < len(message) && message[end] != '"' {
+			if message[end] == '\\' {
+				end += 2
+				continue
+			}
+			end++
+		}
+		if end >= len(message) {
+			// Unterminated. Everything after the opening quote is dropped rather
+			// than kept: there is no way to tell where the value would have ended,
+			// so it is all treated as the value. Checked before the empty case
+			// below, which needs a closing quote to be sure it saw one.
+			out.WriteString(`"…"`)
+			return out.String()
+		}
+		if end == i+1 {
+			// An empty value is not content, and blanking it would invent one.
+			out.WriteString(`""`)
+		} else {
+			out.WriteString(`"…"`)
+		}
+		i = end
+	}
+	return out.String()
 }
 
 // Lifecycle records a process boundary. These are the only non-failure lines, and

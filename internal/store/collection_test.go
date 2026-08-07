@@ -215,6 +215,64 @@ func TestDeleteCollectionItemKeepsItsTodoAndReleasesItsMessages(t *testing.T) {
 	}
 }
 
+// A duplicated id asks for the same end state as naming it once. Failing the
+// batch instead would make a group refuse to clear with nothing wrong with it.
+func TestDeleteCollectionItemsIgnoresARepeatedID(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-dup",
+		Name: "研发群", Priority: "P1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	first, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-dup", Fingerprint: "one", MessageIDs: []string{"m1"},
+		Action: "ignore", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put first item: %v", err)
+	}
+	second, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-dup", Fingerprint: "two", MessageIDs: []string{"m2"},
+		Action: "ignore", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put second item: %v", err)
+	}
+
+	deleted, err := DeleteCollectionItems(db, []string{first.ID, second.ID, first.ID})
+	if err != nil {
+		t.Fatalf("a repeated id failed the batch: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("deleted %d records, want the 2 distinct ones: %+v", len(deleted), deleted)
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		if _, err := GetCollectionItem(db, id); err == nil {
+			t.Fatalf("record %s survived the batch", id)
+		}
+	}
+	// An id that was never there is still a stale snapshot, and still stops
+	// everything: the dedup must not have turned "missing" into "fine".
+	third, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-dup", Fingerprint: "three", MessageIDs: []string{"m3"},
+		Action: "ignore", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put third item: %v", err)
+	}
+	if _, err := DeleteCollectionItems(db, []string{third.ID, "ci-gone"}); err == nil {
+		t.Fatal("an unknown id in the batch reported success")
+	}
+	if _, err := GetCollectionItem(db, third.ID); err != nil {
+		t.Fatalf("a failed batch still deleted a record: %v", err)
+	}
+}
+
 func TestCollectionSourceValidation(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()
