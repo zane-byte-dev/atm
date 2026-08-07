@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,4 +130,64 @@ func TestReadSchemaVersionAtMissingDatabase(t *testing.T) {
 	if _, err := ReadSchemaVersionAt(config.AtmDB); err != ErrDatabaseMissing {
 		t.Fatalf("err = %v, want ErrDatabaseMissing", err)
 	}
+}
+
+// Version 0 is a claim — it goes into the backup manifest a restore checks, and
+// diagnose prints it instead of the error field it keeps for this case — so only
+// the two states that really mean "no version recorded" may report it. A file
+// that is not a database has to come back as an error.
+func TestReadSchemaVersionAtSeparatesNoVersionFromUnreadable(t *testing.T) {
+	dir := t.TempDir()
+	oldDB := config.AtmDB
+	t.Cleanup(func() { config.AtmDB = oldDB })
+
+	// Not a database at all: the catalogue read fails.
+	corrupt := filepath.Join(dir, "corrupt.db")
+	if err := os.WriteFile(corrupt, []byte("this is not a sqlite file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if version, err := ReadSchemaVersionAt(corrupt); err == nil {
+		t.Fatalf("a corrupt file reported version %d with no error", version)
+	}
+
+	// A real database with no schema_version table: someone else's, and 0 is the
+	// honest answer.
+	foreign := filepath.Join(dir, "foreign.db")
+	db, err := openNoMigrate2(t, foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE notes (id INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if version, err := ReadSchemaVersionAt(foreign); err != nil || version != 0 {
+		t.Fatalf("foreign database = %d, %v; want 0, nil", version, err)
+	}
+
+	// The table exists but holds nothing: a database caught mid-creation.
+	empty := filepath.Join(dir, "empty-version.db")
+	db, err = openNoMigrate2(t, empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE schema_version (version INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if version, err := ReadSchemaVersionAt(empty); err != nil || version != 0 {
+		t.Fatalf("versionless table = %d, %v; want 0, nil", version, err)
+	}
+}
+
+// openNoMigrate2 creates the file first, because openNoMigrate refuses a path
+// that does not exist yet and this test needs to build databases by hand.
+func openNoMigrate2(t *testing.T, path string) (*sql.DB, error) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	file.Close()
+	return openNoMigrate(path, false)
 }

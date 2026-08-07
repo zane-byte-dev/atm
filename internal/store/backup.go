@@ -48,15 +48,37 @@ func RebuildableTables() []string {
 // A file with no schema_version table reports 0 rather than an error: that is
 // what a database created by some other tool, or an empty file, looks like, and
 // the caller decides whether that is fatal.
+//
+// "No such table" is asked of the catalogue rather than inferred from a failed
+// read of the table itself. Treating every read error as version 0 would fold a
+// corrupt file, an unreadable one and a locked one into the same answer as a
+// foreign database — and 0 is a claim, not a shrug: `atm backup` writes it into
+// the manifest a restore checks, and `atm diagnose` prints it in place of the
+// error field it keeps for exactly this.
 func ReadSchemaVersionAt(dbPath string) (int, error) {
 	db, err := openNoMigrate(dbPath, true)
 	if err != nil {
 		return 0, err
 	}
 	defer db.Close()
+	var name string
+	switch err := db.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'`,
+	).Scan(&name); {
+	case err == sql.ErrNoRows:
+		return 0, nil
+	case err != nil:
+		// The catalogue itself did not read: not a database, truncated, or locked.
+		return 0, err
+	}
 	var version int
 	if err := db.QueryRow(`SELECT version FROM schema_version LIMIT 1`).Scan(&version); err != nil {
-		return 0, nil
+		if err == sql.ErrNoRows {
+			// The table exists with nothing in it, which is a database caught
+			// mid-creation. Same answer as no table at all: no version recorded.
+			return 0, nil
+		}
+		return 0, err
 	}
 	return version, nil
 }
