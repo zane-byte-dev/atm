@@ -15,7 +15,7 @@ final class StatusBarController {
 
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        panel = FloatingPanel(size: NSSize(width: 340, height: 400))
+        panel = FloatingPanel(size: NSSize(width: 360, height: 420))
         configureStatusItem()
         bindAppearance()
         configurePanel()
@@ -39,9 +39,12 @@ final class StatusBarController {
         if ProcessInfo.processInfo.environment["ATM_OPEN_PANEL"] == "1" {
             DispatchQueue.main.async { [weak self] in self?.openPanel() }
         }
+        ATMGlobalHotKeyManager.shared.onTrigger = { [weak self] in self?.handleGlobalHotKey() }
+        ATMGlobalHotKeyManager.shared.start()
     }
 
     func stop() {
+        ATMGlobalHotKeyManager.shared.stop()
         agentNotchController?.stop()
         store.stop()
         stopOutsideClickMonitor()
@@ -174,11 +177,45 @@ final class StatusBarController {
     @objc private func statusItemClicked() {
         if NSApp.currentEvent?.type == .rightMouseUp {
             showContextMenu()
-        } else if panel.isVisible {
+        } else {
+            toggleQuickPanel()
+        }
+    }
+
+    /// The global shortcut and the status item share one gesture: press once to
+    /// glance, press again to get out of the way. A shortcut that only ever
+    /// opened would leave the panel stranded over whatever the person went back
+    /// to, since the panel closes on an outside *click*, not on a keystroke.
+    private func toggleQuickPanel() {
+        if panel.isVisible {
             closePanel()
         } else {
             openPanel()
         }
+    }
+
+    private func handleGlobalHotKey() {
+        switch ATMGlobalHotKeyPreferences.target {
+        case .desktop:
+            toggleDesktop()
+        case .quickPanel:
+            toggleQuickPanel()
+        }
+    }
+
+    /// Press again to put ATM away, the same way the quick panel behaves. Hiding
+    /// only applies while ATM is the app in front and this window is the one being
+    /// looked at: from another app the same keystroke has to raise the window, or
+    /// the shortcut would silently hide a window nobody could see.
+    ///
+    /// Keeps whichever section was last open — the shortcut is "come back to what
+    /// I was doing", while the menu's 打开 ATM 主窗口 keeps the 任务 default.
+    private func toggleDesktop() {
+        if let window = desktopWindow, window.isVisible, NSApp.isActive, window.isKeyWindow {
+            window.orderOut(nil)
+            return
+        }
+        openDesktop(section: desktopNavigation.section)
     }
 
     private func openPanel() {
@@ -211,6 +248,13 @@ final class StatusBarController {
     /// Right-click is the only add-task entry that works without first pulling
     /// the quick panel open.
     @objc func addTodoFromMenu() { openDesktop(showAddTodo: true) }
+    /// ⌘N，来自主菜单，所以在主窗口的任何页签和快速面板上都成立。停在哪个页签就在那儿
+    /// 弹卡：卡片本来就覆盖整个窗口，先把人拽到「任务」再弹，等于顺手换掉了他正在看的
+    /// 东西——提交后才会跳到新建的任务上。面板上按的话先把面板收起来，输入卡在主窗口。
+    @objc func addTodoFromShortcut() {
+        closePanel()
+        openDesktop(showAddTodo: true, section: desktopNavigation.section)
+    }
     @objc func openQuickPanelFromMenu() { openPanel() }
     @objc func syncFromMenu() { store.refresh(sync: true) }
     @objc func quitFromMenu() { NSApp.terminate(nil) }

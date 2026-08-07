@@ -210,6 +210,9 @@ func printQuotaProviderCards(cardsByAgent map[string][]quotaProviderCard,
 				title += " · " + card.Period
 			}
 			fmt.Printf("  %s\n", title)
+			if card.Unavailable {
+				fmt.Printf("  %s\n", quotaProviderUnavailableText(card))
+			}
 			for _, metric := range card.Metrics {
 				unit := metric.Unit
 				if metric.Currency != "" {
@@ -220,17 +223,33 @@ func printQuotaProviderCards(cardsByAgent map[string][]quotaProviderCard,
 					metric.Precision, metric.Limit, unit, metric.UsedPercent)
 			}
 			if card.ObservedAt != "" || card.Source != "" {
-				fmt.Printf("  Observed: %s", card.ObservedAt)
+				observed := "Observed"
+				if card.Unavailable {
+					observed = "Last observed"
+				}
+				fmt.Printf("  %s: %s", observed, card.ObservedAt)
 				if card.Source != "" {
 					fmt.Printf("  Source: %s", card.Source)
 				}
 				fmt.Println()
+			}
+			if card.URL != "" {
+				fmt.Printf("  Page: %s\n", card.URL)
 			}
 			fmt.Println()
 			printed = true
 		}
 	}
 	return printed
+}
+
+// A placeholder card still has to say why it is empty: a provider that failed
+// and a provider with nothing to report look identical once the numbers are gone.
+func quotaProviderUnavailableText(card quotaProviderCard) string {
+	if card.UnavailableReason == quotaProviderReasonError {
+		return "no data (provider failed)"
+	}
+	return "no data (provider reported nothing)"
 }
 
 func loadAndReportQuotaProviders(ctx context.Context, stderr io.Writer) map[string][]quotaProviderCard {

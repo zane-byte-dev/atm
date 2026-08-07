@@ -38,11 +38,26 @@ enum ATMCommandPolicy {
 private struct ATMCommandOutcome<Value> {
     let value: Value?
     let error: String?
+    /// Set when the failure was a CLI/App contract skew rather than a bad
+    /// payload. Carried as a type, not folded into `error`, because the caller has
+    /// to present it differently: nothing refreshed, and the fix is an upgrade.
+    let schemaMismatch: ATMDashboardSchemaMismatch?
+
+    init(value: Value?, error: String?, schemaMismatch: ATMDashboardSchemaMismatch? = nil) {
+        self.value = value
+        self.error = error
+        self.schemaMismatch = schemaMismatch
+    }
 }
 
 /// Shape of `atm config get <key> --json` for boolean settings.
 private struct ATMConfigBoolValue: Decodable {
     let value: Bool
+}
+
+/// Shape of `atm config get <key> --json` for string settings.
+private struct ATMConfigStringValue: Decodable {
+    let value: String
 }
 
 private func decodeCommand<Value: Decodable>(
@@ -55,6 +70,10 @@ private func decodeCommand<Value: Decodable>(
         return ATMCommandOutcome(value: try JSONDecoder().decode(type, from: data), error: nil)
     } catch is CancellationError {
         return ATMCommandOutcome(value: nil, error: nil)
+    } catch let mismatch as ATMDashboardSchemaMismatch {
+        // Not truncated: the whole point of this message is the instruction at the
+        // end of it.
+        return ATMCommandOutcome(value: nil, error: mismatch.summary, schemaMismatch: mismatch)
     } catch {
         return ATMCommandOutcome(
             value: nil,
@@ -439,6 +458,11 @@ enum ATMTodoAction: Equatable {
     case start
     case complete
     case drop
+    /// Recoverable removal from the working set.
+    case trash
+    /// Bring a recoverably removed todo back with its lifecycle state intact.
+    case restore
+    /// Irreversible removal, exposed only from the trash.
     case delete
     /// Park for later: `todo wait --wake 暂不处理`.
     case deferLater
@@ -466,8 +490,14 @@ struct ATMTodoLifecycleItem: Equatable, Identifiable {
     var id: String { "\(title)-\(systemImage)" }
 }
 
-/// Status-scoped lifecycle actions. Utility items (edit, copy prompt, delete)
-/// stay available everywhere; these only cover work-state transitions.
+/// Lifecycle actions. Utility items (edit, copy prompt, delete) stay available
+/// everywhere; these only cover work-state transitions.
+///
+/// There is one set for every open todo — 开始 / 标记完成 / 回到待办 / 暂不处理 /
+/// 放弃 — minus whatever the todo is already in (no 开始 while in_progress, no
+/// 回到待办 while open, no 暂不处理 while parked). A closed todo only offers
+/// 重新开始. Per-status action sets were tried first and only made the same
+/// controls come and go for no reason the user could predict.
 enum ATMTodoStatusActions {
     static func isDeferred(_ todo: ATMTodo) -> Bool {
         todo.status == "waiting"
@@ -475,65 +505,12 @@ enum ATMTodoStatusActions {
             == ATMTodoDeferred.wakeCondition
     }
 
+    static func isClosed(_ todo: ATMTodo) -> Bool {
+        todo.status == "done" || todo.status == "dropped"
+    }
+
     static func items(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
-        if isDeferred(todo) {
-            // Unpark → open backlog, not in_progress.
-            return [
-                item(
-                    .returnToOpen,
-                    title: "移出暂不处理",
-                    help: "移出暂不处理，回到待开始",
-                    icon: "arrow.uturn.backward"
-                ),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        }
-        switch todo.status {
-        case "review":
-            // Human gate: accept the submission, or send it back to the backlog.
-            return [
-                item(.complete, title: "验收", help: "验收通过", icon: "checkmark"),
-                item(
-                    .returnToOpen,
-                    title: "验收不通过（重新到待办）",
-                    help: "验收不通过，重新到待办",
-                    icon: "arrow.uturn.backward"
-                ),
-            ]
-        case "open":
-            return [
-                item(.start, title: "开始", help: "开始此任务", icon: "play.fill"),
-                item(.complete, title: "标记完成", help: "标记完成", icon: "checkmark"),
-                item(.deferLater, title: "暂不处理", help: "暂不处理", icon: "moon.zzz"),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        case "in_progress":
-            // Stopping work in progress means putting it back in the queue, not
-            // parking it: 暂不处理 is for backlog you have decided to skip.
-            return [
-                item(.complete, title: "标记完成", help: "标记完成", icon: "checkmark"),
-                item(
-                    .returnToOpen,
-                    title: "回到待办",
-                    help: "回到待办，不再进行中",
-                    icon: "arrow.uturn.backward"
-                ),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        case "waiting":
-            return [
-                item(.start, title: "开始", help: "开始此任务", icon: "play.fill"),
-                item(.complete, title: "标记完成", help: "标记完成", icon: "checkmark"),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        case "blocked":
-            return [
-                item(.start, title: "开始", help: "开始此任务", icon: "play.fill"),
-                item(.complete, title: "标记完成", help: "标记完成", icon: "checkmark"),
-                item(.deferLater, title: "暂不处理", help: "暂不处理", icon: "moon.zzz"),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
-        case "done", "dropped":
+        if isClosed(todo) {
             return [
                 item(
                     .start,
@@ -542,22 +519,55 @@ enum ATMTodoStatusActions {
                     icon: "arrow.counterclockwise"
                 ),
             ]
-        default:
-            return [
-                item(.start, title: "开始", help: "开始此任务", icon: "play.fill"),
-                item(
-                    .complete,
-                    title: "标记\(todo.completionVerb)",
-                    help: "标记\(todo.completionVerb)",
-                    icon: "checkmark"
-                ),
-                item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false),
-            ]
         }
+        // Review is the human gate, so closing it is 验收 rather than 完成. Sending
+        // it back needs no such wording: 回到待办 already says what happens, and
+        // 「验收不通过」 only added a verdict nobody has to pronounce.
+        let isReview = todo.status == "review"
+        var actions: [ATMTodoLifecycleItem] = []
+        if todo.status != "in_progress" {
+            actions.append(item(.start, title: "开始", help: "开始此任务", icon: "play.fill"))
+        }
+        actions.append(
+            item(
+                .complete,
+                title: isReview ? "验收" : "标记\(todo.completionVerb)",
+                help: isReview ? "验收通过" : "标记\(todo.completionVerb)",
+                icon: "checkmark"
+            )
+        )
+        if todo.status != "open" {
+            actions.append(
+                item(
+                    .returnToOpen,
+                    title: "回到待办",
+                    help: "回到待办",
+                    icon: "arrow.uturn.backward"
+                )
+            )
+        }
+        if !isDeferred(todo) {
+            actions.append(item(.deferLater, title: "暂不处理", help: "暂不处理", icon: "moon.zzz"))
+        }
+        actions.append(item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false))
+        return actions
     }
 
     static func primaryItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
         items(for: todo).filter(\.isPrimary)
+    }
+
+    /// Actions visible as toolbar icon chips: start (or restart) and
+    /// complete/accept. These are the stable "常用" controls; everything else
+    /// drops into the `···` overflow menu.
+    static func inlineItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
+        items(for: todo).filter { $0.action == .start || $0.action == .complete }
+    }
+
+    /// The rest of the lifecycle actions, inside the `···` overflow menu:
+    /// returnToOpen / deferLater / drop.
+    static func overflowItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
+        items(for: todo).filter { $0.action != .start && $0.action != .complete }
     }
 
     /// Launch prompt is for handing work to an agent; review is the human gate.
@@ -587,7 +597,6 @@ struct ATMTodoEdit: Equatable {
     let description: String
     let priority: String
     let project: String
-    let lane: String
     let status: String
     let wakeCondition: String
     let reviewAt: String
@@ -611,9 +620,13 @@ enum ATMCommandBuilder {
             return ["todo", "done", todo.id, "--reason", "通过 ATM 菜单栏\(todo.completionVerb)"]
         case .drop:
             return ["todo", "drop", todo.id, "--reason", "通过 ATM 菜单栏放弃"]
+        case .trash:
+            return ["todo", "trash", todo.id]
+        case .restore:
+            return ["todo", "restore", todo.id]
         case .delete:
-            // --yes because the desktop already ran its own confirmation dialog;
-            // without it the CLI waits on a stdin nobody can answer.
+            // Permanent deletion exists only inside the trash, after the desktop
+            // confirmation dialog. The CLI has no interactive stdin.
             return ["todo", "delete", todo.id, "--yes"]
         case .deferLater:
             return ["todo", "wait", todo.id, "--wake", ATMTodoDeferred.wakeCondition]
@@ -638,7 +651,6 @@ enum ATMCommandBuilder {
         var arguments = ["todo", "add", draft.title, "--priority", draft.priority]
         if !draft.description.isEmpty { arguments += ["--desc", draft.description] }
         if !draft.project.isEmpty { arguments += ["--project", draft.project] }
-        if !draft.lane.isEmpty { arguments += ["--lane", draft.lane] }
         // JSON so the desktop can select the new id after create succeeds.
         arguments.append("--json")
         return arguments
@@ -670,7 +682,6 @@ enum ATMCommandBuilder {
             "--desc", edit.description,
             "--priority", edit.priority,
             "--project", edit.project,
-            "--lane", edit.lane,
             "--status", edit.status,
             "--wake", edit.wakeCondition,
             "--review-at", edit.reviewAt,
@@ -804,11 +815,15 @@ final class ATMDataStore: ObservableObject {
     /// Mirrors `grok_live_quota` in ~/.atm/config.json. The toggle is only a
     /// config entry point — the CLI owns fetching, caching and fallback.
     @Published private(set) var grokLiveQuotaEnabled = false
+    /// Mirrors `owner_name` in ~/.atm/config.json: how to name the human when a
+    /// todo they filed themselves is displayed. Empty falls back to 我.
+    @Published private(set) var ownerName = ""
     /// Internal refresh gate only. No view renders this flag, so publishing it
     /// needlessly rebuilt the desktop at both ends of every one-minute refresh.
     private(set) var isLoading = false
     @Published private(set) var isSyncing = false
     @Published private(set) var isActing = false
+    @Published private(set) var trashedTodos: [ATMTodo] = []
     @Published private(set) var knowledgeCollections: [ATMKnowledgeCollection] = []
     @Published private(set) var isKnowledgeCatalogLoading = false
     @Published var knowledgeErrorMessage: String?
@@ -851,6 +866,9 @@ final class ATMDataStore: ObservableObject {
     /// their absence. This prevents an older in-flight refresh from restoring a
     /// row after the CLI has already removed it.
     private var optimisticallyDeletedTodoIDs: Set<String> = []
+    /// Keeps an older in-flight trash listing from resurrecting a row after the
+    /// irreversible delete command has succeeded.
+    private var optimisticallyPermanentlyDeletedTodoIDs: Set<String> = []
     private var optimisticallyUpdatedTodos: [String: ATMTodo] = [:]
     /// Prior id→status map for human-facing notifications. nil until first
     /// successful dashboard load (baseline, no historical flood).
@@ -874,6 +892,7 @@ final class ATMDataStore: ObservableObject {
     func start() {
         guard timer == nil else { return }
         loadGrokLiveQuotaSetting()
+        loadOwnerNameSetting()
         refresh()
         refresh(sync: true)
         refreshCollection(runIfDue: true)
@@ -1077,6 +1096,22 @@ final class ATMDataStore: ObservableObject {
             )
             if let value = outcome.value {
                 grokLiveQuotaEnabled = value.value
+            }
+        }
+    }
+
+    /// Reads the nickname a todo's "me" creator is displayed with. Read once at
+    /// start: it changes only when the user edits config, and every task detail
+    /// needs it.
+    func loadOwnerNameSetting() {
+        Task {
+            guard let runner = try? ATMCommandRunner() else { return }
+            let outcome: ATMCommandOutcome<ATMConfigStringValue> = await decodeCommand(
+                runner,
+                arguments: ["config", "get", "owner_name", "--json"]
+            )
+            if let value = outcome.value {
+                ownerName = value.value
             }
         }
     }
@@ -1346,6 +1381,22 @@ final class ATMDataStore: ObservableObject {
         runCollectionItemAction(["revert", item.id, "--yes"])
     }
 
+    /// Removes one processing record. `--yes` because the desktop already asked;
+    /// the Todo this record wrote stays, so a clean-up here never quietly takes
+    /// work with it.
+    func deleteCollectionItem(_ item: ATMCollectionItem) {
+        deleteCollectionItems([item])
+    }
+
+    /// Clears a whole group in one CLI call rather than one per record: a group
+    /// runs to dozens of rows, and the command deletes them as a single
+    /// transaction — a half-cleared group is indistinguishable on screen from one
+    /// that was never cleared.
+    func deleteCollectionItems(_ items: [ATMCollectionItem]) {
+        guard !items.isEmpty else { return }
+        runCollectionItemAction(["delete"] + items.map(\.id) + ["--yes"])
+    }
+
     private func collectionItemArguments(
         action: String,
         item: ATMCollectionItem,
@@ -1461,7 +1512,15 @@ final class ATMDataStore: ObservableObject {
                     runner,
                     arguments: ["quota", "--json"]
                 )
-                let (dashboard, quotaOutcome) = await (dashboardTask, quotaTask)
+                async let trashTask: ATMCommandOutcome<[ATMTodo]> = decodeCommand(
+                    runner,
+                    arguments: ["todo", "list", "--status", "trashed", "--json"]
+                )
+                let (dashboard, quotaOutcome, trashOutcome) = await (
+                    dashboardTask,
+                    quotaTask,
+                    trashTask
+                )
 
                 var nextState = dashboardState
                 if let error = dashboard.error {
@@ -1470,8 +1529,29 @@ final class ATMDataStore: ObservableObject {
                 if let error = quotaOutcome.error {
                     warnings.append("配额：\(error)")
                 }
+                if let error = trashOutcome.error {
+                    warnings.append("回收站：\(error)")
+                }
                 if let value = quotaOutcome.value {
                     nextState.quota = value
+                }
+                if let value = trashOutcome.value {
+                    let permanentlyDeletedIDs = optimisticallyPermanentlyDeletedTodoIDs
+                    let restoringIDs = Set(optimisticallyUpdatedTodos.keys)
+                    var incomingTrash = value.filter {
+                        !permanentlyDeletedIDs.contains($0.id) && !restoringIDs.contains($0.id)
+                    }
+                    // A listing that started before `todo trash` may not include
+                    // the newly moved row. Preserve the optimistic copy until the
+                    // dashboard has observed that it left the working set.
+                    incomingTrash.append(contentsOf: trashedTodos.filter { optimistic in
+                        optimisticallyDeletedTodoIDs.contains(optimistic.id)
+                            && !incomingTrash.contains(where: { $0.id == optimistic.id })
+                    })
+                    trashedTodos = incomingTrash
+                    optimisticallyPermanentlyDeletedTodoIDs.formIntersection(
+                        Set(value.map(\.id))
+                    )
                 }
                 if let value = dashboard.value {
                     let deletedIDs = optimisticallyDeletedTodoIDs
@@ -1528,13 +1608,34 @@ final class ATMDataStore: ObservableObject {
                         lastSyncAttemptAt = date
                     }
                 }
-                nextState.errorMessage = warnings.isEmpty
-                    ? nil
-                    : "部分数据未刷新：" + warnings.prefix(3).joined(separator: "；")
-                        + (warnings.count > 3 ? "；另有 \(warnings.count - 3) 项" : "")
+                // A contract skew is not "some data did not refresh" — the App and
+                // the CLI cannot talk at all, and wrapping it in that prefix next to
+                // unrelated warnings buries the one thing the user must act on.
+                if let mismatch = dashboard.schemaMismatch {
+                    nextState.errorMessage = mismatch.summary
+                    ATMLog.failure("dashboard_schema_mismatch", fields: [
+                        "cli_version": String(mismatch.cliVersion),
+                        "app_version": String(mismatch.appVersion),
+                    ])
+                } else {
+                    nextState.errorMessage = warnings.isEmpty
+                        ? nil
+                        : "部分数据未刷新：" + warnings.prefix(3).joined(separator: "；")
+                            + (warnings.count > 3 ? "；另有 \(warnings.count - 3) 项" : "")
+                }
+                // On screen this is replaced by the next successful cycle, which is
+                // why an intermittent failure was impossible to investigate: by the
+                // time anyone looked, the evidence was gone.
+                if let error = dashboard.error {
+                    ATMLog.failure("dashboard_refresh_failed", error: error)
+                }
+                if let error = quotaOutcome.error {
+                    ATMLog.failure("quota_refresh_failed", error: error)
+                }
                 applyDashboardRefresh(nextState)
             } catch {
                 errorMessage = error.localizedDescription
+                ATMLog.failure("refresh_failed", error: error.localizedDescription)
             }
         }
     }
@@ -1568,14 +1669,42 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
-    /// The CLI mutation is authoritative, so deletion should disappear from the
-    /// UI immediately and lifecycle actions should move to their destination
-    /// section without waiting for a complete dashboard reload. A queued refresh
-    /// reconciles every other field and eventually clears the optimistic state.
+    /// The CLI mutation is authoritative, so removal should update the working
+    /// set and trash immediately while a queued refresh reconciles other fields.
     func applySuccessfulTodoAction(_ action: ATMTodoAction, on todo: ATMTodo) {
-        if action == .delete {
+        if action == .trash {
             let deletedIDs: Set<String> = [todo.id]
             optimisticallyDeletedTodoIDs.insert(todo.id)
+            optimisticallyUpdatedTodos.removeValue(forKey: todo.id)
+            updateDashboardState {
+                $0.allTodos.removeAll { $0.id == todo.id }
+                $0.snapshot = $0.snapshot.removingTodos(withIDs: deletedIDs)
+            }
+            progressByTodoID.removeValue(forKey: todo.id)
+            if !trashedTodos.contains(where: { $0.id == todo.id }) {
+                trashedTodos.insert(todo, at: 0)
+            }
+            return
+        }
+
+        if action == .restore {
+            trashedTodos.removeAll { $0.id == todo.id }
+            optimisticallyDeletedTodoIDs.remove(todo.id)
+            optimisticallyUpdatedTodos[todo.id] = todo
+            updateDashboardState {
+                if !$0.allTodos.contains(where: { $0.id == todo.id }) {
+                    $0.allTodos.append(todo)
+                }
+                $0.snapshot = $0.snapshot.replacingTodo(todo)
+            }
+            return
+        }
+
+        if action == .delete {
+            trashedTodos.removeAll { $0.id == todo.id }
+            let deletedIDs: Set<String> = [todo.id]
+            optimisticallyDeletedTodoIDs.insert(todo.id)
+            optimisticallyPermanentlyDeletedTodoIDs.insert(todo.id)
             optimisticallyUpdatedTodos.removeValue(forKey: todo.id)
             updateDashboardState {
                 $0.allTodos.removeAll { $0.id == todo.id }
@@ -1600,7 +1729,7 @@ final class ATMDataStore: ObservableObject {
             )
         case .returnToOpen:
             updated = todo.replacingLifecycle(status: "open")
-        case .delete:
+        case .trash, .restore, .delete:
             return
         }
         optimisticallyUpdatedTodos[todo.id] = updated
@@ -1664,7 +1793,6 @@ final class ATMDataStore: ObservableObject {
                     description: edit.description.trimmingCharacters(in: .whitespacesAndNewlines),
                     priority: edit.priority,
                     project: edit.project.trimmingCharacters(in: .whitespacesAndNewlines),
-                    lane: edit.lane.trimmingCharacters(in: .whitespacesAndNewlines),
                     status: edit.status,
                     wakeCondition: edit.wakeCondition.trimmingCharacters(in: .whitespacesAndNewlines),
                     reviewAt: edit.reviewAt.trimmingCharacters(in: .whitespacesAndNewlines),

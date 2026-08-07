@@ -119,6 +119,34 @@ enum ATMTodoStatusStyle {
     }
 }
 
+/// Priority color / label shared by the task list, the detail header and the
+/// collection rules editor, so P0 is the same red everywhere.
+///
+/// In a list row the priority is carried by the *color of the id* rather than by
+/// its own chip: the id is in every row at a fixed width already, so tinting it
+/// costs no space, and three P-chips down a column was three words to read where
+/// what you wanted was "which of these is on fire".
+enum ATMTodoPriorityStyle {
+    static func color(for priority: String) -> Color {
+        switch priority {
+        case "P0": return ATMTheme.danger
+        case "P1": return ATMTheme.accent
+        default: return ATMTheme.secondary
+        }
+    }
+
+    /// Spelled out, for the places color cannot carry it on its own — tooltips,
+    /// pickers, accessibility.
+    static func label(_ priority: String) -> String {
+        switch priority {
+        case "P0": return "P0 · 紧急"
+        case "P1": return "P1 · 高"
+        case "P3": return "P3 · 低"
+        default: return "P2 · 普通"
+        }
+    }
+}
+
 /// Status glyph for todo lists and badges. Working tasks use a ProgressView so
 /// the icon itself reads as “loading”, not a play button.
 struct ATMTodoStatusGlyph: View {
@@ -306,51 +334,6 @@ private struct ATMTaskGroup: Identifiable {
     let todos: [ATMTodo]
 }
 
-private final class ATMContextMenuAction: NSObject {
-    private let handler: () -> Void
-
-    init(_ handler: @escaping () -> Void) {
-        self.handler = handler
-    }
-
-    @objc func invoke() {
-        handler()
-    }
-}
-
-private final class ATMRightClickMenuView: NSView {
-    var makeMenu: () -> NSMenu = { NSMenu() }
-
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        switch NSApp.currentEvent?.type {
-        case .rightMouseDown, .rightMouseUp:
-            return self
-        default:
-            return nil
-        }
-    }
-
-    override func rightMouseDown(with event: NSEvent) {
-        let menu = makeMenu()
-        guard !menu.items.isEmpty else { return }
-        NSMenu.popUpContextMenu(menu, with: event, for: self)
-    }
-}
-
-private struct ATMRightClickMenuHost: NSViewRepresentable {
-    let makeMenu: () -> NSMenu
-
-    func makeNSView(context: Context) -> ATMRightClickMenuView {
-        let view = ATMRightClickMenuView()
-        view.makeMenu = makeMenu
-        return view
-    }
-
-    func updateNSView(_ nsView: ATMRightClickMenuView, context: Context) {
-        nsView.makeMenu = makeMenu
-    }
-}
-
 @MainActor
 final class ATMDesktopNavigation: ObservableObject {
     @Published var section: ATMDesktopSection = .tasks
@@ -368,6 +351,9 @@ final class ATMDesktopNavigation: ObservableObject {
     /// Add-task modal is owned at the desktop root so the dimmed backdrop
     /// covers the sidebar and centers over the whole window.
     @Published var showAddTodo = false
+    /// A todo id whose detail pane should open directly in its edit form, set by
+    /// the task row's right-click 编辑任务 and cleared once the form is open.
+    @Published var editTodoID: String?
 }
 
 struct ATMCollectionRef: Identifiable, Equatable {
@@ -379,6 +365,38 @@ struct ATMCollectionRef: Identifiable, Equatable {
 struct ATMTextAlert: Identifiable {
     let id = UUID()
     let message: String
+}
+
+/// ATM's app-wide navigation rail is the one persistent piece of brand chrome.
+/// It has its own foreground tokens because system label colours are tuned for
+/// the light working canvas and disappear on the dark rail in light appearance.
+private struct ATMDesktopRailSurfaceModifier: ViewModifier {
+    let isSelected: Bool
+    var isNested = false
+
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, isNested ? 8 : 10)
+            .frame(maxWidth: .infinity, minHeight: isNested ? 28 : 34, alignment: .leading)
+            .foregroundStyle(isSelected ? ATMTheme.railPrimary : ATMTheme.railSecondary)
+            .background(fill, in: RoundedRectangle(cornerRadius: isNested ? 7 : 9, style: .continuous))
+            .contentShape(Rectangle())
+            .onHover { isHovered = $0 }
+    }
+
+    private var fill: Color {
+        if isSelected { return ATMTheme.railSelected }
+        if isHovered { return ATMTheme.railRaised }
+        return .clear
+    }
+}
+
+private extension View {
+    func atmDesktopRailSurface(isSelected: Bool, isNested: Bool = false) -> some View {
+        modifier(ATMDesktopRailSurfaceModifier(isSelected: isSelected, isNested: isNested))
+    }
 }
 
 struct DesktopContentView: View {
@@ -399,9 +417,17 @@ struct DesktopContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             desktopSidebar
-                .frame(width: 200, alignment: .leading)
+                .frame(width: 212, alignment: .leading)
                 .clipped()
-            Divider()
+                .background {
+                    // Paint behind the transparent title bar outside the
+                    // sidebar's content clip so the rail reaches the window edge.
+                    ATMTheme.rail
+                        .ignoresSafeArea(edges: .top)
+                }
+            Rectangle()
+                .fill(ATMTheme.railBorder)
+                .frame(width: 1)
             Group {
                 switch navigation.section {
                 case .tasks:
@@ -423,6 +449,7 @@ struct DesktopContentView: View {
         }
         .background(ATMTheme.canvas)
         .frame(minWidth: 880, minHeight: 620)
+        .atmHidesScrollBars()
         .onChange(of: store.knowledgeCollections.map(\.id)) { _ in
             selectDefaultKnowledgeLibraryIfNeeded()
         }
@@ -588,16 +615,17 @@ struct DesktopContentView: View {
     }
 
     private var desktopSidebar: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 8) {
                 ATMBrandMark()
-                    .frame(width: 34, height: 34)
+                    .frame(width: 38, height: 38)
                 VStack(alignment: .leading, spacing: 0) {
                     Text("ATM")
                         .font(ATMFont.font(.title3, weight: .bold))
+                        .foregroundStyle(ATMTheme.railPrimary)
                     Text("工作台")
                         .font(ATMFont.body)
-                        .foregroundStyle(ATMTheme.secondary)
+                        .foregroundStyle(ATMTheme.railSecondary)
                 }
                 .lineLimit(1)
                 Spacer(minLength: 0)
@@ -624,12 +652,12 @@ struct DesktopContentView: View {
             // quick panel / desktop window opens. No permanent sidebar button.
             Text(appVersionLabel)
                 .font(ATMFont.mono(.caption))
-                .foregroundStyle(ATMTheme.secondary.opacity(0.8))
+                .foregroundStyle(ATMTheme.railMuted)
                 .frame(maxWidth: .infinity, alignment: .center)
                 .padding(.bottom, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(ATMTheme.sidebar)
+        .background(ATMTheme.rail)
     }
 
     private var appVersionLabel: String {
@@ -651,14 +679,17 @@ struct DesktopContentView: View {
                 Spacer()
                 Text("⌘K")
                     .font(ATMFont.mono(.footnote, .medium))
-                    .foregroundStyle(ATMTheme.secondary)
+                    .foregroundStyle(ATMTheme.railMuted)
             }
             .font(ATMFont.font(.body, weight: .medium))
-            .foregroundStyle(ATMTheme.primary)
+            .foregroundStyle(ATMTheme.railPrimary)
             .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-            // 搜索入口不是导航项，没有选中态，所以保留自己的常驻 controlFill 底。
-            .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 7))
+            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+            .background(ATMTheme.railRaised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(ATMTheme.railBorder)
+            )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -675,9 +706,8 @@ struct DesktopContentView: View {
                 Text(section.title)
                 Spacer()
             }
-            .font(ATMFont.font(.body, weight: selected ? .semibold : .medium))
-            .foregroundStyle(selected ? ATMTheme.accent : ATMTheme.primary)
-            .atmRowSurface(.navigation, isSelected: selected)
+            .font(ATMFont.font(.body, weight: .medium))
+            .atmDesktopRailSurface(isSelected: selected)
         }
         .buttonStyle(.plain)
     }
@@ -705,9 +735,8 @@ struct DesktopContentView: View {
                     Image(systemName: knowledgeExpanded ? "chevron.down" : "chevron.right")
                         .font(ATMFont.font(.micro, weight: .semibold))
                 }
-                .font(ATMFont.font(.body, weight: selected ? .semibold : .medium))
-                .foregroundStyle(selected ? ATMTheme.accent : ATMTheme.primary)
-                .atmRowSurface(.navigation, isSelected: selected)
+                .font(ATMFont.font(.body, weight: .medium))
+                .atmDesktopRailSurface(isSelected: selected)
             }
             .buttonStyle(.plain)
 
@@ -746,7 +775,7 @@ struct DesktopContentView: View {
                 .overlay(alignment: .bottom) {
                     if sortedKnowledgeCollections.count > 5 {
                         LinearGradient(
-                            colors: [ATMTheme.sidebar.opacity(0), ATMTheme.sidebar.opacity(0.96)],
+                            colors: [ATMTheme.rail.opacity(0), ATMTheme.rail.opacity(0.96)],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -781,39 +810,38 @@ struct DesktopContentView: View {
                 if let count {
                     Text("\(count)")
                         .font(ATMFont.mono(.caption, .medium))
-                        .foregroundStyle(ATMTheme.secondary)
+                        .foregroundStyle(ATMTheme.railMuted)
                 }
             }
             .font(ATMFont.font(.footnote, weight: selected ? .semibold : .regular))
-            .foregroundStyle(selected ? ATMTheme.accent : ATMTheme.secondary)
-            .atmRowSurface(.nestedNavigation, isSelected: selected)
+            .atmDesktopRailSurface(isSelected: selected, isNested: true)
         }
         .buttonStyle(.plain)
         .help(title)
-        .contextMenu {
-            Button("新建知识库…") {
+        .atmRightClickMenu {
+            ATMMenuItem("新建知识库…") {
                 newCollectionID = ""
                 newCollectionName = ""
                 showingCollectionCreate = true
             }
             if id != ATMKnowledgeLibrary.memoryID {
-                Button("在此新建知识…") {
+                ATMMenuItem("在此新建知识…") {
                     navigation.section = .knowledge
                     navigation.selectedKnowledgeLibraryID = id
                     navigation.knowledgeCreateRequest += 1
                 }
-                Divider()
-                Button("重命名…") {
+                ATMMenuSeparator()
+                ATMMenuItem("重命名…") {
                     renameCollectionName = title
                     renameCollectionTarget = ATMCollectionRef(id: id, name: title, count: count ?? 0)
                 }
-                Button("删除…", role: .destructive) {
+                ATMMenuItem("删除…", destructive: true) {
                     deleteCollectionTarget = ATMCollectionRef(id: id, name: title, count: count ?? 0)
                 }
             }
-            Divider()
-            Button("刷新目录") { store.refreshKnowledgeCatalog() }
-            Button("复制知识库 ID") {
+            ATMMenuSeparator()
+            ATMMenuItem("刷新目录") { store.refreshKnowledgeCatalog() }
+            ATMMenuItem("复制知识库 ID") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(id, forType: .string)
             }
@@ -842,6 +870,7 @@ private struct DesktopTasksView: View {
     @ObservedObject var navigation: ATMDesktopNavigation
 
     @State private var deleteCandidate: ATMTodo?
+    @State private var showingTrash = false
     @AppStorage("ATMCollapsedTaskGroups")
     private var collapsedGroupsRaw = "done,deferred,dropped,history"
     @AppStorage("ATMDidApplyDefaultCollapsedTaskGroups") private var didApplyDefaultCollapsedGroups = false
@@ -869,14 +898,13 @@ private struct DesktopTasksView: View {
         Button {
             withAnimation(.easeInOut(duration: 0.15)) { expanded.wrappedValue.toggle() }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "chevron.right")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                    .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
-                Text(group.title)
-                Text("\(group.todos.count)")
-                    .foregroundStyle(ATMTheme.secondary)
+            HStack {
+                ATMDrawerDisclosureLabel(
+                    title: group.title,
+                    count: group.todos.count,
+                    tint: groupAccent(group.id),
+                    isExpanded: expanded.wrappedValue
+                )
                 Spacer()
             }
             .contentShape(Rectangle())
@@ -884,12 +912,25 @@ private struct DesktopTasksView: View {
         .buttonStyle(.plain)
     }
 
+    private func groupAccent(_ id: String) -> Color {
+        switch id {
+        case "trash": return ATMTheme.secondary
+        case "review": return ATMTodoStatusStyle.color(forStatus: "review")
+        case "working": return ATMTodoStatusStyle.color(forStatus: "in_progress")
+        case "waiting": return ATMTodoStatusStyle.color(forStatus: "waiting")
+        case "blocked": return ATMTodoStatusStyle.color(forStatus: "blocked")
+        case "done", "history": return ATMTodoStatusStyle.color(forStatus: "done")
+        default: return ATMTheme.secondary
+        }
+    }
+
     private var todos: [ATMTodo] {
-        store.allTodos
+        showingTrash ? store.trashedTodos : store.allTodos
     }
 
     private var visibleTodos: [ATMTodo] {
-        ATMTaskQuery.visibleTodos(from: todos, showsDropped: showsDropped)
+        if showingTrash { return todos }
+        return ATMTaskQuery.visibleTodos(from: todos, showsDropped: showsDropped)
     }
 
     private var selectedTodo: ATMTodo? {
@@ -898,26 +939,45 @@ private struct DesktopTasksView: View {
     }
 
     private var groups: [ATMTaskGroup] {
-        ATMTaskQuery.groups(from: visibleTodos).map {
+        if showingTrash {
+            return [ATMTaskGroup(id: "trash", title: "已删除", todos: visibleTodos)]
+        }
+        return ATMTaskQuery.groups(from: visibleTodos).map {
             ATMTaskGroup(id: $0.id, title: $0.title, todos: $0.todos)
         }
     }
 
     var body: some View {
-        HSplitView {
+        ATMSplitColumn(
+            id: "tasks",
+            defaultWidth: 330,
+            minWidth: 260,
+            maxWidth: 420,
+            detailMinWidth: 400
+        ) {
             taskList
-                .frame(minWidth: 260, idealWidth: 330, maxWidth: 420)
-
+        } detail: {
             Group {
                 if let todo = selectedTodo {
-                    DesktopTodoDetail(todo: todo, store: store)
-                        .id("\(todo.id)-\(todo.title)-\(todo.description ?? "")-\(todo.status)")
+                    DesktopTodoDetail(
+                        todo: todo,
+                        store: store,
+                        navigation: navigation,
+                        isTrashed: showingTrash
+                    )
+                        // Identity is the Todo id alone. Folding title / description /
+                        // status into it recreated the view on every background sync
+                        // that touched them, which reset the selected tab and threw
+                        // away an open edit form mid-typing. The form seeds itself
+                        // from `todo` when 编辑 is picked, so it opens on current
+                        // values without needing a fresh identity to do it.
+                        .id(todo.id)
                 } else {
                     VStack(spacing: 10) {
-                        Image(systemName: "checklist")
+                        Image(systemName: showingTrash ? "trash" : "checklist")
                             .font(ATMFont.font(.display, weight: .light))
                             .foregroundStyle(ATMTheme.secondary)
-                        Text("选择一个任务")
+                        Text(showingTrash ? "选择一个已删除任务" : "选择一个任务")
                             .font(ATMFont.font(.title3, weight: .semibold))
                         Text("从左侧列表查看详情、编辑 Markdown 或执行快捷操作。")
                             .font(ATMFont.body)
@@ -926,7 +986,7 @@ private struct DesktopTasksView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ATMTheme.canvas)
         }
         .onAppear {
@@ -941,37 +1001,54 @@ private struct DesktopTasksView: View {
         // reveal stays on selection change / first appear.
         .onChange(of: todos.map(\.id)) { _ in selectFirstIfNeeded() }
         .onChange(of: showsDropped) { _ in selectFirstIfNeeded() }
+        .onChange(of: showingTrash) { _ in selectFirstIfNeeded() }
         .onChange(of: navigation.selectedTodoID) { _ in revealSelectedGroup() }
     }
 
     private var taskList: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("任务")
-                    .font(ATMFont.font(.title2, weight: .semibold))
-                Text("\(visibleTodos.count)")
-                    .font(ATMFont.mono(.footnote, .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(ATMTheme.controlFill, in: Capsule())
-                Spacer()
-                ATMIconButton(
-                    systemImage: "plus",
-                    help: "添加任务 (⌘N)",
-                    chrome: .bare,
-                    side: 28,
-                    iconTier: .bodyLarge
-                ) { navigation.showAddTodo = true }
-                .keyboardShortcut("n", modifiers: .command)
+            ATMDrawerHeader(title: showingTrash ? "回收站" : "我的任务", count: visibleTodos.count) {
+                if showingTrash {
+                    Button {
+                        showingTrash = false
+                    } label: {
+                        Label("返回任务", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        showingTrash = true
+                    } label: {
+                        Image(systemName: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .help("回收站")
+
+                    Button {
+                        navigation.showAddTodo = true
+                    } label: {
+                        Label("新建", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    // ⌘N 归主菜单「文件 → 新建任务」，不挂在这个按钮上：挂在这儿的话
+                    // 快捷键跟着「任务」页一起消失，切到收集或知识就按不动了。
+                    .help("添加任务 (⌘N)")
+                }
             }
-            .padding(.horizontal, 12)
-            .frame(height: 50)
 
             if let error = store.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.danger)
+                    // Wraps rather than truncates: the version-mismatch message
+                    // ends in the command to run, and a clipped instruction is no
+                    // instruction.
+                    .fixedSize(horizontal: false, vertical: true)
+                    .multilineTextAlignment(.leading)
+                    .textSelection(.enabled)
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
             }
@@ -994,12 +1071,7 @@ private struct DesktopTasksView: View {
                                     .focusable(false)
                                     .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
                                     .listRowBackground(Color.clear)
-                                    .overlay {
-                                        ATMRightClickMenuHost {
-                                            todoContextMenu(for: todo)
-                                        }
-                                        .accessibilityHidden(true)
-                                    }
+                                    .atmRightClickMenu { todoMenuEntries(for: todo) }
                             }
                         }
                     } header: {
@@ -1014,7 +1086,7 @@ private struct DesktopTasksView: View {
                     VStack(spacing: 7) {
                         Image(systemName: "magnifyingglass")
                             .font(ATMFont.font(.title2, weight: .light))
-                        Text("没有匹配的任务")
+                        Text(showingTrash ? "回收站为空" : "没有匹配的任务")
                             .font(ATMFont.font(.body, weight: .medium))
                     }
                     .foregroundStyle(ATMTheme.secondary)
@@ -1022,9 +1094,9 @@ private struct DesktopTasksView: View {
                 }
             }
         }
-        .background(ATMTheme.surface)
+        .background(ATMTheme.listPane)
         .confirmationDialog(
-            "删除 \(deleteCandidate?.id.uppercased() ?? "")？",
+            "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
             isPresented: Binding(
                 get: { deleteCandidate != nil },
                 set: { if !$0 { deleteCandidate = nil } }
@@ -1039,79 +1111,23 @@ private struct DesktopTasksView: View {
             }
             Button("取消", role: .cancel) { deleteCandidate = nil }
         } message: {
-            Text(deleteCandidate?.title ?? "").font(ATMFont.body)
+            Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
         }
     }
 
-    private func todoContextMenu(for todo: ATMTodo) -> NSMenu {
-        let menu = NSMenu()
-        menu.addItem(contextMenuItem(
-            "用 VS Code 打开项目",
-            systemImage: "chevron.left.forwardslash.chevron.right"
-        ) {
-            store.openTodoProjectInVSCode(todo)
-        })
-        menu.addItem(.separator())
-        for item in ATMTodoStatusActions.items(for: todo) {
-            menu.addItem(contextMenuItem(item.title, systemImage: item.systemImage) {
-                store.perform(item.action, on: todo)
-            })
-        }
-        if let links = todo.links, !links.isEmpty {
-            menu.addItem(.separator())
-            let linksItem = NSMenuItem(title: "打开链接", action: nil, keyEquivalent: "")
-            let linksMenu = NSMenu(title: "打开链接")
-            for link in links {
-                linksMenu.addItem(contextMenuItem(link.title ?? link.url) {
-                    if let url = URL(string: link.url) {
-                        NSWorkspace.shared.open(url)
-                    }
-                })
-            }
-            linksItem.submenu = linksMenu
-            menu.addItem(linksItem)
-        }
-        menu.addItem(.separator())
-        menu.addItem(contextMenuItem("复制 ID") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(todo.id, forType: .string)
-        })
-        if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-            menu.addItem(contextMenuItem("复制启动提示") {
-                Task {
-                    guard let prompt = await store.launchPrompt(for: todo) else { return }
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(prompt, forType: .string)
-                }
-            })
-        }
-        menu.addItem(.separator())
-        let deleteItem = contextMenuItem("删除…") { deleteCandidate = todo }
-        deleteItem.attributedTitle = NSAttributedString(
-            string: "删除…",
-            attributes: [.foregroundColor: NSColor.systemRed]
+    private func todoMenuEntries(for todo: ATMTodo) -> [ATMMenuEntry] {
+        ATMTodoMenu.entries(
+            for: todo,
+            store: store,
+            isTrashed: showingTrash,
+            // Editing lives in the detail pane's form, so the row menu selects the
+            // todo and asks the detail to open straight into it.
+            onEdit: {
+                navigation.selectedTodoID = todo.id
+                navigation.editTodoID = todo.id
+            },
+            onPermanentDelete: { deleteCandidate = todo }
         )
-        menu.addItem(deleteItem)
-        return menu
-    }
-
-    private func contextMenuItem(
-        _ title: String,
-        systemImage: String? = nil,
-        action: @escaping () -> Void
-    ) -> NSMenuItem {
-        let target = ATMContextMenuAction(action)
-        let item = NSMenuItem(
-            title: title,
-            action: #selector(ATMContextMenuAction.invoke),
-            keyEquivalent: ""
-        )
-        item.target = target
-        item.representedObject = target
-        if let systemImage {
-            item.image = NSImage(systemSymbolName: systemImage, accessibilityDescription: nil)
-        }
-        return item
     }
 
     private func selectFirstIfNeeded() {
@@ -1154,12 +1170,39 @@ private struct DesktopTodoRow: View {
     let isSelected: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            // Icon only — the section header already names the status, so no label.
-            // Working tasks show a spinner instead of a static play glyph.
-            ATMTodoStatusGlyph(todo: todo, tier: .body)
-                .padding(.top, 2)
-            VStack(alignment: .leading, spacing: 5) {
+        // No status glyph. It sat in a 28pt tile at the head of every row and said
+        // only what the section header the row is filed under already says — every
+        // row in 工作中 carried the same spinner, every row in 等待中 the same clock.
+        // Dropping it gives the title back ~38pt of a 260–420pt column and takes a
+        // line's worth of height off each row, which is the whole point of the list:
+        // scan ids and titles, not re-read the section you are already inside.
+        VStack(alignment: .leading, spacing: 5) {
+            // The id leads the title rather than sitting in the meta line: it
+            // is what you scan the list for and what you type back at the CLI,
+            // and below the title it was the one thing you had to look away to
+            // find. Mono and baseline-aligned so it reads as a label on the
+            // title, not as its first word.
+            //
+            // Its tint is the priority — see ATMTodoPriorityStyle. A closed
+            // todo drops to secondary regardless: a finished P0 is not urgent,
+            // and red on a struck-through row reads as a problem.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(todo.id.uppercased())
+                    .font(ATMFont.mono(.caption, .medium))
+                    .foregroundStyle(
+                        isClosed
+                            ? ATMTheme.secondary
+                            : ATMTodoPriorityStyle.color(for: todo.priority)
+                    )
+                    // Color alone is not readable — the priority stays
+                    // available by hover and to accessibility. The status rides
+                    // along for the same reason: with the glyph gone it is only on
+                    // the section header, which is a sibling of the row rather than
+                    // an ancestor and so is not read as part of it.
+                    .help(ATMTodoPriorityStyle.label(todo.priority))
+                    .accessibilityLabel(
+                        "\(todo.id.uppercased()) \(ATMTodoPriorityStyle.label(todo.priority)) \(ATMTodoStatusStyle.label(for: todo))"
+                    )
                 Text(todo.title)
                     // Fixed weight — see ATMRowSurface: selection never changes
                     // type weight, or the title jumps as glyph widths reflow.
@@ -1170,10 +1213,26 @@ private struct DesktopTodoRow: View {
                         color: ATMTheme.secondary
                     )
                     .lineLimit(2)
+            }
+            // Priority left this line for the id's tint, so the line can now be
+            // empty — a todo with no project filed before `creator` existed has
+            // nothing to say here. Skip it rather than leave the row padded
+            // around a blank strip.
+            if projectLabel != nil || creatorLabel != nil {
                 HStack(spacing: 6) {
-                    Text(todo.id.uppercased())
-                    Text(todo.priority)
-                    if let project = todo.project { Text(project) }
+                    if let project = projectLabel { Text(project) }
+                    // Where the todo came from. The icon carries it — 收集 and
+                    // agent-filed todos are the ones worth spotting, and they
+                    // are spotted by glyph long before the name is read.
+                    if let creator = creatorLabel {
+                        Label {
+                            Text(creator)
+                        } icon: {
+                            if let icon = ATMTodoCreator.icon(todo.creator) {
+                                Image(systemName: icon)
+                            }
+                        }
+                    }
                 }
                 .font(ATMFont.mono(.caption, .medium))
                 .foregroundStyle(ATMTheme.secondary)
@@ -1185,6 +1244,14 @@ private struct DesktopTodoRow: View {
     private var isClosed: Bool {
         todo.status == "done" || todo.status == "dropped"
     }
+
+    private var projectLabel: String? {
+        guard let project = todo.project?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !project.isEmpty else { return nil }
+        return project
+    }
+
+    private var creatorLabel: String? { ATMTodoCreator.shortLabel(todo.creator) }
 }
 
 struct DesktopTodoDetail: View {
@@ -1195,43 +1262,39 @@ struct DesktopTodoDetail: View {
 
     let todo: ATMTodo
     @ObservedObject var store: ATMDataStore
+    @ObservedObject var navigation: ATMDesktopNavigation
+    let isTrashed: Bool
 
     @State private var isEditing = false
     @State private var selectedTab: DetailTab = .detail
     @State private var copiedPrompt = false
-    @State private var title: String
-    @State private var description: String
-    @State private var priority: String
-    @State private var project: String
-    @State private var lane: String
-    @State private var status: String
-    @State private var wakeCondition: String
-    @State private var reviewAt: String
-    @State private var source: String
+    @State private var deleteCandidate: ATMTodo?
+    @State private var isEditingSource = false
+    @State private var title = ""
+    @State private var description = ""
+    @State private var priority = "P1"
+    @State private var project = ""
+    @State private var status = "open"
+    @State private var wakeCondition = ""
+    @State private var reviewAt = ""
+    @State private var source = ""
 
-    init(todo: ATMTodo, store: ATMDataStore) {
-        self.todo = todo
-        self.store = store
-        _title = State(initialValue: todo.title)
-        _description = State(initialValue: todo.description ?? "")
-        _priority = State(initialValue: todo.priority)
-        _project = State(initialValue: todo.project ?? "")
-        _lane = State(initialValue: todo.lane ?? "")
-        _status = State(initialValue: todo.status)
-        _wakeCondition = State(initialValue: todo.wakeCondition ?? "")
-        _reviewAt = State(initialValue: todo.reviewAt ?? "")
-        _source = State(initialValue: todo.source ?? "")
-    }
+    private static let reviewDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     var body: some View {
         VStack(spacing: 0) {
-            detailHeader
-            Divider()
             if isEditing {
+                editHeader
+                Divider()
                 editContent
             } else {
+                detailHeader
                 detailTabs
-                Divider()
                 if selectedTab == .detail {
                     readContent
                 } else {
@@ -1240,24 +1303,69 @@ struct DesktopTodoDetail: View {
             }
         }
         .background(ATMTheme.canvas)
-        .onAppear { store.loadBoundSessions(for: todo.id) }
+        .onAppear {
+            if !isTrashed { store.loadBoundSessions(for: todo.id) }
+            // Selecting another row rebuilds this view (`.id(todo.id)`), so a
+            // request aimed at a not-yet-selected todo arrives here rather than in
+            // onChange.
+            consumeEditRequest()
+        }
+        .onChange(of: navigation.editTodoID) { _ in consumeEditRequest() }
         .onChange(of: store.snapshot.refreshedAt) { _ in
-            store.loadBoundSessions(for: todo.id)
+            if !isTrashed { store.loadBoundSessions(for: todo.id) }
+        }
+        .confirmationDialog(
+            "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
+            isPresented: Binding(
+                get: { deleteCandidate != nil },
+                set: { if !$0 { deleteCandidate = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let target = deleteCandidate {
+                Button("永久删除", role: .destructive) {
+                    store.perform(.delete, on: target)
+                    deleteCandidate = nil
+                }
+            }
+            Button("取消", role: .cancel) { deleteCandidate = nil }
+        } message: {
+            Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
         }
     }
 
     private var detailTabs: some View {
-        Picker("详情页签", selection: $selectedTab) {
-            Label("详情", systemImage: "doc.text").tag(DetailTab.detail)
-            Label(sessionTabTitle, systemImage: "terminal").tag(DetailTab.sessions)
+        HStack(spacing: 22) {
+            detailTabButton(.detail, title: "任务描述", icon: "doc.text")
+            if !isTrashed {
+                detailTabButton(.sessions, title: sessionTabTitle, icon: "terminal")
+            }
+            Spacer(minLength: 0)
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(maxWidth: 360)
-        .padding(.horizontal, 18)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.surface)
+        .padding(.horizontal, 24)
+        .frame(height: 46)
+        .background(ATMTheme.elevated)
+        .overlay(alignment: .bottom) { Rectangle().fill(ATMTheme.border).frame(height: 1) }
+    }
+
+    private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
+        let selected = selectedTab == tab
+        return Button {
+            selectedTab = tab
+        } label: {
+            Label(title, systemImage: icon)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
+                .padding(.horizontal, 2)
+                .frame(height: 46)
+                .overlay(alignment: .bottom) {
+                    Capsule()
+                        .fill(selected ? ATMTheme.accent : Color.clear)
+                        .frame(height: 2)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var sessionTabTitle: String {
@@ -1266,68 +1374,153 @@ struct DesktopTodoDetail: View {
     }
 
     private var detailHeader: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            HStack(spacing: 6) {
-                badge(todo.id.uppercased(), ATMTheme.accent)
-                badge(todo.priority, priorityColor)
-                statusBadge
-                Spacer(minLength: 8)
-                if store.isActing { ProgressView().controlSize(.small) }
+        VStack(alignment: .leading, spacing: 15) {
+            HStack(spacing: 7) {
+                Label(todo.project ?? "未分项目", systemImage: "folder")
+                Image(systemName: "chevron.right")
+                    .font(ATMFont.font(.micro, weight: .semibold))
+                Text(todo.id.uppercased())
+                    .font(ATMFont.mono(.footnote, .semibold))
+                    .foregroundStyle(ATMTheme.accent)
+                Spacer(minLength: 10)
+                detailActions
             }
-            Text(isEditing ? "编辑任务" : todo.title)
-                .font(ATMFont.font(.title2, weight: .semibold))
-                .foregroundStyle(ATMTheme.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-            if !isEditing {
-                HStack(spacing: 10) {
-                    Label(todo.project ?? "未分项目", systemImage: "folder")
-                    Label(laneLabel(todo.lane), systemImage: "person.crop.circle")
-                    Text(todo.created)
-                    Spacer(minLength: 8)
-                    HStack(spacing: 2) {
-                        // Status-scoped lifecycle first; utility (copy/edit) always.
-                        // Affirmative complete/accept is rendered last among lifecycle
-                        // so it stays on the right edge of the action cluster.
-                        let lifecycle = ATMTodoStatusActions.primaryItems(for: todo)
-                        let leading = lifecycle.filter { $0.action != .complete }
-                        let trailing = lifecycle.filter { $0.action == .complete }
-                        ForEach(leading) { item in
-                            actionButton(item.systemImage, help: item.help) {
-                                store.perform(item.action, on: todo)
-                            }
-                        }
-                        if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                            actionButton(
-                                copiedPrompt ? "checkmark" : "doc.on.doc",
-                                help: copiedPrompt ? "已复制启动提示" : "复制启动提示（粘贴到 Agent 会话）"
-                            ) {
-                                copyLaunchPrompt(for: todo)
-                            }
-                        }
-                        actionButton("pencil", help: "编辑任务") { isEditing = true }
-                        ForEach(trailing) { item in
-                            actionButton(item.systemImage, help: item.help) {
-                                store.perform(item.action, on: todo)
-                            }
-                        }
-                    }
+            .font(ATMFont.footnote)
+            .foregroundStyle(ATMTheme.secondary)
+
+            // Status sits on its own line above the title. Beside it, a wrapped
+            // title pushed the badge off the first line's baseline and left a
+            // ragged notch in the text block; stacked, the title gets the full
+            // width and the badge reads as a label for the whole header.
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    statusBadge
+                    if store.isActing { ProgressView().controlSize(.small) }
                 }
-                .font(ATMFont.body)
-                .foregroundStyle(ATMTheme.secondary)
-            } else {
-                HStack {
-                    Text("支持 Markdown；保存后会自动刷新任务数据。")
-                        .font(ATMFont.body)
-                        .foregroundStyle(ATMTheme.secondary)
-                    Spacer()
-                }
+                Text(todo.title)
+                    .font(ATMFont.font(.title1, weight: .semibold))
+                    .foregroundStyle(ATMTheme.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            LazyVGrid(
+                columns: Array(
+                    repeating: GridItem(.flexible(minimum: 84), spacing: 8),
+                    count: 3
+                ),
+                spacing: 8
+            ) {
+                propertyCell("项目", value: todo.project ?? "未分项目", icon: "folder")
+                propertyCell(
+                    "优先级",
+                    value: ATMTodoPriorityStyle.label(todo.priority),
+                    icon: "flag",
+                    valueColor: priorityColor
+                )
+                propertyCell("创建", value: todo.created, icon: "calendar")
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 24)
+        .padding(.top, 17)
+        .padding(.bottom, 18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.surface)
+        .background(ATMTheme.elevated)
+    }
+
+    @ViewBuilder
+    private var detailActions: some View {
+        HStack(spacing: 3) {
+            if isTrashed {
+                actionButton("arrow.uturn.backward", help: "恢复任务") {
+                    store.perform(.restore, on: todo)
+                }
+                Menu {
+                    Button(role: .destructive) {
+                        deleteCandidate = todo
+                    } label: {
+                        Label("永久删除…", systemImage: "trash.slash")
+                    }
+                } label: {
+                    ATMIconMenuLabel(
+                        systemImage: "ellipsis",
+                        help: "更多操作",
+                        chrome: .chip,
+                        isEnabled: !store.isActing,
+                        side: 26,
+                        iconTier: .body
+                    )
+                }
+                .menuStyle(.borderlessButton)
+            } else {
+                let inline = ATMTodoStatusActions.inlineItems(for: todo)
+                let overflow = ATMTodoStatusActions.overflowItems(for: todo)
+                ForEach(inline) { item in
+                    actionButton(item.systemImage, help: item.help) {
+                        store.perform(item.action, on: todo)
+                    }
+                }
+                if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
+                    actionButton(
+                        copiedPrompt ? "checkmark" : "doc.on.doc",
+                        help: copiedPrompt ? "已复制启动提示" : "复制启动提示"
+                    ) {
+                        copyLaunchPrompt(for: todo)
+                    }
+                }
+                overflowMenu(overflow: overflow, todo: todo)
+            }
+        }
+    }
+
+    private func propertyCell(
+        _ label: String,
+        value: String,
+        icon: String,
+        valueColor: Color = ATMTheme.primary
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(label, systemImage: icon)
+                .font(ATMFont.caption)
+                .foregroundStyle(ATMTheme.secondary)
+            Text(value)
+                .font(ATMFont.font(.footnote, weight: .semibold))
+                .foregroundStyle(valueColor)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.listPane, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    /// Edit mode gets its own header rather than reusing the reading one: the read
+    /// header's priority and status badges would sit right above the fields that
+    /// edit them, showing the pre-edit value until save. Only the ID survives —
+    /// it is the one thing the form does not own.
+    private var editHeader: some View {
+        HStack(spacing: 8) {
+            badge(todo.id.uppercased(), ATMTheme.accent)
+            Text("编辑中")
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+            if store.isActing { ProgressView().controlSize(.small) }
+            Spacer(minLength: 12)
+            Button("取消") { isEditing = false }
+                .keyboardShortcut(.cancelAction)
+                .help("放弃修改 (⎋)")
+            Button("保存") { saveEdit() }
+                .buttonStyle(.borderedProminent)
+                // ⌘⏎ rather than ⏎: the description editor needs Return for newlines,
+                // so a bare Return shortcut only ever fired when focus was elsewhere.
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(!canSaveEdit)
+                .help("保存修改 (⌘⏎)")
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.elevated)
     }
 
     private var readContent: some View {
@@ -1343,8 +1536,10 @@ struct DesktopTodoDetail: View {
                     }
                 }
 
-                detailCard("动态", icon: "clock.arrow.circlepath") {
-                    TodoProgressView(todo: todo, store: store)
+                if !isTrashed {
+                    detailCard("动态", icon: "clock.arrow.circlepath") {
+                        TodoProgressView(todo: todo, store: store)
+                    }
                 }
 
                 if let links = todo.links, !links.isEmpty {
@@ -1363,14 +1558,10 @@ struct DesktopTodoDetail: View {
                     }
                 }
 
-                if let path = nonEmpty(todo.featurePath) {
-                    detailCard("关联路径", icon: "folder") {
-                        Text(path).font(ATMFont.mono(.body)).textSelection(.enabled)
-                    }
-                }
             }
             .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
@@ -1382,7 +1573,8 @@ struct DesktopTodoDetail: View {
                 }
             }
             .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
@@ -1391,79 +1583,237 @@ struct DesktopTodoDetail: View {
         return store.progress(for: todo.id).reversed().compactMap(\.nextAction).first
     }
 
-    /// The header already carries id / priority / status / project / lane / created,
+    /// The header already carries id / priority / status / project / created,
     /// so the read view opens on the one thing it can't show: what to do next.
     private func nextActionBanner(_ nextAction: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: "arrow.right.circle.fill")
-                .font(ATMFont.body)
-            Text("下一步")
-                .font(ATMFont.font(.caption, weight: .semibold))
-            Text(nextAction)
-                .font(ATMFont.font(.body, weight: .medium))
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+        HStack(alignment: .center, spacing: 11) {
+            Image(systemName: "arrow.up.right")
+                .font(ATMFont.font(.body, weight: .semibold))
+                .frame(width: 32, height: 32)
+                .background(ATMTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("下一步")
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(ATMTheme.secondary)
+                Text(nextAction)
+                    .font(ATMFont.font(.body, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
             Spacer(minLength: 0)
         }
         .foregroundStyle(ATMTheme.accent)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(13)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
+        .background(ATMTheme.accent.opacity(0.075), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(ATMTheme.accent.opacity(0.16))
+        )
     }
 
+    /// Two tiers, because the old flat run of eight identical fields gave 来源 the
+    /// same weight as 标题: the two content fields get full-width boxes, everything
+    /// else is metadata inside one aligned card.
+    ///
+    /// Short fields first, then the description. 描述 is the one field with no upper
+    /// bound on height — below it, every attribute sat under the fold, so setting a
+    /// priority meant scrolling past the whole body text to reach it.
     private var editContent: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    editField("标题", placeholder: "任务标题", text: $title)
-                    VStack(alignment: .leading, spacing: 7) {
-                        editLabel("描述（Markdown）")
-                        TextEditor(text: $description)
-                            .font(ATMFont.mono(.body))
-                            .scrollContentBackground(.hidden)
-                            .padding(8)
-                            .frame(minHeight: 160)
-                            .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
-                            .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                editSection("标题") {
+                    fieldBox {
+                        TextField("任务标题", text: $title)
+                            .textFieldStyle(.plain)
+                            .font(ATMFont.font(.body, weight: .medium))
                     }
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
-                        editPicker("优先级", selection: $priority, values: ["P0", "P1", "P2"], label: { $0 })
-                        editPicker("领域", selection: $lane, values: ["", "personal", "work"], label: { laneLabel($0) })
-                        editPicker(
-                            "状态",
-                            selection: $status,
-                            values: ["open", "in_progress", "waiting", "review", "blocked"],
-                            label: { ATMTodoStatusStyle.label(forStatus: $0) }
-                        )
-                    }
-                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                        editField("项目", placeholder: "项目（可选）", text: $project)
-                        editField("复查日期", placeholder: "YYYY-MM-DD", text: $reviewAt)
-                    }
-                    editField("唤醒条件", placeholder: "等待什么条件（可选）", text: $wakeCondition)
-                    editField("来源", placeholder: "来源（可选）", text: $source)
                 }
-                .padding(16)
-                .frame(maxWidth: 880, alignment: .leading)
-            }
-            Divider()
-            HStack {
-                Spacer()
-                Button("取消") { isEditing = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("保存") {
-                    store.editTodo(todo, edit: editValue)
-                    isEditing = false
+
+                detailCard("属性", icon: "slider.horizontal.3") {
+                    attributeGrid
                 }
-                .buttonStyle(.borderedProminent)
-                .keyboardShortcut(.defaultAction)
-                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.isActing)
+
+                editSection("描述", hint: "Markdown") {
+                    TextEditor(text: $description)
+                        // Body rather than mono: descriptions are mostly Chinese
+                        // prose, and CJK in a monospaced face is what made the old
+                        // form read as a code editor.
+                        .font(ATMFont.body)
+                        .scrollContentBackground(.hidden)
+                        .padding(7)
+                        .frame(minHeight: 200)
+                        .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
+                }
             }
-            .padding(.horizontal, 16)
-            .frame(height: 54)
-            .background(ATMTheme.surface)
+            // Capped and left-aligned: stretched across a wide detail pane, a
+            // single-line title field ran on for hundreds of points.
+            .frame(maxWidth: 620, alignment: .leading)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// One label column, one control column — the old layout put each label and its
+    /// control in a `maxWidth: .infinity` cell, so labels hugged the cell's leading
+    /// edge while the intrinsically-sized popup floated in the middle of it.
+    private var attributeGrid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 9) {
+            GridRow {
+                gridLabel("优先级").gridColumnAlignment(.trailing)
+                segmented(selection: $priority, values: ["P0", "P1", "P2"]) { $0 }
+            }
+            GridRow {
+                gridLabel("状态")
+                Picker("", selection: $status) {
+                    ForEach(["open", "in_progress", "waiting", "review", "blocked"], id: \.self) { value in
+                        Text(ATMTodoStatusStyle.label(forStatus: value)).tag(value)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+                .gridCellColumns(3)
+            }
+            GridRow {
+                gridLabel("项目")
+                TextField("未分项目", text: $project)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 190)
+                    .gridCellColumns(3)
+            }
+            GridRow {
+                gridLabel("复查日期")
+                reviewDateControl.gridCellColumns(3)
+            }
+            // 唤醒条件 only means anything while a Todo waits, so it stays out of the
+            // way otherwise — but never hides a value that is already set.
+            if status == "waiting" || !wakeCondition.trimmingCharacters(in: .whitespaces).isEmpty {
+                GridRow {
+                    gridLabel("唤醒条件")
+                    TextField("等待什么条件", text: $wakeCondition)
+                        .textFieldStyle(.roundedBorder)
+                        .gridCellColumns(3)
+                }
+            }
+            GridRow {
+                gridLabel("来源")
+                sourceControl.gridCellColumns(3)
+            }
+        }
+    }
+
+    /// `atm todo edit --review-at` takes `YYYY-MM-DD` and clears on empty, which a
+    /// free-text field advertised only through its placeholder. A value that does
+    /// not parse falls back to text so an odd existing date is never rewritten
+    /// behind the user's back.
+    @ViewBuilder
+    private var reviewDateControl: some View {
+        let trimmed = reviewAt.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty {
+            Button("设置日期") {
+                reviewAt = Self.reviewDateFormatter.string(from: Date())
+            }
+            .buttonStyle(.link)
+            .font(ATMFont.body)
+        } else if let date = Self.reviewDateFormatter.date(from: trimmed) {
+            HStack(spacing: 7) {
+                DatePicker(
+                    "",
+                    selection: Binding(
+                        get: { date },
+                        set: { reviewAt = Self.reviewDateFormatter.string(from: $0) }
+                    ),
+                    displayedComponents: .date
+                )
+                .labelsHidden()
+                .datePickerStyle(.field)
+                .fixedSize()
+                Button { reviewAt = "" } label: {
+                    Image(systemName: "xmark.circle.fill").font(ATMFont.body)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(ATMTheme.secondary)
+                .help("清除复查日期")
+            }
+        } else {
+            HStack(spacing: 7) {
+                TextField("YYYY-MM-DD", text: $reviewAt)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 130)
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.warning)
+                    .help("需要 YYYY-MM-DD")
+            }
+        }
+    }
+
+    /// 来源 is a provenance key the collection pipeline wrote
+    /// (`dingtalk:cid…:msg…`), not prose: one stray keystroke in a text field and
+    /// the trail back to the original message is gone. Read-only until asked
+    /// otherwise, and truncated in the middle so both the connector prefix and the
+    /// message suffix stay readable.
+    @ViewBuilder
+    private var sourceControl: some View {
+        if isEditingSource {
+            TextField("来源（可选）", text: $source)
+                .textFieldStyle(.roundedBorder)
+                .font(ATMFont.mono(.footnote))
+        } else {
+            HStack(spacing: 8) {
+                Text(source.isEmpty ? "无" : source)
+                    .font(ATMFont.mono(.footnote))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(source)
+                Spacer(minLength: 8)
+                Button(source.isEmpty ? "添加" : "编辑") { isEditingSource = true }
+                    .buttonStyle(.link)
+                    .font(ATMFont.footnote)
+            }
+        }
+    }
+
+    private var canSaveEdit: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !store.isActing
+            && editValue != savedValue
+    }
+
+    private func saveEdit() {
+        guard canSaveEdit else { return }
+        store.editTodo(todo, edit: editValue)
+        isEditing = false
+    }
+
+    /// Seeded when 编辑 is picked rather than in `init`, so the form always opens on
+    /// the Todo's current values — including the fields (project, 来源) that
+    /// the detail view's identity does not track.
+    private func beginEditing() {
+        title = todo.title
+        description = todo.description ?? ""
+        priority = todo.priority
+        project = todo.project ?? ""
+        status = todo.status
+        wakeCondition = todo.wakeCondition ?? ""
+        reviewAt = todo.reviewAt ?? ""
+        source = todo.source ?? ""
+        isEditingSource = false
+        isEditing = true
+    }
+
+    /// Opens the edit form when the task row's 编辑任务 pointed at this todo. The
+    /// request is cleared on the way in so re-selecting the same row later does not
+    /// drop the user back into an edit form.
+    private func consumeEditRequest() {
+        guard navigation.editTodoID == todo.id else { return }
+        navigation.editTodoID = nil
+        guard !isTrashed, !isEditing else { return }
+        beginEditing()
     }
 
     private var editValue: ATMTodoEdit {
@@ -1472,11 +1822,25 @@ struct DesktopTodoDetail: View {
             description: description,
             priority: priority,
             project: project,
-            lane: lane,
             status: status,
             wakeCondition: wakeCondition,
             reviewAt: reviewAt,
             source: source
+        )
+    }
+
+    /// What the form was seeded with, so 保存 can stay disabled until something
+    /// actually changed instead of firing a no-op `atm todo edit`.
+    private var savedValue: ATMTodoEdit {
+        ATMTodoEdit(
+            title: todo.title,
+            description: todo.description ?? "",
+            priority: todo.priority,
+            project: todo.project ?? "",
+            status: todo.status,
+            wakeCondition: todo.wakeCondition ?? "",
+            reviewAt: todo.reviewAt ?? "",
+            source: todo.source ?? ""
         )
     }
 
@@ -1490,8 +1854,9 @@ struct DesktopTodoDetail: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(ATMTheme.border))
+        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
+        .shadow(color: Color.black.opacity(0.045), radius: 8, y: 2)
     }
 
     private func actionButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
@@ -1503,6 +1868,45 @@ struct DesktopTodoDetail: View {
             iconTier: .body,
             action: action
         )
+    }
+
+    /// 「···」溢出菜单：编辑、剩余 lifecycle（暂不处理/回到待办/放弃等）、删除。
+    /// 形状恒定，内容随状态拼装。与 `actionButton` 同样的 chip 外观。
+    @ViewBuilder
+    private func overflowMenu(
+        overflow: [ATMTodoLifecycleItem],
+        todo: ATMTodo
+    ) -> some View {
+        Menu {
+            Button {
+                beginEditing()
+            } label: {
+                Label("编辑任务", systemImage: "pencil")
+            }
+            ForEach(overflow) { item in
+                Button {
+                    store.perform(item.action, on: todo)
+                } label: {
+                    Label(item.title, systemImage: item.systemImage)
+                }
+            }
+            Divider()
+            Button {
+                store.perform(.trash, on: todo)
+            } label: {
+                Label("移到回收站", systemImage: "trash")
+            }
+        } label: {
+            ATMIconMenuLabel(
+                systemImage: "ellipsis",
+                help: "更多操作",
+                chrome: .chip,
+                isEnabled: !store.isActing,
+                side: 26,
+                iconTier: .body
+            )
+        }
+        .menuStyle(.borderlessButton)
     }
 
     private func copyLaunchPrompt(for todo: ATMTodo) {
@@ -1517,10 +1921,14 @@ struct DesktopTodoDetail: View {
     }
 
     private var statusBadge: some View {
-        let color = ATMTodoStatusStyle.color(for: todo)
+        let color = isTrashed ? ATMTheme.secondary : ATMTodoStatusStyle.color(for: todo)
         return HStack(spacing: 3) {
-            ATMTodoStatusGlyph(todo: todo, tier: .caption)
-            Text(ATMTodoStatusStyle.label(for: todo))
+            if isTrashed {
+                Image(systemName: "trash")
+            } else {
+                ATMTodoStatusGlyph(todo: todo, tier: .caption)
+            }
+            Text(isTrashed ? "已删除" : ATMTodoStatusStyle.label(for: todo))
                 .font(ATMFont.mono(.caption, .semibold))
         }
         .foregroundStyle(color)
@@ -1544,36 +1952,58 @@ struct DesktopTodoDetail: View {
             .foregroundStyle(ATMTheme.secondary)
     }
 
-    private func editField(_ label: String, placeholder: String, text: Binding<String>) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            editLabel(label)
-            TextField(placeholder, text: text).textFieldStyle(.roundedBorder)
+    private func editSection<Content: View>(
+        _ label: String,
+        hint: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                editLabel(label)
+                if let hint {
+                    Text(hint)
+                        .font(ATMFont.mono(.micro))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            content()
         }
-        .frame(maxWidth: .infinity)
     }
 
-    private func editPicker(
-        _ title: String,
+    private func fieldBox<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        content()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
+    }
+
+    private func gridLabel(_ text: String) -> some View {
+        Text(text)
+            .font(ATMFont.body)
+            .foregroundStyle(ATMTheme.secondary)
+    }
+
+    /// Segmented rather than a popup for the two- and three-value fields: the
+    /// current value is readable without opening anything, and changing it is one
+    /// click instead of two.
+    private func segmented(
         selection: Binding<String>,
         values: [String],
         label: @escaping (String) -> String
     ) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            editLabel(title)
-            Picker("", selection: selection) {
-                ForEach(values, id: \.self) { value in Text(label(value)).tag(value) }
-            }
-            .labelsHidden()
+        Picker("", selection: selection) {
+            ForEach(values, id: \.self) { value in Text(label(value)).tag(value) }
         }
-        .frame(maxWidth: .infinity)
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
     }
 
-    private var priorityColor: Color {
-        switch todo.priority { case "P0": return ATMTheme.danger; case "P1": return ATMTheme.accent; default: return ATMTheme.secondary }
-    }
-    private func laneLabel(_ value: String?) -> String {
-        switch value { case "personal": return "个人"; case "work": return "工作"; case let lane?: return lane.isEmpty ? "未指定" : lane; default: return "未指定" }
-    }
+    // The detail header keeps a spelled-out priority badge: it is also the legend
+    // for the list, where the same color arrives with no word attached.
+    private var priorityColor: Color { ATMTodoPriorityStyle.color(for: todo.priority) }
     private func nonEmpty(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
         return trimmed
@@ -1622,7 +2052,7 @@ private struct DesktopTodoDescription: View {
                 .overlay(alignment: .bottom) {
                     if isClipped {
                         LinearGradient(
-                            colors: [ATMTheme.surface.opacity(0), ATMTheme.surface],
+                            colors: [ATMTheme.elevated.opacity(0), ATMTheme.elevated],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -1674,7 +2104,6 @@ private struct DesktopAddTodoSheet: View {
     @State private var text = ""
     @State private var projectOverride: String?
     @State private var priorityOverride: String?
-    @State private var laneOverride: String?
     @State private var isEditingProject = false
     let onAdd: (ATMTodoDraft) -> Void
 
@@ -1692,7 +2121,6 @@ private struct DesktopAddTodoSheet: View {
             text: text,
             project: projectOverride ?? suggestion.project,
             priority: priorityOverride ?? suggestion.priority,
-            lane: laneOverride ?? suggestion.lane
         )
     }
 
@@ -1738,13 +2166,11 @@ private struct DesktopAddTodoSheet: View {
                     projectChip(draft: draft, suggestion: suggestion)
                 }
                 priorityChip(draft: draft, suggestion: suggestion)
-                laneChip(draft: draft, suggestion: suggestion)
                 Spacer()
                 if isOverridden {
                     Button("恢复推荐") {
                         projectOverride = nil
                         priorityOverride = nil
-                        laneOverride = nil
                         isEditingProject = false
                     }
                     .buttonStyle(.link)
@@ -1773,7 +2199,7 @@ private struct DesktopAddTodoSheet: View {
     }
 
     private var isOverridden: Bool {
-        projectOverride != nil || priorityOverride != nil || laneOverride != nil
+projectOverride != nil || priorityOverride != nil
     }
 
     private func projectChip(draft: ATMTodoDraft, suggestion: ATMTodoSuggestion) -> some View {
@@ -1813,21 +2239,6 @@ private struct DesktopAddTodoSheet: View {
         .help(priorityOverride == nil ? "推荐依据：\(suggestion.priorityReason)" : "已手动指定优先级")
     }
 
-    private func laneChip(draft: ATMTodoDraft, suggestion: ATMTodoSuggestion) -> some View {
-        Menu {
-            Button("个人") { laneOverride = "personal" }
-            Button("工作") { laneOverride = "work" }
-        } label: {
-            chipLabel(
-                icon: "square.grid.2x2",
-                value: draft.lane == "work" ? "工作" : "个人",
-                isSuggested: laneOverride == nil
-            )
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help(laneOverride == nil ? "推荐依据：\(suggestion.laneReason)" : "已手动指定领域")
-    }
 
     /// Suggested values are marked so the sheet never looks like it is asserting a
     /// project the user chose; the mark disappears once they pick one themselves.
@@ -1997,8 +2408,11 @@ private struct DesktopUsageContent: View, Equatable {
     /// Metric / quota cards used a fixed column count equal to the number of
     /// items, so a narrow window crushed every card into a sliver. Adaptive
     /// columns keep a readable minimum width and wrap to extra rows instead.
-    private static let metricCardColumns = [
-        GridItem(.adaptive(minimum: 148, maximum: .infinity), spacing: 12),
+    private static let featuredMetricColumns = [
+        GridItem(.adaptive(minimum: 185, maximum: .infinity), spacing: 10),
+    ]
+    private static let supportingMetricColumns = [
+        GridItem(.adaptive(minimum: 145, maximum: .infinity), spacing: 8),
     ]
     // Wide enough for the per-product legend (● Build 13% ● Imagine 4% …)
     // on one line without scaling down.
@@ -2012,7 +2426,9 @@ private struct DesktopUsageContent: View, Equatable {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 28) {
+            LazyVStack(alignment: .leading, spacing: 22) {
+                usageModuleChrome
+
                 // Quota is a pinned top-level summary, independent of the
                 // overview / today-sessions tab and usage filters below.
                 if !quota.isEmpty {
@@ -2021,7 +2437,9 @@ private struct DesktopUsageContent: View, Equatable {
 
                 usageModule
             }
-            .padding(22)
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 30)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(ATMTheme.canvas)
@@ -2059,8 +2477,13 @@ private struct DesktopUsageContent: View, Equatable {
     /// Rate-limit windows and external provider cards are not scoped by usage filters.
     private var quotaModule: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("额度")
-                .font(ATMFont.font(.title2, weight: .bold))
+            VStack(alignment: .leading, spacing: 3) {
+                Text("额度概览")
+                    .font(ATMFont.font(.title3, weight: .semibold))
+                Text("各服务当前窗口与下一次重置")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
 
             LazyVGrid(columns: Self.quotaCardColumns, spacing: 12) {
                 ForEach(quota.cards) { card in
@@ -2094,14 +2517,26 @@ private struct DesktopUsageContent: View, Equatable {
     /// so their right edges stay aligned.
     private var usageModule: some View {
         LazyVStack(alignment: .leading, spacing: 14) {
-            usageModuleChrome
             usageFilterToolbar
 
             if pageTab == .overview {
                 let metrics = snapshot.usageMetrics(for: range, filters: filters)
-                LazyVGrid(columns: Self.metricCardColumns, spacing: 12) {
-                    ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
-                        metricCard(metric)
+                let featuredMetrics = metrics.filter(isFeaturedMetric)
+                let supportingMetrics = metrics.filter { !isFeaturedMetric($0) }
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("关键指标")
+                        .font(ATMFont.font(.title3, weight: .semibold))
+                    LazyVGrid(columns: Self.featuredMetricColumns, spacing: 10) {
+                        ForEach(Array(featuredMetrics.enumerated()), id: \.offset) { _, metric in
+                            metricCard(metric)
+                        }
+                    }
+                    if !supportingMetrics.isEmpty {
+                        LazyVGrid(columns: Self.supportingMetricColumns, spacing: 8) {
+                            ForEach(Array(supportingMetrics.enumerated()), id: \.offset) { _, metric in
+                                metricCard(metric, compact: true)
+                            }
+                        }
                     }
                 }
 
@@ -2129,22 +2564,30 @@ private struct DesktopUsageContent: View, Equatable {
     /// Narrow: keep the page switch beside the title and move health below.
     private var usageModuleChrome: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                Text("用量")
-                    .font(ATMFont.font(.title2, weight: .bold))
-                usagePagePicker
+            HStack(alignment: .bottom, spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("用量")
+                        .font(ATMFont.font(.title1, weight: .semibold))
+                    Text("额度、成本与模型效率")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
                 Spacer(minLength: 8)
+                usagePagePicker
                 dataHealthButton
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
                     Text("用量")
-                        .font(ATMFont.font(.title2, weight: .bold))
-                    usagePagePicker
+                        .font(ATMFont.font(.title1, weight: .semibold))
+                    Text("额度、成本与模型效率")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
                 }
                 HStack {
+                    usagePagePicker
                     Spacer()
                     dataHealthButton
                 }
@@ -2186,13 +2629,22 @@ private struct DesktopUsageContent: View, Equatable {
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            ATMTheme.controlFill.opacity(0.55),
+            ATMTheme.elevated,
             in: RoundedRectangle(cornerRadius: 10, style: .continuous)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(ATMTheme.border.opacity(0.7))
         )
+    }
+
+    private func isFeaturedMetric(_ metric: ATMUsageMetric) -> Bool {
+        switch metric {
+        case .tokens, .cacheHitRate, .cost, .throughput:
+            return true
+        default:
+            return false
+        }
     }
 
     @ViewBuilder
@@ -2298,19 +2750,24 @@ private struct DesktopUsageContent: View, Equatable {
     /// shared, and seeing them in the same frame is how "more tokens" gets told
     /// apart from "slower model".
     private var usageTrendCard: some View {
-        usageCard(range.tokenTrendTitle) {
-            let availableSeries = snapshot.filteredSeriesNames(for: range, filters: filters)
-            let seriesStats = snapshot.filteredLineTrendStats(for: range, filters: filters)
-            let seriesNames = snapshot.filteredLineTrendSeries(for: range, filters: filters)
-            let seriesLabel = filters.project.isEmpty ? "模型" : "项目"
-            let pinSeries = !filters.model.isEmpty || !filters.project.isEmpty
-            // Buckets with no measurable request carry no speed at all. Dropping
-            // them leaves a gap in the line; drawing them as 0 would claim the
-            // model stalled.
-            let speedStats = seriesStats.filter { $0.tokensPerSecond != nil }
-
+        let availableSeries = snapshot.filteredSeriesNames(for: range, filters: filters)
+        let seriesStats = snapshot.filteredLineTrendStats(for: range, filters: filters)
+        let seriesNames = snapshot.filteredLineTrendSeries(for: range, filters: filters)
+        let seriesLabel = filters.project.isEmpty ? "模型" : "项目"
+        let pinSeries = !filters.model.isEmpty || !filters.project.isEmpty
+        // Buckets with no measurable request carry no speed at all. Dropping
+        // them leaves a gap in the line; drawing them as 0 would claim the
+        // model stalled.
+        let speedStats = seriesStats.filter { $0.tokensPerSecond != nil }
+        let points = trendMetric == .speed
+            ? speedStats.map { ATMTrendPoint(from: $0, value: $0.tokensPerSecond ?? 0) }
+            : seriesStats.map { ATMTrendPoint(from: $0, value: Double($0.totalTokens)) }
+        return VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Spacer(minLength: 0)
+                Text(range.tokenTrendTitle)
+                    .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                    .foregroundStyle(ATMTheme.primary)
+                Spacer(minLength: 12)
                 Picker("", selection: $trendMetric) {
                     ForEach(ATMUsageTrendMetric.allCases) { item in Text(item.title).tag(item) }
                 }
@@ -2319,10 +2776,6 @@ private struct DesktopUsageContent: View, Equatable {
                 .frame(width: 154)
                 .help("Token 看用了多少，速度看模型每秒输出多少 token（不含工具执行时间）")
             }
-
-            let points = trendMetric == .speed
-                ? speedStats.map { ATMTrendPoint(from: $0, value: $0.tokensPerSecond ?? 0) }
-                : seriesStats.map { ATMTrendPoint(from: $0, value: Double($0.totalTokens)) }
 
             if points.isEmpty {
                 usageEmptyState(trendMetric.emptyStateTitle, icon: "chart.xyaxis.line")
@@ -2420,6 +2873,11 @@ private struct DesktopUsageContent: View, Equatable {
                 .frame(height: 240)
             }
         }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
+        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
     }
 
     private var todaySessionsCard: some View {
@@ -2937,14 +3395,30 @@ private struct DesktopUsageContent: View, Equatable {
         // One fixed height for every card: tall enough for the product-split
         // variant, and the Spacer above absorbs the slack in plain cards.
         .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border))
+        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
+        .shadow(color: Color.black.opacity(0.04), radius: 7, y: 2)
         .help("\(label) \(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)")
     }
 
+    /// A card whose provider named the page behind the reading is a way in to it:
+    /// the whole card opens that page, so a quota running low is one click from
+    /// wherever it is managed.
+    @ViewBuilder
     private func providerQuotaCard(_ card: ATMProviderQuotaCard) -> some View {
+        if let url = card.payload.linkURL {
+            DesktopQuotaCardLink(url: url) { isHovered in
+                providerQuotaCardBody(card, isHovered: isHovered)
+            }
+        } else {
+            providerQuotaCardBody(card, isHovered: false)
+        }
+    }
+
+    private func providerQuotaCardBody(_ card: ATMProviderQuotaCard, isHovered: Bool) -> some View {
         let payload = card.payload
         let label = ATMAgentDisplay.name(card.agent)
+        let linksOut = payload.linkURL != nil
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 5) {
                 ATMAgentMark(agent: card.agent, size: 15)
@@ -2963,6 +3437,14 @@ private struct DesktopUsageContent: View, Equatable {
                         .font(ATMFont.mono(.caption))
                         .foregroundStyle(ATMTheme.secondary)
                 }
+                if linksOut {
+                    // Drawn whether or not the pointer is here, so revealing it on
+                    // hover cannot shove the period label sideways.
+                    Image(systemName: "arrow.up.right")
+                        .font(ATMFont.font(.caption, weight: .semibold))
+                        .foregroundStyle(ATMTheme.accent)
+                        .opacity(isHovered ? 1 : 0)
+                }
             }
             .frame(height: 20)
             .foregroundStyle(ATMTheme.secondary)
@@ -2972,16 +3454,23 @@ private struct DesktopUsageContent: View, Equatable {
                 .foregroundStyle(ATMTheme.secondary)
                 .lineLimit(1)
 
-            ForEach(payload.metrics) { metric in
-                providerQuotaMetric(metric)
+            if payload.isUnavailable {
+                providerQuotaEmptyState(payload)
+            } else {
+                ForEach(payload.metrics) { metric in
+                    providerQuotaMetric(metric)
+                }
             }
 
             Spacer(minLength: 0)
 
             HStack(spacing: 6) {
                 if !payload.observedAt.isEmpty {
-                    Label(payload.observedTimeLabel, systemImage: "clock")
-                        .lineLimit(1)
+                    Label(
+                        payload.isUnavailable ? "上次 \(payload.observedTimeLabel)" : payload.observedTimeLabel,
+                        systemImage: "clock"
+                    )
+                    .lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 if let sourceLabel = card.sourceLabel {
@@ -2998,13 +3487,37 @@ private struct DesktopUsageContent: View, Equatable {
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border))
+        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(isHovered ? ATMTheme.accent : ATMTheme.border)
+        )
+        .shadow(color: Color.black.opacity(isHovered ? 0.08 : 0.04), radius: 7, y: 2)
+        // The card's own padding is part of the hit area, not a dead margin.
+        .contentShape(RoundedRectangle(cornerRadius: 12))
         .help(
             "\(label) · \(card.providerLabel) · \(payload.title)："
-                + payload.metrics.map { "\($0.label) \(String(format: "%.1f", $0.usedPercent))%" }
-                    .joined(separator: "，")
+                + (payload.isUnavailable
+                    ? payload.unavailableText
+                    : payload.metrics.map { "\($0.label) \(String(format: "%.1f", $0.usedPercent))%" }
+                        .joined(separator: "，"))
+                + (linksOut ? " · 点击打开" : "")
         )
+    }
+
+    /// A provider with nothing to report keeps its card and loses its numbers.
+    /// Dropping the card instead read as "this quota no longer exists" — for a
+    /// daily quota that is only observed when its page is open, that happened
+    /// every morning. The reading is the only thing missing, so say so and let
+    /// the timestamp below show how old the last one is.
+    private func providerQuotaEmptyState(_ payload: ATMProviderQuotaPayload) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "clock.arrow.circlepath")
+            Text(payload.unavailableText)
+        }
+        .font(ATMFont.footnote)
+        .foregroundStyle(ATMTheme.secondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func providerQuotaMetric(_ metric: ATMProviderQuotaMetric) -> some View {
@@ -3046,13 +3559,14 @@ private struct DesktopUsageContent: View, Equatable {
     }
 
     @ViewBuilder
-    private func metricCard(_ metric: ATMUsageMetric) -> some View {
+    private func metricCard(_ metric: ATMUsageMetric, compact: Bool = false) -> some View {
         switch metric {
         case let .seriesCount(count, title):
             metricCard(
                 "\(title)数",
                 .plain("\(count)"),
-                "square.stack.3d.up"
+                "square.stack.3d.up",
+                compact: compact
             )
         case let .tokens(value):
             metricCard(
@@ -3060,39 +3574,43 @@ private struct DesktopUsageContent: View, Equatable {
                 .compact(value),
                 "number.circle.fill",
                 emphasized: true,
-                valueColor: ATMTheme.accent
+                valueColor: ATMTheme.accent,
+                compact: compact
             )
         case let .output(value):
-            metricCard("输出", .compact(value), "arrow.up.right.circle")
+            metricCard("输出", .compact(value), "arrow.up.right.circle", compact: compact)
         case let .cacheHitRate(rate):
             metricCard(
                 "缓存命中率",
                 .percent(rate),
                 "bolt.shield.fill",
                 emphasized: true,
-                valueColor: ATMTheme.cacheHitColor(rate)
+                valueColor: ATMTheme.cacheHitColor(rate),
+                compact: compact
             )
         case let .sessions(count):
             metricCard(
                 "会话",
                 .plain("\(count)"),
-                "bubble.left.and.bubble.right"
+                "bubble.left.and.bubble.right",
+                compact: compact
             )
         case let .queries(count):
-            metricCard("提问", .plain("\(count)"), "text.bubble")
+            metricCard("提问", .plain("\(count)"), "text.bubble", compact: compact)
         case let .cost(value):
             metricCard(
                 "估算费用",
                 .plain(NumberFormat.currency(value)),
                 "dollarsign.circle.fill",
                 emphasized: true,
-                valueColor: ATMTheme.accent
+                valueColor: ATMTheme.accent,
+                compact: compact
             )
         case let .throughput(value):
-            metricCard("输出速度", .throughput(value), "speedometer")
+            metricCard("输出速度", .throughput(value), "speedometer", compact: compact)
                 .help("模型自身的生成速度，不含工具执行时间；由日志时间戳推导，只统计可测的请求")
         case let .turnWait(seconds):
-            metricCard("等待中位数", .duration(seconds), "hourglass")
+            metricCard("等待中位数", .duration(seconds), "hourglass", compact: compact)
                 .help("从你发出消息到模型给出最后一句回复，含工具执行与该轮内部的每次请求")
         }
     }
@@ -3102,9 +3620,10 @@ private struct DesktopUsageContent: View, Equatable {
         _ value: ATMMetricDisplayValue,
         _ icon: String,
         emphasized: Bool = false,
-        valueColor: Color = ATMTheme.primary
+        valueColor: Color = ATMTheme.primary,
+        compact: Bool = false
     ) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: compact ? 6 : 9) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
                     .foregroundStyle(emphasized ? valueColor : ATMTheme.secondary)
@@ -3129,10 +3648,14 @@ private struct DesktopUsageContent: View, Equatable {
                 }
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border))
+        .padding(compact ? 12 : 16)
+        .frame(maxWidth: .infinity, minHeight: compact ? 72 : 92, alignment: .leading)
+        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous)
+                .stroke(ATMTheme.border)
+        )
+        .shadow(color: compact ? .clear : Color.black.opacity(0.04), radius: 7, y: 2)
         .overlay(alignment: .topLeading) {
             if emphasized {
                 Capsule()
@@ -3153,8 +3676,9 @@ private struct DesktopUsageContent: View, Equatable {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border))
+        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
+        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
     }
 
     private func usageEmptyState(_ title: String, icon: String) -> some View {
@@ -3188,6 +3712,30 @@ private struct DesktopUsageContent: View, Equatable {
         }
     }
 
+}
+
+/// Makes one quota card open a page.
+///
+/// Its own view because each card needs its own hover state — a single `@State`
+/// on the grid's parent would light up every card at once. macOS `.plain`
+/// buttons draw no hover of their own (see `ATMIconButton`), so the card body
+/// takes the hover flag and decides what it means.
+private struct DesktopQuotaCardLink<Content: View>: View {
+    let url: URL
+    @ViewBuilder var content: (Bool) -> Content
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            NSWorkspace.shared.open(url)
+        } label: {
+            content(isHovered)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.easeInOut(duration: 0.12), value: isHovered)
+    }
 }
 
 /// Gear on a quota card that opens that agent's own settings.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/store"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
@@ -195,9 +196,24 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			batchFailed = true
 			continue
 		}
+		if inserted {
+			// This batch owns its messages from now on, so any failed batch made
+			// only of them will never be rebuilt again. Retire it here rather than
+			// leave it advertising a retry that cannot arrive.
+			if _, err := store.RetireSupersededCollectionItems(db, source.ID, stored.ID, stored.MessageIDs); err != nil {
+				run.Error = err.Error()
+			}
+		}
 		// Already decided, or held by an on-demand analysis for someone to
 		// confirm. A proposal must not be carried out behind their back.
 		if !inserted && (stored.Status == "processed" || stored.ProposedAction != "") {
+			continue
+		}
+		// Out of retries: failing the same way every run is not something waiting
+		// changes, and each attempt costs a model call. The item stays visible and
+		// `atm collect item reprocess` still works, but the run must not be marked
+		// failed for it — that is what would keep the checkpoint from advancing.
+		if !inserted && store.CollectionRetriesExhausted(stored) {
 			continue
 		}
 		item = stored
@@ -429,6 +445,23 @@ func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decis
 			return item, err
 		}
 		item.TodoID, item.Status = todoID, "processed"
+	case "append":
+		todoID, err := appendDecision(batch, decision)
+		if err != nil {
+			return item, err
+		}
+		// The target was closed, deleted, or does not belong to this conversation.
+		// Filing the batch as its own Todo is the wrong answer the classifier was
+		// trying to avoid, but it is still better than marking the batch handled
+		// with nothing written anywhere.
+		if todoID == "" {
+			todoID, err = createDecision(batch, decision)
+			if err != nil {
+				return item, err
+			}
+			item.Action = "create"
+		}
+		item.TodoID, item.Status = todoID, "processed"
 	default:
 		return item, fmt.Errorf("unsupported collection decision: %s", decision.Action)
 	}
@@ -464,6 +497,11 @@ func (service Service) Reprocess(ctx context.Context, itemID string) (store.Coll
 	if err != nil {
 		return item, err
 	}
+	// An explicit reprocess is a fresh start, not a fourth attempt: someone asked
+	// for this after fixing whatever broke, so the automatic retry gets its full
+	// budget back and a batch that still fails will stop on its own again.
+	item.Attempts = 0
+	item.RetryStopped = false
 	item, err = service.processBatch(ctx, batch, item)
 	if err != nil {
 		markItemFailed(db, &item, err)
@@ -522,10 +560,18 @@ func (service Service) Promote(itemID string, correction ItemCorrection) (store.
 	if item.ProposedAction != "" {
 		reason = "用户确认按需分析的建议"
 	}
-	decision := normalizeDecision(Decision{Action: "create", Title: title,
+	// Confirming a proposed append has to append. Promoting it into a new Todo
+	// would produce exactly the duplicate the proposal was avoiding, and the
+	// target's own guardrails still get to refuse — applyDecision falls back to
+	// creating if the Todo has since been closed or belongs to another thread.
+	action, relatedTodoID := "create", ""
+	if item.ProposedAction == "append" && item.TodoID != "" {
+		action, relatedTodoID = "append", item.TodoID
+	}
+	decision := normalizeDecision(Decision{Action: action, Title: title,
 		Summary:  empty(strings.TrimSpace(item.Summary), strings.TrimSpace(item.RawContext)),
 		ItemType: itemType, Project: project, Priority: priority,
-		Reason: reason, Confidence: 1}, source)
+		RelatedTodoID: relatedTodoID, Reason: reason, Confidence: 1}, source)
 	item, err = applyDecision(batch, item, decision)
 	if err != nil {
 		markItemFailed(db, &item, err)
@@ -655,7 +701,8 @@ func (service Service) Revert(itemID string) (store.CollectionItem, error) {
 		if todo == nil {
 			return item, store.TodoNotFoundError(todos, item.TodoID)
 		}
-		marker := "[撤销钉钉采集:" + shortFingerprint(item.Fingerprint) + "] 此前自动补充被用户标记为误判；原记录保留供审计。"
+		marker := "[撤销" + collectionSupplementMarker + ":" + shortFingerprint(item.Fingerprint) +
+			"] 此前自动补充被用户标记为误判；原记录保留供审计。"
 		if _, err := store.AppendTodoLog(todo, marker, "补充"); err != nil {
 			return item, err
 		}
@@ -800,9 +847,24 @@ func applyDecisionToItem(item *store.CollectionItem, decision Decision) {
 	item.Confidence, item.Error = decision.Confidence, ""
 }
 
+// markItemFailed records a failed attempt and spends one of the item's retries.
+// The count is what later runs read to decide whether trying again is still
+// worth a model call.
 func markItemFailed(db *sql.DB, item *store.CollectionItem, err error) {
 	item.Action, item.Status, item.Error = "failed", "failed", compactError(err)
-	_ = store.UpdateCollectionItem(db, *item)
+	item.Attempts++
+	item.RetryStopped = store.CollectionRetriesExhausted(*item)
+	// The ceiling only holds if this write lands: an attempt that fails to record
+	// itself leaves the count where it was, and the batch goes back to costing a
+	// model call every run — the exact behaviour Attempts exists to stop. Still
+	// not returned, because the caller's job is to report the failure that got us
+	// here, but no longer silent either.
+	if writeErr := store.UpdateCollectionItem(db, *item); writeErr != nil {
+		logging.Failure("collection_item_failure_not_recorded", "", writeErr, map[string]any{
+			"item":     item.ID,
+			"attempts": item.Attempts,
+		})
+	}
 }
 
 func createDecision(batch MessageBatch, decision Decision) (string, error) {
@@ -836,8 +898,9 @@ func createDecision(batch MessageBatch, decision Decision) (string, error) {
 		todos := transaction.Todos()
 		created = store.Todo{ID: store.NextTodoID(todos), Title: decision.Title,
 			Description: todoDescription(decision, relatedTodoID), Priority: decision.Priority,
-			Status: store.TodoStatusOpen, Project: decision.Project, Lane: "work",
-			Created: store.Today(), Source: connectorSource(batch)}
+			Status: store.TodoStatusOpen, Project: decision.Project,
+			Created: store.Today(), Source: connectorSource(batch),
+			Creator: store.TodoCreatorCollect}
 		todos.Items = append(todos.Items, created)
 		return nil
 	})
@@ -850,6 +913,55 @@ func createDecision(batch MessageBatch, decision Decision) (string, error) {
 	return created.ID, nil
 }
 
+// collectionSupplementMarker tags a 补充 that collection wrote, so the note can
+// be tied back to the item that wrote it and written again idempotently.
+//
+// Named rather than inlined because it is a contract with a second codebase: the
+// App matches this exact literal to keep the marker out of the task timeline
+// (ATMTodoProgressEntry.displayText in
+// app/macos/Sources/ATMMenuBarApp/Models.swift), and Todo documents on disk
+// already carry it. It says 钉钉 even though nothing here is DingTalk-specific —
+// that is the cost of a literal shared with documents already written, so a
+// second connector's supplements will read 钉钉采集 until both sides learn a new
+// tag and the old one stays understood.
+const collectionSupplementMarker = "钉钉采集"
+
+// appendDecision records what a batch adds to work an existing Todo already
+// tracks, and reports which Todo it wrote to. An empty ID means the append could
+// not be carried out and the caller has to fall back to creating.
+//
+// The target must be a Todo this same conversation filed. The classifier reads
+// untrusted chat, so the one write it can direct at an existing record is held to
+// the thread that produced it: a hand-written Todo, or one belonging to another
+// group, cannot be edited by whatever a message claims to relate to.
+func appendDecision(batch MessageBatch, decision Decision) (string, error) {
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		return "", err
+	}
+	target := store.FindTodo(todos, decision.RelatedTodoID)
+	if target == nil || !store.TodoIsActive(*target) {
+		return "", nil
+	}
+	prefix := conversationSourcePrefix(batch)
+	if prefix == "" || !strings.HasPrefix(target.Source, prefix) {
+		return "", nil
+	}
+	// 补充 rather than 进展: this is context the chat added, not a milestone the
+	// person working the Todo reached. It is also where Revert writes its
+	// compensating note, so an append and its undo read as one thread.
+	//
+	// The fingerprint goes in an HTML comment because the App strips exactly this
+	// shape out of the task timeline: the entry reads as the one sentence the chat
+	// added, and the marker stays on disk to tie it back to the collection item.
+	note := strings.TrimSpace(decision.Summary) +
+		"\n\n<!-- [" + collectionSupplementMarker + ":" + shortFingerprint(batch.Fingerprint) + "] -->"
+	if _, err := store.AppendTodoLog(target, note, "补充"); err != nil {
+		return "", err
+	}
+	return target.ID, nil
+}
+
 func todoDescription(decision Decision, relatedTodoID string) string {
 	description := strings.TrimSpace(decision.Summary)
 	if relatedTodoID == "" {
@@ -860,6 +972,20 @@ func todoDescription(decision Decision, relatedTodoID string) string {
 		return relation
 	}
 	return description + "\n\n" + relation
+}
+
+// conversationSourcePrefix is the Todo source marker every Todo filed from this
+// batch's conversation starts with. connectorSource pins the message too, which
+// identifies one batch; this identifies the thread.
+func conversationSourcePrefix(batch MessageBatch) string {
+	conversation := batch.Source.ExternalID
+	if len(batch.Messages) > 0 && batch.Messages[0].ConversationID != "" {
+		conversation = batch.Messages[0].ConversationID
+	}
+	if batch.Source.Connector == "" || conversation == "" {
+		return ""
+	}
+	return batch.Source.Connector + ":" + conversation + ":"
 }
 
 func connectorSource(batch MessageBatch) string {

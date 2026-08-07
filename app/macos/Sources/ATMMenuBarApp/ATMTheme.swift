@@ -6,11 +6,29 @@ enum ATMTheme {
     static let white = Color(nsColor: .textBackgroundColor)
     static let canvas = Color(nsColor: .windowBackgroundColor)
     static let surface = Color(nsColor: .controlBackgroundColor)
+    /// Quietly separates list columns from document/detail canvases without
+    /// introducing another saturated brand color.
+    static let listPane = Color(nsColor: .underPageBackgroundColor).opacity(0.22)
+    /// Raised rows and reading cards use the text background: in light mode it
+    /// reads as a crisp sheet over listPane; in dark mode it stays system-aware.
+    static let elevated = Color(nsColor: .textBackgroundColor)
     static let sidebar = Color(nsColor: .windowBackgroundColor)
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let border = Color(nsColor: .separatorColor).opacity(0.65)
+    static let borderStrong = Color(nsColor: .separatorColor).opacity(0.92)
     static let primary = Color(nsColor: .labelColor)
     static let secondary = Color(nsColor: .secondaryLabelColor)
+
+    // The desktop app rail is deliberately tonal rather than another system
+    // sidebar. It gives ATM one stable piece of chrome while the working panes
+    // continue to follow the user's light/dark appearance.
+    static let rail = Color(red: 18 / 255, green: 25 / 255, blue: 42 / 255)
+    static let railRaised = Color(red: 30 / 255, green: 39 / 255, blue: 59 / 255)
+    static let railSelected = Color(red: 42 / 255, green: 57 / 255, blue: 91 / 255)
+    static let railPrimary = Color.white.opacity(0.96)
+    static let railSecondary = Color.white.opacity(0.62)
+    static let railMuted = Color.white.opacity(0.42)
+    static let railBorder = Color.white.opacity(0.10)
 
     // 状态色：好 / 警告 / 危险。全 App 只有这一套。
     //
@@ -42,6 +60,15 @@ enum ATMTheme {
     static let chartPlotFill = primary.opacity(0.022)
     static let chartGrid = secondary.opacity(0.18)
 
+    /// 连接器健康色。设置页和「添加来源」共用，别处不要再判一次状态字符串。
+    static func collectionHealthColor(_ status: String?) -> Color {
+        switch status {
+        case "ready": return success
+        case "auth_required", "permission_required", "error": return warning
+        default: return secondary
+        }
+    }
+
     static func quotaColor(_ level: ATMQuotaLevel) -> Color {
         switch level {
         case .critical: return danger
@@ -56,5 +83,36 @@ enum ATMTheme {
         case ..<0.8: return warning
         default: return success
         }
+    }
+}
+
+extension View {
+    /// ATM keeps its scroll bars out of sight. The panes are dense — nested cards,
+    /// list columns, Markdown descriptions — and an overlay scroller drew a grey
+    /// stripe down the edge of nearly every one of them, on top of a layout whose
+    /// job is to be read at a glance.
+    ///
+    /// Applied at each window / panel / sheet root: the setting reaches every
+    /// scroll view inside, so individual `ScrollView`s and `List`s stay clean.
+    /// Horizontal bars inside Markdown code blocks and tables opt back in with
+    /// `.scrollIndicators(.visible, axes: .horizontal)` — there the bar is the only
+    /// hint that the content continues past the edge.
+    func atmHidesScrollBars() -> some View {
+        scrollIndicators(.hidden)
+    }
+
+    /// Shared raised surface for the desktop workspaces. Keeping this in one
+    /// place prevents Collection, Agent, Knowledge and Settings from drifting
+    /// into four subtly different card styles.
+    func atmWorkspaceCard(cornerRadius: CGFloat = 12) -> some View {
+        background(
+            ATMTheme.elevated,
+            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(ATMTheme.border, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
     }
 }

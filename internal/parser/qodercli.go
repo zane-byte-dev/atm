@@ -210,7 +210,11 @@ func qoderJSONLLiveSessions(files []string, maxAge time.Duration, toolName strin
 		if len(parsed.Outputs) > 0 {
 			lastAssistant = truncateText(parsed.Outputs[len(parsed.Outputs)-1].Content, 200)
 		}
-		sessions = append(sessions, Session{Tool: toolName, Project: parsed.Project, SessionID: parsed.ShortID, Model: parsed.Usage.Model, Summary: parsed.Summary, FirstQ: firstQ, LastUserMsg: lastUser, LastAssistant: lastAssistant, AgeSeconds: int(age.Seconds())})
+		// The transcript filename is the session id Qoder's hook reports, while
+		// ShortID is truncated for display. ResumeID keeps the whole one so hook
+		// events can be joined onto this row.
+		resumeID := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+		sessions = append(sessions, Session{Tool: toolName, Project: parsed.Project, SessionID: parsed.ShortID, ResumeID: resumeID, Model: parsed.Usage.Model, Summary: parsed.Summary, FirstQ: firstQ, LastUserMsg: lastUser, LastAssistant: lastAssistant, AgeSeconds: int(age.Seconds())})
 	}
 	sort.Slice(sessions, func(i, j int) bool { return sessions[i].AgeSeconds < sessions[j].AgeSeconds })
 	return sessions

@@ -23,13 +23,38 @@ struct DesktopSettingsView: View {
             case .connectors: return "连接器"
             }
         }
+
+        var systemImage: String {
+            switch self {
+            case .general: return "slider.horizontal.3"
+            case .notch: return "rectangle.topthird.inset.filled"
+            case .todo: return "checklist"
+            case .connectors: return "link"
+            }
+        }
+
+        var subtitle: String {
+            switch self {
+            case .general: return "主题、字号与快捷键"
+            case .notch: return "状态提醒与声音反馈"
+            case .todo: return "任务列表与默认行为"
+            case .connectors: return "自动收集与外部来源"
+            }
+        }
     }
 
     @ObservedObject var store: ATMDataStore
     @ObservedObject private var appearance = ATMAppearance.shared
+    @ObservedObject private var hotKeys = ATMGlobalHotKeyManager.shared
     @State private var selectedTab: SettingsTab = .general
     @AppStorage(ATMTodoListPreferences.showDroppedKey)
     private var showsDropped = ATMTodoListPreferences.defaultShowsDropped
+    @AppStorage(ATMGlobalHotKeyPreferences.enabledKey)
+    private var globalHotKeyEnabled = ATMGlobalHotKeyPreferences.defaultEnabled
+    @AppStorage(ATMGlobalHotKeyPreferences.hotKeyKey)
+    private var globalHotKeyValue = ATMGlobalHotKeyPreferences.defaultHotKey.storageValue
+    @AppStorage(ATMGlobalHotKeyPreferences.targetKey)
+    private var globalHotKeyTarget = ATMGlobalHotKeyPreferences.defaultTarget.rawValue
     @AppStorage(ATMAgentNotchPreferences.enabledKey)
     private var agentNotchEnabled = ATMAgentNotchPreferences.defaultEnabled
     @AppStorage(ATMAgentNotchPreferences.retentionKey)
@@ -69,40 +94,140 @@ struct DesktopSettingsView: View {
         """
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 18) {
+        // The settings sidebar holds four short rows and no user content, so it
+        // starts narrower than the task / knowledge lists: the space is worth more
+        // to the settings forms on the right.
+        ATMSplitColumn(
+            id: "settings",
+            defaultWidth: 232,
+            minWidth: 208,
+            maxWidth: 310,
+            detailMinWidth: 560
+        ) {
+            settingsSidebar
+        } detail: {
+            settingsContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(ATMTheme.listPane)
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("工作台")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
                 Text("设置")
                     .font(ATMFont.font(.title2, weight: .bold))
+                Text("应用偏好与外部连接")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 24)
+            .padding(.bottom, 18)
 
-                Picker("设置分类", selection: $selectedTab) {
-                    ForEach(SettingsTab.allCases) { tab in
-                        Text(tab.title).tag(tab)
+            Divider()
+
+            VStack(spacing: 4) {
+                ForEach(SettingsTab.allCases) { tab in
+                    Button {
+                        selectedTab = tab
+                    } label: {
+                        settingsSidebarRow(tab)
                     }
+                    .buttonStyle(.plain)
                 }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .frame(width: 400)
+            }
+            .padding(8)
+
+            Spacer(minLength: 0)
+        }
+        .background(ATMTheme.listPane)
+    }
+
+    private func settingsSidebarRow(_ tab: SettingsTab) -> some View {
+        let isSelected = selectedTab == tab
+
+        return HStack(spacing: 12) {
+            Image(systemName: tab.systemImage)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(isSelected ? ATMTheme.accent : ATMTheme.secondary)
+                .frame(width: 30, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(isSelected ? ATMTheme.accent.opacity(0.12) : ATMTheme.surface)
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(tab.title)
+                    .font(ATMFont.font(.body, weight: .semibold))
+                    .foregroundStyle(ATMTheme.primary)
+                Text(tab.subtitle)
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+
+            Spacer(minLength: 4)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary.opacity(0.65))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .contentShape(Rectangle())
+        .atmRowSurface(isSelected: isSelected)
+    }
+
+    private var settingsContent: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 13) {
+                Image(systemName: selectedTab.systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(ATMTheme.accent)
+                    .frame(width: 36, height: 36)
+                    .background(
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .fill(ATMTheme.accent.opacity(0.12))
+                    )
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(selectedTab.title)
+                        .font(ATMFont.font(.title2, weight: .bold))
+                    Text(selectedTab.subtitle)
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
 
                 Spacer()
             }
             .padding(.horizontal, 24)
-            .padding(.top, 22)
-            .padding(.bottom, 14)
+            .frame(height: 86)
+            .background(ATMTheme.elevated)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(ATMTheme.border)
+                    .frame(height: 1)
+            }
 
-            Divider()
-
-            switch selectedTab {
-            case .general:
-                generalSettings
-            case .notch:
-                notchSettings
-            case .todo:
-                todoSettings
-            case .connectors:
-                connectorSettings
+            Group {
+                switch selectedTab {
+                case .general:
+                    generalSettings
+                case .notch:
+                    notchSettings
+                case .todo:
+                    todoSettings
+                case .connectors:
+                    connectorSettings
+                }
             }
         }
-        .background(ATMTheme.canvas)
+        // 设置内容是阅读/编辑画布，和任务、Agent 的详情栏一样保持白色；
+        // 灰色 listPane 只属于左侧分类抽屉。
+        .background(ATMTheme.elevated)
     }
 
     private var generalSettings: some View {
@@ -119,7 +244,15 @@ struct DesktopSettingsView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
 
-                        HStack(alignment: .top, spacing: 14) {
+                        LazyVGrid(
+                            columns: [
+                                // Never below the preview's fixed 184pt artwork,
+                                // or a narrow column would clip it again.
+                                GridItem(.adaptive(minimum: 184, maximum: 220), spacing: 14)
+                            ],
+                            alignment: .leading,
+                            spacing: 14
+                        ) {
                             ForEach(ATMThemeMode.allCases) { mode in
                                 ATMThemeChoiceButton(
                                     mode: mode,
@@ -150,7 +283,7 @@ struct DesktopSettingsView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
-                        .frame(width: 420)
+                        .frame(maxWidth: 520)
                     }
                 }
 
@@ -165,12 +298,70 @@ struct DesktopSettingsView: View {
                     }
                 }
 
+                card { globalHotKeySection }
+
                 Spacer(minLength: 0)
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The global shortcut lives in 通用 rather than in a tab of its own: it is a
+    /// single app-wide binding, and the only other place it could sit — 刘海 — is
+    /// about pushed events rather than about opening ATM by hand.
+    private var globalHotKeySection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("全局快捷键")
+                        .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                    Text("在任何应用中按一次呼出 ATM，再按一次收起。默认 ⌥⌘A；点击下方按钮后按新的组合即可改绑。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 12)
+                Toggle("启用全局快捷键", isOn: $globalHotKeyEnabled)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+            }
+
+            HStack(spacing: 14) {
+                ATMHotKeyRecorder(hotKey: globalHotKeyBinding, isEnabled: globalHotKeyEnabled)
+
+                Picker("呼出", selection: $globalHotKeyTarget) {
+                    ForEach(ATMGlobalHotKeyTarget.allCases) { target in
+                        Text(target.label).tag(target.rawValue)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+                .disabled(!globalHotKeyEnabled)
+            }
+
+            // A combination another app already owns cannot be registered, and the
+            // only symptom is a shortcut that does nothing — so say so here rather
+            // than leaving it to be discovered by pressing keys.
+            if globalHotKeyEnabled,
+               case .unavailable(let hotKey) = hotKeys.registration {
+                Text("\(hotKey.displayString) 已被系统或其他应用占用，请换一个组合。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    /// `@AppStorage` only holds the serialized form; an unreadable value falls
+    /// back to the default so the recorder always has something to show.
+    private var globalHotKeyBinding: Binding<ATMHotKey> {
+        Binding(
+            get: { ATMHotKey(storageValue: globalHotKeyValue) ?? ATMGlobalHotKeyPreferences.defaultHotKey },
+            set: { globalHotKeyValue = $0.storageValue }
+        )
     }
 
     /// The 刘海 tab: everything about the menu-bar notch experience — the strip
@@ -325,15 +516,16 @@ struct DesktopSettingsView: View {
                                     Text(health.connector)
                                         .font(ATMFont.mono(.footnote))
                                         .frame(width: 80, alignment: .leading)
-                                    Label(
-                                        collectionHealthLabel(health.status),
-                                        systemImage: collectionHealthIcon(health.status)
-                                    )
-                                    .foregroundStyle(collectionHealthColor(health.status))
-                                    .font(ATMFont.font(.body, weight: .medium))
+                                    Label(health.statusLabel, systemImage: health.statusIcon)
+                                        .foregroundStyle(ATMTheme.collectionHealthColor(health.status))
+                                        .font(ATMFont.font(.body, weight: .medium))
                                     Spacer()
                                     if let checkedAt = health.checkedAt {
                                         Text("检测于 \(collectionSettingsRelativeTime(checkedAt))")
+                                            .font(ATMFont.caption)
+                                            .foregroundStyle(ATMTheme.secondary)
+                                    } else {
+                                        Text("请立即收集一次")
                                             .font(ATMFont.caption)
                                             .foregroundStyle(ATMTheme.secondary)
                                     }
@@ -722,38 +914,16 @@ struct DesktopSettingsView: View {
 
     private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         content()
-            .padding(16)
+            .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border, lineWidth: 1))
-    }
-
-    private func collectionHealthLabel(_ status: String?) -> String {
-        switch status {
-        case "ready": return "可用"
-        case "auth_required": return "需要登录"
-        case "permission_required": return "缺少消息权限/权益"
-        case "error": return "连接异常"
-        default: return "尚未检测（请立即收集一次）"
-        }
-    }
-
-    private func collectionHealthIcon(_ status: String?) -> String {
-        switch status {
-        case "ready": return "checkmark.circle.fill"
-        case "auth_required": return "person.crop.circle.badge.exclamationmark"
-        case "permission_required": return "lock.trianglebadge.exclamationmark"
-        case "error": return "exclamationmark.triangle.fill"
-        default: return "questionmark.circle"
-        }
-    }
-
-    private func collectionHealthColor(_ status: String?) -> Color {
-        switch status {
-        case "ready": return ATMTheme.success
-        case "auth_required", "permission_required", "error": return ATMTheme.warning
-        default: return ATMTheme.secondary
-        }
+            .background(
+                ATMTheme.elevated,
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(ATMTheme.border, lineWidth: 1)
+            }
     }
 
     private func collectionSettingsRelativeTime(_ timestamp: Int64) -> String {
@@ -821,6 +991,7 @@ private struct ATMThemeChoiceButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .frame(maxWidth: .infinity)
         .accessibilityLabel("\(mode.label)主题")
         .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -829,80 +1000,56 @@ private struct ATMThemeChoiceButton: View {
 private struct ATMThemePreview: View {
     let mode: ATMThemeMode
 
+    private static let designWidth: CGFloat = 184
+    private static let designHeight: CGFloat = 108
+    private static let resourceBundle: Bundle = {
+        let name = "ATMMenuBarApp_ATMMenuBarApp.bundle"
+        let candidates = [
+            Bundle.main.resourceURL,
+            Bundle.main.bundleURL,
+            Bundle.main.executableURL?.deletingLastPathComponent(),
+        ]
+        for baseURL in candidates.compactMap({ $0 }) {
+            if let bundle = Bundle(url: baseURL.appendingPathComponent(name, isDirectory: true)) {
+                return bundle
+            }
+        }
+        return Bundle.module
+    }()
+
+    private static let images: [ATMThemeMode: NSImage] = {
+        Dictionary(uniqueKeysWithValues: ATMThemeMode.allCases.compactMap { mode in
+            let resourceName: String
+            switch mode {
+            case .system: resourceName = "theme-system@2x"
+            case .light: resourceName = "theme-light@2x"
+            case .dark: resourceName = "theme-dark@2x"
+            }
+            guard let url = resourceBundle.url(
+                forResource: resourceName,
+                withExtension: "png",
+                subdirectory: "ThemePreviews"
+            ) ?? resourceBundle.url(forResource: resourceName, withExtension: "png"),
+                let image = NSImage(contentsOf: url)
+            else {
+                return nil
+            }
+            return (mode, image)
+        })
+    }()
+
     var body: some View {
-        HStack(spacing: 0) {
-            if mode == .system {
-                previewHalf(isDark: false, isSplit: true)
-                previewHalf(isDark: true, isSplit: true)
+        Group {
+            if let image = Self.images[mode] {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
             } else {
-                previewHalf(isDark: mode == .dark, isSplit: false)
+                Color(nsColor: .controlBackgroundColor)
             }
         }
-        .frame(width: 184, height: 108)
+        .frame(width: Self.designWidth, height: Self.designHeight)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    private func previewHalf(isDark: Bool, isSplit: Bool) -> some View {
-        let palette = ATMThemePreviewPalette(isDark: isDark)
-
-        return HStack(spacing: 0) {
-            palette.canvas
-                .overlay(palette.line.opacity(0.055))
-                .frame(width: isSplit ? 20 : 38)
-
-            VStack(alignment: .leading, spacing: 7) {
-                Capsule()
-                    .fill(palette.line.opacity(0.72))
-                    .frame(width: 45, height: 5)
-
-                VStack(alignment: .leading, spacing: 7) {
-                    Capsule()
-                        .fill(palette.line.opacity(0.55))
-                        .frame(width: 35, height: 5)
-                    Capsule()
-                        .fill(palette.line.opacity(0.34))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 4)
-                    Capsule()
-                        .fill(palette.line.opacity(0.34))
-                        .frame(width: 54, height: 4)
-                }
-                .padding(10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(palette.surface)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            }
-            .padding(10)
-            .background(palette.canvas)
-        }
-    }
-}
-
-/// Resolves AppKit's dynamic semantic colors against an explicit appearance.
-/// Without this, a dark preview rendered while the app is light would silently
-/// inherit the light window appearance.
-private struct ATMThemePreviewPalette {
-    let canvas: Color
-    let surface: Color
-    let line: Color
-
-    init(isDark: Bool) {
-        guard let appearance = NSAppearance(named: isDark ? .darkAqua : .aqua) else {
-            canvas = Color(nsColor: .windowBackgroundColor)
-            surface = Color(nsColor: .controlBackgroundColor)
-            line = Color(nsColor: .labelColor)
-            return
-        }
-        canvas = Self.resolve(.windowBackgroundColor, appearance: appearance)
-        surface = Self.resolve(.controlBackgroundColor, appearance: appearance)
-        line = Self.resolve(.labelColor, appearance: appearance)
-    }
-
-    private static func resolve(_ color: NSColor, appearance: NSAppearance) -> Color {
-        var resolved = color
-        appearance.performAsCurrentDrawingAppearance {
-            resolved = color.usingColorSpace(.sRGB) ?? color
-        }
-        return Color(nsColor: resolved)
     }
 }

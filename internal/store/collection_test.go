@@ -83,6 +83,196 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 	}
 }
 
+// The ledger records what collection decided; whether that decision is still
+// outstanding belongs to the Todo it wrote to. Nothing writes the Todo's state
+// back into the ledger, so every read has to derive it — including for the
+// records that were already there before this existed.
+func TestCollectionItemsFollowTheirTodoThroughItsLifecycle(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "处理收集到的部署报错"))
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-lifecycle",
+		Name: "研发群", Priority: "P1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	filed, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-lifecycle", Fingerprint: "filed", MessageIDs: []string{"m1"},
+		Action: "create", Title: "处理收集到的部署报错", TodoID: "t1", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put filed item: %v", err)
+	}
+	unlinked, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-lifecycle", Fingerprint: "noise", MessageIDs: []string{"m2"},
+		Action: "ignore", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put unlinked item: %v", err)
+	}
+	if filed.TodoStatus != TodoStatusOpen || filed.TodoArchived || CollectionItemTodoClosed(filed) {
+		t.Fatalf("open todo did not reach its record: %+v", filed)
+	}
+	if unlinked.TodoStatus != "" || CollectionItemTodoClosed(unlinked) {
+		t.Fatalf("record without a todo invented one: %+v", unlinked)
+	}
+
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		todo := FindTodo(state.Todos, "t1")
+		if todo == nil {
+			return TodoNotFoundError(state.Todos, "t1")
+		}
+		todo.Status = TodoStatusDone
+		return nil
+	}); err != nil {
+		t.Fatalf("finish todo: %v", err)
+	}
+
+	// Every read path, because the App reads the overview and the collector reads
+	// single records — one of them silently missing the join would be worse than
+	// none of them having it.
+	reread, err := GetCollectionItem(db, filed.ID)
+	if err != nil || reread.TodoStatus != TodoStatusDone || !CollectionItemTodoClosed(reread) {
+		t.Fatalf("get after done = %+v, %v", reread, err)
+	}
+	listed, err := ListCollectionItems(db, source.ID, 20)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("list items = %+v, %v", listed, err)
+	}
+	for _, item := range listed {
+		if item.ID == filed.ID && item.TodoStatus != TodoStatusDone {
+			t.Fatalf("list after done = %+v", item)
+		}
+	}
+	overview, err := LoadCollectionOverview(db, 20)
+	if err != nil {
+		t.Fatalf("load overview: %v", err)
+	}
+	if overview.Summary.Followups != 1 || overview.Summary.FollowupsClosed != 1 {
+		t.Fatalf("unexpected follow-up counts: %+v", overview.Summary)
+	}
+
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		_, err := state.ArchiveTodos([]string{"t1"})
+		return err
+	}); err != nil {
+		t.Fatalf("archive todo: %v", err)
+	}
+	archived, err := GetCollectionItem(db, filed.ID)
+	if err != nil || archived.TodoStatus != TodoStatusDone || !archived.TodoArchived {
+		t.Fatalf("get after archive = %+v, %v", archived, err)
+	}
+}
+
+// Deleting a record is tidying the ledger, not undoing the work: the Todo it
+// filed belongs to whoever has been acting on it. Its messages do come back out
+// of the handled set, which is what lets a re-read rebuild the record.
+func TestDeleteCollectionItemKeepsItsTodoAndReleasesItsMessages(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "处理收集到的部署报错"))
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-delete",
+		Name: "研发群", Priority: "P1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	filed, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-delete", Fingerprint: "filed", MessageIDs: []string{"m1"},
+		Action: "create", Title: "处理收集到的部署报错", TodoID: "t1", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put item: %v", err)
+	}
+
+	deleted, err := DeleteCollectionItem(db, filed.ID)
+	if err != nil || deleted.ID != filed.ID || deleted.TodoID != "t1" {
+		t.Fatalf("delete item = %+v, %v", deleted, err)
+	}
+	if _, err := GetCollectionItem(db, filed.ID); err == nil {
+		t.Fatalf("record survived its deletion")
+	}
+	todos, err := LoadTodosReadOnly()
+	if err != nil || FindTodo(todos, "t1") == nil {
+		t.Fatalf("deleting a record took its Todo with it: %v", err)
+	}
+	handled, err := HandledCollectionMessageIDs(db, source.ID)
+	if err != nil || len(handled) != 0 {
+		t.Fatalf("handled message ids = %v, %v", handled, err)
+	}
+	if _, err := DeleteCollectionItem(db, filed.ID); err == nil {
+		t.Fatalf("deleting a missing record reported success")
+	}
+}
+
+// A duplicated id asks for the same end state as naming it once. Failing the
+// batch instead would make a group refuse to clear with nothing wrong with it.
+func TestDeleteCollectionItemsIgnoresARepeatedID(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-dup",
+		Name: "研发群", Priority: "P1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	first, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-dup", Fingerprint: "one", MessageIDs: []string{"m1"},
+		Action: "ignore", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put first item: %v", err)
+	}
+	second, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-dup", Fingerprint: "two", MessageIDs: []string{"m2"},
+		Action: "ignore", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put second item: %v", err)
+	}
+
+	deleted, err := DeleteCollectionItems(db, []string{first.ID, second.ID, first.ID})
+	if err != nil {
+		t.Fatalf("a repeated id failed the batch: %v", err)
+	}
+	if len(deleted) != 2 {
+		t.Fatalf("deleted %d records, want the 2 distinct ones: %+v", len(deleted), deleted)
+	}
+	for _, id := range []string{first.ID, second.ID} {
+		if _, err := GetCollectionItem(db, id); err == nil {
+			t.Fatalf("record %s survived the batch", id)
+		}
+	}
+	// An id that was never there is still a stale snapshot, and still stops
+	// everything: the dedup must not have turned "missing" into "fine".
+	third, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: "cid-dup", Fingerprint: "three", MessageIDs: []string{"m3"},
+		Action: "ignore", Status: "processed"})
+	if err != nil {
+		t.Fatalf("put third item: %v", err)
+	}
+	if _, err := DeleteCollectionItems(db, []string{third.ID, "ci-gone"}); err == nil {
+		t.Fatal("an unknown id in the batch reported success")
+	}
+	if _, err := GetCollectionItem(db, third.ID); err != nil {
+		t.Fatalf("a failed batch still deleted a record: %v", err)
+	}
+}
+
 func TestCollectionSourceValidation(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()

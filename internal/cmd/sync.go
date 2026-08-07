@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
 
@@ -82,6 +83,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 		// hourly rate. A failure here must not fail the sync — history is a
 		// convenience, the session index is the point.
 		if sampleErr := recordQuotaSamples(db, time.Now()); sampleErr != nil {
+			// Degrades without failing the sync, which means the Progress line is
+			// the only trace — and nobody is reading stderr when the App runs this
+			// on a timer. Quota history silently never accumulating is exactly the
+			// kind of fault that needs a record.
+			logging.Failure("quota_history_not_recorded", "atm sync", sampleErr, nil)
 			output.Progress("quota history not recorded: %v", sampleErr)
 		}
 		if jsonOutput {

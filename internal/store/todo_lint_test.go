@@ -75,7 +75,6 @@ func TestLintTodoDocFindsVerboseAndInconsistentProgress(t *testing.T) {
 		Priority:    "P2",
 		Status:      "in_progress",
 		Project:     "wanda",
-		Lane:        "work",
 		Created:     "2026-07-09",
 	}
 	long := strings.Repeat("细节", 520)
@@ -305,7 +304,6 @@ func TestSyncTodoDocMetadataUsesStructuredTodoAsSource(t *testing.T) {
 	todo.Priority = "P1"
 	todo.Status = "in_progress"
 	todo.Tags = []string{TodoTagMaintenance}
-	todo.Lane = "work"
 	todo.Project = "atm"
 	if err := SyncTodoDocMetadata(&todo); err != nil {
 		t.Fatal(err)
@@ -318,7 +316,6 @@ func TestSyncTodoDocMetadataUsesStructuredTodoAsSource(t *testing.T) {
 		"# New title",
 		"- **优先级**: P1",
 		"- **标签**: maintenance",
-		"- **领域**: work",
 		"- **项目**: atm",
 		// The section is generated from Todo.Description, so it carries a notice
 		// telling the reader not to edit it by hand.
@@ -329,5 +326,41 @@ func TestSyncTodoDocMetadataUsesStructuredTodoAsSource(t *testing.T) {
 		if !strings.Contains(content, expected) {
 			t.Errorf("synced doc missing %q:\n%s", expected, content)
 		}
+	}
+}
+
+// 领域 was retired with schema v35. Documents written before then still carry the
+// line, and the structured Todo is the source of truth for the header — so a sync
+// has to sweep the field out rather than leave a value nothing can update.
+func TestSyncTodoDocMetadataDropsRetiredLaneField(t *testing.T) {
+	oldDir := config.AtmDir
+	config.AtmDir = t.TempDir()
+	t.Cleanup(func() { config.AtmDir = oldDir })
+
+	todo := Todo{ID: "t1", Title: "Keep", Priority: "P2", Status: "open", Project: "atm", Created: "2026-07-01"}
+	if _, err := InitTodoDoc(&todo); err != nil {
+		t.Fatal(err)
+	}
+	content, err := ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content = strings.Replace(content, "- **项目**: atm", "- **领域**: work\n- **项目**: atm", 1)
+	if err := os.WriteFile(TodoDocPath(todo.ID), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SyncTodoDocMetadata(&todo); err != nil {
+		t.Fatal(err)
+	}
+	content, err = ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(content, "领域") {
+		t.Errorf("synced doc still carries 领域:\n%s", content)
+	}
+	if !strings.Contains(content, "- **项目**: atm") {
+		t.Errorf("synced doc lost 项目:\n%s", content)
 	}
 }

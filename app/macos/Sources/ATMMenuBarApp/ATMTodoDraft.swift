@@ -8,9 +8,8 @@ struct ATMTodoDraft: Equatable {
     let description: String
     let project: String
     let priority: String
-    let lane: String
 
-    init(text: String, project: String, priority: String, lane: String) {
+    init(text: String, project: String, priority: String) {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         let titleIndex = lines.firstIndex { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
         self.title = titleIndex.map { lines[$0].trimmingCharacters(in: .whitespaces) } ?? ""
@@ -19,13 +18,12 @@ struct ATMTodoDraft: Equatable {
             ?? ""
         self.project = project.trimmingCharacters(in: .whitespacesAndNewlines)
         self.priority = priority
-        self.lane = lane
     }
 
     var isSubmittable: Bool { !title.isEmpty }
 }
 
-/// Project, priority and lane inferred from what was typed plus what the existing
+/// Project and priority inferred from what was typed plus what the existing
 /// todos and live sessions already say. Everything here is a recommendation the
 /// sheet shows with its reason and lets you override -- picking all three by hand
 /// on every task was the part that felt like busywork.
@@ -34,16 +32,12 @@ struct ATMTodoSuggestion: Equatable {
     var projectReason: String
     var priority: String
     var priorityReason: String
-    var lane: String
-    var laneReason: String
 
     static let empty = ATMTodoSuggestion(
         project: "",
         projectReason: "无历史项目可参考",
         priority: "P1",
         priorityReason: "默认",
-        lane: "personal",
-        laneReason: "默认"
     )
 
     /// Words that move a task off the default priority. They are matched against
@@ -91,12 +85,6 @@ struct ATMTodoSuggestion: Equatable {
             suggestion.priorityReason = "文本提到「\(marker)」"
         }
 
-        if let lane = dominantLane(of: suggestion.project, in: todos) {
-            suggestion.lane = lane
-            suggestion.laneReason = suggestion.project.isEmpty
-                ? "最近任务多在此领域"
-                : "\(suggestion.project) 的任务多在此领域"
-        }
 
         return suggestion
     }
@@ -134,17 +122,4 @@ struct ATMTodoSuggestion: Equatable {
         return haystack[range].uppercased()
     }
 
-    private static func dominantLane(of project: String, in todos: [ATMTodo]) -> String? {
-        let scoped = todos.filter { todo in
-            guard let lane = todo.lane, !lane.isEmpty else { return false }
-            guard !project.isEmpty else { return true }
-            return todo.project == project
-        }
-        guard !scoped.isEmpty else { return nil }
-        let counts = Dictionary(grouping: scoped, by: { $0.lane ?? "" }).mapValues(\.count)
-        return counts.keys.sorted {
-            if counts[$0] != counts[$1] { return counts[$0, default: 0] > counts[$1, default: 0] }
-            return $0 < $1
-        }.first
-    }
 }

@@ -25,6 +25,7 @@ enum ATMMainMenu {
     static func make(appName: String) -> NSMenu {
         let main = NSMenu()
         main.addItem(submenu(title: appName, items: appItems(appName: appName)))
+        main.addItem(submenu(title: "文件", items: fileItems()))
         main.addItem(submenu(title: "编辑", items: editItems()))
         main.addItem(submenu(title: "窗口", items: windowItems()))
         return main
@@ -40,6 +41,15 @@ enum ATMMainMenu {
             .separator(),
             item("退出 \(appName)", #selector(NSApplication.terminate(_:)), "q"),
         ]
+    }
+
+    /// ⌘N 是这里唯一一条业务快捷键，而它必须归菜单：加任务卡是覆盖整个窗口的浮层，
+    /// 快捷键却曾经挂在「任务」页那个「新建」按钮上——切到收集或知识就按不动了，得先
+    /// 换回任务页才能记一条。菜单键等价在任何页签、以及快速面板上都成立，顺带把这一下
+    /// 快捷键写在人看得见的地方。⌘S / ⌘K 仍归各自的视图：保存归当前编辑器、搜索归
+    /// 常驻侧栏，两者本来就不因页签而消失。
+    private static func fileItems() -> [NSMenuItem] {
+        [item("新建任务", #selector(AppDelegate.newTodoFromMenu(_:)), "n")]
     }
 
     private static func editItems() -> [NSMenuItem] {

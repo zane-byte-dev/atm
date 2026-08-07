@@ -308,7 +308,7 @@ func TestDesiredHooksStayOutOfTheAgentsHotPath(t *testing.T) {
 	// PreToolUse is redundant now that PostToolUse is installed, and it cannot
 	// observe what PostToolUse is there for — it runs *before* the permission
 	// prompt, not after the user answers it.
-	for _, source := range []string{SourceClaude, SourceCodex, SourceGrokbuild} {
+	for _, source := range []string{SourceClaude, SourceCodex, SourceGrokbuild, SourceQoder} {
 		for _, spec := range DesiredHooks(source) {
 			switch spec.Event {
 			case "PermissionRequest":
@@ -494,6 +494,88 @@ func TestCodexUsesItsOwnConfigFile(t *testing.T) {
 	// Codex commands must say codex, or events would be attributed to Claude.
 	if got := commandsFor(document, "Stop"); len(got) != 1 || !strings.Contains(got[0], "--source codex") {
 		t.Errorf("codex Stop hook = %v", got)
+	}
+}
+
+// realWorldQoderSettings is a trimmed copy of a genuine ~/.qoder/settings.json.
+// Qoder keeps unrelated top-level settings in the same document as its hooks and
+// already has two other tools registered, so this is the shape the installer has
+// to merge into without disturbing anything.
+const realWorldQoderSettings = `{
+  "enabledPlugins": {"security-scan@qoder-bundler": true},
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "/Users/tester/.ping-island/bin/ping-island-bridge --source claude --client-kind qoder"}
+        ]
+      },
+      {
+        "matcher": "Bash|bash|terminal",
+        "hooks": [
+          {"type": "command", "command": "bash /Users/tester/.r2c/scripts/qoder-cli-hook.sh", "timeout": 15}
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {"type": "command", "command": "/Users/tester/.ping-island/bin/ping-island-bridge --source claude --client-kind qoder"}
+        ]
+      }
+    ]
+  }
+}`
+
+func TestQoderInstallsIntoItsOwnSettingsDocument(t *testing.T) {
+	home := writeHome(t, ".qoder/settings.json", realWorldQoderSettings)
+	path, err := ConfigPath(SourceQoder, home)
+	if err != nil {
+		t.Fatalf("ConfigPath: %v", err)
+	}
+	if want := filepath.Join(home, ".qoder", "settings.json"); path != want {
+		t.Errorf("qoder config path = %q, want %q", path, want)
+	}
+
+	result, err := Install(SourceQoder, home, atmBinary)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	document := readDocument(t, result.Path)
+	for _, spec := range DesiredHooks(SourceQoder) {
+		if !hasHook(document, spec, hookCommand(home, atmBinary, SourceQoder, spec.Reason)) {
+			t.Errorf("qoder hook for %s missing", describe(spec))
+		}
+	}
+	// Events must be attributed to qoder, not to the Claude payload shape they
+	// happen to share.
+	stop := commandsFor(document, "Stop")
+	if len(stop) != 2 {
+		t.Fatalf("Stop commands = %v, want ping-island's plus ATM's", stop)
+	}
+	if !strings.Contains(strings.Join(stop, " "), "--source qoder") {
+		t.Errorf("no ATM qoder Stop hook registered: %v", stop)
+	}
+	// The other tools and the unrelated settings survive.
+	if !strings.Contains(strings.Join(commandsFor(document, "PostToolUse"), " "), "qoder-cli-hook.sh") {
+		t.Error("r2c's PostToolUse hook was lost")
+	}
+	if document["enabledPlugins"] == nil {
+		t.Error("unrelated Qoder settings were dropped")
+	}
+
+	if _, err := Uninstall(SourceQoder, home, atmBinary); err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	after := readDocument(t, result.Path)
+	for _, command := range commandsFor(after, "Stop") {
+		if strings.Contains(command, "--source qoder") {
+			t.Errorf("ATM's qoder hook survived uninstall: %q", command)
+		}
+	}
+	if len(commandsFor(after, "Stop")) != 1 {
+		t.Errorf("uninstall did not leave ping-island's Stop hook alone: %v", commandsFor(after, "Stop"))
 	}
 }
 

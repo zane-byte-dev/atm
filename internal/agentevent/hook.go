@@ -9,21 +9,28 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 )
 
-// Supported hook sources. Claude Code, Codex, and Grok Build ship Claude-style
-// hook event names (compare ~/.claude/settings.json, ~/.codex/hooks.json, and
-// ~/.grok/hooks/*.json), so they share one mapping. Grok's stdin envelope is
-// camelCase; Claude/Codex use snake_case — FromHook accepts both. Pi has a
-// different extension API and builds envelopes in TypeScript instead.
+// Supported hook sources. Claude Code, Codex, Grok Build, and Qoder ship
+// Claude-style hook event names (compare ~/.claude/settings.json,
+// ~/.codex/hooks.json, ~/.grok/hooks/*.json, and ~/.qoder/settings.json), so
+// they share one mapping. Grok's stdin envelope is camelCase; Claude, Codex and
+// Qoder use snake_case — FromHook accepts both. Pi has a different extension API
+// and builds envelopes in TypeScript instead.
+//
+// Qoder covers both the IDE and Qoder CLI: they read the same
+// ~/.qoder/settings.json, and their payloads are Claude-shaped down to the field
+// names (session_id, cwd, hook_event_name, last_assistant_message). QoderWork is
+// a different product with its own runtime and is not wired up here.
 const (
 	SourceClaude    = "claude"
 	SourceCodex     = "codex"
 	SourceGrokbuild = "grokbuild"
+	SourceQoder     = "qoder"
 	SourcePi        = "pi"
 )
 
 // SupportedSources lists the sources the CLI accepts, in install order.
 func SupportedSources() []string {
-	return []string{SourceClaude, SourceCodex, SourceGrokbuild, SourcePi}
+	return []string{SourceClaude, SourceCodex, SourceGrokbuild, SourceQoder, SourcePi}
 }
 
 // Input is one hook invocation: the raw stdin payload plus the two things the
@@ -120,7 +127,7 @@ func FromHook(in Input) (Envelope, bool, error) {
 
 func isHookSource(source string) bool {
 	switch source {
-	case SourceClaude, SourceCodex, SourceGrokbuild:
+	case SourceClaude, SourceCodex, SourceGrokbuild, SourceQoder:
 		return true
 	default:
 		return false

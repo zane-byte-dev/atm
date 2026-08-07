@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
 
@@ -48,9 +49,24 @@ func SetVersion(v string) {
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		// stderr is for whoever is watching; the log is for whoever is not. The
+		// App, collection and hooks all invoke atm unattended, and until this
+		// existed their failures vanished with the process.
+		logging.Failure("command_failed", failedCommandPath(), err, nil)
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// failedCommandPath names the subcommand that failed, without its arguments.
+// Arguments are excluded on purpose: `atm todo add "<title>"` and
+// `atm knowledge import <path>` carry exactly the content this log must not hold.
+func failedCommandPath() string {
+	command, _, err := rootCmd.Find(os.Args[1:])
+	if err != nil || command == nil {
+		return ""
+	}
+	return command.CommandPath()
 }
 
 // showHelp is the RunE for group commands (no own action). Combined with

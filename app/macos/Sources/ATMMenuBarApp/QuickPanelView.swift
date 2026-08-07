@@ -11,24 +11,30 @@ struct QuickPanelView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 8) {
+                VStack(spacing: 0) {
                     if let error = store.errorMessage {
                         banner(error, icon: "exclamationmark.triangle.fill", color: ATMTheme.danger)
+                            .padding(.bottom, 8)
                     }
                     indexHealthBanner
                     usageSection
+                    sectionDivider
                     if !store.snapshot.work.needsAction.isEmpty {
                         attentionSection
+                        sectionDivider
                     }
                     workingSection
                 }
-                .padding(10)
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
+                .padding(.bottom, 8)
             }
             actionBar
         }
-        .background(ATMTheme.canvas.opacity(0.98))
+        .background(ATMTheme.canvas.opacity(0.96))
         .ignoresSafeArea()
-        .frame(minWidth: 340, minHeight: 290)
+        .frame(minWidth: 360, minHeight: 320)
+        .atmHidesScrollBars()
     }
 
     @ViewBuilder
@@ -78,9 +84,7 @@ struct QuickPanelView: View {
         let usage = store.snapshot.summary(for: metricsRange)
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                Label("用量", systemImage: "chart.bar.fill")
-                    .font(ATMFont.mono(.footnote, .bold))
-                    .foregroundStyle(ATMTheme.secondary)
+                sectionTitle("用量", icon: "chart.bar.fill", color: ATMTheme.accent)
                     .fixedSize()
                 Spacer(minLength: 6)
                 // Three windows, not all seven: seven segments overflowed the panel
@@ -106,32 +110,35 @@ struct QuickPanelView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
             } else {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(NumberFormat.compact(usage.totalTokens))
                         .font(ATMFont.rounded(.metric, .black))
                         .foregroundStyle(ATMTheme.primary)
-                    Text("Token")
-                        .font(ATMFont.mono(.caption, .semibold))
+                    Text("tokens")
+                        .font(ATMFont.font(.caption, weight: .medium))
                         .foregroundStyle(ATMTheme.secondary)
                     Spacer()
-                    Text(NumberFormat.currency(usage.costUSD))
-                        .font(ATMFont.mono(.bodyLarge, .bold))
-                        .foregroundStyle(ATMTheme.accent)
-                        .help("按模型定价估算的费用")
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(NumberFormat.currency(usage.costUSD))
+                            .font(ATMFont.mono(.bodyLarge, .bold))
+                            .foregroundStyle(ATMTheme.accent)
+                        Text("\(usage.sessions) 个会话")
+                            .font(ATMFont.font(.micro, weight: .medium))
+                            .foregroundStyle(ATMTheme.secondary)
+                    }
+                    .help("按模型定价估算的费用 · \(usage.sessions) 个会话")
                 }
 
                 HStack(spacing: 0) {
                     usageMetric("输入 + 缓存", NumberFormat.compact(usage.inputTokens))
-                    Divider().frame(height: 28)
+                    Divider().frame(height: 30)
                     usageMetric("输出", NumberFormat.compact(usage.outputTokens))
-                    Divider().frame(height: 28)
+                    Divider().frame(height: 30)
                     usageMetric(
                         "缓存命中",
                         NumberFormat.percent(usage.cacheHitRate),
                         valueColor: ATMTheme.cacheHitColor(usage.cacheHitRate)
                     )
-                    Divider().frame(height: 28)
-                    usageMetric("会话", "\(usage.sessions)")
                 }
                 .padding(.top, 2)
 
@@ -148,13 +155,12 @@ struct QuickPanelView: View {
                 }
             }
         }
-        .padding(12)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border, lineWidth: 1))
     }
 
-    /// One rate-limit window, compact enough for the 300pt panel: agent, window
+    /// One rate-limit window, compact enough for the quick panel: agent, window
     /// length, a bar, the percentage, and when it resets.
     private func quotaRow(agent: String, window: ATMQuotaWindow) -> some View {
         let percent = window.displayPercent
@@ -171,16 +177,45 @@ struct QuickPanelView: View {
         card: ATMProviderQuotaCard,
         metric: ATMProviderQuotaMetric
     ) -> some View {
-        quotaPercentRow(
+        let url = card.payload.linkURL
+        return quotaPercentRow(
             agent: card.agent,
             title: "\(card.providerLabel) \(metric.label)",
             percent: metric.usedPercent,
             help: "\(ATMAgentDisplay.name(card.agent)) · \(card.providerLabel) · "
                 + "\(card.payload.title)：\(metric.valueText)（\(String(format: "%.1f", metric.usedPercent))%）"
+                + (url == nil ? "" : " · 点击打开"),
+            url: url
         )
     }
 
+    /// `url` is the page behind the reading, when the provider named one. Built-in
+    /// rate-limit windows have no such page and stay unclickable.
+    @ViewBuilder
     private func quotaPercentRow(
+        agent: String,
+        title: String,
+        percent: Double,
+        help: String,
+        url: URL? = nil
+    ) -> some View {
+        if let url {
+            Button {
+                // The panel is transient and the browser is about to take focus,
+                // so it goes away first — same as opening the desktop window.
+                close()
+                NSWorkspace.shared.open(url)
+            } label: {
+                quotaPercentRowBody(agent: agent, title: title, percent: percent, help: help)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            quotaPercentRowBody(agent: agent, title: title, percent: percent, help: help)
+        }
+    }
+
+    private func quotaPercentRowBody(
         agent: String,
         title: String,
         percent: Double,
@@ -215,19 +250,28 @@ struct QuickPanelView: View {
     }
 
     private var workingSection: some View {
-        quickCard("工作中", icon: "hammer") {
+        quickCard(
+            "工作中",
+            icon: "hammer",
+            badge: store.snapshot.work.working.isEmpty ? nil : "\(store.snapshot.work.working.count)"
+        ) {
             if store.snapshot.work.working.isEmpty {
                 empty("当前没有工作中的任务")
             } else {
                 ForEach(store.snapshot.work.working) { todo in
-                    quickTodoRow(todo, caption: todo.lane == "work" ? "工作" : "个人")
+                    quickTodoRow(todo, caption: "工作中")
                 }
             }
         }
     }
 
     private var attentionSection: some View {
-        quickCard("需处理", icon: "exclamationmark.circle.fill") {
+        quickCard(
+            "需处理",
+            icon: "exclamationmark.circle.fill",
+            badge: "\(store.snapshot.work.needsAction.count)",
+            iconColor: ATMTheme.warning
+        ) {
             ForEach(store.snapshot.work.needsAction) { todo in
                 quickTodoRow(todo, caption: attentionCaption(todo), showsActions: false)
             }
@@ -235,8 +279,8 @@ struct QuickPanelView: View {
     }
 
     /// Capturing a task is the one write the panel offers, so it sits next to the
-    /// only other action rather than inside the glance content. The card itself is
-    /// the desktop window's — 300pt has no room for the project/priority/lane
+    /// only other action rather than inside the glance content. The composer itself is
+    /// the desktop window's — the compact panel has no room for the project/priority
     /// chips, and two composers would drift apart.
     private var actionBar: some View {
         HStack(spacing: 4) {
@@ -248,7 +292,9 @@ struct QuickPanelView: View {
                 tier: .footnote,
                 action: addTodo
             )
-            .keyboardShortcut("n", modifiers: .command)
+            // ⌘N 归主菜单「文件 → 新建任务」，面板不再自己声明一遍：菜单键等价先被
+            // 匹配，两个声明里这一个永远不会触发，只会看着像还有人管。
+
             ATMHoverLabelButton(
                 title: "主窗口",
                 systemImage: "macwindow",
@@ -260,7 +306,9 @@ struct QuickPanelView: View {
                 openDesktop(nil)
             }
         }
-        .padding(.horizontal, 2)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background(.regularMaterial)
         .overlay(alignment: .top) { Divider().opacity(0.45) }
     }
 
@@ -283,35 +331,37 @@ struct QuickPanelView: View {
             }
             .buttonStyle(.plain)
             if showsActions {
-                ForEach(ATMTodoStatusActions.primaryItems(for: todo)) { item in
-                    rowAction(item.systemImage, help: item.help) {
-                        store.perform(item.action, on: todo)
+                Menu {
+                    ForEach(ATMTodoStatusActions.items(for: todo)) { item in
+                        Button {
+                            store.perform(item.action, on: todo)
+                        } label: {
+                            Label(item.title, systemImage: item.systemImage)
+                        }
                     }
+                } label: {
+                    ATMIconMenuLabel(
+                        systemImage: "ellipsis",
+                        help: "任务操作",
+                        chrome: .bare,
+                        isEnabled: !store.isActing,
+                        side: 24,
+                        iconTier: .caption
+                    )
                 }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .disabled(store.isActing)
             } else {
                 Image(systemName: "chevron.right")
                     .font(ATMFont.font(.micro, weight: .semibold))
                     .foregroundStyle(ATMTheme.secondary)
             }
         }
-        .contextMenu {
-            Button {
-                store.openTodoProjectInVSCode(todo)
-            } label: {
-                Label("用 VS Code 打开项目", systemImage: "chevron.left.forwardslash.chevron.right")
-            }
-            if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                Button {
-                    Task {
-                        guard let prompt = await store.launchPrompt(for: todo) else { return }
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(prompt, forType: .string)
-                    }
-                } label: {
-                    Label("复制启动提示", systemImage: "doc.on.doc")
-                }
-            }
-        }
+        // Same menu as the task list, minus 编辑任务: the edit form only exists in
+        // the desktop detail pane, and the quick panel is not where you would go
+        // looking for it.
+        .atmRightClickMenu { ATMTodoMenu.entries(for: todo, store: store) }
     }
 
     private func attentionCaption(_ todo: ATMTodo) -> String {
@@ -322,24 +372,54 @@ struct QuickPanelView: View {
         case "waiting": status = "到期"
         default: status = "需处理"
         }
-        return "\(status) · \(todo.project ?? "未分项目")"
+        // Status only: quickTodoRow appends the project itself, so returning it
+        // here printed it twice ("待验收 · atm · atm").
+        return status
     }
 
     private func quickCard<Content: View>(
         _ title: String,
         icon: String,
+        badge: String? = nil,
+        iconColor: Color = ATMTheme.secondary,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            Label(title, systemImage: icon)
-                .font(ATMFont.mono(.footnote, .bold))
-                .foregroundStyle(ATMTheme.primary.opacity(0.72))
+            HStack(spacing: 7) {
+                sectionTitle(title, icon: icon, color: iconColor)
+                Spacer(minLength: 8)
+                if let badge {
+                    Text(badge)
+                        .font(ATMFont.mono(.micro, .semibold))
+                        .foregroundStyle(ATMTheme.secondary)
+                        .padding(.horizontal, 7)
+                        .frame(minHeight: 18)
+                        .background(ATMTheme.controlFill, in: Capsule())
+                }
+            }
             content()
         }
-        .padding(12)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(ATMTheme.border, lineWidth: 1))
+    }
+
+    private var sectionDivider: some View {
+        Divider()
+            .padding(.horizontal, 4)
+            .opacity(0.7)
+    }
+
+    private func sectionTitle(_ title: String, icon: String, color: Color) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 16)
+            Text(title)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(ATMTheme.primary)
+        }
     }
 
     private func usageMetric(
@@ -358,25 +438,18 @@ struct QuickPanelView: View {
                 .foregroundStyle(ATMTheme.secondary)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func rowAction(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
-        ATMIconButton(
-            systemImage: icon,
-            help: help,
-            isEnabled: !store.isActing,
-            side: 24,
-            iconTier: .caption,
-            action: action
-        )
     }
 
     private func banner(_ text: String, icon: String, color: Color) -> some View {
         Label(text, systemImage: icon)
             .font(ATMFont.font(.caption, weight: .medium))
             .foregroundStyle(color)
+            // A banner that carries an instruction has to show all of it; the
+            // version-mismatch message ends in the command to run.
+            .fixedSize(horizontal: false, vertical: true)
+            .multilineTextAlignment(.leading)
             .padding(9)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))

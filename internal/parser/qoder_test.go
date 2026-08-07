@@ -2,9 +2,12 @@ package parser
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 )
@@ -37,6 +40,309 @@ func TestQoderCLIParseFile(t *testing.T) {
 	}
 	if len(got.Skills) != 1 || got.Skills[0].Name != "a1" {
 		t.Fatalf("skills = %#v", got.Skills)
+	}
+}
+
+// seedQoderDB builds the two tables QoderParseFile reads, in the shape the real
+// Qoder client writes them.
+func seedQoderDB(t *testing.T, messages ...string) {
+	t.Helper()
+	oldDB := config.QoderDB
+	dbPath := filepath.Join(t.TempDir(), "local.db")
+	config.QoderDB = dbPath
+	t.Cleanup(func() { config.QoderDB = oldDB })
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := append([]string{
+		`CREATE TABLE chat_session (session_id TEXT PRIMARY KEY, session_title TEXT,
+			project_name TEXT, mode TEXT, gmt_create INTEGER, gmt_modified INTEGER,
+			last_user_query_at INTEGER)`,
+		`CREATE TABLE chat_message (id TEXT PRIMARY KEY, session_id TEXT, role TEXT,
+			content TEXT, token_info TEXT, model_info TEXT, gmt_create INTEGER)`,
+		`INSERT INTO chat_session VALUES ('sess-1','Corpus session','atm','agent',100000,140000,140000)`,
+	}, messages...)
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestQoderParseFileKeepsLongUserPrompts is the regression for the gap t188 was
+// opened on: Qoder inlines IDE context into the prompt, so real user messages
+// start around a kilobyte. The parser used to skip anything over 500 bytes, and
+// because the storage layer pairs outputs to inputs by index, dropping the
+// inputs silently discarded every assistant reply too — five sessions and 331
+// upstream messages indexed as zero.
+func TestQoderParseFileKeepsLongUserPrompts(t *testing.T) {
+	longPrompt := strings.Repeat("上下文", 400) // ~1200 bytes, like a real Qoder prompt
+	seedQoderDB(t,
+		`INSERT INTO chat_message VALUES ('m1','sess-1','user','`+longPrompt+`','','',110000)`,
+		`INSERT INTO chat_message VALUES ('m2','sess-1','assistant','Implemented it.',
+			'{"prompt_tokens":1200,"completion_tokens":340,"cached_tokens":900}',
+			'{"model_key":"qwen-max"}',120000)`,
+		`INSERT INTO chat_message VALUES ('m3','sess-1','tool','tool output','','',130000)`,
+	)
+
+	got := QoderParseFile("qoder://sess-1")
+	if got == nil {
+		t.Fatal("QoderParseFile returned nil for a session that has messages")
+	}
+	if len(got.Inputs) != 1 {
+		t.Fatalf("long user prompt was dropped instead of truncated: inputs = %#v", got.Inputs)
+	}
+	if len(got.Outputs) != 1 || got.Outputs[0].Content != "Implemented it." {
+		t.Fatalf("outputs = %#v", got.Outputs)
+	}
+	// Truncated, not stored whole: the index is for search, not archival.
+	if len([]rune(got.Inputs[0].Content)) > 2000 {
+		t.Errorf("input was not truncated: %d runes", len([]rune(got.Inputs[0].Content)))
+	}
+	if !strings.HasPrefix(got.Inputs[0].Content, "上下文") {
+		t.Error("truncation cut into the start of the prompt")
+	}
+	// Messages, not just Inputs/Outputs: an agent run answers one prompt with
+	// several assistant messages, and the index-pairing fallback would keep only
+	// as many replies as there were prompts.
+	if len(got.Messages) != 2 {
+		t.Fatalf("messages = %#v", got.Messages)
+	}
+	if got.Messages[0].Role != "user" || got.Messages[1].Role != "assistant" {
+		t.Errorf("roles out of order: %#v", got.Messages)
+	}
+	if got.Tools["tool_call"] != 1 {
+		t.Errorf("tools = %#v", got.Tools)
+	}
+	if got.Usage.InputTokens != 300 || got.Usage.OutputTokens != 340 || got.Usage.CacheReadTokens != 900 {
+		t.Errorf("usage = %#v", got.Usage)
+	}
+	if got.Usage.Model != "qoder-qwen-max" {
+		t.Errorf("model = %q", got.Usage.Model)
+	}
+}
+
+// Base64-looking payloads are still skipped: they are stored blobs, not prose,
+// and indexing them would fill search with noise.
+func TestQoderParseFileStillSkipsEncryptedContent(t *testing.T) {
+	blob := strings.Repeat("aGVsbG8+d29ybGQ/", 80) // long, and full of + / =
+	seedQoderDB(t,
+		`INSERT INTO chat_message VALUES ('m1','sess-1','user','`+blob+`','','',110000)`,
+		`INSERT INTO chat_message VALUES ('m2','sess-1','assistant','ok',
+			'{"prompt_tokens":10,"completion_tokens":2}','{"model_key":"qwen-max"}',120000)`,
+	)
+	got := QoderParseFile("qoder://sess-1")
+	if got == nil {
+		t.Fatal("QoderParseFile returned nil")
+	}
+	if len(got.Inputs) != 0 {
+		t.Errorf("an encrypted-looking blob was indexed: %#v", got.Inputs)
+	}
+}
+
+// The counterpart to the blob case, and the reason the heuristic was rewritten:
+// six occurrences of `+ / =` used to be enough to discard a message, and a single
+// line mentioning two file paths and a couple of commands clears that on its own.
+func TestQoderParseFileKeepsProseContainingSlashesAndPluses(t *testing.T) {
+	// Deliberately over the old threshold of five marks, and unmistakably prose.
+	reply := "改完了：internal/cmd/backup.go 和 internal/store/backup.go 都过了，" +
+		"命令是 go test ./... + go vet ./... + make build，覆盖率 a/b/c 三块。"
+	seedQoderDB(t,
+		`INSERT INTO chat_message VALUES ('m1','sess-1','user','`+strings.Repeat("上下文", 400)+`','','',110000)`,
+		`INSERT INTO chat_message VALUES ('m2','sess-1','assistant','`+reply+`',
+			'{"prompt_tokens":10,"completion_tokens":2}','{"model_key":"qwen-max"}',120000)`,
+	)
+	got := QoderParseFile("qoder://sess-1")
+	if got == nil {
+		t.Fatal("QoderParseFile returned nil")
+	}
+	if len(got.Outputs) != 1 {
+		t.Fatalf("prose with slashes and pluses was treated as an encrypted blob: %#v", got.Outputs)
+	}
+}
+
+func TestLooksEncryptedDistinguishesBlobsFromProse(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want bool
+	}{
+		{"base64 blob", strings.Repeat("aGVsbG8+d29ybGQ/", 20), true},
+		// The density case, and the reason the threshold was dropped. This is the
+		// head of a real chat_message.content row: three `+ / =` in the first 100
+		// characters, which is typical — only three of the 64 code points are marks
+		// — and six was never going to be reached.
+		{"real ciphertext with sparse marks", qoderCiphertextSample, true},
+		// No marks at all in the leading window, which happens often enough that the
+		// character-class mix has to carry the decision on its own.
+		{"base64 head without marks", strings.Repeat("aGVsbG8wd29ybGQx", 10), true},
+		{"prose with marks", "run go test ./... + go vet ./... and check a/b/c = ok, then ship", false},
+		{"chinese prose", "改完了：internal/cmd/backup.go + internal/store/backup.go 都过了 a/b/c", false},
+		{"short string", "a+b/c=d", false},
+		{"long identifier without padding", strings.Repeat("abcdef0123456789", 8), false},
+		// The things that also run without spaces and must survive: a digest is one
+		// case with digits, an identifier is two cases without them.
+		{"sha256 digest", strings.Repeat("9f86d081884c7d65", 8), false},
+		{"long camelCase identifier", strings.Repeat("someVeryLongMethodName", 6), false},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := looksEncrypted(testCase.text); got != testCase.want {
+				t.Errorf("looksEncrypted = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+// qoderCiphertextSample is the leading window of a real encrypted
+// chat_message.content row, kept verbatim because its mark density is the point.
+const qoderCiphertextSample = "Y8wkuJN0ZBduA9x4DgFv4JrWzgYtKw3we+BbiYoOeMIWoON6vSfUg8xXe9jpHOjgUh59WEsoiA7Ps22mJOt+2RO/r1FVrDJfdk0B"
+
+// seedQoderDBWithSubagents builds the newer schema, the one that carries
+// parent_session_id, and populates a root session with a delegated child.
+func seedQoderDBWithSubagents(t *testing.T, extra ...string) {
+	t.Helper()
+	oldDB := config.QoderDB
+	dbPath := filepath.Join(t.TempDir(), "local.db")
+	config.QoderDB = dbPath
+	t.Cleanup(func() { config.QoderDB = oldDB })
+
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := append([]string{
+		`CREATE TABLE chat_session (session_id TEXT PRIMARY KEY, session_title TEXT,
+			project_name TEXT, mode TEXT, gmt_create INTEGER, gmt_modified INTEGER,
+			last_user_query_at INTEGER, session_type TEXT DEFAULT '',
+			parent_session_id TEXT DEFAULT '')`,
+		`CREATE TABLE chat_message (id TEXT PRIMARY KEY, session_id TEXT, role TEXT,
+			content TEXT, token_info TEXT, model_info TEXT, gmt_create INTEGER)`,
+		`INSERT INTO chat_session VALUES ('root-1','Fix the parser','atm','agent',100000,140000,140000,'assistant','')`,
+		`INSERT INTO chat_session VALUES ('sub-1','Investigate the whole todo storage chain, list every field, and quote the code','atm','agent_sub',110000,130000,130000,'agent_sub_search','root-1')`,
+		`INSERT INTO chat_message VALUES ('r1','root-1','user','Fix it please','','',110000)`,
+		`INSERT INTO chat_message VALUES ('r2','root-1','assistant','Done.',
+			'{"prompt_tokens":1000,"completion_tokens":100,"cached_tokens":400}',
+			'{"model_key":"qwen-max"}',120000)`,
+		`INSERT INTO chat_message VALUES ('s1','sub-1','user','Investigate','','',115000)`,
+		`INSERT INTO chat_message VALUES ('s2','sub-1','assistant','Findings.',
+			'{"prompt_tokens":500,"completion_tokens":60,"cached_tokens":200}',
+			'{"model_key":"qwen-max"}',118000)`,
+	}, extra...)
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A delegated run is a row in chat_session like any other, so discovery used to
+// return it and the sync indexed work the user never started as a session of its
+// own — titled with the verbatim delegation prompt, since Qoder stores the task
+// text in session_title.
+func TestDiscoverQoderExcludesSubagentSessions(t *testing.T) {
+	seedQoderDBWithSubagents(t)
+	got := DiscoverQoder()
+	want := []string{"qoder://root-1"}
+	if len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("DiscoverQoder() = %#v, want %#v", got, want)
+	}
+}
+
+// Excluding the child must not lose its spend: the tokens were really billed, and
+// the row they were billed against is no longer indexed.
+func TestQoderParseFileRollsUpSubagentUsage(t *testing.T) {
+	seedQoderDBWithSubagents(t)
+	got := QoderParseFile("qoder://root-1")
+	if got == nil {
+		t.Fatal("QoderParseFile returned nil for the root session")
+	}
+	// (1000-400) + (500-200) input, 100+60 output, 400+200 cached, two requests.
+	if got.Usage.InputTokens != 900 || got.Usage.OutputTokens != 160 {
+		t.Errorf("subagent tokens were not rolled into the parent: usage = %#v", got.Usage)
+	}
+	if got.Usage.CacheReadTokens != 600 || got.Usage.RequestCount != 2 {
+		t.Errorf("cache/request rollup = %#v", got.Usage)
+	}
+	// Tokens roll up, transcript does not: reporting the child's prompts as the
+	// parent's would describe a conversation the user never had.
+	if len(got.Messages) != 2 {
+		t.Fatalf("subagent messages leaked into the parent transcript: %#v", got.Messages)
+	}
+	for _, message := range got.Messages {
+		if strings.Contains(message.Content, "Findings") || strings.Contains(message.Content, "Investigate") {
+			t.Errorf("subagent message in parent transcript: %#v", got.Messages)
+		}
+	}
+}
+
+// Discovery filters subagents, but a virtual path recorded by an earlier scan is
+// re-parsed on the incremental path and must not resurrect the session.
+func TestQoderParseFileRejectsSubagentSession(t *testing.T) {
+	seedQoderDBWithSubagents(t)
+	if got := QoderParseFile("qoder://sub-1"); got != nil {
+		t.Errorf("QoderParseFile indexed a subagent session: %#v", got)
+	}
+}
+
+func TestQoderLiveSessionsExcludeSubagentSessions(t *testing.T) {
+	seedQoderDBWithSubagents(t)
+	// The seeded timestamps are epoch-relative, so the window has to reach back
+	// past them for either row to be live at all.
+	sessions := QoderLiveSessions(time.Since(time.UnixMilli(0)))
+	if len(sessions) != 1 {
+		t.Fatalf("live sessions = %#v, want only the root session", sessions)
+	}
+	if sessions[0].ResumeID != "root-1" {
+		t.Errorf("live session = %q, want root-1", sessions[0].ResumeID)
+	}
+}
+
+// parent_session_id arrived in an upstream migration. On a database that predates
+// it the filter must degrade to the unfiltered list, not to no sessions at all —
+// seedQoderDB builds exactly that older schema.
+func TestDiscoverQoderToleratesSchemaWithoutParentColumn(t *testing.T) {
+	seedQoderDB(t,
+		`INSERT INTO chat_message VALUES ('m1','sess-1','user','hello there friend','','',110000)`,
+	)
+	got := DiscoverQoder()
+	if len(got) != 1 || got[0] != "qoder://sess-1" {
+		t.Fatalf("DiscoverQoder() on the pre-migration schema = %#v", got)
+	}
+}
+
+// The end-to-end shape of the leak: every message ciphertext, so nothing is
+// indexed as prose, while the plaintext token column still reports the spend.
+func TestQoderParseFileSkipsCiphertextButKeepsUsage(t *testing.T) {
+	blob := strings.Repeat(qoderCiphertextSample, 4)
+	seedQoderDB(t,
+		`INSERT INTO chat_message VALUES ('m1','sess-1','user','`+blob+`','','',110000)`,
+		`INSERT INTO chat_message VALUES ('m2','sess-1','assistant','`+blob+`',
+			'{"prompt_tokens":1000,"completion_tokens":50,"cached_tokens":200}',
+			'{"model_key":"qwen-max"}',120000)`,
+	)
+	got := QoderParseFile("qoder://sess-1")
+	if got == nil {
+		t.Fatal("a session whose text is all ciphertext should still be indexed for its usage")
+	}
+	if len(got.Inputs) != 0 || len(got.Outputs) != 0 || len(got.Messages) != 0 {
+		t.Errorf("ciphertext was indexed as conversation: inputs=%#v outputs=%#v", got.Inputs, got.Outputs)
+	}
+	if got.Usage.InputTokens != 800 || got.Usage.OutputTokens != 50 {
+		t.Errorf("usage lost with the skipped text: %#v", got.Usage)
+	}
+	if got.Summary != "Corpus session" {
+		t.Errorf("summary = %q; session_title is plaintext and is all that stays searchable", got.Summary)
 	}
 }
 
@@ -107,5 +413,55 @@ func TestDiscoverQoderCLICoversBothLayouts(t *testing.T) {
 	got := DiscoverQoderCLI()
 	if len(got) != 2 || got[0] != paths[0] || got[1] != paths[1] {
 		t.Fatalf("discovered = %#v", got)
+	}
+}
+
+// Live sessions have to carry the identifier Qoder's hook actually reports.
+// Both readers truncate the session id to eight characters for display, and the
+// hook payload carries the whole uuid — so without ResumeID the notch has
+// nothing to join a `Stop` event onto and falls back to guessing completions
+// from the transcript, which is what made Qoder prompt on every poll.
+func TestQoderLiveSessionsExposeTheFullSessionID(t *testing.T) {
+	const sessionID = "1af727db-91c1-4d8d-87f5-fcf4ad264c62"
+	now := time.Now().UnixMilli()
+	seedQoderDB(t, fmt.Sprintf(
+		`INSERT INTO chat_session VALUES ('%s','Live session','atm','agent',%d,%d,%d)`,
+		sessionID, now, now, now,
+	))
+
+	sessions := QoderLiveSessions(24 * time.Hour)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	if sessions[0].SessionID != sessionID[:8] {
+		t.Errorf("session id = %q, want the truncated one for display", sessions[0].SessionID)
+	}
+	if sessions[0].ResumeID != sessionID {
+		t.Errorf("resume id = %q, want %q", sessions[0].ResumeID, sessionID)
+	}
+}
+
+func TestQoderCLILiveSessionsExposeTheFullSessionID(t *testing.T) {
+	oldProjects := config.QoderCLIProjects
+	root := t.TempDir()
+	config.QoderCLIProjects = root
+	t.Cleanup(func() { config.QoderCLIProjects = oldProjects })
+
+	const sessionID = "1af727db-91c1-4d8d-87f5-fcf4ad264c62"
+	path := filepath.Join(root, "-tmp-my-project", "transcript", sessionID+".jsonl")
+	writeJSONL(t, path,
+		`{"type":"session_meta","timestamp":"2026-08-05T01:00:00Z","cwd":"/tmp/my-project","sessionId":"`+sessionID+`"}`,
+		`{"type":"user","timestamp":"2026-08-05T01:00:01Z","cwd":"/tmp/my-project","message":{"role":"user","content":[{"type":"text","text":"实现 t202"}]}}`,
+	)
+
+	sessions := QoderCLILiveSessions(24 * time.Hour)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	if sessions[0].SessionID != sessionID[:8] {
+		t.Errorf("session id = %q, want the truncated one for display", sessions[0].SessionID)
+	}
+	if sessions[0].ResumeID != sessionID {
+		t.Errorf("resume id = %q, want %q", sessions[0].ResumeID, sessionID)
 	}
 }

@@ -3,6 +3,7 @@
 给人用的 AI 管理面板。看 AI 都在干什么、干得怎么样、花了多少钱。
 
 > 设计原则与非目标见 [DESIGN.md](DESIGN.md)
+> 版本间的变化见 [CHANGELOG.md](CHANGELOG.md)
 > 当前可用性、支持矩阵和发布前清单见 [docs/release-readiness.md](docs/release-readiness.md)
 
 公开使用或参与开发前，请阅读 [隐私与数据处理](PRIVACY.md)、
@@ -33,6 +34,8 @@ make install    # 构建并安装到 /usr/local/bin
 
 独立菜单栏 App 常驻显示今日 Token；主窗口提供任务、收集、Agent、知识和用量工作区。收集工作区
 把钉钉等外部来源的消息自动分类为新 Todo、知识沉淀或忽略记录，并提供失败重试、纠错与撤销；与历史 Todo 有关时在新 Todo 中记录关联，不合并事项。
+处理记录跟随它写出去的 Todo：那个 Todo 被完成或废弃后（在哪儿关的都算），这条记录一并
+了结，折叠进「沉淀与已了结」，主列表只留还欠一个动作的跟进。
 沉淀的内容按来源每天汇总成一篇知识文档写进中央知识库。
 知识工作区
 按“知识库 / 文章 / 详情”组织中央知识，并把共享记忆作为特殊知识库统一浏览。支持跨库搜索、
@@ -61,7 +64,7 @@ atm session forget  <session-id> [-y]                    # 永久移除源文件
 # 待办与工作状态
 atm now                                     # 工作中、等待中、待验收、阻塞和到期复查
 atm dashboard --json                       # 一次返回带 schema_version 的桌面聚合快照
-atm todo    [list|add|start|submit|done|drop|show|context|edit|move|log|doc|prompt]
+atm todo    [list|add|start|submit|done|drop|trash|restore|show|context|edit|move|log|doc|prompt]
 atm todo start <id>                         # 进入工作中；done/dropped 会重新开始
 atm todo context [id] --json                # 临时、只读汇总 Todo、Session 与 Git 上下文
 atm todo submit [id] --reason "实现及证据"   # 显式提交待确认，不直接标记 done
@@ -89,7 +92,10 @@ atm todo lint <id>                      # 检查冗长动态、无效 tID 和文
 atm todo add "<title>" --desc-file <path>  # - 表示从 stdin 读取多行描述
 atm todo add --batch                       # 从 YAML/JSON stdin 批量创建；示例见 --help
 id=$(atm todo add "<title>")               # 非 JSON 模式 stdout 仅输出新 ID
-atm todo delete <id> -y                    # 非交互永久删除；默认会要求确认
+atm todo trash <id>                        # 移到回收站，不确认、可恢复
+atm todo list --status trashed             # 查看回收站（archived 仍是兼容别名）
+atm todo restore <id>                      # 从回收站恢复原状态
+atm todo delete <id> -y                    # 永久删除；默认确认，通常只在回收站使用
 
 # 报告与系统
 atm report  [date]     [--agent X]               # 每日活动报告
@@ -98,12 +104,17 @@ atm stats   --by skill [--agent X] [--days N]     # Skill 调用次数、会话�
 atm stats   --by request [--session ID]          # 单次模型请求明细
 atm stats   --by speed [--days N]                # 模型输出速度 tok/s 与轮次等待时长
 atm doctor                                          # 数据源与明细覆盖率诊断（含可测速比例）
+atm diagnose [--bundle] [-o path]                # 报障用支持包：版本/schema/doctor 结论/同步错误/日志尾部，脱敏且不联网
 atm sync    [--agent X]                          # 手动触发数据同步
 atm sync status [--agent X] --json               # 只读查看索引新鲜度、最近同步结果与错误
 atm config  [init]                               # 查看/初始化配置文件
+atm backup  [-o path]                            # 归档无处重建的记录（todo/记忆/知识/收集账本）
+atm restore <archive> [--yes]                    # 从归档恢复；被替换的数据移到 pre-restore-<时间>/
 
 # 外部需求收集（可扩展连接器）
 atm collect status --json                         # 健康状态、来源、运行和处理记录
+                                                  # 文本里的 Filed Todos 说明建过多少、还开着几个；
+                                                  # JSON 每条记录带 todo_status/todo_archived
 atm collect source search deploy --connector slack --kind channel --limit 10
 atm collect source add --connector slack --kind channel --id C123 --name deploys
 atm collect source add --connector github --kind issue --id owner/repo#42 --project atm
@@ -124,6 +135,7 @@ atm collect item reprocess <item-id>               # 重新判断失败、已忽
 atm collect item promote <item-id> [--title X]     # 将忽略/沉淀/失败记录显式转成 Todo
 atm collect item correct <item-id> [--title X] [--project X] [--priority P1]
 atm collect item revert <item-id> -y               # 撤销误创建/误补充，保留审计轨迹
+atm collect item delete <item-id>... -y            # 删除处理记录本身；它写出的 Todo 保留（多个 id 一个事务，用于清空一整组）
 # history 和 run 拉到的聊天原文都会同步进 ~/.atm/atm.db，默认保留 90 天：
 #   atm config set collection_message_retention_days 30   # 改成 30 天
 #   atm config set collection_message_retention_days 0    # 0 = 永久保留
@@ -219,19 +231,20 @@ Parser 层自动处理以下噪音，保证存储和展示的数据是真实用�
 装上 hook 后，Agent 会在事件发生时直接推给 ATM：
 
 ```bash
-atm agent hook install            # Claude / Codex / Grok Build 都装；Pi 见下方说明
+atm agent hook install            # Claude / Codex / Grok Build / Qoder 都装；Pi 见下方说明
 atm agent hook install --source claude
-atm agent hook install --source grokbuild
+atm agent hook install --source qoder
 atm agent hook status             # 看当前接了哪些事件
 atm agent hook uninstall          # 原样摘掉
 ```
 
-- 写入的是 Agent 自己的配置（`~/.claude/settings.json`、`~/.codex/hooks.json`、`~/.grok/hooks/atm-notch.json`），**只增删 ATM 自己那几条**，同一份配置里其他工具的 hook 一条不动
+- 写入的是 Agent 自己的配置（`~/.claude/settings.json`、`~/.codex/hooks.json`、`~/.grok/hooks/atm-notch.json`、`~/.qoder/settings.json`），**只增删 ATM 自己那几条**，同一份配置里其他工具的 hook 一条不动
 - 装的都是只上报的 hook（`SessionStart` / `UserPromptSubmit` / `Stop` / `SessionEnd` / `Notification`），**不会拦住工具调用，也不会替你做授权决定**；App 没在跑时 hook 立刻静默退出，不影响 Agent
 - 事件走 `~/.atm/notch.sock`（0600），只在本机；带的是会话 ID、cwd 和一句提示文字
 - **Grok Build** 使用独立文件 `~/.grok/hooks/atm-notch.json`，与同目录其他 hook 文件合并加载；payload 支持 Grok 的 camelCase 字段
-- **Pi** 没有 hook 配置文件，把 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 复制到 `~/.pi/agent/extensions/` 即可
-- 没接 hook 的 Agent（copilot / qoder）继续走原来的关键词判断，行为不变
+- **Qoder** 的 hook 事件名与 payload 与 Claude 同构，一份 `~/.qoder/settings.json` 同时覆盖 Qoder IDE 与 Qoder CLI。Qoder 只在启动时读这份配置，**装完要重启 Qoder 才生效**；刘海因此不看「文件里装了」而只认真实收到的事件，重启前维持原来的关键词判断，收到第一个事件后自动切换
+- **Pi** 没有 hook 配置文件，把 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 复制到 `~/.pi/agent/extensions/` 即可。Pi 的 `agent_settled` 上报为「已完成」而不是「需要你」——它分不清是做完了还是卡住了，而 attention 是刘海最高优先级的状态，猜错会让每一轮结束都变橙
+- 没接 hook 的 Agent（copilot / qoderwork）继续走原来的关键词判断，行为不变
 
 也可以在 App 的「设置 → 通用 → Agent 事件推送」里一键安装并查看接入状态。
 
@@ -258,6 +271,11 @@ token 和成本都还在，`atm stats --days 90` 的历史不会自己缩水。�
 不想留的用 `atm session forget <id>` 永久移除，它的 token 和成本会一起离开所有统计。只有已保留的
 会话能被 forget：源文件还在时下次 sync 会把它重新索引进来，所以命令会直接拒绝，而不是假装删掉。
 
+索引**不做自动清理**：没有保留期，也没有后台 compaction，库单调增长是有意接受的成本。原因写在
+[DESIGN.md](DESIGN.md) 里——它比 Agent 自己的日志活得更久正是它的意义，而「哪条会话不再需要」只有人知道。
+删除只有 `session forget` 这一条显式路径；后续会加「推荐清理」：ATM 列出候选和各自的 token/成本代价，
+由人确认后执行。
+
 Claude、Codex、Pi 和 Qoder CLI 支持从上游 transcript 提供的字段读取逐请求模型与
 input/output/cache token 明细；Pi 还支持
 会话增量同步、顺序消息和 thinking。同一会话切换模型时，`atm stats --by model`
@@ -271,6 +289,25 @@ Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事
 
 `atm todo archive <id>` 把已完结的 Todo 移出工作集：行仍然保留，所以它的 ID 不会被复用，
 依赖和进展记录仍可引用它；`atm todo list --status archived` 查看，`atm todo unarchive` 取回。
+面向日常删除使用 `atm todo trash <id>`：任何状态都能无确认移入回收站，活跃 Session Binding
+会安全关闭，但任务状态、Markdown、进展、依赖和历史都保留；`atm todo restore <id>` 恢复。
+菜单栏 App 的普通删除走这条可恢复路径，只有回收站里的永久删除才要求确认。
+
+失败会落盘到 `~/.atm/logs/`：CLI 写 `cli.log`，菜单栏 App 写 `app.log`，一行一个 JSON 事件，
+单文件封顶 5 MB 并保留一个轮转。**只记失败和进程启停**，不记会话正文、Todo/记忆/知识内容、凭据，
+也不记命令参数（`atm todo add "<标题>"` 的标题本身就是内容），所以日志里是 `atm todo add` 而不是完整命令行。
+App 无法在自己崩溃时写日志，因此用一个「上次是否正常退出」的标记来区分崩溃与正常退出，并在日志里
+指向 macOS 的 crash report 目录而不是把报告内容抄进来。`atm diagnose --bundle` 会带上两个日志的
+最后 200 行 —— 这是「每天失败一次、其余时间正常」这类间歇故障唯一能被看见的地方。
+
+`atm backup` 归档这个库真正无处重建的部分：Todo、共享记忆、中央知识、连接器收集账本和 review 游标。
+会话镜像被有意排除——它由 `atm sync` 从各家 transcript 重建，归档因此小到一个量级，值得经常做。
+排除的方式是清空而不是删表：恢复出来的库 schema 完整，`atm doctor` 立刻可读，下一次 sync 把行填回来。
+
+它同时是 schema 太旧被拒时的逃生口。`atm backup` 不走会 migrate 的打开路径，所以被
+`minUpgradableVersion` 硬拒的库仍然备份得出来——先备份，再删库重建索引，这个顺序写在拒绝信息里。
+`atm restore` 会拒绝比当前构建更新的归档（宁可不认，也不误读未知列），并把被替换的数据移到
+`~/.atm/pre-restore-<时间>/` 而不是删除。
 
 会话搜索使用固定字面子串，不依赖 FTS5。查询默认以只读快照打开数据库；`atm sync status --json`
 会只读报告索引是否存在、最后成功同步时间、数据年龄、最近错误和已索引会话数。需要最新会话时再运行
@@ -283,10 +320,17 @@ Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事
 继续各自演进，任一额度源读取失败也只影响自己的卡片。
 
 Todo 使用一套生命周期状态：`open/in_progress/waiting/review/blocked/done/dropped`。
-`lane` 表示工作、个人等领域，`maintenance` 是标签而不是状态。当前会话通过 session↔todo
+`maintenance` 是标签而不是状态。当前会话通过 session↔todo
 绑定表达焦点；待开始队列由 `open` todo 的优先级和创建时间推导，不再单独保存
 `focus/queued`。v4 的 `attention` 字段会在读取时自动迁移，并在下次保存时移除；`atm now`
 会在一个兼容版本内附带旧视图字段，支持 CLI 与 macOS App 分步升级。
+
+`creator` 记录任务是谁建的，取值限定为 `me`、`collect` 或 agent 名，与自由文本 `source`
+（为什么/从哪来）正交——因此 `atm todo list --creator collect` 是个能回答的问题。创建时自动判定：
+环境里有 agent session 记该 agent，连接器收集记 `collect`，其余记 `me`；判定不准时用
+`atm todo add --creator <值>` 显式声明。展示 `me` 时使用 `atm config set owner_name <昵称>`
+配置的昵称（默认「我」），存储值始终是 `me`，改昵称不会改写任何记录。该字段自 schema v33 起存在，
+更早创建的 todo 保持为空，不做回填。
 
 Todo 可通过 `depends_on` 建立结构化依赖。`atm todo done` 和批量完成会在同一次原子保存中检查
 依赖图；当 waiting todo 的全部依赖都为 done 时，自动回到 open 并记录 wake 进展。依赖就绪只表示

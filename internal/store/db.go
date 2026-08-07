@@ -99,8 +99,15 @@ func migrate(db *sql.DB) error {
 	}
 	switch {
 	case version < minUpgradableVersion:
+		// Deleting the database is the last step, not the first: sessions rebuild
+		// from agent transcripts, but todos, memory, knowledge, the collection
+		// ledger and the review cursor are this database's own records and have
+		// nowhere to rebuild from. `atm backup` reads a schema this old precisely
+		// because it never takes this path.
 		return fmt.Errorf("database schema v%d is no longer supported (minimum v%d): "+
-			"remove %s and run `atm sync` to rebuild it", version, minUpgradableVersion, config.AtmDB)
+			"run `atm backup` first to keep your todos, memory and knowledge, "+
+			"then remove %s and run `atm sync` to rebuild the session index",
+			version, minUpgradableVersion, config.AtmDB)
 	case version > SchemaVersion:
 		// An older binary against a newer database: reading it would silently
 		// misinterpret columns this build does not know about.
@@ -164,6 +171,21 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 32
+		case 32:
+			if err := migrateV32ToV33(db); err != nil {
+				return err
+			}
+			version = 33
+		case 33:
+			if err := migrateV33ToV34(db); err != nil {
+				return err
+			}
+			version = 34
+		case 34:
+			if err := migrateV34ToV35(db); err != nil {
+				return err
+			}
+			version = 35
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -692,6 +714,103 @@ func migrateV31ToV32(db *sql.DB) error {
 		}
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 32`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV32ToV33 records who filed a todo. Existing rows keep an empty creator
+// rather than a guessed one: the free-text source they carry says why the work
+// exists, not who typed it, so reading "me" or "claude" out of it would invent a
+// fact the database never had.
+func migrateV32ToV33(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	hasColumn, err := tableHasColumn(tx, "todos", "creator")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := tx.Exec(`ALTER TABLE todos ADD COLUMN creator TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 33`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV33ToV34 bounds automatic retries of a failed collection batch.
+// Existing failed items start at zero attempts rather than an invented count:
+// the ledger never recorded how many runs already tried them, and guessing high
+// would silently retire items that a working connector would now process. They
+// get a full budget from here, which costs at most MaxCollectionAttempts runs
+// once.
+func migrateV33ToV34(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	hasColumn, err := tableHasColumn(tx, "collection_items", "attempts")
+	if err != nil {
+		return err
+	}
+	if !hasColumn {
+		if _, err := tx.Exec(`ALTER TABLE collection_items
+			ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 34`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV34ToV35 drops two columns from todos: lane and feature_path.
+//
+// The work/personal lane never earned a
+// column: nothing branched on it, the value was derived rather than chosen (the
+// desktop app filled in whichever lane already dominated the project, the
+// collector hardcoded "work"), and the only reader was an optional --lane
+// filter on `todo list` and `now`. Todos already have a tag table for
+// cross-cutting marks, so the lane was a second, weaker copy of it.
+//
+// The existing labels are dropped rather than migrated into tags: within the
+// one project holding most of the todos they disagreed with each other for the
+// same kind of work, so there is no classification in them worth carrying
+// forward.
+//
+// feature_path is the other half: nothing has read or written it for as long as
+// it has existed, so every row holds NULL. It outlived its usefulness only
+// because dropping one unused column did not justify a schema bump on its own.
+//
+// Neither column appears in an index, view, or constraint, so both go without
+// rewriting the table.
+func migrateV34ToV35(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, column := range []string{"lane", "feature_path"} {
+		hasColumn, err := tableHasColumn(tx, "todos", column)
+		if err != nil {
+			return err
+		}
+		if !hasColumn {
+			continue
+		}
+		if _, err := tx.Exec(`ALTER TABLE todos DROP COLUMN ` + column); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 35`); err != nil {
 		return err
 	}
 	return tx.Commit()

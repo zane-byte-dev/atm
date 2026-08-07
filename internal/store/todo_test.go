@@ -19,7 +19,7 @@ func TestTodoJSONKeysAreSnakeCase(t *testing.T) {
 	start, done := int64(1), int64(2)
 	encoded, err := json.Marshal(Todo{
 		ID: "t1", Title: "T", Description: "d", Priority: "P1", Status: "done",
-		Project: "atm", Lane: "work", Tags: []string{"maintenance"},
+		Project: "atm", Tags: []string{"maintenance"},
 		WakeCondition: "w", ReviewAt: "2026-07-30", MaintenanceLimit: 1,
 		DependsOn: []string{"t2"}, Created: "2026-07-01", Source: "s",
 		Closed: &closed, ClosedReason: &reason, OnDone: "o",

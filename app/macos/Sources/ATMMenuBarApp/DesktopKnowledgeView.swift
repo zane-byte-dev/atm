@@ -63,12 +63,17 @@ struct DesktopKnowledgeView: View {
     private var hasUnsavedChanges: Bool { editContent != originalEditContent }
 
     var body: some View {
-        HSplitView {
+        ATMSplitColumn(
+            id: "knowledge",
+            defaultWidth: 316,
+            minWidth: 260,
+            maxWidth: 410,
+            detailMinWidth: 400
+        ) {
             itemList
-                .frame(minWidth: 260, idealWidth: 316, maxWidth: 410)
-
+        } detail: {
             detailPane
-                .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(ATMTheme.canvas)
         }
         .task {
@@ -231,7 +236,10 @@ struct DesktopKnowledgeView: View {
 
     private var itemList: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("知识库")
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(ATMTheme.secondary)
                 HStack(spacing: 8) {
                     Image(systemName: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? "brain.head.profile" : "folder")
                         .foregroundStyle(ATMTheme.accent)
@@ -295,7 +303,8 @@ struct DesktopKnowledgeView: View {
                     ) { refreshGeneration += 1 }
                 }
             }
-            .padding(14)
+            .padding(.horizontal, 14)
+            .frame(height: 88)
 
             Divider()
 
@@ -322,7 +331,7 @@ struct DesktopKnowledgeView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(ATMTheme.surface)
+        .background(ATMTheme.listPane)
     }
 
     private var detailPane: some View {
@@ -391,47 +400,42 @@ struct DesktopKnowledgeView: View {
             .atmRowSurface(isSelected: selected)
         }
         .buttonStyle(.plain)
-        .contextMenu { knowledgeContextMenu(for: item) }
+        .atmRightClickMenu { knowledgeMenuEntries(for: item) }
     }
 
-    @ViewBuilder
-    private func knowledgeContextMenu(for item: KnowledgeListItem) -> some View {
+    @ATMMenuBuilder
+    private func knowledgeMenuEntries(for item: KnowledgeListItem) -> [ATMMenuEntry] {
         switch item {
         case .document(let summary):
-            Button("重命名…") {
+            ATMMenuItem("重命名…") {
                 renameText = summary.title
                 renameSummary = summary
             }
-            Menu {
+            ATMMenuSubmenu("移动到", systemImage: "folder") {
                 let destinations = store.knowledgeCollections.filter { $0.id != summary.collection }
                 if destinations.isEmpty {
-                    Button("没有其他知识库") {}
-                        .disabled(true)
+                    ATMMenuItem("没有其他知识库", enabled: false) {}
                 } else {
-                    ForEach(destinations) { collection in
-                        Button {
+                    for collection in destinations {
+                        ATMMenuItem(collection.name, systemImage: "folder") {
                             Task { await moveDocument(summary, to: collection.id) }
-                        } label: {
-                            Label(collection.name, systemImage: "folder")
                         }
                     }
                 }
-            } label: {
-                Label("移动到", systemImage: "folder")
             }
             let archived = summary.status == "archived"
-            Button(archived ? "恢复" : "归档") {
+            ATMMenuItem(archived ? "恢复" : "归档") {
                 Task { await toggleArchive(summary: summary, archived: archived) }
             }
-            Button("复制 ID") { copyIdentifier(summary.documentID) }
-            Divider()
-            Button("新建知识…") { showingCreateSheet = true }
-            Divider()
-            Button("永久删除…", role: .destructive) { deleteSummary = summary }
+            ATMMenuItem("复制 ID") { copyIdentifier(summary.documentID) }
+            ATMMenuSeparator()
+            ATMMenuItem("新建知识…") { showingCreateSheet = true }
+            ATMMenuSeparator()
+            ATMMenuItem("永久删除…", destructive: true) { deleteSummary = summary }
         case .memory(let memory):
-            Button("复制 ID") { copyIdentifier(memory.id) }
-            Divider()
-            Button("新建知识…") { showingCreateSheet = true }
+            ATMMenuItem("复制 ID") { copyIdentifier(memory.id) }
+            ATMMenuSeparator()
+            ATMMenuItem("新建知识…") { showingCreateSheet = true }
         }
     }
 
@@ -550,8 +554,9 @@ struct DesktopKnowledgeView: View {
                 )
 
             }
-            .padding(24)
-            .frame(maxWidth: 980, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(maxWidth: 900, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -656,8 +661,9 @@ struct DesktopKnowledgeView: View {
 
                 ATMMarkdownContentView(source: memory.content)
             }
-            .padding(24)
-            .frame(maxWidth: 980, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(maxWidth: 900, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -673,80 +679,86 @@ struct DesktopKnowledgeView: View {
         onDelete: (() -> Void)? = nil,
         archiveTitle: String = "归档知识"
     ) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Text(title)
-                .font(ATMFont.font(.metric, weight: .bold))
-                .lineLimit(4)
-                .textSelection(.enabled)
-                .layoutPriority(1)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(libraryTitle)
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(ATMTheme.accent)
 
-            Spacer(minLength: 2)
+            HStack(alignment: .top, spacing: 10) {
+                Text(title)
+                    .font(ATMFont.font(.metric, weight: .bold))
+                    .lineLimit(4)
+                    .textSelection(.enabled)
+                    .layoutPriority(1)
 
-            HStack(spacing: 2) {
-                if let onEdit {
-                    ATMIconButton(
-                        systemImage: "pencil",
-                        help: "编辑 Markdown",
-                        chrome: .bare,
-                        side: 26,
-                        iconTier: .bodyLarge,
-                        action: onEdit
-                    )
-                }
+                Spacer(minLength: 2)
 
-                ATMIconButton(
-                    systemImage: "info.circle",
-                    help: infoTitle,
-                    chrome: .bare,
-                    isEmphasized: showingInfo,
-                    side: 26,
-                    iconTier: .bodyLarge
-                ) { showingInfo.toggle() }
-                .popover(isPresented: $showingInfo, arrowEdge: .top) {
-                    knowledgeInfoPopover(title: infoTitle, fields: infoFields)
-                }
-
-                ATMIconButton(
-                    systemImage: copiedIdentifier == identifier ? "checkmark" : "doc.on.doc",
-                    help: copiedIdentifier == identifier ? "已复制" : "复制 ID",
-                    chrome: .bare,
-                    isEmphasized: copiedIdentifier == identifier,
-                    side: 26,
-                    iconTier: .bodyLarge
-                ) { copyIdentifier(identifier) }
-
-                if onEditInfo != nil || onArchive != nil || onDelete != nil {
-                    Menu {
-                        if let onEditInfo {
-                            Button(action: onEditInfo) {
-                                Label("编辑信息", systemImage: "slider.horizontal.3")
-                            }
-                        }
-                        if let onArchive {
-                            Divider()
-                            Button(action: onArchive) {
-                                Label(archiveTitle, systemImage: archiveTitle == "恢复知识" ? "arrow.uturn.backward" : "archivebox")
-                            }
-                        }
-                        if let onDelete {
-                            Divider()
-                            Button(role: .destructive, action: onDelete) {
-                                Label("永久删除…", systemImage: "trash")
-                            }
-                        }
-                    } label: {
-                        ATMIconMenuLabel(
-                            systemImage: "ellipsis",
-                            help: "管理知识",
+                HStack(spacing: 2) {
+                    if let onEdit {
+                        ATMIconButton(
+                            systemImage: "pencil",
+                            help: "编辑 Markdown",
+                            chrome: .bare,
                             side: 26,
-                            iconTier: .bodyLarge
+                            iconTier: .bodyLarge,
+                            action: onEdit
                         )
                     }
-                    .menuStyle(.borderlessButton)
-                    .menuIndicator(.hidden)
+
+                    ATMIconButton(
+                        systemImage: "info.circle",
+                        help: infoTitle,
+                        chrome: .bare,
+                        isEmphasized: showingInfo,
+                        side: 26,
+                        iconTier: .bodyLarge
+                    ) { showingInfo.toggle() }
+                    .popover(isPresented: $showingInfo, arrowEdge: .top) {
+                        knowledgeInfoPopover(title: infoTitle, fields: infoFields)
+                    }
+
+                    ATMIconButton(
+                        systemImage: copiedIdentifier == identifier ? "checkmark" : "doc.on.doc",
+                        help: copiedIdentifier == identifier ? "已复制" : "复制 ID",
+                        chrome: .bare,
+                        isEmphasized: copiedIdentifier == identifier,
+                        side: 26,
+                        iconTier: .bodyLarge
+                    ) { copyIdentifier(identifier) }
+
+                    if onEditInfo != nil || onArchive != nil || onDelete != nil {
+                        Menu {
+                            if let onEditInfo {
+                                Button(action: onEditInfo) {
+                                    Label("编辑信息", systemImage: "slider.horizontal.3")
+                                }
+                            }
+                            if let onArchive {
+                                Divider()
+                                Button(action: onArchive) {
+                                    Label(archiveTitle, systemImage: archiveTitle == "恢复知识" ? "arrow.uturn.backward" : "archivebox")
+                                }
+                            }
+                            if let onDelete {
+                                Divider()
+                                Button(role: .destructive, action: onDelete) {
+                                    Label("永久删除…", systemImage: "trash")
+                                }
+                            }
+                        } label: {
+                            ATMIconMenuLabel(
+                                systemImage: "ellipsis",
+                                help: "管理知识",
+                                side: 26,
+                                iconTier: .bodyLarge
+                            )
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                    }
                 }
+                .padding(.top, 1)
             }
-            .padding(.top, 1)
         }
     }
 

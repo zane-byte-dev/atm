@@ -34,25 +34,46 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 ## 几个容易被重新提出的决定
 
 - **Knowledge 不做缓存或索引**：检索每次全量读取中央 Markdown。在当前量级（约 100 篇）解析成本远低于
-  进程启动，缓存反而更慢，且会引入失效问题。
+  进程启动，缓存反而更慢，且会引入失效问题。这个结论依赖量级，不是永久的：**文档数超过 500 篇，或
+  一次 `knowledge search` 的墙上时间稳定超过 300ms 时，重新评估**。复评的对照项是索引而不是缓存 ——
+  缓存要解决失效，索引只需要在写入时更新。
 - **ATM 不在进程内运行模型做记忆抽取**：它只提供未整理 session 查询、带来源的 memory 写入和
   append-only review 游标；语义抽取、去重、路由与授权检查由 curator skill 约束 Agent 完成。
 - **Parser 提取结构，不做业务判断**：应提取一切可用的结构化信息（summary、时间戳、工具调用），
   但不提取 git commit、不生成摘要。
 - **`review` 状态保留，但不是闸门**：它表示「Agent 声称完成、人尚未验收」。`todo done` 不设前置检查 ——
   人点下完成时验收已经发生。删掉这个状态等于让 Agent 自己宣布完成。
+- **Session 镜像不主动清理**（2026-08-05 决定）：索引只增不减，没有保留期，没有后台 compaction。
+  理由是它的存在意义就是比 Agent 自己的日志活得更久 —— Claude Code 三十天就清 `~/.claude/projects`，
+  而 ATM 承诺 `atm stats --days 90` 的历史不会自己缩水（见 README「数据源」）。任何自动清理都在
+  削弱这个承诺，而且「哪条会话不再需要」只有人知道：一条三个月前的会话可能是某个决定的唯一记录。
+  库因此单调增长，这是有意接受的成本 —— 单用户单机的量级下，磁盘比丢失的历史便宜。
+  现有的显式手段是 `atm session forget <id>`，一次一条，且源文件还在时会直接拒绝。
+  后续方向是**推荐清理**：ATM 给出候选清单和它们各自的 token/成本代价，人确认后才执行；
+  不做静默的后台删除。
+- **团队与多机共享不是产品目标**（2026-08-05 决定）：ATM 服务一个人的一台机器。Knowledge、Memory 和
+  Todo 都是单人第二大脑，不做团队共享、不做多机同步、不做冲突合并。这不只是「暂时没做」——
+  「单用户单库」「Knowledge 全量扫描」「不背向后兼容成本」这三条都建立在它之上，反悔的代价是同时推翻
+  它们。因此这条不接受被需求逐步侵蚀：跨机使用请走 `atm backup` / `atm restore` 的显式搬移，
+  它是一次人发起的整体迁移，而不是后台同步。
 
 ## 不做
 
 - Agent Schedule/Run、Webhook、独立 daemon 或后台 Agent 执行；由 Enchanted 等运行客户端负责
 - ATM HTTP API、MCP server 或独立 Web UI
-- 远程同步
+- 远程同步、团队共享与多机合并（见上一节的决定；跨机搬移用 `atm backup` / `atm restore`）
 - 模型循环或 prompt/event stream 代理
 
 ## 已知限制
 
 - Codex/Copilot 暂不支持 thinking 提取（Claude 和 Pi 支持）
 - Copilot 目前偏会话检索和工具统计，不提供 token/cost 明细
+- Qoder CLI 与 QoderWork 同样没有 token/cost 明细，原因在上游而非 parser（2026-08-05 核验）：
+  QoderWork 的 metadata 里 `inputTokens`/`outputTokens`/`totalCostUsd` 恒为 0，而同一批消息的
+  `durationMs` 与 `contextUsageRatio` 有真实值；Qoder CLI 的 transcript 里根本不存在任何
+  token 字段。两者的提取逻辑保留着，上游一旦开始写入，把
+  [`parser.CapabilitiesFor`](internal/parser/capabilities.go) 改回 `Usage: true` 即可恢复统计。
+  Qoder 本体（IDE）提供 token，不在此列。
 - Qoder 与 QoderWork 依赖本地 SQLite 表结构，Qoder CLI 依赖 JSONL transcript；若上游客户端变更
   schema，需要更新 parser
 

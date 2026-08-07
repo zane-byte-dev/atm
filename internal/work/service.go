@@ -40,8 +40,20 @@ func (transaction *Transaction) ArchiveTodos(ids []string) ([]string, error) {
 	return transaction.state.ArchiveTodos(ids)
 }
 
+func (transaction *Transaction) TrashTodos(ids []string) ([]string, error) {
+	return transaction.state.TrashTodos(ids)
+}
+
 func (transaction *Transaction) UnarchiveTodos(ids []string) ([]string, error) {
 	return transaction.state.UnarchiveTodos(ids)
+}
+
+func (transaction *Transaction) RestoreTodos(ids []string) ([]string, error) {
+	return transaction.state.RestoreTodos(ids)
+}
+
+func (transaction *Transaction) PermanentlyDeleteTodos(ids []string) ([]string, error) {
+	return transaction.state.PermanentlyDeleteTodos(ids)
 }
 
 func (transaction *Transaction) BindSession(binding store.TodoSessionBinding) (*store.TodoSessionBinding, error) {

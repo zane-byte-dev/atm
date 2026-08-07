@@ -53,6 +53,12 @@ var (
 	Pricing        map[string][4]float64
 	Subscriptions  map[string]float64
 	ProjectAliases map[string]string
+	// OwnerName is how the single human behind this installation wants to be
+	// named. Todos record the human creator as "me" — a stable token that stays
+	// correct if the nickname changes — and only the display layer reads this.
+	// Empty means "我", which every ATM user can read without configuring
+	// anything.
+	OwnerName = ""
 	// GrokLiveQuota gates the network call to the Grok billing API. Off by
 	// default so `atm quota` stays local-only unless the user opts in via
 	// config or the ATM_GROK_LIVE_QUOTA env override.
@@ -156,6 +162,7 @@ type QuotaProviderConfig struct {
 
 type FileConfig struct {
 	Timezone          string `json:"timezone,omitempty"`
+	OwnerName         string `json:"owner_name,omitempty"`
 	ClaudeProjects    string `json:"claude_projects,omitempty"`
 	CodexSessions     string `json:"codex_sessions,omitempty"`
 	PiSessions        string `json:"pi_sessions,omitempty"`
@@ -200,6 +207,9 @@ func loadConfigFile() {
 		if err == nil {
 			Loc = loc
 		}
+	}
+	if cfg.OwnerName != "" {
+		OwnerName = cfg.OwnerName
 	}
 	if cfg.ClaudeProjects != "" {
 		ClaudeProjects = expandHome(cfg.ClaudeProjects)
@@ -305,6 +315,7 @@ func expandHome(p string) string {
 func ShowConfig() string {
 	cfg := FileConfig{
 		Timezone:                       Loc.String(),
+		OwnerName:                      OwnerName,
 		ClaudeProjects:                 ClaudeProjects,
 		CodexSessions:                  CodexSessions,
 		PiSessions:                     PiSessions,

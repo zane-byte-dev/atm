@@ -66,7 +66,17 @@ final class ModelsTests: XCTestCase {
                         "sender":"测试发送人","occurred_at":99,"raw_context":"想做自动收集",
                         "action":"create","title":"实现自动收集","item_type":"requirement",
                         "project":"atm","priority":"P1","reason":"明确需求","confidence":0.95,
-                        "todo_id":"t1","status":"processed","created_at":100,"updated_at":101}],
+                        "todo_id":"t1","todo_status":"open",
+                        "status":"processed","created_at":100,"updated_at":101},
+                       {"id":"ci2","source_id":"cs1","connector":"example",
+                        "conversation_id":"channel-1","fingerprint":"fp2","message_ids":["m2"],
+                        "action":"create","title":"修好部署脚本","item_type":"bug",
+                        "todo_id":"t2","todo_status":"done","todo_archived":true,
+                        "status":"processed","created_at":102,"updated_at":103},
+                       {"id":"ci3","source_id":"cs1","connector":"example",
+                        "conversation_id":"channel-1","fingerprint":"fp3","message_ids":["m3"],
+                        "action":"create","title":"没有回流状态的旧记录",
+                        "todo_id":"t3","status":"processed","created_at":104,"updated_at":105}],
               "digests":[]
             }
             """.utf8
@@ -87,6 +97,17 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.connectorHealth.first?.status, "ready")
         XCTAssertEqual(overview.items.first?.todoID, "t1")
         XCTAssertEqual(overview.items.first?.messageIDs, ["m1"])
+        // A record is only settled once the Todo it filed is: the open one stays in
+        // the main list, the finished one folds away with the insights and noise.
+        XCTAssertEqual(overview.items.first?.todoClosed, false)
+        XCTAssertEqual(overview.items.first?.shouldCollapseInCollection, false)
+        XCTAssertEqual(overview.items[1].todoClosed, true)
+        XCTAssertEqual(overview.items[1].shouldCollapseInCollection, true)
+        XCTAssertEqual(overview.items[1].todoArchived, true)
+        // Written before the CLI derived the Todo's state: absent, not closed.
+        XCTAssertNil(overview.items[2].todoStatus)
+        XCTAssertNil(overview.items[2].todoArchived)
+        XCTAssertEqual(overview.items[2].shouldCollapseInCollection, false)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "run"]), 300)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "item", "reprocess", "ci1"]), 180)
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)
@@ -104,9 +125,65 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMCollectionItemType.resolve(nil), .unknown)
 
         for itemType in ATMCollectionItemType.allCases {
-            XCTAssertFalse(itemType.explanation.isEmpty)
+            XCTAssertFalse(itemType.title.isEmpty)
             XCTAssertFalse(itemType.systemImage.isEmpty)
         }
+    }
+
+    /// 原文的行格式来自 collector 的 formatMessageContext：
+    /// `[新消息] 2026-08-06 15:04:05 [张三] 内容`。详情栏把它当聊天渲染，所以这里盯住
+    /// 三件在真实数据里一定会出现的事：同一个人连说几句要并成一块、正文自己的换行不能
+    /// 被当成新消息、分界线只画在第一条新消息前面。
+    func testCollectionTranscriptGroupsMessagesAndMarksWhereFreshBegins() {
+        let transcript = ATMCollectionTranscript.parse(
+            """
+            [上下文] 2026-08-06 15:04:05 [张三] 昨天那个导出还是超时
+            [上下文] 2026-08-06 15:04:30 [张三] 大概 30s 就断了
+            [新消息] 2026-08-06 15:12:00 [李四] 我看下
+            应该是分页没生效
+            [新消息] 2026-08-06 15:12:40 [王五] 那我先回滚
+
+            """
+        )
+
+        XCTAssertNil(transcript.fallback)
+        XCTAssertEqual(transcript.blocks.map(\.sender), ["张三", "李四", "王五"])
+        XCTAssertEqual(transcript.blocks.map(\.isFresh), [false, true, true])
+        // 秒被丢掉，日期只在开头和跨天时出现：逐行重复的时分秒是这段原文最大的噪声。
+        XCTAssertEqual(transcript.blocks.map(\.time), ["08-06 15:04", "15:12", "15:12"])
+        // 原文以换行结尾时，末尾空行不能变成消息尾部的空白。
+        XCTAssertEqual(transcript.blocks[2].lines, ["那我先回滚"])
+        XCTAssertEqual(transcript.blocks[0].lines, ["昨天那个导出还是超时", "大概 30s 就断了"])
+        // 正文里的换行留在同一条消息里，不会伪装成又一条。
+        XCTAssertEqual(transcript.blocks[1].lines, ["我看下\n应该是分页没生效"])
+        // 分界线只有一条，画在第一块新消息前面。
+        XCTAssertEqual(transcript.blocks.map(\.startsFresh), [false, true, false])
+    }
+
+    func testCollectionTranscriptWithoutMarkersIsAllFreshAndHasNoDivider() {
+        // 按需分析没有标记前缀：每一行都参与了判断，没有「上面只是背景」这回事。
+        let transcript = ATMCollectionTranscript.parse(
+            """
+            2026-08-06 15:04:05 [张三] 分析下这段
+            2026-08-07 09:00:00 [张三] 顺便看看昨天的
+            """
+        )
+
+        XCTAssertEqual(transcript.blocks.map(\.isFresh), [true, true])
+        XCTAssertEqual(transcript.blocks.map(\.startsFresh), [false, false])
+        // 同一个人跨天说话要断开，并且补上日期——只留时分会读成两分钟前的事。
+        XCTAssertEqual(transcript.blocks.map(\.time), ["08-06 15:04", "08-07 09:00"])
+    }
+
+    func testCollectionTranscriptFallsBackToRawTextAndHandlesEmpty() {
+        let freeform = "连接器直出的自由文本\n没有时间戳"
+        let transcript = ATMCollectionTranscript.parse(freeform)
+
+        XCTAssertTrue(transcript.blocks.isEmpty)
+        XCTAssertEqual(transcript.fallback, freeform)
+
+        XCTAssertEqual(ATMCollectionTranscript.parse(nil), .empty)
+        XCTAssertEqual(ATMCollectionTranscript.parse("   \n "), .empty)
     }
 
     func testCollectionCandidatesDecodeAndBuildAddArguments() throws {
@@ -139,6 +216,79 @@ final class ModelsTests: XCTestCase {
         )
         XCTAssertTrue(ATMCollectionSourceTarget.identifier(kind: "channel", externalID: "   ").value.isEmpty)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "source", "search", "示例研发"]), 45)
+    }
+
+    /// The add sheet only knows the connector and whatever the person has picked
+    /// or typed; these two rules decide what `collect source add` is handed, and
+    /// what the footer says while it cannot be handed anything.
+    func testCollectionSourceIdentityResolvesWhatGetsSaved() {
+        var identity = ATMCollectionSourceIdentity()
+        XCTAssertNil(identity.target)
+        XCTAssertEqual(identity.blockReason, "请先选择连接器")
+
+        identity.connector = " DingTalk "
+        XCTAssertEqual(identity.trimmedConnector, "dingtalk")
+        XCTAssertEqual(identity.blockReason, "请搜索并选择一个来源")
+
+        // A picked candidate wins over the manual fields: it carries the kind the
+        // connector itself uses, which is not something anyone should retype.
+        identity.manualKind = "group"
+        identity.externalID = "typed-id"
+        identity.selection = ATMCollectionCandidate(
+            kind: "bot", externalID: "bot-1", name: "Code助手", detail: nil
+        )
+        XCTAssertEqual(identity.target?.arguments, ["--kind", "bot", "--id", "bot-1"])
+        XCTAssertNil(identity.blockReason)
+
+        // Switching to manual entry ignores the stale candidate.
+        identity.manualEntry = true
+        XCTAssertEqual(identity.target?.arguments, ["--kind", "group", "--id", "typed-id"])
+        identity.externalID = "   "
+        XCTAssertNil(identity.target)
+        XCTAssertEqual(identity.blockReason, "请填写来源类型和来源 ID")
+
+        // Editing pins the identity: the upsert keys on it, so a save that let it
+        // drift would create a second source instead of updating this one.
+        identity.locked = .identifier(kind: "group", externalID: "chat-9")
+        XCTAssertTrue(identity.isEditing)
+        XCTAssertEqual(identity.target?.arguments, ["--kind", "group", "--id", "chat-9"])
+        XCTAssertNil(identity.blockReason)
+    }
+
+    func testCollectionVocabularyNamesKindsAndConnectorHealth() {
+        XCTAssertEqual(collectionKindLabel("group"), "群聊")
+        XCTAssertEqual(collectionKindLabel("open_dingtalk_id"), "联系人")
+        XCTAssertEqual(collectionKindLabel("bot"), "机器人")
+        XCTAssertEqual(collectionKindLabel("all"), "来源")
+        XCTAssertEqual(collectionKindLabel(nil), "来源")
+        // A kind ATM has never seen belongs to the connector, so it prints as
+        // itself rather than as "未知".
+        XCTAssertEqual(collectionKindLabel("issue"), "issue")
+
+        // The search filter is discovery only; every case has to survive the trip
+        // to `collect source search --kind`.
+        XCTAssertEqual(ATMCollectionSearchKind.allCases.map(\.rawValue), ["all", "group", "user", "bot"])
+        for kind in ATMCollectionSearchKind.allCases {
+            XCTAssertFalse(kind.label.isEmpty)
+            XCTAssertFalse(kind.systemImage.isEmpty)
+        }
+
+        let ready = ATMCollectionConnectorHealth(
+            connector: "example", status: "ready", error: nil, checkedAt: 110
+        )
+        XCTAssertEqual(ready.statusLabel, "可用")
+        XCTAssertFalse(ready.isUnverified)
+        let unchecked = ATMCollectionConnectorHealth(
+            connector: "example", status: "not_checked", error: nil, checkedAt: nil
+        )
+        XCTAssertEqual(unchecked.statusLabel, "尚未检测")
+        XCTAssertTrue(unchecked.isUnverified)
+        XCTAssertEqual(
+            ATMCollectionConnectorHealth(
+                connector: "example", status: "auth_required", error: "not_authenticated", checkedAt: 9
+            ).statusIcon,
+            "person.crop.circle.badge.exclamationmark"
+        )
     }
 
     func testCollectionHistoryDecodesReadOnlyConversation() throws {
@@ -413,6 +563,54 @@ final class ModelsTests: XCTestCase {
         XCTAssertThrowsError(try JSONDecoder().decode(ATMDashboardEnvelope.self, from: data))
     }
 
+    /// A newer CLI than the App: the App is the side that has to move, and the
+    /// message has to say so rather than describing a corrupt payload.
+    func testDashboardSchemaMismatchTellsTheUserToUpdateTheApp() throws {
+        let data = Data(
+            #"{"schema_version":\#(ATMDashboardContract.supportedSchemaVersion + 1)}"#.utf8
+        )
+        do {
+            _ = try JSONDecoder().decode(ATMDashboardEnvelope.self, from: data)
+            XCTFail("expected a schema mismatch")
+        } catch let mismatch as ATMDashboardSchemaMismatch {
+            XCTAssertEqual(mismatch.direction, .appTooOld)
+            XCTAssertEqual(mismatch.cliVersion, ATMDashboardContract.supportedSchemaVersion + 1)
+            XCTAssertEqual(mismatch.appVersion, ATMDashboardContract.supportedSchemaVersion)
+            let summary = mismatch.summary
+            XCTAssertTrue(summary.contains("App 需要更新"), summary)
+            XCTAssertTrue(summary.contains("build-app.sh"), "no actionable step: \(summary)")
+            // Both numbers must appear, or the user cannot tell how far apart they are.
+            XCTAssertTrue(summary.contains("v\(ATMDashboardContract.supportedSchemaVersion + 1)"), summary)
+            XCTAssertTrue(summary.contains("v\(ATMDashboardContract.supportedSchemaVersion)"), summary)
+        }
+    }
+
+    /// An older CLI than the App: the same failure, the opposite instruction.
+    func testDashboardSchemaMismatchTellsTheUserToUpdateTheCLI() throws {
+        let older = ATMDashboardContract.supportedSchemaVersion - 1
+        let data = Data(#"{"schema_version":\#(older)}"#.utf8)
+        do {
+            _ = try JSONDecoder().decode(ATMDashboardEnvelope.self, from: data)
+            XCTFail("expected a schema mismatch")
+        } catch let mismatch as ATMDashboardSchemaMismatch {
+            XCTAssertEqual(mismatch.direction, .cliTooOld)
+            let summary = mismatch.summary
+            XCTAssertTrue(summary.contains("CLI 需要更新"), summary)
+            XCTAssertTrue(summary.contains("install.sh"), "no actionable step: \(summary)")
+            XCTAssertTrue(summary.contains("v\(older)"), summary)
+        }
+    }
+
+    /// The two directions must not produce the same advice; that was the bug.
+    func testDashboardSchemaMismatchDirectionsGiveDifferentAdvice() {
+        let appBehind = ATMDashboardSchemaMismatch(cliVersion: 7, appVersion: 6)
+        let cliBehind = ATMDashboardSchemaMismatch(cliVersion: 5, appVersion: 6)
+        XCTAssertNotEqual(appBehind.recoverySuggestion, cliBehind.recoverySuggestion)
+        XCTAssertNotEqual(appBehind.errorDescription, cliBehind.errorDescription)
+        XCTAssertEqual(appBehind.direction, .appTooOld)
+        XCTAssertEqual(cliBehind.direction, .cliTooOld)
+    }
+
     func testQuotaDecodesWindowsAndSkipsAgentsWithoutData() throws {
         let data = Data(
             """
@@ -492,6 +690,7 @@ final class ModelsTests: XCTestCase {
                 "provider_cards":[{
                   "id":"daily","provider":"example","title":"Team plan","period":"今日",
                   "observed_at":"2026-08-04T03:28:37Z","source":"browser",
+                  "url":"https://example.com/account",
                   "metrics":[
                     {"id":"count","label":"每日次数","used":428,"limit":4000,"used_percent":10.7,"unit":"次"},
                     {"id":"amount","label":"每日金额","used":266.58,"limit":1200,"used_percent":22.215,"currency":"CNY","precision":2}
@@ -508,8 +707,87 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(card.providerLabel, "Example")
         XCTAssertEqual(card.sourceLabel, "浏览器")
         XCTAssertEqual(card.payload.metrics.map(\.valueText), ["428 / 4.0K 次", "¥266.58 / ¥1200.00"])
+        XCTAssertEqual(card.payload.linkURL?.absoluteString, "https://example.com/account")
         XCTAssertFalse(quota.isEmpty)
         XCTAssertTrue(quota.tooltipText?.contains("Claude Example 每日金额 22%") == true)
+    }
+
+    /// The card's URL becomes a click that opens the system browser, so a scheme
+    /// the App must never launch has to read as "no link" rather than as a link.
+    /// The CLI already refuses these; this covers a hand-edited cache file.
+    func testProviderCardIgnoresANonHTTPURL() throws {
+        func linkURL(_ url: String) throws -> URL? {
+            let data = Data(
+                """
+                {"claude":{"provider_cards":[{"id":"daily","provider":"example",
+                "title":"Team plan","observed_at":"2026-08-04T03:28:37Z","url":"\(url)",
+                "metrics":[]}]}}
+                """.utf8
+            )
+            let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: data)
+            return try XCTUnwrap(quota.providerCards.first).payload.linkURL
+        }
+
+        XCTAssertNil(try linkURL("file:///etc/passwd"))
+        XCTAssertNil(try linkURL("javascript:alert(1)"))
+        XCTAssertNil(try linkURL("/manage/"))
+        XCTAssertNil(try linkURL(""))
+        XCTAssertEqual(try linkURL("https://example.com/account")?.host, "example.com")
+    }
+
+    /// ATM keeps the last card a provider returned and marks it unavailable once
+    /// the provider reports nothing, so a daily quota that has not been observed
+    /// today leaves a card with no reading instead of a hole in the grid.
+    func testQuotaKeepsAProviderCardThatHasNoReadingLeft() throws {
+        let data = Data(
+            """
+            {
+              "claude":{
+                "provider_cards":[{
+                  "id":"daily","provider":"example","title":"Team plan","period":"今日",
+                  "observed_at":"2026-08-04T03:28:37Z","metrics":[],
+                  "unavailable":true,"unavailable_reason":"empty"
+                }]
+              }
+            }
+            """.utf8
+        )
+        let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: data)
+        let card = try XCTUnwrap(quota.providerCards.first)
+        XCTAssertTrue(card.payload.isUnavailable)
+        XCTAssertEqual(card.payload.unavailableText, "暂无数据")
+        // The card holds its place without claiming a reading: the 额度 module
+        // renders, and nothing feeds the menu bar or its tooltip.
+        XCTAssertFalse(quota.isEmpty)
+        XCTAssertNil(quota.menuBarSuffix)
+        XCTAssertNil(quota.tooltipText)
+    }
+
+    func testProviderCardObservedLabelIsLocalAndDatesOlderObservations() throws {
+        func payload(observedAt: String) throws -> ATMProviderQuotaPayload {
+            let data = Data(
+                """
+                {"claude":{"provider_cards":[{"id":"daily","provider":"example",
+                "title":"Team plan","observed_at":"\(observedAt)","metrics":[]}]}}
+                """.utf8
+            )
+            let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: data)
+            return try XCTUnwrap(quota.providerCards.first).payload
+        }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MM-dd HH:mm"
+        let stale = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-08-04T03:28:37Z"))
+        // The timestamp is UTC, so slicing "HH:mm" out of the string reported a
+        // card observed at 11:28 Beijing time as 03:28, undated.
+        XCTAssertEqual(
+            try payload(observedAt: "2026-08-04T03:28:37Z").observedTimeLabel,
+            formatter.string(from: stale)
+        )
+
+        let today = ISO8601DateFormatter().string(from: Date())
+        XCTAssertEqual(try payload(observedAt: today).observedTimeLabel.count, 5)
     }
 
     func testQuotaTranslatesLegacyDailyQuotaIntoProviderCard() throws {
@@ -846,7 +1124,7 @@ final class ModelsTests: XCTestCase {
               "working": [
                 {
                   "id": "t1", "title": "Personal focus", "priority": "P0",
-                  "status": "in_progress", "project": "atm", "lane": "personal",
+                  "status": "in_progress", "project": "atm",
                   "created": "2026-07-13"
                 }
               ],
@@ -854,7 +1132,7 @@ final class ModelsTests: XCTestCase {
               "review": [],
               "blocked": [{
                 "id": "t2", "title": "Blocked", "priority": "P1", "status": "blocked",
-                "project": "demo", "lane": "work", "created": "2026-07-13"
+                "project": "demo", "created": "2026-07-13"
               }],
               "due": [], "waiting": [],
               "summary": {
@@ -1801,12 +2079,89 @@ final class ModelsTests: XCTestCase {
         XCTAssertGreaterThan(domain.upperBound, try XCTUnwrap(dates.last))
     }
 
+    func testTodoCreatorLabelMatchesTheCLIRendering() throws {
+        let filedByMe = try JSONDecoder().decode(
+            ATMTodo.self,
+            from: Data(
+                #"{"id":"t1","title":"Filed by hand","priority":"P1","status":"open","created":"2026-08-05","creator":"me"}"#.utf8
+            )
+        )
+        XCTAssertEqual(ATMTodoCreator.label(filedByMe.creator, ownerName: "墨水"), "墨水（我）")
+        XCTAssertEqual(ATMTodoCreator.label(filedByMe.creator, ownerName: ""), "我")
+
+        let collected = try JSONDecoder().decode(
+            ATMTodo.self,
+            from: Data(
+                #"{"id":"t2","title":"Filed by collection","priority":"P1","status":"open","created":"2026-08-05","creator":"collect"}"#.utf8
+            )
+        )
+        XCTAssertEqual(ATMTodoCreator.label(collected.creator, ownerName: "墨水"), "收集")
+
+        let byAgent = try JSONDecoder().decode(
+            ATMTodo.self,
+            from: Data(
+                #"{"id":"t3","title":"Filed by an agent","priority":"P1","status":"open","created":"2026-08-05","creator":"codex"}"#.utf8
+            )
+        )
+        XCTAssertEqual(ATMTodoCreator.label(byAgent.creator, ownerName: "墨水"), "codex")
+
+        // A todo from before the field existed has no creator, and the detail
+        // header shows nothing rather than claiming one.
+        let legacy = try JSONDecoder().decode(
+            ATMTodo.self,
+            from: Data(
+                #"{"id":"t4","title":"Filed before creator existed","priority":"P1","status":"open","created":"2026-07-01"}"#.utf8
+            )
+        )
+        XCTAssertNil(legacy.creator)
+        XCTAssertNil(ATMTodoCreator.label(legacy.creator, ownerName: "墨水"))
+
+        // The row form drops the nickname — it is the same on every row it shows
+        // up on — but keeps everything that distinguishes one creator from another.
+        XCTAssertEqual(ATMTodoCreator.shortLabel(filedByMe.creator), "我")
+        XCTAssertEqual(ATMTodoCreator.shortLabel(collected.creator), "收集")
+        XCTAssertEqual(ATMTodoCreator.shortLabel(byAgent.creator), "codex")
+        XCTAssertNil(ATMTodoCreator.shortLabel(legacy.creator))
+
+        // Icons come from the sidebar's vocabulary: a 收集-filed todo wears the
+        // 收集 section's tray, an agent-filed one the Agent section's cpu.
+        XCTAssertEqual(ATMTodoCreator.icon(filedByMe.creator), "person.fill")
+        XCTAssertEqual(ATMTodoCreator.icon(collected.creator), ATMDesktopSection.collection.icon)
+        XCTAssertEqual(ATMTodoCreator.icon(byAgent.creator), ATMDesktopSection.agents.icon)
+        // No creator, no icon — a placeholder glyph would claim provenance the
+        // record does not have.
+        XCTAssertNil(ATMTodoCreator.icon(legacy.creator))
+        XCTAssertNil(ATMTodoCreator.icon("   "))
+    }
+
+    /// The list row spends no width on the priority — it tints the id instead — so
+    /// the color is the only thing carrying it there. P0 and P1 have to stay
+    /// distinct from each other and from the unset/low case.
+    func testTodoPriorityStyleKeepsUrgencyDistinctByColor() throws {
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P0"), ATMTheme.danger)
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P1"), ATMTheme.accent)
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P2"), ATMTheme.secondary)
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P3"), ATMTheme.secondary)
+        XCTAssertNotEqual(ATMTodoPriorityStyle.color(for: "P0"), ATMTodoPriorityStyle.color(for: "P1"))
+        XCTAssertNotEqual(ATMTodoPriorityStyle.color(for: "P0"), ATMTodoPriorityStyle.color(for: "P2"))
+        // An unknown priority must not borrow P0's red and claim to be urgent.
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: ""), ATMTheme.secondary)
+        XCTAssertEqual(ATMTodoPriorityStyle.color(for: "P9"), ATMTheme.secondary)
+
+        // Words for the tooltip and the pickers, since the color says nothing on
+        // its own to hover or to a screen reader.
+        XCTAssertEqual(ATMTodoPriorityStyle.label("P0"), "P0 · 紧急")
+        XCTAssertEqual(ATMTodoPriorityStyle.label("P1"), "P1 · 高")
+        XCTAssertEqual(ATMTodoPriorityStyle.label("P2"), "P2 · 普通")
+        XCTAssertEqual(ATMTodoPriorityStyle.label("P3"), "P3 · 低")
+    }
+
     func testTodoCommandArgumentsPreserveBusinessCLI() throws {
         let data = Data(
             """
             {
               "id":"t8","title":"Ship menu app","priority":"P1","status":"open",
-              "project":"atm","lane":"personal","created":"2026-07-13"
+              "project":"atm","created":"2026-07-13"
             }
             """.utf8
         )
@@ -1833,8 +2188,16 @@ final class ModelsTests: XCTestCase {
             ATMCommandBuilder.arguments(for: .deferLater, todo: todo),
             ["todo", "wait", "t8", "--wake", ATMTodoDeferred.wakeCondition]
         )
-        // Must carry --yes: the CLI prompt would otherwise read an unanswerable
-        // stdin and cancel, leaving the todo alive with no error surfaced.
+        XCTAssertEqual(
+            ATMCommandBuilder.arguments(for: .trash, todo: todo),
+            ["todo", "trash", "t8"]
+        )
+        XCTAssertEqual(
+            ATMCommandBuilder.arguments(for: .restore, todo: todo),
+            ["todo", "restore", "t8"]
+        )
+        // Permanent deletion is only offered from the trash, after the App has
+        // confirmed it. The CLI still needs --yes because it has no stdin.
         XCTAssertEqual(
             ATMCommandBuilder.arguments(for: .delete, todo: todo),
             ["todo", "delete", "t8", "--yes"]
@@ -1846,17 +2209,21 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(submitted.completionVerb, "验收")
         XCTAssertEqual(todo.completionVerb, "完成")
 
-        // Status-scoped actions: review is only accept / reject-to-backlog.
+        // One lifecycle set for every open todo; at the review gate only the
+        // closing verb changes wording (验收), and only what the todo is already
+        // in drops out. Sending it back stays plain 回到待办 — the App does not
+        // ask anyone to pronounce a 验收不通过 verdict to move a task back.
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: submitted).map(\.action),
-            [.complete, .returnToOpen]
+            [.start, .complete, .returnToOpen, .deferLater, .drop]
         )
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: submitted).map(\.title),
-            ["验收", "验收不通过（重新到待办）"]
+            ["开始", "验收", "回到待办", "暂不处理", "放弃"]
         )
         XCTAssertFalse(ATMTodoStatusActions.showsLaunchPrompt(for: submitted))
         XCTAssertTrue(ATMTodoStatusActions.showsLaunchPrompt(for: todo))
+        // Already open, so 回到待办 is the one thing missing here.
         XCTAssertEqual(
             ATMTodoStatusActions.primaryItems(for: todo).map(\.action),
             [.start, .complete, .deferLater]
@@ -1871,15 +2238,14 @@ final class ModelsTests: XCTestCase {
                 #"{"id":"t10","title":"Working","priority":"P1","status":"in_progress","created":"2026-07-29"}"#.utf8
             )
         )
-        // Work in progress goes back to the queue, not into the parked bucket:
-        // 暂不处理 is a backlog decision, so it is not offered here.
+        // Already running, so 开始 drops out and the rest stays.
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: inProgress).map(\.action),
-            [.complete, .returnToOpen, .drop]
+            [.complete, .returnToOpen, .deferLater, .drop]
         )
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: inProgress).map(\.title),
-            ["标记完成", "回到待办", "放弃"]
+            ["标记完成", "回到待办", "暂不处理", "放弃"]
         )
         // Not waiting, so the edit path applies — it also unbinds the sessions
         // that were working the todo.
@@ -1896,14 +2262,17 @@ final class ModelsTests: XCTestCase {
                 """.utf8
             )
         )
+        // Already parked, so 暂不处理 drops out.
         XCTAssertEqual(
             ATMTodoStatusActions.items(for: deferred).map(\.action),
-            [.returnToOpen, .drop]
+            [.start, .complete, .returnToOpen, .drop]
         )
         XCTAssertEqual(
             ATMTodoStatusActions.primaryItems(for: deferred).map(\.title),
-            ["移出暂不处理"]
+            ["开始", "标记完成", "回到待办"]
         )
+        // Waiting has its own wake path, which clears the wake metadata that
+        // `todo edit --status` would leave behind.
         XCTAssertEqual(
             ATMCommandBuilder.arguments(for: .returnToOpen, todo: deferred),
             [
@@ -1918,6 +2287,11 @@ final class ModelsTests: XCTestCase {
                 #"{"id":"t12","title":"Done","priority":"P1","status":"done","created":"2026-07-29"}"#.utf8
             )
         )
+        // A closed todo has exactly one way forward.
+        XCTAssertEqual(
+            ATMTodoStatusActions.items(for: closed).map(\.action),
+            [.start]
+        )
         XCTAssertEqual(
             ATMTodoStatusActions.primaryItems(for: closed).map(\.action),
             [.start]
@@ -1929,15 +2303,15 @@ final class ModelsTests: XCTestCase {
 
         XCTAssertEqual(
             ATMCommandBuilder.addTodo(
-                ATMTodoDraft(text: "New task", project: "atm", priority: "P0", lane: "work")
+                ATMTodoDraft(text: "New task", project: "atm", priority: "P0")
             ),
-            ["todo", "add", "New task", "--priority", "P0", "--project", "atm", "--lane", "work", "--json"]
+            ["todo", "add", "New task", "--priority", "P0", "--project", "atm", "--json"]
         )
         // Everything after the first line is the description, so one composer can
         // file a task and its details in a single call.
         XCTAssertEqual(
             ATMCommandBuilder.addTodo(
-                ATMTodoDraft(text: "New task\n\nWhy it matters", project: "", priority: "P1", lane: "")
+                ATMTodoDraft(text: "New task\n\nWhy it matters", project: "", priority: "P1")
             ),
             ["todo", "add", "New task", "--priority", "P1", "--desc", "Why it matters", "--json"]
         )
@@ -1960,7 +2334,6 @@ final class ModelsTests: XCTestCase {
             description: "More context",
             priority: "P2",
             project: "atm",
-            lane: "personal",
             status: "review",
             wakeCondition: "",
             reviewAt: "2026-07-20",
@@ -1974,7 +2347,6 @@ final class ModelsTests: XCTestCase {
                 "--desc", "More context",
                 "--priority", "P2",
                 "--project", "atm",
-                "--lane", "personal",
                 "--status", "review",
                 "--wake", "",
                 "--review-at", "2026-07-20",
@@ -1996,11 +2368,11 @@ final class ModelsTests: XCTestCase {
             """
             {
               "id":"t9","title":"Inspect details","description":"Full task context",
-              "priority":"P0","status":"waiting","project":"atm","lane":"personal",
+              "priority":"P0","status":"waiting","project":"atm",
               "tags":["maintenance"],"wake_condition":"Review completed","review_at":"2026-07-15",
               "maintenance_limit":3,"created":"2026-07-14","source":"Codex",
               "links":[{"url":"https://example.com/review","kind":"review","title":"Review"}],
-              "featurePath":"docs/task.md","on_done":"notify","start_ts":1783992000
+              "on_done":"notify","start_ts":1783992000
             }
             """.utf8
         )
@@ -2011,7 +2383,6 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(todo.reviewAt, "2026-07-15")
         XCTAssertEqual(todo.maintenanceLimit, 3)
         XCTAssertEqual(todo.links?.first?.title, "Review")
-        XCTAssertEqual(todo.featurePath, "docs/task.md")
         XCTAssertEqual(todo.onDone, "notify")
     }
 
@@ -2192,7 +2563,7 @@ final class ModelsTests: XCTestCase {
             """
             {
               "id":"t10","title":"完成原生通知","priority":"P1","status":"in_progress",
-              "project":"atm","lane":"personal","created":"2026-07-14",
+              "project":"atm","created":"2026-07-14",
               "start_ts":1783992000
             }
             """.utf8
@@ -2271,9 +2642,9 @@ final class ModelsTests: XCTestCase {
         let data = Data(
             """
             [
-              {"id":"t1","title":"Work ATM","description":"desktop window","priority":"P1","status":"in_progress","project":"atm","lane":"personal","created":"2026-07-14"},
-              {"id":"t2","title":"Review API","priority":"P0","status":"review","project":"maigc","lane":"work","created":"2026-07-14"},
-              {"id":"t3","title":"Wait input","priority":"P2","status":"waiting","project":"wanda","lane":"work","created":"2026-07-14"}
+              {"id":"t1","title":"Work ATM","description":"desktop window","priority":"P1","status":"in_progress","project":"atm","created":"2026-07-14"},
+              {"id":"t2","title":"Review API","priority":"P0","status":"review","project":"maigc","created":"2026-07-14"},
+              {"id":"t3","title":"Wait input","priority":"P2","status":"waiting","project":"wanda","created":"2026-07-14"}
             ]
             """.utf8
         )
@@ -3087,7 +3458,6 @@ final class ModelsTests: XCTestCase {
     private func makeTodo(
         id: String,
         project: String?,
-        lane: String?,
         created: String,
         priority: String = "P1",
         status: String = "open"
@@ -3100,7 +3470,6 @@ final class ModelsTests: XCTestCase {
             "\"created\":\"\(created)\"",
         ]
         if let project { fields.append("\"project\":\"\(project)\"") }
-        if let lane { fields.append("\"lane\":\"\(lane)\"") }
         return try JSONDecoder().decode(ATMTodo.self, from: Data("{\(fields.joined(separator: ","))}".utf8))
     }
 
@@ -3108,35 +3477,33 @@ final class ModelsTests: XCTestCase {
         let draft = ATMTodoDraft(
             text: "\n  收敛用量面板  \n\n按 client / project 拆视角\n还要带费用\n",
             project: " atm ",
-            priority: "P1",
-            lane: "work"
+            priority: "P1"
         )
 
         XCTAssertEqual(draft.title, "收敛用量面板")
         XCTAssertEqual(draft.description, "按 client / project 拆视角\n还要带费用")
         XCTAssertEqual(draft.project, "atm")
         XCTAssertTrue(draft.isSubmittable)
-        XCTAssertFalse(ATMTodoDraft(text: "   \n  ", project: "", priority: "P1", lane: "").isSubmittable)
+        XCTAssertFalse(ATMTodoDraft(text: "   \n  ", project: "", priority: "P1").isSubmittable)
     }
 
     func testTodoSuggestionPrefersProjectNamedInTheText() throws {
         let todos = [
-            try makeTodo(id: "t1", project: "atm", lane: "work", created: "2026-07-20"),
-            try makeTodo(id: "t2", project: "wanda", lane: "personal", created: "2026-07-27"),
+            try makeTodo(id: "t1", project: "atm", created: "2026-07-20"),
+            try makeTodo(id: "t2", project: "wanda", created: "2026-07-27"),
         ]
 
         let suggestion = ATMTodoSuggestion.infer(text: "atm 的用量面板要拆视角", todos: todos)
 
         XCTAssertEqual(suggestion.project, "atm")
         XCTAssertEqual(suggestion.projectReason, "文本提到 atm")
-        XCTAssertEqual(suggestion.lane, "work")
         XCTAssertEqual(suggestion.priority, "P1")
     }
 
     func testTodoSuggestionFallsBackToTheLiveSessionThenRecentProject() throws {
         let todos = [
-            try makeTodo(id: "t1", project: "atm", lane: "work", created: "2026-07-20"),
-            try makeTodo(id: "t2", project: "wanda", lane: "personal", created: "2026-07-27"),
+            try makeTodo(id: "t1", project: "atm", created: "2026-07-20"),
+            try makeTodo(id: "t2", project: "wanda", created: "2026-07-27"),
         ]
         let live = ATMLiveSession(
             tool: "claude",
@@ -3155,7 +3522,6 @@ final class ModelsTests: XCTestCase {
         // With no session at all, the most recently used project wins.
         let fromHistory = ATMTodoSuggestion.infer(text: "修一下详情页", todos: todos)
         XCTAssertEqual(fromHistory.project, "wanda")
-        XCTAssertEqual(fromHistory.lane, "personal")
         XCTAssertEqual(ATMTodoSuggestion.infer(text: "", todos: []), .empty)
     }
 
@@ -3300,11 +3666,10 @@ final class ModelsTests: XCTestCase {
     }
 
     @MainActor
-    func testSuccessfulDeleteImmediatelyRemovesTodoFromDashboardState() throws {
+    func testSuccessfulTrashImmediatelyMovesTodoOutOfDashboardState() throws {
         let todo = try makeTodo(
             id: "t161",
             project: "atm",
-            lane: "personal",
             created: "2026-07-31"
         )
         let store = ATMDataStore()
@@ -3340,11 +3705,17 @@ final class ModelsTests: XCTestCase {
         )
         store.applyDashboardRefresh(state)
 
-        store.applySuccessfulTodoAction(.delete, on: todo)
+        store.applySuccessfulTodoAction(.trash, on: todo)
 
         XCTAssertTrue(store.allTodos.isEmpty)
         XCTAssertTrue(store.snapshot.work.open.isEmpty)
         XCTAssertEqual(store.snapshot.work.summary.open, 0)
+        XCTAssertEqual(store.trashedTodos.map(\.id), [todo.id])
+
+        store.applySuccessfulTodoAction(.restore, on: todo)
+
+        XCTAssertEqual(store.allTodos.map(\.id), [todo.id])
+        XCTAssertTrue(store.trashedTodos.isEmpty)
     }
 
     @MainActor
@@ -3352,7 +3723,6 @@ final class ModelsTests: XCTestCase {
         let todo = try makeTodo(
             id: "t162",
             project: "atm",
-            lane: "personal",
             created: "2026-07-31",
             status: "review"
         )

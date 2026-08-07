@@ -155,7 +155,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 		envelope = dashboardEnvelope{
 			SchemaVersion:    contract.DashboardSchemaVersion,
 			GeneratedAt:      now.Format(time.RFC3339),
-			Work:             buildNowView(todos, "", now),
+			Work:             buildNowView(todos, now),
 			Todos:            nonNil(todos.Items),
 			DayStats:         nonNil(dayStats),
 			HourStats:        nonNil(hourStats),

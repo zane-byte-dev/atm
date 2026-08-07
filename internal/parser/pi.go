@@ -363,6 +363,10 @@ func PiLiveSessions(maxAge time.Duration) []Session {
 			if idx := strings.LastIndex(stem, "_"); idx >= 0 {
 				sid = stem[idx+1:]
 			}
+			// The extension reports Pi's own session id, which is this whole
+			// uuid; SessionID below is truncated for display. Keeping the full
+			// one in ResumeID is what lets a hook event find this row.
+			resumeID := sid
 			if len(sid) > 8 {
 				sid = sid[:8]
 			}
@@ -373,6 +377,7 @@ func PiLiveSessions(maxAge time.Duration) []Session {
 			sessions = append(sessions, Session{
 				Tool:          "Pi",
 				Project:       project,
+				ResumeID:      resumeID,
 				SessionID:     sid,
 				Model:         model,
 				Summary:       summary,

@@ -1,0 +1,9 @@
+{"timestamp":"2026-08-01T09:00:00Z","type":"session_meta","payload":{"cwd":"/PLACEHOLDER/corpus-project"}}
+{"timestamp":"2026-08-01T09:00:01Z","type":"turn_context","payload":{"model":"gpt-5.1-codex"}}
+{"timestamp":"2026-08-01T09:00:02Z","type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"PLACEHOLDER_USER_PROMPT"}]}}
+{"timestamp":"2026-08-01T09:00:04Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"sed -n '1,80p' /PLACEHOLDER/.codex/skills/atm/SKILL.md\"}"}}
+{"timestamp":"2026-08-01T09:00:06Z","type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"PLACEHOLDER_ASSISTANT_REPLY"}]}}
+{"timestamp":"2026-08-01T09:00:07Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1200,"output_tokens":340,"cached_input_tokens":900}}}}
+{"timestamp":"2026-08-01T09:00:10Z","type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"PLACEHOLDER_FOLLOW_UP"}]}}
+{"timestamp":"2026-08-01T09:00:13Z","type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"PLACEHOLDER_FINAL_REPLY"}]}}
+{"timestamp":"2026-08-01T09:00:14Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1700,"output_tokens":460,"cached_input_tokens":1500}}}}

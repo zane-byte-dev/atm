@@ -106,6 +106,11 @@ func TestServiceCreatesOnceAndAdvancesCheckpoint(t *testing.T) {
 	if todos.Items[0].Status != store.TodoStatusOpen || !strings.HasPrefix(todos.Items[0].Source, "test:cid-product:m1") {
 		t.Fatalf("created Todo is not traceable/open: %+v", todos.Items[0])
 	}
+	// Collection files work nobody asked for by hand, and the creator has to say
+	// so: it is the difference between a Todo to review and a Todo I wrote.
+	if todos.Items[0].Creator != store.TodoCreatorCollect {
+		t.Fatalf("created Todo creator = %q, want %q", todos.Items[0].Creator, store.TodoCreatorCollect)
+	}
 	if todos.Items[0].Description != "自动读取聊天并创建 Todo" ||
 		strings.Contains(todos.Items[0].Description, "我想把需求收集做成全自动的") {
 		t.Fatalf("created Todo copied raw conversation into its description: %q", todos.Items[0].Description)
@@ -177,6 +182,116 @@ func TestServiceRelatedWorkCreatesNewTodoAndKeepsExistingTodoUntouched(t *testin
 	if created == nil || !strings.Contains(created.Description, "使用 connector 增量拉取") ||
 		!strings.Contains(created.Description, "相关历史 Todo：t9") {
 		t.Fatalf("new Todo did not preserve the historical relation: %+v", created)
+	}
+}
+
+// A group returns to the same topic every few minutes, and each return is its own
+// batch. Filing every one of them buries the single item somebody has to act on,
+// so a follow-up lands on the Todo this same conversation already filed.
+func TestServiceAppendsFollowUpToTheTodoTheSameChatFiled(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m1", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 10_000, Content: "技能批测会命中默认 SKILL"}}, newest: 10_000}
+	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "排查技能命中默认 SKILL",
+		Summary: "批测有概率命中默认 SKILL", ItemType: "investigation", Project: "atm",
+		Priority: "P1", Reason: "明确排查项", Confidence: 0.95}}
+	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	if _, err := service.Run(context.Background(), source.ID); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 {
+		t.Fatalf("first run should file one Todo: %+v", todos.Items)
+	}
+	filed := todos.Items[0].ID
+
+	// 40 minutes later the group is still on the same topic, with a new finding.
+	fetcher.messages = []Message{{ID: "m2", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 12_400, Content: "新结论：只注入了 definition，没在 prompt 里触发"}}
+	fetcher.newest = 12_400
+	extractor.decision = Decision{Action: "append", Title: "补充技能激活排查结论",
+		Summary: "只注入了 skill definition，未在 prompt 里真正触发激活", ItemType: "investigation",
+		Project: "atm", Priority: "P1", RelatedTodoID: filed, Reason: "同一件事的新进展", Confidence: 0.93}
+	second, err := service.Run(context.Background(), source.ID)
+	if err != nil || second.Runs[0].AppendedCount != 1 || second.Runs[0].CreatedCount != 0 {
+		t.Fatalf("append run=%+v err=%v", second, err)
+	}
+	todos, _ = store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 {
+		t.Fatalf("follow-up filed a duplicate Todo: %+v", todos.Items)
+	}
+	doc, err := store.ReadTodoDoc(filed)
+	if err != nil {
+		t.Fatalf("read Todo doc: %v", err)
+	}
+	if !strings.Contains(doc, "## 补充") ||
+		!strings.Contains(doc, "只注入了 skill definition，未在 prompt 里真正触发激活") {
+		t.Fatalf("append did not reach the Todo's 补充 section:\n%s", doc)
+	}
+	// The App strips exactly this marker out of the task timeline and keeps it on
+	// disk to tie the entry back to its collection item.
+	if !strings.Contains(doc, "<!-- [钉钉采集:") {
+		t.Fatalf("append lost its traceability marker:\n%s", doc)
+	}
+	// The requirement is generated from the description on every metadata sync, so
+	// an append must not have gone there.
+	if todos.Items[0].Description != "批测有概率命中默认 SKILL" {
+		t.Fatalf("append rewrote the Todo description: %q", todos.Items[0].Description)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 2 {
+		t.Fatalf("expected one item per batch: %+v", items)
+	}
+	appended := items[0]
+	if appended.Action != "append" || appended.TodoID != filed || appended.Status != "processed" {
+		t.Fatalf("append item=%+v", appended)
+	}
+}
+
+// The classifier reads untrusted chat, so the one write it can aim at an existing
+// record is held to the thread that produced it. A Todo somebody wrote by hand is
+// not editable by whatever a message claims to relate to — and the batch is filed
+// rather than dropped, because a decision recorded nowhere is the worse failure.
+func TestServiceRefusesToAppendOutsideTheConversationThatFiledTheTodo(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{{ID: "t9", Title: "手写的任务", Priority: "P1",
+			Status: store.TodoStatusOpen, Project: "atm", Created: store.Today()}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m2", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 11_000, Content: "顺带说一下手写任务的事"}}, newest: 11_000}
+	extractor := &fakeExtractor{decision: Decision{Action: "append", Title: "补充手写任务",
+		Summary: "群里提到的补充信息", ItemType: "follow_up", Project: "atm", Priority: "P1",
+		RelatedTodoID: "t9", Reason: "自称与 t9 有关", Confidence: 0.9}}
+	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].CreatedCount != 1 || report.Runs[0].AppendedCount != 0 {
+		t.Fatalf("refused append run=%+v err=%v", report, err)
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 2 {
+		t.Fatalf("refused append should still file the batch: %+v", todos.Items)
+	}
+	if store.TodoDocExists("t9") {
+		doc, _ := store.ReadTodoDoc("t9")
+		if strings.Contains(doc, "群里提到的补充信息") {
+			t.Fatalf("collector edited a Todo outside its conversation:\n%s", doc)
+		}
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	// The record has to say what happened, not what was asked for: the run counted
+	// a create, and Revert drops a Todo rather than writing a compensating note.
+	if len(items) != 1 || items[0].Action != "create" {
+		t.Fatalf("refused append item=%+v", items)
 	}
 }
 
@@ -562,6 +677,195 @@ func TestServiceFailureDoesNotAdvanceCheckpointAndCanRecover(t *testing.T) {
 	}
 }
 
+// A batch that fails the same way every run must stop costing a model call, and
+// must stop holding the checkpoint: an unbounded retry turns one broken message
+// into a permanent tax on every later run.
+func TestFailedBatchStopsRetryingWhenItsAttemptBudgetRunsOut(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m9", ConversationID: source.ExternalID,
+		Sender: "测试发送人", CreatedAt: 12_000, Content: "这段内容解析不了"}}, newest: 12_000}
+	failing := &fakeExtractor{err: errors.New("model unavailable")}
+	service := Service{Fetcher: fetcher, Extractor: failing, Now: tickingClock()}
+
+	for attempt := 1; attempt <= store.MaxCollectionAttempts; attempt++ {
+		if _, err := service.Run(context.Background(), source.ID); err == nil {
+			t.Fatalf("attempt %d hid the model failure", attempt)
+		}
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	checkpoint, _ := store.GetCollectionCheckpoint(db, source.ID)
+	db.Close()
+	if len(items) != 1 || items[0].Attempts != store.MaxCollectionAttempts || !store.CollectionRetriesExhausted(items[0]) {
+		t.Fatalf("attempts were not counted: items=%+v", items)
+	}
+	if checkpoint.CursorTime != 0 {
+		t.Fatalf("checkpoint advanced while retries remained: %+v", checkpoint)
+	}
+
+	// The run after the budget is spent must be clean, not another failure, or the
+	// source stays permanently due and the re-read window keeps growing.
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil {
+		t.Fatalf("run after the budget ran out still failed: %v", err)
+	}
+	if failing.calls != store.MaxCollectionAttempts {
+		t.Fatalf("retry kept spending model calls: calls=%d", failing.calls)
+	}
+	if report.Runs[0].Status != "succeeded" || report.Runs[0].FailedCount != 0 {
+		t.Fatalf("retired item still failed the run: %+v", report.Runs[0])
+	}
+	db, _ = store.Open()
+	items, _ = store.ListCollectionItems(db, source.ID, 10)
+	checkpoint, _ = store.GetCollectionCheckpoint(db, source.ID)
+	db.Close()
+	if checkpoint.CursorTime != 12_000 {
+		t.Fatalf("retired item kept the checkpoint pinned: %+v", checkpoint)
+	}
+	if len(items) != 1 || items[0].Action != "failed" {
+		t.Fatalf("retired item was dropped from the ledger instead of kept: %+v", items)
+	}
+}
+
+// Retiring an item stops the automatic retry, not every retry: asking for one
+// explicitly is how someone says they fixed the cause.
+func TestReprocessRestoresTheAutomaticRetryBudget(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m10", ConversationID: source.ExternalID,
+		Sender: "测试发送人", CreatedAt: 12_000, Content: "连接器刚刚挂了"}}, newest: 12_000}
+	failing := &fakeExtractor{err: errors.New("model unavailable")}
+	service := Service{Fetcher: fetcher, Extractor: failing, Now: tickingClock()}
+	for attempt := 1; attempt <= store.MaxCollectionAttempts; attempt++ {
+		service.Run(context.Background(), source.ID)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 || !store.CollectionRetriesExhausted(items[0]) {
+		t.Fatalf("item was not retired before the reprocess: %+v", items)
+	}
+
+	service.Extractor = &fakeExtractor{decision: Decision{Action: "create", Title: "修好连接器后重试",
+		Summary: "重新解析", ItemType: "bug", Priority: "P1", Confidence: 0.9}}
+	item, err := service.Reprocess(context.Background(), items[0].ID)
+	if err != nil {
+		t.Fatalf("reprocess after retirement: %v", err)
+	}
+	if item.Action != "create" || item.TodoID == "" {
+		t.Fatalf("reprocess did not carry out the decision: %+v", item)
+	}
+	if store.CollectionRetriesExhausted(item) {
+		t.Fatalf("reprocess kept the item retired: %+v", item)
+	}
+}
+
+// The retry rebuilds a batch from its messages, so one more message in the same
+// conversation produces a different batch. The item left behind must not keep
+// promising a retry that will never rebuild it.
+func TestExpandedBatchRetiresTheFailedItemItAbsorbs(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m11", ConversationID: source.ExternalID,
+		Sender: "测试发送人", CreatedAt: 12_000, Content: "这个功能要改"}}, newest: 12_000}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{err: errors.New("model unavailable")},
+		Now: tickingClock()}
+	service.Run(context.Background(), source.ID)
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 || items[0].Attempts != 1 {
+		t.Fatalf("unexpected state after the first failure: %+v", items)
+	}
+	orphanID := items[0].ID
+
+	fetcher.messages = append(fetcher.messages, Message{ID: "m12", ConversationID: source.ExternalID,
+		Sender: "测试发送人", CreatedAt: 12_060, Content: "补充一下，优先级 P1"})
+	fetcher.newest = 12_060
+	service.Extractor = &fakeExtractor{decision: Decision{Action: "create", Title: "改这个功能",
+		Summary: "按补充的优先级处理", ItemType: "requirement", Priority: "P1", Confidence: 0.9}}
+	if _, err := service.Run(context.Background(), source.ID); err != nil {
+		t.Fatalf("run over the expanded conversation: %v", err)
+	}
+	db, _ = store.Open()
+	defer db.Close()
+	orphan, err := store.GetCollectionItem(db, orphanID)
+	if err != nil {
+		t.Fatalf("read the absorbed item: %v", err)
+	}
+	if !store.CollectionRetriesExhausted(orphan) {
+		t.Fatalf("absorbed item still advertises an automatic retry: %+v", orphan)
+	}
+	items, _ = store.ListCollectionItems(db, source.ID, 10)
+	if !slices.ContainsFunc(items, func(item store.CollectionItem) bool {
+		return item.ID != orphanID && item.Action == "create" && item.TodoID != ""
+	}) {
+		t.Fatalf("expanded batch did not produce its own decision: %+v", items)
+	}
+}
+
+// An on-demand analysis holds its decisions for a person, and confirming a
+// proposed append has to append. Promoting it into a new Todo would produce
+// exactly the duplicate the proposal was avoiding.
+func TestPromoteCarriesOutAProposedAppend(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{{ID: "t9", Title: "排查技能命中默认 SKILL",
+			Description: "批测有概率命中默认 SKILL", Priority: "P1", Status: store.TodoStatusOpen,
+			Project: "atm", Created: store.Today(), Source: "test:cid-product:m1",
+			Creator: store.TodoCreatorCollect}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	messages := []Message{{ID: "m2", ConversationID: source.ExternalID, Sender: "测试用户",
+		CreatedAt: 11_000, Content: "新结论：没在 prompt 里触发激活"}}
+	db, _ := store.Open()
+	if _, err := store.PutCollectionMessages(db, CollectionMessagesFor(source, messages)); err != nil {
+		t.Fatalf("seed messages: %v", err)
+	}
+	db.Close()
+	extractor := &fakeExtractor{decision: Decision{Action: "append", Title: "补充激活排查结论",
+		Summary: "未在 prompt 里真正触发激活", ItemType: "investigation", Project: "atm",
+		Priority: "P1", RelatedTodoID: "t9", Reason: "同一件事的新进展", Confidence: 0.9}}
+	service := Service{Extractor: extractor, Now: tickingClock()}
+
+	report, err := service.Analyze(context.Background(), source.ID, AnalyzeOptions{Local: true})
+	if err != nil || report.Proposed != 1 || report.Applied != 0 {
+		t.Fatalf("analyze report=%+v err=%v", report, err)
+	}
+	proposal := report.Items[0]
+	// The target has to survive the wait: TodoID carries it, ProposedAction is what
+	// still says nothing has been written.
+	if proposal.ProposedAction != "append" || proposal.TodoID != "t9" || proposal.Action != "pending" {
+		t.Fatalf("proposal lost its append target: %+v", proposal)
+	}
+	if store.TodoDocExists("t9") {
+		doc, _ := store.ReadTodoDoc("t9")
+		if strings.Contains(doc, "未在 prompt 里真正触发激活") {
+			t.Fatalf("analysis wrote before it was confirmed:\n%s", doc)
+		}
+	}
+
+	promoted, err := service.Promote(proposal.ID, ItemCorrection{})
+	if err != nil {
+		t.Fatalf("promote proposed append: %v", err)
+	}
+	if promoted.Action != "append" || promoted.TodoID != "t9" || promoted.ProposedAction != "" {
+		t.Fatalf("promoted item=%+v", promoted)
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 {
+		t.Fatalf("promoting an append filed a duplicate Todo: %+v", todos.Items)
+	}
+	doc, err := store.ReadTodoDoc("t9")
+	if err != nil || !strings.Contains(doc, "未在 prompt 里真正触发激活") {
+		t.Fatalf("confirmed append did not reach the Todo: err=%v\n%s", err, doc)
+	}
+}
+
 func TestFetcherFailurePreservesExistingCheckpoint(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
@@ -681,6 +985,79 @@ func TestRunArchivesFetchedChatWhateverTheDecisionIs(t *testing.T) {
 	stats, err := store.CollectionMessageStatsFor(db)
 	if err != nil || stats.Total != 2 {
 		t.Fatalf("archive stats after re-run = %+v, err=%v", stats, err)
+	}
+}
+
+// What the classifier is allowed to do, and which candidates it can tell apart,
+// is decided entirely by this prompt. A rolling discussion filed four separate
+// Todos for one topic while append was absent from it.
+func TestCollectionPromptOffersAppendAndMarksThisChatsOwnTodos(t *testing.T) {
+	source := store.CollectionSource{Connector: "dingtalk", ExternalID: "cid-wanda",
+		Name: "Project Wanda", Project: "wanda", Priority: "P2", Strategy: store.CollectionStrategyTasks}
+	batch := MessageBatch{Source: source,
+		Messages:   []Message{{ID: "m9", ConversationID: "cid-wanda"}},
+		RawContext: "[新消息] 2026-08-06 [先酉] 还是有概率命中默认 SKILL"}
+	prompt := collectionPrompt(batch, []store.Todo{
+		{ID: "t210", Title: "排查技能命中默认 SKILL", Status: store.TodoStatusOpen, Project: "wanda",
+			Description: "先酉反馈批测仍有概率命中默认 SKILL", Source: "dingtalk:cid-wanda:m1"},
+		{ID: "t80", Title: "别的群的任务", Status: store.TodoStatusOpen, Project: "wanda",
+			Source: "dingtalk:cid-other:m4"},
+		{ID: "t70", Title: "已完成的任务", Status: store.TodoStatusDone, Source: "dingtalk:cid-wanda:m0"},
+	})
+	if !strings.Contains(prompt, "- append:") {
+		t.Fatalf("prompt does not offer append:\n%s", prompt)
+	}
+	// The flag is the whole point: without it the classifier cannot tell "the group
+	// is still on the same bug" from "a new bug was just reported".
+	if !strings.Contains(prompt, `"id":"t210"`) ||
+		!strings.Contains(prompt, `"status":"open","from_this_chat":true`) {
+		t.Fatalf("this conversation's own Todo is not marked:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, `"id":"t80"`) ||
+		!strings.Contains(prompt, `"status":"open","from_this_chat":false`) {
+		t.Fatalf("another conversation's Todo is marked as this chat's:\n%s", prompt)
+	}
+	// Sameness cannot be judged from a title alone, so the description travels too.
+	if !strings.Contains(prompt, "先酉反馈批测仍有概率命中默认 SKILL") {
+		t.Fatalf("candidate summary missing:\n%s", prompt)
+	}
+	if strings.Contains(prompt, "t70") {
+		t.Fatalf("closed Todo offered as a candidate:\n%s", prompt)
+	}
+}
+
+// An append whose target or payload is missing writes nothing, and the batch would
+// be marked handled having recorded nothing anywhere.
+func TestValidateDecisionRequiresAnAppendTargetAndPayload(t *testing.T) {
+	complete := Decision{Action: "append", Title: "补充结论", Summary: "新的排查结论",
+		RelatedTodoID: "t210"}
+	if err := validateDecision(complete); err != nil {
+		t.Fatalf("complete append rejected: %v", err)
+	}
+	noTarget := complete
+	noTarget.RelatedTodoID = ""
+	if err := validateDecision(noTarget); err == nil {
+		t.Fatal("append without related_todo_id accepted")
+	}
+	noPayload := complete
+	noPayload.Summary = " "
+	if err := validateDecision(noPayload); err == nil {
+		t.Fatal("append without a summary accepted")
+	}
+}
+
+// An observation source may not reach the Todo list at all. Adding append reopened
+// that door, and the clamp is what keeps it shut.
+func TestObservationSourceClampsAppendToInsight(t *testing.T) {
+	observe := store.CollectionSource{Strategy: store.CollectionStrategyObserve}
+	clamped := clampToStrategy(Decision{Action: "append", Title: "补充", Summary: "内容",
+		ItemType: "follow_up", RelatedTodoID: "t210"}, observe)
+	if clamped.Action != "insight" || clamped.RelatedTodoID != "" {
+		t.Fatalf("observation append was not clamped: %+v", clamped)
+	}
+	prompt := collectionPrompt(MessageBatch{Source: observe}, nil)
+	if strings.Contains(prompt, "- append:") {
+		t.Fatalf("observation prompt offers append:\n%s", prompt)
 	}
 }
 

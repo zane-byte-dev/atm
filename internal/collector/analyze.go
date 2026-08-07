@@ -145,6 +145,12 @@ func (service Service) analyzeBatch(ctx context.Context, db *sql.DB, batch Messa
 	applyDecisionToItem(&item, decision)
 	item.ProposedAction = decision.Action
 	item.Action, item.Status, item.TodoID = "pending", "pending", ""
+	// A proposed append is the only decision that names a Todo before anything is
+	// carried out, and Promote has nowhere else to read the target from. TodoID
+	// holds it; ProposedAction is what still says nothing has been written.
+	if decision.Action == "append" {
+		item.TodoID = decision.RelatedTodoID
+	}
 	return item, store.UpdateCollectionItem(db, item)
 }
 
