@@ -515,9 +515,19 @@ func extractBackupArchive(archivePath, staging string) ([]string, error) {
 		if header.Name == backupManifestName {
 			continue
 		}
-		destination, err := safeExtractPath(staging, header.Name)
+		relative, err := safeExtractPath(header.Name)
 		if err != nil {
 			return nil, err
+		}
+		destination := filepath.Join(staging, relative)
+		// Confirmed here, in the function that does the writing, rather than
+		// trusted from the helper: this is the guard that has to hold for every
+		// MkdirAll and OpenFile below, and a reader (or an analyser) checking
+		// whether extraction can escape should not have to leave this loop to find
+		// out. safeExtractPath decides whether the entry is a plain relative path;
+		// this decides whether the path it produced landed inside our own root.
+		if destination != staging && !strings.HasPrefix(destination, staging+string(os.PathSeparator)) {
+			return nil, fmt.Errorf("archive entry %q escapes the extraction directory", header.Name)
 		}
 		switch header.Typeflag {
 		case tar.TypeDir:
@@ -536,8 +546,12 @@ func extractBackupArchive(archivePath, staging string) ([]string, error) {
 			// extraction root, and a backup never needs them.
 			continue
 		}
-		name := strings.SplitN(filepath.ToSlash(strings.TrimPrefix(header.Name, "./")), "/", 2)[0]
-		if name != "" && !seen[name] {
+		// Taken from the validated relative path, not from header.Name again. These
+		// names are what the caller moves into ~/.atm, so parsing the raw name a
+		// second time would mean two pieces of code deciding what an entry is
+		// called, with only one of them having been checked.
+		name := strings.SplitN(filepath.ToSlash(relative), "/", 2)[0]
+		if name != "" && name != "." && !seen[name] {
 			seen[name] = true
 			top = append(top, name)
 		}
@@ -568,21 +582,19 @@ func writeExtractedFile(destination string, source io.Reader, header *tar.Header
 	return nil
 }
 
-// safeExtractPath resolves an archive entry inside root and refuses anything
-// that would land outside it — absolute paths, .. traversal, or a name that
-// normalises out of the tree.
-func safeExtractPath(root, name string) (string, error) {
+// safeExtractPath normalises an archive entry into the relative path it may be
+// written to, and refuses anything that would land outside the extraction tree —
+// absolute paths, .. traversal, or a name that normalises out of the tree.
+//
+// It returns the relative path rather than a resolved one so that the caller
+// joins it against its own root and checks the result there: the guard that
+// matters belongs next to the writes it protects, not one call away from them.
+func safeExtractPath(name string) (string, error) {
 	cleaned := filepath.Clean(filepath.FromSlash(name))
 	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(os.PathSeparator)) {
 		return "", fmt.Errorf("archive entry %q escapes the extraction directory", name)
 	}
-	destination := filepath.Join(root, cleaned)
-	// Join+Clean already normalises, but compare explicitly: the check is the
-	// whole point of this function and must not depend on Join's behaviour.
-	if destination != root && !strings.HasPrefix(destination, root+string(os.PathSeparator)) {
-		return "", fmt.Errorf("archive entry %q escapes the extraction directory", name)
-	}
-	return destination, nil
+	return cleaned, nil
 }
 
 func mustAbs(path string) string {

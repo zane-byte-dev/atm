@@ -324,23 +324,56 @@ func TestRestoreMovesExistingDataAside(t *testing.T) {
 }
 
 func TestSafeExtractPathRejectsEscapes(t *testing.T) {
-	root := t.TempDir()
 	for _, name := range []string{
 		"../escape",
 		"a/../../escape",
 		"/absolute/path",
 		"..",
 	} {
-		if _, err := safeExtractPath(root, name); err == nil {
+		if _, err := safeExtractPath(name); err == nil {
 			t.Fatalf("safeExtractPath accepted %q", name)
 		}
 	}
-	inside, err := safeExtractPath(root, "knowledge/ops/runbook.md")
+	inside, err := safeExtractPath("knowledge/ops/runbook.md")
 	if err != nil {
 		t.Fatalf("safeExtractPath rejected a legitimate entry: %v", err)
 	}
-	if !strings.HasPrefix(inside, root+string(os.PathSeparator)) {
-		t.Fatalf("resolved path %q is not under %q", inside, root)
+	// Relative, so the caller decides which root it lands in and checks the
+	// result there.
+	if filepath.IsAbs(inside) || inside != filepath.FromSlash("knowledge/ops/runbook.md") {
+		t.Fatalf("resolved entry = %q", inside)
+	}
+	// Joining it against a root has to stay inside that root — the property the
+	// extraction loop then re-checks for every entry it writes.
+	root := t.TempDir()
+	if joined := filepath.Join(root, inside); !strings.HasPrefix(joined, root+string(os.PathSeparator)) {
+		t.Fatalf("joined path %q is not under %q", joined, root)
+	}
+}
+
+// The whole guard, exercised through the code that writes files: a hostile
+// archive must fail the restore rather than land a single byte outside staging.
+func TestExtractBackupArchiveRefusesAnEscapingEntry(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "hostile.tgz")
+	writeTestArchive(t, archivePath, backupManifest{
+		SchemaVersion: store.SchemaVersion,
+		Database:      "atm.db",
+	}, map[string]string{
+		"../escaped.md": "# should never be written\n",
+	})
+
+	staging := filepath.Join(dir, "staging")
+	if err := os.MkdirAll(staging, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := extractBackupArchive(archivePath, staging); err == nil {
+		t.Fatal("extraction accepted an entry that escapes staging")
+	} else if !strings.Contains(err.Error(), "escapes the extraction directory") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "escaped.md")); !os.IsNotExist(err) {
+		t.Fatalf("the escaping entry was written next to staging: %v", err)
 	}
 }
 
