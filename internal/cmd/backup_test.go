@@ -377,6 +377,36 @@ func TestExtractBackupArchiveRefusesAnEscapingEntry(t *testing.T) {
 	}
 }
 
+// `tar -C dir .` writes a "." entry for the archive root. `atm backup` does not,
+// but an archive built by hand is still a reasonable thing to restore, and the
+// entry has to be skipped rather than treated as an escape.
+func TestExtractBackupArchiveSkipsTheArchiveRootEntry(t *testing.T) {
+	dir := t.TempDir()
+	archivePath := filepath.Join(dir, "with-root.tgz")
+	writeTestArchive(t, archivePath, backupManifest{
+		SchemaVersion: store.SchemaVersion,
+		Database:      "atm.db",
+	}, map[string]string{
+		"./":                       "",
+		"knowledge/ops/runbook.md": "# runbook\n",
+	})
+
+	staging := filepath.Join(dir, "staging")
+	if err := os.MkdirAll(staging, 0700); err != nil {
+		t.Fatal(err)
+	}
+	top, err := extractBackupArchive(archivePath, staging)
+	if err != nil {
+		t.Fatalf("the archive root entry failed extraction: %v", err)
+	}
+	if len(top) != 1 || top[0] != "knowledge" {
+		t.Fatalf("top-level entries = %v, want [knowledge]", top)
+	}
+	if _, err := os.Stat(filepath.Join(staging, "knowledge", "ops", "runbook.md")); err != nil {
+		t.Fatalf("the real entry was not extracted: %v", err)
+	}
+}
+
 // writeTestArchive builds an archive with a manifest, for cases that need a
 // specific manifest rather than a real backup.
 func writeTestArchive(t *testing.T, target string, manifest backupManifest, files map[string]string) {
@@ -414,6 +444,18 @@ func writeRawTestArchive(t *testing.T, target string, entries map[string]string)
 	}
 	for _, name := range names {
 		content := entries[name]
+		// A trailing slash means a directory entry, which is how tar writes one and
+		// the only way a test can produce the "./" archive root.
+		if strings.HasSuffix(name, "/") {
+			if err := archive.WriteHeader(&tar.Header{
+				Name:     name,
+				Mode:     0700,
+				Typeflag: tar.TypeDir,
+			}); err != nil {
+				t.Fatalf("write dir header %s: %v", name, err)
+			}
+			continue
+		}
 		if err := archive.WriteHeader(&tar.Header{
 			Name:     name,
 			Mode:     0600,

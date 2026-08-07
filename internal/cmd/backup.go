@@ -519,14 +519,21 @@ func extractBackupArchive(archivePath, staging string) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
+		if relative == "." {
+			// The archive's own root entry, which `tar -C dir .` writes and
+			// `atm backup` does not. There is nothing to create — staging already
+			// exists — and skipping it here is what lets the guard below be a single
+			// unconditional condition.
+			continue
+		}
 		destination := filepath.Join(staging, relative)
 		// Confirmed here, in the function that does the writing, rather than
 		// trusted from the helper: this is the guard that has to hold for every
-		// MkdirAll and OpenFile below, and a reader (or an analyser) checking
-		// whether extraction can escape should not have to leave this loop to find
-		// out. safeExtractPath decides whether the entry is a plain relative path;
-		// this decides whether the path it produced landed inside our own root.
-		if destination != staging && !strings.HasPrefix(destination, staging+string(os.PathSeparator)) {
+		// MkdirAll and OpenFile below, and a reader (or an analyser) asking whether
+		// extraction can escape should not have to leave this loop to find out.
+		// safeExtractPath decides whether the entry is a plain relative path; this
+		// decides whether the path it produced landed inside our own root.
+		if !strings.HasPrefix(destination, filepath.Clean(staging)+string(os.PathSeparator)) {
 			return nil, fmt.Errorf("archive entry %q escapes the extraction directory", header.Name)
 		}
 		switch header.Typeflag {
@@ -551,7 +558,7 @@ func extractBackupArchive(archivePath, staging string) ([]string, error) {
 		// second time would mean two pieces of code deciding what an entry is
 		// called, with only one of them having been checked.
 		name := strings.SplitN(filepath.ToSlash(relative), "/", 2)[0]
-		if name != "" && name != "." && !seen[name] {
+		if name != "" && !seen[name] {
 			seen[name] = true
 			top = append(top, name)
 		}
