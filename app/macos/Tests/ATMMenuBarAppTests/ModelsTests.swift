@@ -130,6 +130,62 @@ final class ModelsTests: XCTestCase {
         }
     }
 
+    /// 原文的行格式来自 collector 的 formatMessageContext：
+    /// `[新消息] 2026-08-06 15:04:05 [张三] 内容`。详情栏把它当聊天渲染，所以这里盯住
+    /// 三件在真实数据里一定会出现的事：同一个人连说几句要并成一块、正文自己的换行不能
+    /// 被当成新消息、分界线只画在第一条新消息前面。
+    func testCollectionTranscriptGroupsMessagesAndMarksWhereFreshBegins() {
+        let transcript = ATMCollectionTranscript.parse(
+            """
+            [上下文] 2026-08-06 15:04:05 [张三] 昨天那个导出还是超时
+            [上下文] 2026-08-06 15:04:30 [张三] 大概 30s 就断了
+            [新消息] 2026-08-06 15:12:00 [李四] 我看下
+            应该是分页没生效
+            [新消息] 2026-08-06 15:12:40 [王五] 那我先回滚
+
+            """
+        )
+
+        XCTAssertNil(transcript.fallback)
+        XCTAssertEqual(transcript.blocks.map(\.sender), ["张三", "李四", "王五"])
+        XCTAssertEqual(transcript.blocks.map(\.isFresh), [false, true, true])
+        // 秒被丢掉，日期只在开头和跨天时出现：逐行重复的时分秒是这段原文最大的噪声。
+        XCTAssertEqual(transcript.blocks.map(\.time), ["08-06 15:04", "15:12", "15:12"])
+        // 原文以换行结尾时，末尾空行不能变成消息尾部的空白。
+        XCTAssertEqual(transcript.blocks[2].lines, ["那我先回滚"])
+        XCTAssertEqual(transcript.blocks[0].lines, ["昨天那个导出还是超时", "大概 30s 就断了"])
+        // 正文里的换行留在同一条消息里，不会伪装成又一条。
+        XCTAssertEqual(transcript.blocks[1].lines, ["我看下\n应该是分页没生效"])
+        // 分界线只有一条，画在第一块新消息前面。
+        XCTAssertEqual(transcript.blocks.map(\.startsFresh), [false, true, false])
+    }
+
+    func testCollectionTranscriptWithoutMarkersIsAllFreshAndHasNoDivider() {
+        // 按需分析没有标记前缀：每一行都参与了判断，没有「上面只是背景」这回事。
+        let transcript = ATMCollectionTranscript.parse(
+            """
+            2026-08-06 15:04:05 [张三] 分析下这段
+            2026-08-07 09:00:00 [张三] 顺便看看昨天的
+            """
+        )
+
+        XCTAssertEqual(transcript.blocks.map(\.isFresh), [true, true])
+        XCTAssertEqual(transcript.blocks.map(\.startsFresh), [false, false])
+        // 同一个人跨天说话要断开，并且补上日期——只留时分会读成两分钟前的事。
+        XCTAssertEqual(transcript.blocks.map(\.time), ["08-06 15:04", "08-07 09:00"])
+    }
+
+    func testCollectionTranscriptFallsBackToRawTextAndHandlesEmpty() {
+        let freeform = "连接器直出的自由文本\n没有时间戳"
+        let transcript = ATMCollectionTranscript.parse(freeform)
+
+        XCTAssertTrue(transcript.blocks.isEmpty)
+        XCTAssertEqual(transcript.fallback, freeform)
+
+        XCTAssertEqual(ATMCollectionTranscript.parse(nil), .empty)
+        XCTAssertEqual(ATMCollectionTranscript.parse("   \n "), .empty)
+    }
+
     func testCollectionCandidatesDecodeAndBuildAddArguments() throws {
         let data = Data(
             """

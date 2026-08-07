@@ -606,13 +606,20 @@ private struct CollectionItemRow: View {
 }
 
 /// 一条处理记录要说清四件事：消息从哪儿来、ATM 为什么这样处理、结论是什么、关联到
-/// 哪个 Todo。原文放最后，因为一段长聊天放在前面会把这四件事顶出屏幕。
+/// 哪个 Todo。这四件都在「处理详情」里；消息原文按条数可以长到几十行，单独一个 tab，
+/// 免得它把四件事顶出屏幕。分页样式沿用任务详情（见 DesktopTodoDetail.detailTabs）。
 private struct CollectionItemDetail: View {
+    private enum DetailTab: String, CaseIterable {
+        case decision
+        case transcript
+    }
+
     @ObservedObject var store: ATMDataStore
     let item: ATMCollectionItem
     let source: ATMCollectionSource?
     let openTodo: () -> Void
 
+    @State private var selectedTab: DetailTab = .decision
     @State private var showingCorrection = false
     @State private var confirmingRevert = false
     @State private var confirmingDelete = false
@@ -623,28 +630,17 @@ private struct CollectionItemDetail: View {
 
     private var retryStopped: Bool { item.retryStopped == true }
 
+    private var transcript: ATMCollectionTranscript {
+        ATMCollectionTranscript.parse(item.rawContext)
+    }
+
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-
-                detailDivider
-                sourceSummary
-
-                detailDivider
-                decisionSummary
-
-                detailDivider
-                outcomeSummary
-
-                detailDivider
-                rawContextSummary
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-            .frame(maxWidth: 880, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+        VStack(spacing: 0) {
+            header
+            detailTabs
+            content
         }
+        .background(ATMTheme.canvas)
         .sheet(isPresented: $showingCorrection) {
             CollectionCorrectionSheet(item: item) { title, project, priority in
                 store.correctCollectionItem(
@@ -684,6 +680,69 @@ private struct CollectionItemDetail: View {
     /// 已了结的记录仍可「打开 Todo」，从任务侧自行处理。
     private var canAmendTodoWrite: Bool {
         (item.action == "create" || item.action == "append") && !item.todoClosed
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                switch selectedTab {
+                case .decision:
+                    sourceSummary
+                    detailDivider
+                    decisionSummary
+                    detailDivider
+                    outcomeSummary
+                case .transcript:
+                    rawContextSummary
+                }
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(maxWidth: 880, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var detailTabs: some View {
+        HStack(spacing: 22) {
+            detailTabButton(.decision, title: "处理详情", icon: "doc.text")
+            detailTabButton(
+                .transcript,
+                title: transcriptTabTitle,
+                icon: "bubble.left.and.bubble.right"
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .frame(height: 46)
+        .background(ATMTheme.elevated)
+        .overlay(alignment: .bottom) { Rectangle().fill(ATMTheme.border).frame(height: 1) }
+    }
+
+    private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
+        let selected = selectedTab == tab
+        return Button {
+            selectedTab = tab
+        } label: {
+            Label(title, systemImage: icon)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
+                .padding(.horizontal, 2)
+                .frame(height: 46)
+                .overlay(alignment: .bottom) {
+                    Capsule()
+                        .fill(selected ? ATMTheme.accent : Color.clear)
+                        .frame(height: 2)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var transcriptTabTitle: String {
+        let count = transcript.messageCount
+        return count == 0 ? "消息原文" : "消息原文 \(count)"
     }
 
     private var header: some View {
@@ -751,6 +810,11 @@ private struct CollectionItemDetail: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
         }
+        .padding(.horizontal, 24)
+        .padding(.top, 17)
+        .padding(.bottom, 18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.elevated)
     }
 
     private var sourceSummary: some View {
@@ -781,7 +845,9 @@ private struct CollectionItemDetail: View {
         if let sender = item.sender, !sender.isEmpty {
             parts.append(sender)
         }
-        parts.append("\(item.messageIDs.count) 条消息")
+        // 「新消息」而不是「消息」：这里数的是触发这次判断的那一批，「消息原文」tab 上的
+        // 条数还含着用来解析指代的上下文，两个数不一样大。
+        parts.append("\(item.messageIDs.count) 条新消息")
         if let time = item.occurredAt {
             parts.append(collectionRelativeTime(time))
         }
@@ -863,17 +929,79 @@ private struct CollectionItemDetail: View {
         return parts.joined(separator: " · ")
     }
 
+    @ViewBuilder
     private var rawContextSummary: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("原始聊天")
-            Text(item.rawContext?.isEmpty == false ? item.rawContext! : "未保存原始聊天上下文。")
-                .font(ATMFont.mono(.footnote))
-                .foregroundStyle(ATMTheme.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
+        let transcript = ATMCollectionTranscript.parse(item.rawContext)
+        VStack(alignment: .leading, spacing: 10) {
+            // 不叫「聊天记录」：来源菜单里那一项是同名的、来源最近 N 条的另一个东西。
+            sectionTitle("消息原文")
+            if let fallback = transcript.fallback {
+                // 认不出格式就原样显示，糙一点也比丢内容好。
+                Text(fallback)
+                    .font(ATMFont.mono(.footnote))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            } else if transcript.blocks.isEmpty {
+                Text("未保存原始聊天上下文。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(transcript.blocks) { block in
+                        if block.startsFresh { freshDivider }
+                        transcriptBlock(block)
+                    }
+                }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 分界线之上是已经处理过、只用来解析指代的上下文；之下才是这次真正参与判断的
+    /// 新消息。上下文那几块同时压成次要色，一眼就能看出判断依据从哪儿开始。
+    private var freshDivider: some View {
+        HStack(spacing: 8) {
+            Text("新消息")
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(ATMTheme.accent)
+            Rectangle()
+                .fill(ATMTheme.accent.opacity(0.28))
+                .frame(height: 1)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func transcriptBlock(_ block: ATMCollectionTranscript.Block) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(block.sender)
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(block.isFresh ? ATMTheme.primary : ATMTheme.secondary)
+                    .lineLimit(1)
+                Text(block.time)
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            ForEach(Array(block.lines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(block.isFresh ? ATMTheme.primary : ATMTheme.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // 新消息用正常气泡、上下文压暗一档。强调色留给分界线本身：几十条消息全上
+        // accent 底，整段就只剩一片蓝。
+        .background(
+            block.isFresh ? ATMTheme.controlFill : ATMTheme.controlFill.opacity(0.5),
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
     }
 
     private func sectionTitle(_ text: String) -> some View {

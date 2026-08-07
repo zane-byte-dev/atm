@@ -509,7 +509,7 @@ struct ATMCollectionTranscript: Equatable {
     struct Block: Identifiable, Equatable {
         let id: Int
         let sender: String
-        /// 已经按需带上日期：同一天只留 `15:04`，跨天才补 `08-06 15:04`。
+        /// 已经按需带上日期：开头那块和跨天的那块是 `08-06 15:04`，其余只留 `15:04`。
         let time: String
         let isFresh: Bool
         let lines: [String]
@@ -520,6 +520,11 @@ struct ATMCollectionTranscript: Equatable {
     let blocks: [Block]
     /// 一行都没解析出来时的原文兜底。
     let fallback: String?
+
+    /// 消息条数（不是块数）：并块是显示手段，条数才是「这段聊了多少」。
+    var messageCount: Int {
+        blocks.reduce(0) { $0 + $1.lines.count }
+    }
 
     static let empty = ATMCollectionTranscript(blocks: [], fallback: nil)
 
@@ -545,10 +550,10 @@ struct ATMCollectionTranscript: Equatable {
     }
 
     private static func blocks(from messages: [ParsedMessage]) -> [Block] {
-        let firstFreshIndex = messages.firstIndex(where: \.isFresh)
         var blocks: [Block] = []
         var current: [ParsedMessage] = []
         var previousDate = ""
+        var seenFresh = false
 
         func flush() {
             guard let first = current.first else { return }
@@ -556,10 +561,10 @@ struct ATMCollectionTranscript: Equatable {
                 ? first.time
                 : "\(first.date.suffix(5)) \(first.time)"
             previousDate = first.date
-            // 分界线画在含第一条新消息的那一块前面，而不是每遇到新消息就画一条。
-            let startsFresh = !blocks.isEmpty
-                && firstFreshIndex != nil
-                && current.contains { $0.index == firstFreshIndex }
+            // 一块内部新旧一致（分组时就在新旧变化处断开），所以分界线只画在第一块
+            // 新消息前面，而不是每遇到一条新消息就画一条。
+            let startsFresh = !blocks.isEmpty && !seenFresh && first.isFresh
+            seenFresh = seenFresh || first.isFresh
             blocks.append(
                 Block(
                     id: blocks.count,
@@ -589,9 +594,6 @@ struct ATMCollectionTranscript: Equatable {
     /// 一行解析出来的消息。`isFresh` 在没有标记前缀时为 true：按需分析里每一行都参与了
     /// 判断，没有「上面这些只是背景」这回事，也就没有分界线。
     private struct ParsedMessage {
-        static var counter = 0
-
-        let index: Int
         let isFresh: Bool
         let date: String
         let time: String
@@ -612,7 +614,6 @@ struct ATMCollectionTranscript: Equatable {
             guard rest.hasPrefix(" [") else { return nil }
             rest = rest.dropFirst(2)
             guard let close = rest.firstIndex(of: "]") else { return nil }
-            self.index = -1
             self.isFresh = isFresh
             self.date = String(stamp.prefix(10))
             self.time = String(stamp.dropFirst(11).prefix(5))
