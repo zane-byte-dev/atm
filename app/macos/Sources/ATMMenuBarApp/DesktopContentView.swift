@@ -1170,68 +1170,72 @@ private struct DesktopTodoRow: View {
     let isSelected: Bool
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            // Icon only — the section header already names the status, so no label.
-            // Working tasks show a spinner instead of a static play glyph.
-            ATMTodoStatusGlyph(todo: todo, tier: .body)
-                .frame(width: 28, height: 28)
-                .background(statusColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-            VStack(alignment: .leading, spacing: 5) {
-                // The id leads the title rather than sitting in the meta line: it
-                // is what you scan the list for and what you type back at the CLI,
-                // and below the title it was the one thing you had to look away to
-                // find. Mono and baseline-aligned so it reads as a label on the
-                // title, not as its first word.
-                //
-                // Its tint is the priority — see ATMTodoPriorityStyle. A closed
-                // todo drops to secondary regardless: a finished P0 is not urgent,
-                // and red on a struck-through row reads as a problem.
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(todo.id.uppercased())
-                        .font(ATMFont.mono(.caption, .medium))
-                        .foregroundStyle(
-                            isClosed
-                                ? ATMTheme.secondary
-                                : ATMTodoPriorityStyle.color(for: todo.priority)
-                        )
-                        // Color alone is not readable — the priority stays
-                        // available by hover and to accessibility.
-                        .help(ATMTodoPriorityStyle.label(todo.priority))
-                        .accessibilityLabel("\(todo.id.uppercased()) \(ATMTodoPriorityStyle.label(todo.priority))")
-                    Text(todo.title)
-                        // Fixed weight — see ATMRowSurface: selection never changes
-                        // type weight, or the title jumps as glyph widths reflow.
-                        .font(ATMFont.font(.body, weight: .medium))
-                        .foregroundStyle(isClosed ? ATMTheme.secondary : ATMTheme.primary)
-                        .strikethrough(
-                            ATMTodoStatusStyle.usesStrikethrough(for: todo),
-                            color: ATMTheme.secondary
-                        )
-                        .lineLimit(2)
-                }
-                // Priority left this line for the id's tint, so the line can now be
-                // empty — a todo with no project filed before `creator` existed has
-                // nothing to say here. Skip it rather than leave the row padded
-                // around a blank strip.
-                if projectLabel != nil || creatorLabel != nil {
-                    HStack(spacing: 6) {
-                        if let project = projectLabel { Text(project) }
-                        // Where the todo came from. The icon carries it — 收集 and
-                        // agent-filed todos are the ones worth spotting, and they
-                        // are spotted by glyph long before the name is read.
-                        if let creator = creatorLabel {
-                            Label {
-                                Text(creator)
-                            } icon: {
-                                if let icon = ATMTodoCreator.icon(todo.creator) {
-                                    Image(systemName: icon)
-                                }
+        // No status glyph. It sat in a 28pt tile at the head of every row and said
+        // only what the section header the row is filed under already says — every
+        // row in 工作中 carried the same spinner, every row in 等待中 the same clock.
+        // Dropping it gives the title back ~38pt of a 260–420pt column and takes a
+        // line's worth of height off each row, which is the whole point of the list:
+        // scan ids and titles, not re-read the section you are already inside.
+        VStack(alignment: .leading, spacing: 5) {
+            // The id leads the title rather than sitting in the meta line: it
+            // is what you scan the list for and what you type back at the CLI,
+            // and below the title it was the one thing you had to look away to
+            // find. Mono and baseline-aligned so it reads as a label on the
+            // title, not as its first word.
+            //
+            // Its tint is the priority — see ATMTodoPriorityStyle. A closed
+            // todo drops to secondary regardless: a finished P0 is not urgent,
+            // and red on a struck-through row reads as a problem.
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(todo.id.uppercased())
+                    .font(ATMFont.mono(.caption, .medium))
+                    .foregroundStyle(
+                        isClosed
+                            ? ATMTheme.secondary
+                            : ATMTodoPriorityStyle.color(for: todo.priority)
+                    )
+                    // Color alone is not readable — the priority stays
+                    // available by hover and to accessibility. The status rides
+                    // along for the same reason: with the glyph gone it is only on
+                    // the section header, which is a sibling of the row rather than
+                    // an ancestor and so is not read as part of it.
+                    .help(ATMTodoPriorityStyle.label(todo.priority))
+                    .accessibilityLabel(
+                        "\(todo.id.uppercased()) \(ATMTodoPriorityStyle.label(todo.priority)) \(ATMTodoStatusStyle.label(for: todo))"
+                    )
+                Text(todo.title)
+                    // Fixed weight — see ATMRowSurface: selection never changes
+                    // type weight, or the title jumps as glyph widths reflow.
+                    .font(ATMFont.font(.body, weight: .medium))
+                    .foregroundStyle(isClosed ? ATMTheme.secondary : ATMTheme.primary)
+                    .strikethrough(
+                        ATMTodoStatusStyle.usesStrikethrough(for: todo),
+                        color: ATMTheme.secondary
+                    )
+                    .lineLimit(2)
+            }
+            // Priority left this line for the id's tint, so the line can now be
+            // empty — a todo with no project filed before `creator` existed has
+            // nothing to say here. Skip it rather than leave the row padded
+            // around a blank strip.
+            if projectLabel != nil || creatorLabel != nil {
+                HStack(spacing: 6) {
+                    if let project = projectLabel { Text(project) }
+                    // Where the todo came from. The icon carries it — 收集 and
+                    // agent-filed todos are the ones worth spotting, and they
+                    // are spotted by glyph long before the name is read.
+                    if let creator = creatorLabel {
+                        Label {
+                            Text(creator)
+                        } icon: {
+                            if let icon = ATMTodoCreator.icon(todo.creator) {
+                                Image(systemName: icon)
                             }
                         }
                     }
-                    .font(ATMFont.mono(.caption, .medium))
-                    .foregroundStyle(ATMTheme.secondary)
                 }
+                .font(ATMFont.mono(.caption, .medium))
+                .foregroundStyle(ATMTheme.secondary)
             }
         }
         .atmRowSurface(isSelected: isSelected)
@@ -1240,8 +1244,6 @@ private struct DesktopTodoRow: View {
     private var isClosed: Bool {
         todo.status == "done" || todo.status == "dropped"
     }
-
-    private var statusColor: Color { ATMTodoStatusStyle.color(for: todo) }
 
     private var projectLabel: String? {
         guard let project = todo.project?.trimmingCharacters(in: .whitespacesAndNewlines),

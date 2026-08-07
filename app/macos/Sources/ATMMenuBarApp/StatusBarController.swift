@@ -15,7 +15,7 @@ final class StatusBarController {
 
     init() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        panel = FloatingPanel(size: NSSize(width: 340, height: 400))
+        panel = FloatingPanel(size: NSSize(width: 360, height: 420))
         configureStatusItem()
         bindAppearance()
         configurePanel()

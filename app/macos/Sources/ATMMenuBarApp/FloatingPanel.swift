@@ -28,7 +28,7 @@ final class FloatingPanel: NSPanel {
         isReleasedWhenClosed = false
         isFloatingPanel = true
         animationBehavior = .utilityWindow
-        minSize = NSSize(width: 340, height: 290)
+        minSize = NSSize(width: 360, height: 320)
 
         standardWindowButton(.closeButton)?.isHidden = true
         standardWindowButton(.miniaturizeButton)?.isHidden = true
