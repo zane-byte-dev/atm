@@ -2,13 +2,22 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+private enum KnowledgeDrawerTab: String {
+    case articles
+    case libraries
+}
+
 struct DesktopKnowledgeView: View {
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
+    let onCreateCollection: () -> Void
+    let onRenameCollection: (ATMKnowledgeCollection) -> Void
+    let onDeleteCollection: (ATMKnowledgeCollection) -> Void
 
     @State private var items: [KnowledgeListItem] = []
     @State private var selectedItemID: String?
     @State private var document: ATMKnowledgeDocument?
+    @State private var documentCache: [String: ATMKnowledgeDocument] = [:]
     @State private var isListLoading = false
     @State private var isDetailLoading = false
     @State private var listError: String?
@@ -24,7 +33,6 @@ struct DesktopKnowledgeView: View {
     @State private var editError: String?
     @State private var showingDiscardAlert = false
     @State private var pendingSelectionID: String?
-    @State private var showingArchived = false
     @State private var showingCreateSheet = false
     @State private var showingImporter = false
     @State private var showingMetadataSheet = false
@@ -38,6 +46,8 @@ struct DesktopKnowledgeView: View {
     @State private var feedbackDraft: KnowledgeFeedbackDraft?
     @State private var feedbackStatus: String?
     @State private var isFeedbackSaving = false
+    @State private var expandedLibraryID: String?
+    @State private var drawerTab = KnowledgeDrawerTab.articles
     @FocusState private var editorFocused: Bool
 
     private var selectedLibraryID: String {
@@ -48,9 +58,17 @@ struct DesktopKnowledgeView: View {
         store.knowledgeCollections.first { $0.id == selectedLibraryID }
     }
 
+    private var sortedKnowledgeCollections: [ATMKnowledgeCollection] {
+        store.knowledgeCollections.sorted {
+            if $0.id == "inbox" { return true }
+            if $1.id == "inbox" { return false }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+    }
+
     private var libraryTitle: String {
-        if showingArchived { return "\(selectedLibrary?.name ?? selectedLibraryID) · 归档" }
         if selectedLibraryID == ATMKnowledgeLibrary.memoryID { return "共享记忆" }
+        if selectedLibraryID == ATMKnowledgeLibrary.archiveID { return "归档" }
         return selectedLibrary?.name ?? selectedLibraryID
     }
 
@@ -83,8 +101,7 @@ struct DesktopKnowledgeView: View {
         }
         .task(id: KnowledgeLoadKey(
             libraryID: selectedLibraryID,
-            generation: refreshGeneration,
-            showingArchived: showingArchived
+            generation: refreshGeneration
         )) {
             await loadItems()
         }
@@ -93,13 +110,18 @@ struct DesktopKnowledgeView: View {
         }
         .onChange(of: navigation.locateKnowledgeDocumentID) { target in
             guard let target else { return }
-            showingArchived = false
+            drawerTab = .articles
+            expandedLibraryID = selectedLibraryID
             selectedItemID = target
             navigation.locateKnowledgeDocumentID = nil
         }
         .onAppear {
+            if expandedLibraryID == nil {
+                expandedLibraryID = selectedLibraryID
+            }
             guard let target = navigation.locateKnowledgeDocumentID else { return }
-            showingArchived = false
+            drawerTab = .articles
+            expandedLibraryID = selectedLibraryID
             selectedItemID = target
             navigation.locateKnowledgeDocumentID = nil
         }
@@ -120,7 +142,6 @@ struct DesktopKnowledgeView: View {
             ) { draft in
                 let created = try await store.addKnowledgeDocument(draft)
                 await MainActor.run {
-                    showingArchived = false
                     navigation.selectedKnowledgeLibraryID = created.collection
                     navigation.section = .knowledge
                     selectedItemID = KnowledgeListItem.documentSummaryID(created.metadata.id)
@@ -135,8 +156,10 @@ struct DesktopKnowledgeView: View {
                     let updated = try await store.editKnowledgeDocument(document.metadata.id, edit: edit)
                     await MainActor.run {
                         self.document = updated
-                        showingArchived = updated.metadata.status == "archived"
-                        navigation.selectedKnowledgeLibraryID = updated.collection
+                        documentCache[updated.metadata.id] = updated
+                        navigation.selectedKnowledgeLibraryID = updated.metadata.status == "archived"
+                            ? ATMKnowledgeLibrary.archiveID
+                            : updated.collection
                         navigation.section = .knowledge
                         selectedItemID = KnowledgeListItem.documentSummaryID(updated.metadata.id)
                         refreshGeneration += 1
@@ -220,115 +243,417 @@ struct DesktopKnowledgeView: View {
             }
             Button("取消", role: .cancel) { renameSummary = nil }
         }
-        .onChange(of: selectedLibraryID) { _ in
-            if showingArchived {
-                showingArchived = false
-            }
+        .onChange(of: selectedLibraryID) { libraryID in
+            expandedLibraryID = libraryID
         }
         .onChange(of: navigation.knowledgeCreateRequest) { _ in
+            drawerTab = .articles
             showingCreateSheet = true
         }
     }
 
     private var writableCollectionID: String {
-        selectedLibraryID == ATMKnowledgeLibrary.memoryID ? (store.knowledgeCollections.first?.id ?? "inbox") : selectedLibraryID
+        if selectedLibraryID == ATMKnowledgeLibrary.memoryID || selectedLibraryID == ATMKnowledgeLibrary.archiveID {
+            return store.knowledgeCollections.first?.id ?? "inbox"
+        }
+        return selectedLibraryID
     }
 
     private var itemList: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    Image(systemName: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? "brain.head.profile" : "folder")
+            knowledgeDrawerTabs
+
+            Divider()
+
+            if drawerTab == .articles {
+                articleGroups
+            } else {
+                knowledgeLibraryList
+            }
+        }
+        .background(ATMTheme.listPane)
+    }
+
+    private var knowledgeDrawerTabs: some View {
+        HStack(spacing: 18) {
+            knowledgeDrawerTabButton(.articles, title: "文章")
+            knowledgeDrawerTabButton(.libraries, title: "知识库")
+            Spacer(minLength: 4)
+
+            if drawerTab == .articles {
+                ATMIconButton(
+                    systemImage: isListLoading ? "hourglass" : "arrow.clockwise",
+                    help: "刷新当前知识库",
+                    chrome: .bare,
+                    isEnabled: !isListLoading,
+                    side: 30,
+                    iconTier: .bodyLarge
+                ) {
+                    documentCache.removeAll()
+                    refreshGeneration += 1
+                }
+            } else {
+                HStack(spacing: 4) {
+                    ATMIconButton(
+                        systemImage: "folder.badge.plus",
+                        help: "新建知识库",
+                        chrome: .chip,
+                        side: 30,
+                        iconTier: .bodyLarge,
+                        action: onCreateCollection
+                    )
+                    ATMIconButton(
+                        systemImage: store.isKnowledgeCatalogLoading ? "hourglass" : "arrow.clockwise",
+                        help: "刷新知识库目录",
+                        chrome: .bare,
+                        isEnabled: !store.isKnowledgeCatalogLoading,
+                        side: 30,
+                        iconTier: .bodyLarge
+                    ) {
+                        store.refreshKnowledgeCatalog()
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .frame(height: 64)
+    }
+
+    private func knowledgeDrawerTabButton(_ tab: KnowledgeDrawerTab, title: String) -> some View {
+        let isSelected = drawerTab == tab
+        return Button {
+            drawerTab = tab
+        } label: {
+            Text(title)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(isSelected ? ATMTheme.primary : ATMTheme.secondary)
+                .padding(.vertical, 12)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(isSelected ? ATMTheme.accent : .clear)
+                        .frame(height: 2)
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var articleGroups: some View {
+        ScrollView {
+            LazyVStack(spacing: 5) {
+                knowledgeLibraryGroup(
+                    id: ATMKnowledgeLibrary.memoryID,
+                    title: "共享记忆",
+                    count: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? items.count : nil,
+                    icon: "brain.head.profile",
+                    collection: nil
+                )
+
+                ForEach(sortedKnowledgeCollections) { collection in
+                    knowledgeLibraryGroup(
+                        id: collection.id,
+                        title: collection.name,
+                        count: collection.documentCount,
+                        icon: collection.id == "inbox" ? "tray" : "folder",
+                        collection: collection
+                    )
+                }
+
+                knowledgeLibraryGroup(
+                    id: ATMKnowledgeLibrary.archiveID,
+                    title: "归档",
+                    count: selectedLibraryID == ATMKnowledgeLibrary.archiveID ? items.count : nil,
+                    icon: "archivebox",
+                    collection: nil
+                )
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 10)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var knowledgeLibraryList: some View {
+        Group {
+            if store.isKnowledgeCatalogLoading && sortedKnowledgeCollections.isEmpty {
+                knowledgeState(icon: "hourglass", title: "正在读取知识库")
+            } else if sortedKnowledgeCollections.isEmpty {
+                knowledgeState(icon: "folder", title: "还没有知识库", detail: "点击右上角新建第一个知识库")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 5) {
+                        ForEach(sortedKnowledgeCollections) { collection in
+                            knowledgeLibraryManagementRow(collection)
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func knowledgeLibraryManagementRow(_ collection: ATMKnowledgeCollection) -> some View {
+        return HStack(spacing: 4) {
+            Button {
+                navigation.selectedKnowledgeLibraryID = collection.id
+                expandedLibraryID = collection.id
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: collection.id == "inbox" ? "tray" : "folder")
+                        .font(ATMFont.font(.body, weight: .medium))
                         .foregroundStyle(ATMTheme.accent)
-                    Text(libraryTitle)
-                        .font(ATMFont.font(.title3, weight: .semibold))
-                        .lineLimit(1)
-                    Text("\(items.count)")
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(collection.name)
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            .foregroundStyle(ATMTheme.primary)
+                            .lineLimit(1)
+                        Text(collection.id)
+                            .font(ATMFont.mono(.caption))
+                            .foregroundStyle(ATMTheme.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    Text(String(collection.documentCount))
                         .font(ATMFont.mono(.caption, .semibold))
                         .foregroundStyle(ATMTheme.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(ATMTheme.controlFill, in: Capsule())
-                    Spacer(minLength: 4)
-                    if selectedLibraryID != ATMKnowledgeLibrary.memoryID {
-                        ATMIconButton(
-                            systemImage: showingArchived ? "archivebox.fill" : "archivebox",
-                            help: showingArchived ? "返回当前知识库" : "查看归档",
-                            chrome: .bare,
-                            isEmphasized: showingArchived,
-                            side: 28,
-                            iconTier: .bodyLarge
-                        ) { showingArchived.toggle() }
+                }
+                .atmRowSurface(isSelected: false)
+            }
+            .buttonStyle(.plain)
+            .atmRightClickMenu {
+                knowledgeLibraryManagementMenuEntries(collection)
+            }
 
-                        Menu {
-                            Button {
-                                showingCreateSheet = true
-                            } label: {
-                                Label("新建知识", systemImage: "square.and.pencil")
-                            }
-                            Button {
-                                showingImporter = true
-                            } label: {
-                                Label("导入 Markdown…", systemImage: "square.and.arrow.down")
-                            }
-                            Divider()
-                            Button {
-                                showingGovernanceSheet = true
-                            } label: {
-                                Label("知识健康", systemImage: "checkmark.shield")
-                            }
-                        } label: {
-                            ATMIconMenuLabel(
-                                systemImage: isImporting ? "hourglass" : "plus",
-                                help: "添加知识",
-                                isEnabled: !isImporting,
-                                side: 28,
-                                iconTier: .bodyLarge
-                            )
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .disabled(isImporting)
+            Menu {
+                Button {
+                    navigation.selectedKnowledgeLibraryID = collection.id
+                    expandedLibraryID = collection.id
+                    drawerTab = .articles
+                } label: {
+                    Label("查看文章", systemImage: "doc.text")
+                }
+                Button {
+                    navigation.selectedKnowledgeLibraryID = collection.id
+                    expandedLibraryID = collection.id
+                    drawerTab = .articles
+                    showingCreateSheet = true
+                } label: {
+                    Label("新建知识…", systemImage: "square.and.pencil")
+                }
+                Divider()
+                Button {
+                    onRenameCollection(collection)
+                } label: {
+                    Label("重命名…", systemImage: "pencil")
+                }
+                Button(role: .destructive) {
+                    onDeleteCollection(collection)
+                } label: {
+                    Label("删除…", systemImage: "trash")
+                }
+                Divider()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(collection.id, forType: .string)
+                } label: {
+                    Label("复制知识库 ID", systemImage: "doc.on.doc")
+                }
+            } label: {
+                ATMIconMenuLabel(
+                    systemImage: "ellipsis",
+                    help: "知识库操作",
+                    side: 28,
+                    iconTier: .bodyLarge
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+        }
+    }
+
+    @ATMMenuBuilder
+    private func knowledgeLibraryManagementMenuEntries(
+        _ collection: ATMKnowledgeCollection
+    ) -> [ATMMenuEntry] {
+        ATMMenuItem("查看文章") {
+            navigation.selectedKnowledgeLibraryID = collection.id
+            expandedLibraryID = collection.id
+            drawerTab = .articles
+        }
+        ATMMenuItem("在此新建知识…") {
+            navigation.selectedKnowledgeLibraryID = collection.id
+            expandedLibraryID = collection.id
+            drawerTab = .articles
+            showingCreateSheet = true
+        }
+        ATMMenuSeparator()
+        ATMMenuItem("重命名…") { onRenameCollection(collection) }
+        ATMMenuItem("删除…", destructive: true) { onDeleteCollection(collection) }
+        ATMMenuSeparator()
+        ATMMenuItem("复制知识库 ID") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(collection.id, forType: .string)
+        }
+    }
+
+    @ViewBuilder
+    private func knowledgeLibraryGroup(
+        id: String,
+        title: String,
+        count: Int?,
+        icon: String,
+        collection: ATMKnowledgeCollection?
+    ) -> some View {
+        let isSelected = selectedLibraryID == id
+        let isExpanded = expandedLibraryID == id
+        let isArchiveLibrary = id == ATMKnowledgeLibrary.archiveID
+
+        VStack(spacing: 3) {
+            HStack(spacing: 3) {
+                Button {
+                    if isSelected {
+                        expandedLibraryID = isExpanded ? nil : id
+                    } else {
+                        navigation.selectedKnowledgeLibraryID = id
+                        expandedLibraryID = id
                     }
-                    ATMIconButton(
-                        systemImage: isListLoading ? "hourglass" : "arrow.clockwise",
-                        help: "刷新当前知识库",
-                        chrome: .bare,
-                        isEnabled: !isListLoading,
-                        side: 28,
-                        iconTier: .bodyLarge
-                    ) { refreshGeneration += 1 }
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "chevron.right")
+                            .font(ATMFont.font(.caption, weight: .semibold))
+                            .foregroundStyle(ATMTheme.secondary)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        Image(systemName: icon)
+                            .font(ATMFont.font(.caption, weight: .semibold))
+                            .foregroundStyle(ATMTheme.accent)
+                            .frame(width: 14)
+                        Text(title)
+                            .lineLimit(1)
+                        if let count {
+                            Text(String(count))
+                                .font(ATMFont.mono(.caption, .semibold))
+                                .foregroundStyle(ATMTheme.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(ATMTheme.controlFill, in: Capsule())
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .font(ATMFont.font(.footnote, weight: .semibold))
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .atmRightClickMenu {
+                    if isArchiveLibrary {
+                        ATMMenuItem("刷新归档") {
+                            documentCache.removeAll()
+                            refreshGeneration += 1
+                        }
+                    } else {
+                        ATMMenuItem("新建知识库…") { onCreateCollection() }
+                        if let collection {
+                            ATMMenuItem("在此新建知识…") {
+                                navigation.selectedKnowledgeLibraryID = collection.id
+                                expandedLibraryID = collection.id
+                                showingCreateSheet = true
+                            }
+                            ATMMenuSeparator()
+                            ATMMenuItem("重命名…") { onRenameCollection(collection) }
+                            ATMMenuItem("删除…", destructive: true) { onDeleteCollection(collection) }
+                        }
+                        ATMMenuSeparator()
+                        ATMMenuItem("刷新目录") { store.refreshKnowledgeCatalog() }
+                        ATMMenuItem("复制知识库 ID") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(id, forType: .string)
+                        }
+                    }
+                }
+
+                if isSelected, id != ATMKnowledgeLibrary.memoryID, !isArchiveLibrary {
+                    Menu {
+                        Button {
+                            showingCreateSheet = true
+                        } label: {
+                            Label("新建知识", systemImage: "square.and.pencil")
+                        }
+                        Button {
+                            showingImporter = true
+                        } label: {
+                            Label("导入 Markdown…", systemImage: "square.and.arrow.down")
+                        }
+                        Divider()
+                        Button {
+                            showingGovernanceSheet = true
+                        } label: {
+                            Label("知识健康", systemImage: "checkmark.shield")
+                        }
+                    } label: {
+                        ATMIconMenuLabel(
+                            systemImage: isImporting ? "hourglass" : "plus",
+                            help: "添加知识",
+                            isEnabled: !isImporting,
+                            side: 26,
+                            iconTier: .bodyLarge
+                        )
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .disabled(isImporting)
                 }
             }
-            .padding(.horizontal, 14)
-            .frame(height: 88)
 
-            Divider()
-
-            Group {
-                if isListLoading && items.isEmpty {
-                    knowledgeState(icon: "hourglass", title: "正在读取知识")
-                } else if let listError {
-                    knowledgeState(icon: "exclamationmark.triangle", title: "加载失败", detail: listError)
-                } else if items.isEmpty {
-                    knowledgeState(
-                        icon: showingArchived ? "archivebox" : "doc",
-                        title: showingArchived ? "归档中没有内容" : "这个知识库还是空的"
-                    )
-                } else {
-                    ScrollView {
+            if isExpanded, isSelected {
+                Group {
+                    if isListLoading && items.isEmpty {
+                        knowledgeInlineState(icon: "hourglass", title: "正在读取知识")
+                    } else if let listError {
+                        knowledgeInlineState(icon: "exclamationmark.triangle", title: "加载失败", detail: listError)
+                    } else if items.isEmpty {
+                        knowledgeInlineState(
+                            icon: isArchiveLibrary ? "archivebox" : "doc",
+                            title: isArchiveLibrary ? "归档中没有内容" : "这个知识库还是空的"
+                        )
+                    } else {
                         LazyVStack(spacing: 4) {
                             ForEach(items) { item in
                                 knowledgeRow(item)
                             }
                         }
-                        .padding(8)
                     }
                 }
+                .padding(.leading, 18)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(ATMTheme.listPane)
+    }
+
+    private func knowledgeInlineState(icon: String, title: String, detail: String? = nil) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(ATMTheme.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(ATMFont.font(.footnote, weight: .medium))
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .lineLimit(3)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var detailPane: some View {
@@ -358,7 +683,6 @@ struct DesktopKnowledgeView: View {
                 )
             }
         }
-        .id(selectedItemID)
     }
 
     private func knowledgeRow(_ item: KnowledgeListItem) -> some View {
@@ -446,6 +770,7 @@ struct DesktopKnowledgeView: View {
 
         do {
             _ = try await store.moveKnowledgeDocument(summary.documentID, to: collectionID)
+            documentCache.removeValue(forKey: summary.documentID)
             if selectedItemID == itemID {
                 finishEditing()
                 selectedItemID = nil
@@ -478,6 +803,7 @@ struct DesktopKnowledgeView: View {
             if selectedItemID == KnowledgeListItem.documentSummaryID(summary.documentID) {
                 document = updated
             }
+            documentCache[summary.documentID] = updated
             refreshGeneration += 1
             store.refreshKnowledgeCatalog()
             await loadItems()
@@ -500,6 +826,7 @@ struct DesktopKnowledgeView: View {
                     projects: summary.projects
                 )
             )
+            documentCache.removeValue(forKey: summary.documentID)
             if selectedItemID == KnowledgeListItem.documentSummaryID(summary.documentID) {
                 selectedItemID = nil
                 document = nil
@@ -516,6 +843,7 @@ struct DesktopKnowledgeView: View {
     private func deleteDocument(_ summary: ATMKnowledgeDocumentSummary) async {
         do {
             try await store.deleteKnowledgeDocument(summary.documentID)
+            documentCache.removeValue(forKey: summary.documentID)
             if selectedItemID == KnowledgeListItem.documentSummaryID(summary.documentID) {
                 finishEditing()
                 selectedItemID = nil
@@ -925,7 +1253,9 @@ struct DesktopKnowledgeView: View {
             do {
                 switch item {
                 case .document(let summary):
-                    document = try await store.updateKnowledgeDocument(summary.documentID, content: editContent)
+                    let updated = try await store.updateKnowledgeDocument(summary.documentID, content: editContent)
+                    document = updated
+                    documentCache[summary.documentID] = updated
                     originalEditContent = editContent
                     finishEditing()
                     refreshGeneration += 1
@@ -1060,10 +1390,12 @@ struct DesktopKnowledgeView: View {
             let loaded: [KnowledgeListItem]
             if selectedLibraryID == ATMKnowledgeLibrary.memoryID {
                 loaded = try await store.memories(query: "").map(KnowledgeListItem.memory)
+            } else if selectedLibraryID == ATMKnowledgeLibrary.archiveID {
+                loaded = try await store.archivedKnowledgeDocuments().map(KnowledgeListItem.document)
             } else {
                 loaded = try await store.knowledgeDocuments(
                     collectionID: selectedLibraryID,
-                    status: showingArchived ? "archived" : "active"
+                    status: "active"
                 )
                     .map(KnowledgeListItem.document)
             }
@@ -1085,18 +1417,25 @@ struct DesktopKnowledgeView: View {
     private func loadSelectedDocument() async {
         showingInfo = false
         copiedIdentifier = nil
-        document = nil
         detailError = nil
         guard case .document(let summary) = selectedItem else {
+            document = nil
             isDetailLoading = false
             return
         }
+        if let cached = documentCache[summary.documentID] {
+            document = cached
+            isDetailLoading = false
+            return
+        }
+        document = nil
         isDetailLoading = true
         defer { isDetailLoading = false }
         do {
             let loaded = try await store.knowledgeDocument(summary.documentID)
             guard !Task.isCancelled, selectedItemID == KnowledgeListItem.document(summary).id else { return }
             document = loaded
+            documentCache[summary.documentID] = loaded
         } catch is CancellationError {
             return
         } catch {
@@ -1125,7 +1464,6 @@ struct DesktopKnowledgeView: View {
                 lastImported = imported.last ?? lastImported
             }
             if let lastImported {
-                showingArchived = false
                 navigation.selectedKnowledgeLibraryID = lastImported.collection
                 navigation.section = .knowledge
                 selectedItemID = KnowledgeListItem.documentSummaryID(lastImported.metadata.id)
@@ -1154,6 +1492,7 @@ struct DesktopKnowledgeView: View {
                 )
             )
             self.document = updated
+            documentCache.removeValue(forKey: updated.metadata.id)
             selectedItemID = nil
             refreshGeneration += 1
             store.refreshKnowledgeCatalog()
@@ -1174,7 +1513,6 @@ struct DesktopKnowledgeView: View {
 private struct KnowledgeLoadKey: Equatable {
     let libraryID: String
     let generation: Int
-    let showingArchived: Bool
 }
 
 private struct KnowledgeOperationError: Identifiable {

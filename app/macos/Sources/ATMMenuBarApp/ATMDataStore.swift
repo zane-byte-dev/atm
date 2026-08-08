@@ -2005,6 +2005,18 @@ final class ATMDataStore: ObservableObject {
         return decoded.filter { ($0.status ?? "active") == status && seen.insert($0.documentID).inserted }
     }
 
+    /// Archived documents remain attached to their original collection. The
+    /// desktop app presents them through one synthetic library, so fetch the
+    /// unscoped list once and aggregate by status rather than querying every
+    /// collection separately.
+    func archivedKnowledgeDocuments() async throws -> [ATMKnowledgeDocumentSummary] {
+        let runner = try ATMCommandRunner()
+        let data = try await runner.run(["knowledge", "list", "--json"])
+        let decoded = try JSONDecoder().decode([ATMKnowledgeDocumentSummary].self, from: data)
+        var seen = Set<String>()
+        return decoded.filter { ($0.status ?? "active") == "archived" && seen.insert($0.documentID).inserted }
+    }
+
     func createCollection(id: String, name: String) async throws {
         let runner = try ATMCommandRunner()
         var arguments = ["knowledge", "collection", "create", id]

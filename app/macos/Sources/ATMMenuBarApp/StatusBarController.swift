@@ -242,12 +242,26 @@ final class StatusBarController {
         panel.orderFrontRegardless()
         panel.makeKey()
         NSApp.activate(ignoringOtherApps: true)
+        setStatusItemHighlighted(true)
         startOutsideClickMonitor()
     }
 
     private func closePanel() {
         panel.orderOut(nil)
+        setStatusItemHighlighted(false)
         stopOutsideClickMonitor()
+    }
+
+    /// A custom panel does not drive the status button's pressed appearance the
+    /// way an `NSMenu` does. Reapply on the next run-loop turn as well, after the
+    /// mouse-up tracking loop has finished clearing AppKit's transient highlight.
+    private func setStatusItemHighlighted(_ highlighted: Bool) {
+        statusItem.button?.highlight(highlighted)
+        guard highlighted else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panel.isVisible else { return }
+            self.statusItem.button?.highlight(true)
+        }
     }
 
     private func showContextMenu() {

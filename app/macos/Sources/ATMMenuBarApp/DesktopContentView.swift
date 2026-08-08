@@ -402,9 +402,7 @@ private extension View {
 struct DesktopContentView: View {
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
-    // Sidebar disclosure is independent from the selected workspace. Switching
-    // to Usage (or another section) must not collapse an expanded library list.
-    @State private var knowledgeExpanded = false
+    @AppStorage("ATMDesktopSidebarCollapsed") private var sidebarCollapsed = false
     @State private var showingCollectionCreate = false
     @State private var newCollectionID = ""
     @State private var newCollectionName = ""
@@ -417,7 +415,7 @@ struct DesktopContentView: View {
     var body: some View {
         HStack(spacing: 0) {
             desktopSidebar
-                .frame(width: 212, alignment: .leading)
+                .frame(width: sidebarCollapsed ? 58 : 176, alignment: .leading)
                 .clipped()
                 .background {
                     // Paint behind the transparent title bar outside the
@@ -437,7 +435,30 @@ struct DesktopContentView: View {
                 case .agents:
                     DesktopAgentsView(store: store, navigation: navigation)
                 case .knowledge:
-                    DesktopKnowledgeView(store: store, navigation: navigation)
+                    DesktopKnowledgeView(
+                        store: store,
+                        navigation: navigation,
+                        onCreateCollection: {
+                            newCollectionID = ""
+                            newCollectionName = ""
+                            showingCollectionCreate = true
+                        },
+                        onRenameCollection: { collection in
+                            renameCollectionName = collection.name
+                            renameCollectionTarget = ATMCollectionRef(
+                                id: collection.id,
+                                name: collection.name,
+                                count: collection.documentCount
+                            )
+                        },
+                        onDeleteCollection: { collection in
+                            deleteCollectionTarget = ATMCollectionRef(
+                                id: collection.id,
+                                name: collection.name,
+                                count: collection.documentCount
+                            )
+                        }
+                    )
                         .id("knowledge-library")
                 case .usage:
                     DesktopUsageView(store: store)
@@ -482,6 +503,7 @@ struct DesktopContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.15), value: navigation.showAddTodo)
+        .animation(.easeInOut(duration: 0.18), value: sidebarCollapsed)
         .sheet(isPresented: $showingCollectionCreate) {
             collectionCreateSheet
         }
@@ -618,40 +640,42 @@ struct DesktopContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 8) {
                 ATMBrandMark()
-                    .frame(width: 38, height: 38)
-                VStack(alignment: .leading, spacing: 0) {
+                    .frame(width: 34, height: 34)
+                if !sidebarCollapsed {
                     Text("ATM")
                         .font(ATMFont.font(.title3, weight: .bold))
                         .foregroundStyle(ATMTheme.railPrimary)
                 }
-                .lineLimit(1)
-                Spacer(minLength: 0)
+                if !sidebarCollapsed { Spacer(minLength: 0) }
             }
-            .padding(.horizontal, 14)
+            .padding(.horizontal, sidebarCollapsed ? 12 : 14)
             .padding(.top, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
 
             VStack(spacing: 4) {
                 searchSidebarButton
                 ForEach(ATMDesktopSection.allCases) { section in
-                    if section == .knowledge {
-                        knowledgeSidebarGroup
-                    } else {
-                        sidebarButton(section)
-                    }
+                    sidebarButton(section)
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, sidebarCollapsed ? 7 : 8)
 
             Spacer()
 
-            // Session index syncs on launch, every 5 minutes, and when the
-            // quick panel / desktop window opens. No permanent sidebar button.
-            Text(appVersionLabel)
-                .font(ATMFont.mono(.caption))
-                .foregroundStyle(ATMTheme.railMuted)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.bottom, 8)
+            sidebarCollapseButton
+                .padding(.horizontal, sidebarCollapsed ? 7 : 8)
+
+            if !sidebarCollapsed {
+                // Session index syncs on launch, every 5 minutes, and when the
+                // quick panel / desktop window opens. No permanent sidebar button.
+                Text(appVersionLabel)
+                    .font(ATMFont.mono(.caption))
+                    .foregroundStyle(ATMTheme.railMuted)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.bottom, 8)
+            } else {
+                Spacer().frame(height: 8)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(ATMTheme.rail)
@@ -672,15 +696,18 @@ struct DesktopContentView: View {
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: "magnifyingglass").frame(width: 18)
-                Text("搜索")
-                Spacer()
-                Text("⌘K")
-                    .font(ATMFont.mono(.footnote, .medium))
-                    .foregroundStyle(ATMTheme.railMuted)
+                if !sidebarCollapsed {
+                    Text("搜索")
+                    Spacer()
+                    Text("⌘K")
+                        .font(ATMFont.mono(.footnote, .medium))
+                        .foregroundStyle(ATMTheme.railMuted)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
             .font(ATMFont.font(.body, weight: .medium))
             .foregroundStyle(ATMTheme.railPrimary)
-            .padding(.horizontal, 10)
+            .padding(.horizontal, sidebarCollapsed ? 0 : 10)
             .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
             .background(ATMTheme.railRaised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             .overlay(
@@ -691,97 +718,50 @@ struct DesktopContentView: View {
         }
         .buttonStyle(.plain)
         .keyboardShortcut("k", modifiers: .command)
+        .help("搜索（⌘K）")
     }
 
     private func sidebarButton(_ section: ATMDesktopSection) -> some View {
         let selected = navigation.section == section
         return Button {
             navigation.section = section
+            if section == .knowledge {
+                store.refreshKnowledgeCatalog()
+            }
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: section.icon).frame(width: 18)
-                Text(section.title)
-                Spacer()
+                if !sidebarCollapsed {
+                    Text(section.title)
+                    Spacer()
+                }
             }
+            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
             .font(ATMFont.font(.body, weight: .medium))
             .atmDesktopRailSurface(isSelected: selected)
         }
         .buttonStyle(.plain)
+        .help(section.title)
     }
 
-    private var knowledgeSidebarGroup: some View {
-        VStack(spacing: 2) {
-            let selected = navigation.section == .knowledge
-            Button {
-                if selected {
-                    knowledgeExpanded.toggle()
-                } else {
-                    navigation.section = .knowledge
-                    knowledgeExpanded = true
-                    store.refreshKnowledgeCatalog()
-                    if navigation.selectedKnowledgeLibraryID == nil {
-                        navigation.selectedKnowledgeLibraryID =
-                            sortedKnowledgeCollections.first?.id ?? ATMKnowledgeLibrary.memoryID
-                    }
-                }
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: ATMDesktopSection.knowledge.icon).frame(width: 18)
-                    Text(ATMDesktopSection.knowledge.title)
+    private var sidebarCollapseButton: some View {
+        Button {
+            sidebarCollapsed.toggle()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: sidebarCollapsed ? "chevron.right" : "chevron.left")
+                    .frame(width: 18)
+                if !sidebarCollapsed {
+                    Text("收起侧栏")
                     Spacer()
-                    Image(systemName: knowledgeExpanded ? "chevron.down" : "chevron.right")
-                        .font(ATMFont.font(.micro, weight: .semibold))
-                }
-                .font(ATMFont.font(.body, weight: .medium))
-                .atmDesktopRailSurface(isSelected: selected)
-            }
-            .buttonStyle(.plain)
-
-            if knowledgeExpanded {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 1) {
-                        knowledgeLibraryButton(
-                            id: ATMKnowledgeLibrary.memoryID,
-                            title: "共享记忆",
-                            count: nil,
-                            icon: "brain.head.profile"
-                        )
-
-                        Divider().padding(.leading, 28).padding(.vertical, 3)
-
-                        ForEach(sortedKnowledgeCollections) { collection in
-                            knowledgeLibraryButton(
-                                id: collection.id,
-                                title: collection.name,
-                                count: collection.documentCount,
-                                icon: collection.id == "inbox" ? "tray" : "folder"
-                            )
-                        }
-
-                        if store.isKnowledgeCatalogLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
-                        }
-                    }
-                    .padding(.trailing, 8)
-                }
-                .padding(.leading, 14)
-                .frame(maxHeight: 172)
-                .overlay(alignment: .bottom) {
-                    if sortedKnowledgeCollections.count > 5 {
-                        LinearGradient(
-                            colors: [ATMTheme.rail.opacity(0), ATMTheme.rail.opacity(0.96)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 16)
-                        .allowsHitTesting(false)
-                    }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
+            .font(ATMFont.font(.footnote, weight: .medium))
+            .atmDesktopRailSurface(isSelected: false)
         }
+        .buttonStyle(.plain)
+        .help(sidebarCollapsed ? "展开侧栏" : "收起侧栏")
     }
 
     private var sortedKnowledgeCollections: [ATMKnowledgeCollection] {
@@ -792,62 +772,9 @@ struct DesktopContentView: View {
         }
     }
 
-    private func knowledgeLibraryButton(id: String, title: String, count: Int?, icon: String) -> some View {
-        let selected = navigation.section == .knowledge && navigation.selectedKnowledgeLibraryID == id
-        return Button {
-            navigation.section = .knowledge
-            navigation.selectedKnowledgeLibraryID = id
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: icon)
-                    .frame(width: 15)
-                Text(title)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if let count {
-                    Text("\(count)")
-                        .font(ATMFont.mono(.caption, .medium))
-                        .foregroundStyle(ATMTheme.railMuted)
-                }
-            }
-            .font(ATMFont.font(.footnote, weight: selected ? .semibold : .regular))
-            .atmDesktopRailSurface(isSelected: selected, isNested: true)
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .atmRightClickMenu {
-            ATMMenuItem("新建知识库…") {
-                newCollectionID = ""
-                newCollectionName = ""
-                showingCollectionCreate = true
-            }
-            if id != ATMKnowledgeLibrary.memoryID {
-                ATMMenuItem("在此新建知识…") {
-                    navigation.section = .knowledge
-                    navigation.selectedKnowledgeLibraryID = id
-                    navigation.knowledgeCreateRequest += 1
-                }
-                ATMMenuSeparator()
-                ATMMenuItem("重命名…") {
-                    renameCollectionName = title
-                    renameCollectionTarget = ATMCollectionRef(id: id, name: title, count: count ?? 0)
-                }
-                ATMMenuItem("删除…", destructive: true) {
-                    deleteCollectionTarget = ATMCollectionRef(id: id, name: title, count: count ?? 0)
-                }
-            }
-            ATMMenuSeparator()
-            ATMMenuItem("刷新目录") { store.refreshKnowledgeCatalog() }
-            ATMMenuItem("复制知识库 ID") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(id, forType: .string)
-            }
-        }
-    }
-
     private func selectDefaultKnowledgeLibraryIfNeeded() {
         if let selected = navigation.selectedKnowledgeLibraryID,
-           selected == ATMKnowledgeLibrary.memoryID ||
+           selected == ATMKnowledgeLibrary.memoryID || selected == ATMKnowledgeLibrary.archiveID ||
            store.knowledgeCollections.contains(where: { $0.id == selected }) {
             return
         }

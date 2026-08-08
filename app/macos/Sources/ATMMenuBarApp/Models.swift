@@ -1191,6 +1191,9 @@ struct ATMNowSnapshot: Decodable {
 
 enum ATMKnowledgeLibrary {
     static let memoryID = "__memory__"
+    /// UI-only aggregate that keeps archived documents in one predictable place
+    /// without changing their real collection metadata.
+    static let archiveID = "__archive__"
 }
 
 struct ATMKnowledgeCollection: Decodable, Identifiable, Equatable {

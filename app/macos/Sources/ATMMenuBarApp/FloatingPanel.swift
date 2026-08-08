@@ -69,18 +69,37 @@ final class FloatingPanel: NSPanel {
               let screen = buttonWindow.screen ?? NSScreen.main else { return }
 
         let buttonRect = buttonWindow.convertToScreen(statusButton.convert(statusButton.bounds, to: nil))
-        let visible = screen.visibleFrame
-        let margin: CGFloat = 10
-        let gap: CGFloat = 8
+        setFrameOrigin(Self.anchoredOrigin(
+            buttonRect: buttonRect,
+            panelSize: frame.size,
+            visibleFrame: screen.visibleFrame
+        ))
+    }
 
-        var x = buttonRect.midX - frame.width / 2
-        x = min(max(x, visible.minX + margin), visible.maxX - frame.width - margin)
+    /// Positions the quick panel directly against the menu bar. `visibleFrame`
+    /// already stops at the lower edge of the menu bar, so applying the regular
+    /// window margin to its upper edge creates a visible (and unintended) gap.
+    static func anchoredOrigin(
+        buttonRect: NSRect,
+        panelSize: NSSize,
+        visibleFrame: NSRect,
+        margin: CGFloat = 10,
+        gap: CGFloat = 0
+    ) -> NSPoint {
+        var x = buttonRect.midX - panelSize.width / 2
+        x = min(max(x, visibleFrame.minX + margin), visibleFrame.maxX - panelSize.width - margin)
 
-        var y = buttonRect.minY - frame.height - gap
-        if y < visible.minY + margin {
-            y = buttonRect.maxY + gap
+        let lowerBound = visibleFrame.minY + margin
+        let belowButton = buttonRect.minY - panelSize.height - gap
+        let y: CGFloat
+        if belowButton >= lowerBound {
+            y = belowButton
+        } else {
+            let aboveButton = buttonRect.maxY + gap
+            let upperBound = visibleFrame.maxY - panelSize.height - margin
+            y = min(max(aboveButton, lowerBound), upperBound)
         }
-        y = min(y, visible.maxY - frame.height - margin)
-        setFrameOrigin(NSPoint(x: x, y: y))
+
+        return NSPoint(x: x, y: y)
     }
 }
