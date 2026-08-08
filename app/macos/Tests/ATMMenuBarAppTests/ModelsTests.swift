@@ -701,6 +701,10 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMAgentDisplay.monogram("codex"), "X")
         XCTAssertEqual(ATMAgentDisplay.monogram("pi"), "π")
         XCTAssertEqual(ATMAgentDisplay.monogram("grokbuild"), "G")
+        XCTAssertEqual(ATMAgentDisplay.iconResourceName("claude"), "agent-claude")
+        XCTAssertEqual(ATMAgentDisplay.iconResourceName("QoderCLI"), "agent-qoder")
+        XCTAssertEqual(ATMAgentDisplay.iconResourceName("Grok"), "agent-grok")
+        XCTAssertNil(ATMAgentDisplay.iconResourceName("custom-agent"))
         XCTAssertEqual(ATMAgentDisplay.systemImage("claude"), "text.bubble.fill")
         XCTAssertEqual(ATMAgentDisplay.systemImage("codex"), "chevron.left.forwardslash.chevron.right")
         XCTAssertEqual(ATMAgentDisplay.key("QoderCLI"), "qodercli")
@@ -739,6 +743,17 @@ final class ModelsTests: XCTestCase {
         let card = try XCTUnwrap(quota.cards.first)
         XCTAssertEqual(card.sourceLabel, "实时")
         XCTAssertEqual(card.products.count, 3)
+    }
+
+    @MainActor
+    func testBundledAgentIconResourcesLoad() {
+        let names = [
+            "agent-claude", "agent-codex", "agent-pi", "agent-copilot",
+            "agent-cursor", "agent-qoder", "agent-grok",
+        ]
+        for name in names {
+            XCTAssertNotNil(ATMBrandAssets.agentIconImage(resourceName: name), "未加载 \(name)")
+        }
     }
 
     func testQuotaDecodesExternalProviderCards() throws {

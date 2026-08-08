@@ -307,11 +307,10 @@ struct DesktopSettingsView: View {
                         .labelsHidden()
                         .pickerStyle(.segmented)
                         .frame(maxWidth: 520)
-                    }
-                }
 
-                card {
-                    VStack(alignment: .leading, spacing: 10) {
+                        Divider()
+                            .padding(.vertical, 4)
+
                         Text("预览")
                             .font(ATMFont.font(.caption, weight: .semibold))
                             .foregroundStyle(ATMTheme.secondary)
@@ -1372,16 +1371,9 @@ private struct ATMThemeChoiceButton: View {
                             )
                     }
 
-                HStack(spacing: 5) {
-                    Text(mode.label)
-                        .font(ATMFont.font(.body, weight: isSelected ? .semibold : .regular))
-                    if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(ATMFont.font(.caption, weight: .semibold))
-                            .foregroundStyle(ATMTheme.accent)
-                    }
-                }
-                .foregroundStyle(ATMTheme.primary)
+                Text(mode.label)
+                    .font(ATMFont.font(.body, weight: isSelected ? .semibold : .regular))
+                    .foregroundStyle(ATMTheme.primary)
             }
             .contentShape(Rectangle())
         }

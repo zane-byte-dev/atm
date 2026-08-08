@@ -525,6 +525,21 @@ enum ATMAgentDisplay {
         }
     }
 
+    /// Bundled, user-approved full-color mark used by dense app surfaces.
+    /// Unknown clients keep the generated monogram fallback.
+    static func iconResourceName(_ agent: String) -> String? {
+        switch key(agent) {
+        case "claude": return "agent-claude"
+        case "codex": return "agent-codex"
+        case "pi": return "agent-pi"
+        case "copilot": return "agent-copilot"
+        case "cursor": return "agent-cursor"
+        case "qoder", "qodercli", "qoderwork": return "agent-qoder"
+        case "grokbuild": return "agent-grok"
+        default: return nil
+        }
+    }
+
     /// SF Symbol used when a monogram badge is impractical (menus, Labels).
     static func systemImage(_ agent: String) -> String {
         switch key(agent) {
