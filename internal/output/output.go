@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strings"
 )
 
 var JSONMode bool
@@ -68,4 +69,14 @@ func Error(msg string) {
 
 func Progress(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
+}
+
+// Dashes returns one "-"-filled cell per width, ready to feed a table's row
+// format string as the separator line under the header.
+func Dashes(widths ...int) []any {
+	cells := make([]any, len(widths))
+	for i, w := range widths {
+		cells[i] = strings.Repeat("-", w)
+	}
+	return cells
 }

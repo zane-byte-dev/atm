@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,7 +47,68 @@ type QuotaInfo struct {
 // CodexQuotaInfo is a compatibility alias for QuotaInfo.
 type CodexQuotaInfo = QuotaInfo
 
+// codexQuotaCacheFresh mirrors the Grok live-quota cache policy: a reading
+// this young is served straight from disk, skipping the sessions-tree scan.
+const codexQuotaCacheFresh = 2 * time.Minute
+
+type codexQuotaCacheEntry struct {
+	ScannedAt   time.Time  `json:"scanned_at"`
+	SessionsDir string     `json:"sessions_dir"`
+	Quota       *QuotaInfo `json:"quota"`
+}
+
+func codexQuotaCachePath() string {
+	return filepath.Join(config.AtmDir, "codex_quota_cache.json")
+}
+
+func readCodexQuotaCache(now time.Time, maxAge time.Duration) *QuotaInfo {
+	data, err := os.ReadFile(codexQuotaCachePath())
+	if err != nil {
+		return nil
+	}
+	var entry codexQuotaCacheEntry
+	if json.Unmarshal(data, &entry) != nil {
+		return nil
+	}
+	if entry.Quota == nil || entry.SessionsDir != config.CodexSessions {
+		return nil
+	}
+	if entry.ScannedAt.IsZero() || now.Sub(entry.ScannedAt) > maxAge {
+		return nil
+	}
+	return entry.Quota
+}
+
+func writeCodexQuotaCache(entry codexQuotaCacheEntry) {
+	// Best-effort: the cache only saves a directory scan, so a failed write
+	// must never fail the quota read itself.
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(config.AtmDir, 0755); err != nil {
+		return
+	}
+	_ = os.WriteFile(codexQuotaCachePath(), data, 0600)
+}
+
 func CodexQuota() *QuotaInfo {
+	now := time.Now()
+	if cached := readCodexQuotaCache(now, codexQuotaCacheFresh); cached != nil {
+		return cached
+	}
+	info := codexQuotaScan()
+	if info != nil {
+		writeCodexQuotaCache(codexQuotaCacheEntry{
+			ScannedAt:   now,
+			SessionsDir: config.CodexSessions,
+			Quota:       info,
+		})
+	}
+	return info
+}
+
+func codexQuotaScan() *QuotaInfo {
 	if _, err := os.Stat(config.CodexSessions); err != nil {
 		return nil
 	}

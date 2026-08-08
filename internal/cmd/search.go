@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
@@ -152,8 +153,8 @@ func runSearch(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 
-		var keys []string
-		grouped := map[string][]store.SearchHit{}
+		keys := make([]string, 0, len(results))
+		grouped := make(map[string][]store.SearchHit, len(results))
 		for _, r := range results {
 			key := fmt.Sprintf("%s | %s | %s | %s", r.ShortID, r.CreatedAt, r.Agent, r.Project)
 			if _, ok := grouped[key]; !ok {
@@ -209,13 +210,13 @@ func matchSnippet(content, keyword string, maxChars int) (string, bool) {
 		return "…", true
 	}
 
-	lowerContent := []rune(strings.ToLower(content))
-	lowerKeyword := []rune(strings.ToLower(keyword))
-	matchAt := runeSliceIndex(lowerContent, lowerKeyword)
+	lowerContent := strings.ToLower(content)
+	lowerKeyword := strings.ToLower(keyword)
+	matchAt := runeIndex(lowerContent, lowerKeyword)
 	if matchAt < 0 {
 		matchAt = 0
 	}
-	center := matchAt + len(lowerKeyword)/2
+	center := matchAt + utf8.RuneCountInString(lowerKeyword)/2
 	start := center - maxChars/2
 	if start < 0 {
 		start = 0
@@ -260,21 +261,11 @@ func matchSnippet(content, keyword string, maxChars int) (string, bool) {
 	return snippet.String(), true
 }
 
-func runeSliceIndex(haystack, needle []rune) int {
-	if len(needle) == 0 {
-		return 0
+// runeIndex returns the rune offset of the first occurrence of needle, or -1.
+func runeIndex(haystack, needle string) int {
+	byteAt := strings.Index(haystack, needle)
+	if byteAt < 0 {
+		return -1
 	}
-	for start := 0; start+len(needle) <= len(haystack); start++ {
-		matched := true
-		for offset := range needle {
-			if haystack[start+offset] != needle[offset] {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return start
-		}
-	}
-	return -1
+	return utf8.RuneCountInString(haystack[:byteAt])
 }
