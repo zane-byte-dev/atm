@@ -129,6 +129,28 @@ enum ATMRowSurface {
     }
 }
 
+/// 中栏内容条目的公共排版度量。
+///
+/// `ATMRowSurface` 负责卡片里面的 padding 和选中表面；这里负责卡片在中栏里的外边距，
+/// 以及有前导图标时的文字起点。两层都集中后，`List` 与 `LazyVStack` 才不会各自长出
+/// 一套看起来相近、实际相差几 pt 的布局。
+enum ATMContentRowLayout {
+    static let outerHorizontalPadding: CGFloat = 8
+    static let outerVerticalPadding: CGFloat = 2
+    static let leadingVisualSize: CGFloat = 24
+    static let leadingSpacing: CGFloat = 9
+    static let contentSpacing: CGFloat = 5
+
+    static var listInsets: EdgeInsets {
+        EdgeInsets(
+            top: outerVerticalPadding,
+            leading: outerHorizontalPadding,
+            bottom: outerVerticalPadding,
+            trailing: outerHorizontalPadding
+        )
+    }
+}
+
 private struct ATMRowSurfaceModifier: ViewModifier {
     let surface: ATMRowSurface
     let isSelected: Bool
@@ -180,5 +202,17 @@ extension View {
     /// 套上统一的行表面：内边距、圆角、选中填充、hover 填充、命中区域与选中态无障碍标注。
     func atmRowSurface(_ surface: ATMRowSurface = .content, isSelected: Bool) -> some View {
         modifier(ATMRowSurfaceModifier(surface: surface, isSelected: isSelected))
+    }
+
+    /// `List` 中栏条目的统一外边距与透明行底色。
+    func atmContentListRow() -> some View {
+        listRowInsets(ATMContentRowLayout.listInsets)
+            .listRowBackground(Color.clear)
+    }
+
+    /// `ScrollView` / `LazyVStack` 中栏条目的统一纵向外边距。
+    /// 水平 8pt 由滚动容器统一提供，知识库条目还会叠加有语义的层级缩进。
+    func atmContentStackRow() -> some View {
+        padding(.vertical, ATMContentRowLayout.outerVerticalPadding)
     }
 }

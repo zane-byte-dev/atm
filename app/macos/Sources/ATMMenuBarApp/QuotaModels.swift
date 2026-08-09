@@ -468,6 +468,7 @@ enum ATMAgentDisplay {
         let trimmed = agent.trimmingCharacters(in: .whitespacesAndNewlines)
         let lowered = trimmed.lowercased()
         switch lowered {
+        case "claude code": return "claude"
         case "grok": return "grokbuild"
         case "qoder cli": return "qodercli"
         case "qoder work": return "qoderwork"

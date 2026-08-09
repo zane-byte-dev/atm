@@ -1,5 +1,10 @@
 import SwiftUI
 
+private enum CollectionDrawerTab: String {
+    case records
+    case sources
+}
+
 /// 一次待确认的记录删除。单条删除和分组清空共用一个请求，因为它们做的是同一件事，
 /// 只有措辞不同：分组清空要说清是哪一组、有多少条，单条删除要说清它写出的那个 Todo。
 private struct CollectionItemDeletion {
@@ -36,6 +41,7 @@ struct DesktopCollectionView: View {
     @State private var itemDeletion: CollectionItemDeletion?
     @State private var historySource: ATMCollectionSource?
     @State private var showingIgnoredItems = false
+    @State private var drawerTab = CollectionDrawerTab.records
     @AppStorage("ATMCollapsedCollectionSourceGroups") private var collapsedSourceGroupsRaw = ""
 
     private var collapsedSourceGroups: Set<String> {
@@ -83,8 +89,14 @@ struct DesktopCollectionView: View {
             detailMinWidth: 420
         ) {
             VStack(spacing: 0) {
-                header
-                itemColumn
+                collectionDrawerTabs
+                Divider()
+                collectionErrorBanner
+                if drawerTab == .records {
+                    itemColumn
+                } else {
+                    sourceManagementColumn
+                }
             }
             // 中栏 surface / 右栏 canvas —— 和任务、Agent、知识一致，标题区也算中栏，
             // 底色铺在整根列上；只铺在列表上时标题区会漏出根视图的 canvas。
@@ -131,91 +143,182 @@ struct DesktopCollectionView: View {
         }
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ATMDrawerHeader(title: "收集", count: primaryItems.count) {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(collectionHealthColor)
-                        .frame(width: 8, height: 8)
-                        .help("\(collectionHealthText) · \(collectionSummaryHelp)")
+    private var collectionDrawerTabs: some View {
+        HStack(spacing: 12) {
+            collectionDrawerTabButton(.records, title: "记录")
+            collectionDrawerTabButton(.sources, title: "来源")
+            Spacer(minLength: 4)
 
-                    sourceManagementMenu
+            Circle()
+                .fill(collectionHealthColor)
+                .frame(width: 8, height: 8)
+                .help("\(collectionHealthText) · \(collectionSummaryHelp)")
 
-                    Button {
-                        store.runCollectionNow()
-                    } label: {
-                        Label("收集", systemImage: store.isCollecting ? "hourglass" : "arrow.clockwise")
+            if drawerTab == .records {
+                Button {
+                    store.runCollectionNow()
+                } label: {
+                    Label("收集", systemImage: store.isCollecting ? "hourglass" : "arrow.clockwise")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help(store.isCollecting ? "正在收集" : "立即收集")
+                .disabled(store.isCollecting || store.collectionOverview.summary.enabledSources == 0)
+            } else {
+                HStack(spacing: 4) {
+                    ATMIconButton(
+                        systemImage: store.collectionOverview.enabled ? "pause.circle" : "play.circle",
+                        help: store.collectionOverview.enabled ? "关闭自动收集" : "开启自动收集",
+                        chrome: .bare,
+                        side: 30,
+                        iconTier: .bodyLarge
+                    ) {
+                        store.setCollectionEnabled(!store.collectionOverview.enabled)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .help(store.isCollecting ? "正在收集" : "立即收集")
-                    .disabled(store.isCollecting || store.collectionOverview.summary.enabledSources == 0)
+                    ATMIconButton(
+                        systemImage: "plus",
+                        help: "添加来源",
+                        chrome: .chip,
+                        side: 30,
+                        iconTier: .bodyLarge
+                    ) {
+                        showingAddSource = true
+                    }
                 }
             }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .frame(height: 64)
+    }
 
-            if let error = store.collectionErrorMessage, !error.isEmpty {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(ATMTheme.warning)
-                    Text(error)
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                        .textSelection(.enabled)
-                    Spacer()
+    private func collectionDrawerTabButton(
+        _ tab: CollectionDrawerTab,
+        title: String
+    ) -> some View {
+        let isSelected = drawerTab == tab
+        return Button {
+            drawerTab = tab
+        } label: {
+            Text(title)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(isSelected ? ATMTheme.primary : ATMTheme.secondary)
+                .padding(.vertical, 12)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(isSelected ? ATMTheme.accent : .clear)
+                        .frame(height: 2)
                 }
-                .padding(.horizontal, 14)
-                .padding(.bottom, 8)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var collectionErrorBanner: some View {
+        if let error = store.collectionErrorMessage, !error.isEmpty {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(ATMTheme.warning)
+                Text(error)
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .textSelection(.enabled)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+        }
+    }
+
+    private var sourceManagementColumn: some View {
+        Group {
+            if store.collectionOverview.sources.isEmpty {
+                CollectionEmptyState(
+                    title: "还没有收集来源",
+                    systemImage: "tray.2",
+                    detail: "点击右上角添加来源，ATM 会按设定周期自动收集。"
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(store.collectionOverview.sources) { source in
+                            sourceManagementRow(source)
+                                .atmContentStackRow()
+                        }
+                    }
+                    .padding(.horizontal, ATMContentRowLayout.outerHorizontalPadding)
+                    .padding(.vertical, 8)
+                }
             }
         }
     }
 
-    private var sourceManagementMenu: some View {
-        Menu {
+    private func sourceManagementRow(_ source: ATMCollectionSource) -> some View {
+        HStack(spacing: 4) {
             Button {
-                store.setCollectionEnabled(!store.collectionOverview.enabled)
+                editingSource = source
             } label: {
-                Label(
-                    store.collectionOverview.enabled ? "关闭自动收集" : "开启自动收集",
-                    systemImage: store.collectionOverview.enabled ? "pause.circle" : "play.circle"
+                HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
+                    Image(systemName: source.symbolName)
+                        .font(ATMFont.font(.body, weight: .medium))
+                        .foregroundStyle(source.enabled ? ATMTheme.accent : ATMTheme.secondary)
+                        .frame(
+                            width: ATMContentRowLayout.leadingVisualSize,
+                            height: ATMContentRowLayout.leadingVisualSize
+                        )
+                        .background(
+                            (source.enabled ? ATMTheme.accent : ATMTheme.secondary).opacity(0.10),
+                            in: Circle()
+                        )
+                    VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
+                        HStack(spacing: 6) {
+                            Text(source.displayName)
+                                .font(ATMFont.font(.body, weight: .medium))
+                                .foregroundStyle(ATMTheme.primary)
+                                .lineLimit(1)
+                            if !source.enabled {
+                                Text("已暂停")
+                                    .font(ATMFont.caption)
+                                    .foregroundStyle(ATMTheme.secondary)
+                            }
+                        }
+                        Text(
+                            "\(source.connector) · \(collectionKindLabel(source.kind)) · 每 \(source.effectiveIntervalMinutes) 分钟"
+                        )
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .atmRowSurface(isSelected: false)
+            }
+            .buttonStyle(.plain)
+            .help("编辑来源")
+
+            Menu {
+                Button("查看聊天记录") {
+                    historySource = source
+                }
+                Button("编辑") { editingSource = source }
+                Button(source.enabled ? "暂停" : "启用") {
+                    store.setCollectionSource(source, enabled: !source.enabled)
+                }
+                Divider()
+                Button("删除", role: .destructive) { deleteCandidate = source }
+            } label: {
+                ATMIconMenuLabel(
+                    systemImage: "ellipsis",
+                    help: "来源操作",
+                    side: 28,
+                    iconTier: .bodyLarge
                 )
             }
-
-            Divider()
-
-            Button {
-                showingAddSource = true
-            } label: {
-                Label("添加来源", systemImage: "plus")
-            }
-
-            if !store.collectionOverview.sources.isEmpty {
-                Divider()
-                ForEach(store.collectionOverview.sources) { source in
-                    Menu(source.displayName) {
-                        Button("查看聊天记录") {
-                            historySource = source
-                        }
-                        Button("编辑") { editingSource = source }
-                        Button(source.enabled ? "暂停" : "启用") {
-                            store.setCollectionSource(source, enabled: !source.enabled)
-                        }
-                        Divider()
-                        Button("删除", role: .destructive) { deleteCandidate = source }
-                    }
-                }
-            }
-        } label: {
-            Label("来源", systemImage: "tray.2")
-                .font(ATMFont.font(.footnote, weight: .medium))
-                .padding(.horizontal, 8)
-                .frame(height: 24)
-                .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize()
-        .help("添加或管理收集来源")
     }
 
     private var collectionHealthText: String {
@@ -475,8 +578,7 @@ struct DesktopCollectionView: View {
         }
         .buttonStyle(.plain)
         .focusable(false)
-        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-        .listRowBackground(Color.clear)
+        .atmContentListRow()
         // 右键只放导航和删除。重新处理、修正、撤销这些要看记录状态才知道能不能做，
         // 判定在详情栏（见 CollectionItemDetail），在这儿抄一遍就是抄两套规则。
         .atmRightClickMenu {
@@ -570,15 +672,18 @@ private struct CollectionItemRow: View {
     private var retryStopped: Bool { item.retryStopped == true }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 9) {
+        HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
             Image(systemName: collectionActionIcon(item.action, retryStopped: retryStopped))
                 .foregroundStyle(collectionActionColor(item.action, retryStopped: retryStopped))
-                .frame(width: 24, height: 24)
+                .frame(
+                    width: ATMContentRowLayout.leadingVisualSize,
+                    height: ATMContentRowLayout.leadingVisualSize
+                )
                 .background(
                     collectionActionColor(item.action, retryStopped: retryStopped).opacity(0.10),
                     in: Circle()
                 )
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                 Text(item.title?.isEmpty == false
                     ? item.title!
                     : collectionActionTitle(item.action, retryStopped: retryStopped))

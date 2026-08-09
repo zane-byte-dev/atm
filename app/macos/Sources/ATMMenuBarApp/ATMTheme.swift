@@ -6,9 +6,16 @@ enum ATMTheme {
     static let white = Color(nsColor: .textBackgroundColor)
     static let canvas = Color(nsColor: .windowBackgroundColor)
     static let surface = Color(nsColor: .controlBackgroundColor)
-    /// Quietly separates list columns from document/detail canvases without
-    /// introducing another saturated brand color.
-    static let listPane = Color(nsColor: .underPageBackgroundColor).opacity(0.22)
+    /// A calm, opaque middle-column surface. The old semi-transparent
+    /// under-page colour was painted both by a split workspace and by its list
+    /// child, so light appearance compounded into a muddy grey. Keeping the
+    /// token opaque makes the three-column hierarchy stable at every nesting
+    /// depth: blue-grey rail, cool neutral list, crisp document canvas.
+    static let listPaneNSColor = adaptiveNSColor(
+        light: rgb(247, 249, 252),
+        dark: rgb(27, 29, 34)
+    )
+    static let listPane = Color(nsColor: listPaneNSColor)
     /// Raised rows and reading cards use the text background: in light mode it
     /// reads as a crisp sheet over listPane; in dark mode it stays system-aware.
     static let elevated = Color(nsColor: .textBackgroundColor)
@@ -19,16 +26,46 @@ enum ATMTheme {
     static let primary = Color(nsColor: .labelColor)
     static let secondary = Color(nsColor: .secondaryLabelColor)
 
-    // The desktop app rail is deliberately tonal rather than another system
-    // sidebar. It gives ATM one stable piece of chrome while the working panes
-    // continue to follow the user's light/dark appearance.
-    static let rail = Color(red: 18 / 255, green: 25 / 255, blue: 42 / 255)
-    static let railRaised = Color(red: 30 / 255, green: 39 / 255, blue: 59 / 255)
-    static let railSelected = Color(red: 42 / 255, green: 57 / 255, blue: 91 / 255)
-    static let railPrimary = Color.white.opacity(0.96)
-    static let railSecondary = Color.white.opacity(0.62)
-    static let railMuted = Color.white.opacity(0.42)
-    static let railBorder = Color.white.opacity(0.10)
+    // Keep the rail distinctly ATM rather than flattening it into a generic
+    // system list. Light appearance gets a restrained blue-grey surface; dark
+    // appearance preserves the original ink-blue chrome. NSColor's dynamic
+    // provider also follows live macOS changes while the app uses system mode.
+    static let railNSColor = adaptiveNSColor(
+        light: rgb(244, 247, 251),
+        dark: rgb(18, 25, 42)
+    )
+    static let railRaisedNSColor = adaptiveNSColor(
+        light: rgb(232, 238, 247),
+        dark: rgb(30, 39, 59)
+    )
+    static let railSelectedNSColor = adaptiveNSColor(
+        light: rgb(223, 233, 250),
+        dark: rgb(42, 57, 91)
+    )
+    static let railPrimaryNSColor = adaptiveNSColor(
+        light: rgb(27, 38, 56),
+        dark: NSColor.white.withAlphaComponent(0.96)
+    )
+    static let railSecondaryNSColor = adaptiveNSColor(
+        light: rgb(83, 97, 118),
+        dark: NSColor.white.withAlphaComponent(0.64)
+    )
+    static let railMutedNSColor = adaptiveNSColor(
+        light: rgb(124, 136, 153),
+        dark: NSColor.white.withAlphaComponent(0.44)
+    )
+    static let railBorderNSColor = adaptiveNSColor(
+        light: rgb(214, 222, 233),
+        dark: NSColor.white.withAlphaComponent(0.10)
+    )
+
+    static let rail = Color(nsColor: railNSColor)
+    static let railRaised = Color(nsColor: railRaisedNSColor)
+    static let railSelected = Color(nsColor: railSelectedNSColor)
+    static let railPrimary = Color(nsColor: railPrimaryNSColor)
+    static let railSecondary = Color(nsColor: railSecondaryNSColor)
+    static let railMuted = Color(nsColor: railMutedNSColor)
+    static let railBorder = Color(nsColor: railBorderNSColor)
 
     // 状态色：好 / 警告 / 危险。全 App 只有这一套。
     //
@@ -83,6 +120,21 @@ enum ATMTheme {
         case ..<0.8: return warning
         default: return success
         }
+    }
+
+    private static func adaptiveNSColor(light: NSColor, dark: NSColor) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
+        }
+    }
+
+    private static func rgb(_ red: Int, _ green: Int, _ blue: Int) -> NSColor {
+        NSColor(
+            deviceRed: CGFloat(red) / 255,
+            green: CGFloat(green) / 255,
+            blue: CGFloat(blue) / 255,
+            alpha: 1
+        )
     }
 }
 

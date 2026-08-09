@@ -367,9 +367,8 @@ struct ATMTextAlert: Identifiable {
     let message: String
 }
 
-/// ATM's app-wide navigation rail is the one persistent piece of brand chrome.
-/// It has its own foreground tokens because system label colours are tuned for
-/// the light working canvas and disappear on the dark rail in light appearance.
+/// ATM's app-wide navigation rail follows the active app appearance while using
+/// dedicated tokens for its hover, selection and hierarchy states.
 private struct ATMDesktopRailSurfaceModifier: ViewModifier {
     let isSelected: Bool
     var isNested = false
@@ -399,6 +398,13 @@ private extension View {
     }
 }
 
+private enum ATMDesktopLayout {
+    static let titleBarHeight: CGFloat = 38
+    static let expandedSidebarWidth: CGFloat = 176
+    static let collapsedSidebarWidth: CGFloat = 58
+    static let railDividerWidth: CGFloat = 1
+}
+
 struct DesktopContentView: View {
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
@@ -413,62 +419,14 @@ struct DesktopContentView: View {
     @State private var showingSearch = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            desktopSidebar
-                .frame(width: sidebarCollapsed ? 58 : 176, alignment: .leading)
-                .clipped()
-                .background {
-                    // Paint behind the transparent title bar outside the
-                    // sidebar's content clip so the rail reaches the window edge.
-                    ATMTheme.rail
-                        .ignoresSafeArea(edges: .top)
-                }
-            Rectangle()
-                .fill(ATMTheme.railBorder)
-                .frame(width: 1)
-            Group {
-                switch navigation.section {
-                case .tasks:
-                    DesktopTasksView(store: store, navigation: navigation)
-                case .collection:
-                    DesktopCollectionView(store: store, navigation: navigation)
-                case .agents:
-                    DesktopAgentsView(store: store, navigation: navigation)
-                case .knowledge:
-                    DesktopKnowledgeView(
-                        store: store,
-                        navigation: navigation,
-                        onCreateCollection: {
-                            newCollectionID = ""
-                            newCollectionName = ""
-                            showingCollectionCreate = true
-                        },
-                        onRenameCollection: { collection in
-                            renameCollectionName = collection.name
-                            renameCollectionTarget = ATMCollectionRef(
-                                id: collection.id,
-                                name: collection.name,
-                                count: collection.documentCount
-                            )
-                        },
-                        onDeleteCollection: { collection in
-                            deleteCollectionTarget = ATMCollectionRef(
-                                id: collection.id,
-                                name: collection.name,
-                                count: collection.documentCount
-                            )
-                        }
-                    )
-                        .id("knowledge-library")
-                case .usage:
-                    DesktopUsageView(store: store)
-                case .settings:
-                    DesktopSettingsView(store: store)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            desktopTitleBar
+            desktopWorkspace
         }
-        .background(ATMTheme.canvas)
+        // The app owns the full-size title bar. Laying the root into the top safe
+        // area makes this one surface sit behind the traffic lights while the
+        // three workspace columns begin only below it.
+        .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 880, minHeight: 620)
         .atmHidesScrollBars()
         .onChange(of: store.knowledgeCollections.map(\.id)) { _ in
@@ -561,6 +519,122 @@ struct DesktopContentView: View {
         }
     }
 
+    private var desktopWorkspace: some View {
+        HStack(spacing: 0) {
+            desktopSidebar
+                .frame(
+                    width: sidebarCollapsed
+                        ? ATMDesktopLayout.collapsedSidebarWidth
+                        : ATMDesktopLayout.expandedSidebarWidth,
+                    alignment: .leading
+                )
+                .clipped()
+            Rectangle()
+                .fill(ATMTheme.railBorder)
+                .frame(width: ATMDesktopLayout.railDividerWidth)
+            Group {
+                switch navigation.section {
+                case .tasks:
+                    DesktopTasksView(store: store, navigation: navigation)
+                case .collection:
+                    DesktopCollectionView(store: store, navigation: navigation)
+                case .agents:
+                    DesktopAgentsView(store: store, navigation: navigation)
+                case .knowledge:
+                    DesktopKnowledgeView(
+                        store: store,
+                        navigation: navigation,
+                        onCreateCollection: {
+                            newCollectionID = ""
+                            newCollectionName = ""
+                            showingCollectionCreate = true
+                        },
+                        onRenameCollection: { collection in
+                            renameCollectionName = collection.name
+                            renameCollectionTarget = ATMCollectionRef(
+                                id: collection.id,
+                                name: collection.name,
+                                count: collection.documentCount
+                            )
+                        },
+                        onDeleteCollection: { collection in
+                            deleteCollectionTarget = ATMCollectionRef(
+                                id: collection.id,
+                                name: collection.name,
+                                count: collection.documentCount
+                            )
+                        }
+                    )
+                        .id("knowledge-library")
+                case .usage:
+                    DesktopUsageView(store: store)
+                case .settings:
+                    DesktopSettingsView(store: store)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ATMTheme.canvas)
+    }
+
+    private var desktopTitleBar: some View {
+        ZStack {
+            Button {
+                showingSearch = true
+            } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "magnifyingglass")
+                    Text("搜索任务、会话和知识")
+                    Spacer(minLength: 12)
+                    Text("⌘K")
+                        .font(ATMFont.mono(.caption, .medium))
+                        .foregroundStyle(ATMTheme.secondary.opacity(0.78))
+                }
+                .font(ATMFont.font(.footnote, weight: .medium))
+                .foregroundStyle(ATMTheme.secondary)
+                .padding(.horizontal, 9)
+                .frame(width: 360, height: 26)
+                .background(
+                    ATMTheme.controlFill.opacity(0.72),
+                    in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(ATMTheme.border)
+                }
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("k", modifiers: .command)
+            .help("全局搜索（⌘K）")
+
+            HStack {
+                Spacer(minLength: 12)
+                ATMIconButton(
+                    systemImage: "sidebar.left",
+                    help: sidebarCollapsed ? "展开侧栏" : "收起侧栏",
+                    chrome: .bare,
+                    side: 26,
+                    iconTier: .body
+                ) {
+                    sidebarCollapsed.toggle()
+                }
+            }
+            .padding(.trailing, 8)
+        }
+        // Native traffic lights sit slightly above the geometric centre of a
+        // full-size title bar. Nudge our chrome onto that same visual baseline.
+        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity)
+        .frame(height: ATMDesktopLayout.titleBarHeight)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(ATMTheme.borderStrong)
+                .frame(height: 1)
+        }
+    }
+
     private var collectionCreateSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("新建知识库")
@@ -638,87 +712,22 @@ struct DesktopContentView: View {
 
     private var desktopSidebar: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 8) {
-                ATMBrandMark()
-                    .frame(width: 34, height: 34)
-                if !sidebarCollapsed {
-                    Text("ATM")
-                        .font(ATMFont.font(.title3, weight: .bold))
-                        .foregroundStyle(ATMTheme.railPrimary)
-                }
-                if !sidebarCollapsed { Spacer(minLength: 0) }
-            }
-            .padding(.horizontal, sidebarCollapsed ? 12 : 14)
-            .padding(.top, 16)
-            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
-
             VStack(spacing: 4) {
-                searchSidebarButton
-                ForEach(ATMDesktopSection.allCases) { section in
+                ForEach(ATMDesktopSection.allCases.filter { $0 != .settings }) { section in
                     sidebarButton(section)
                 }
             }
             .padding(.horizontal, sidebarCollapsed ? 7 : 8)
+            .padding(.top, 16)
 
             Spacer()
 
-            sidebarCollapseButton
+            sidebarButton(.settings)
                 .padding(.horizontal, sidebarCollapsed ? 7 : 8)
-
-            if !sidebarCollapsed {
-                // Session index syncs on launch, every 5 minutes, and when the
-                // quick panel / desktop window opens. No permanent sidebar button.
-                Text(appVersionLabel)
-                    .font(ATMFont.mono(.caption))
-                    .foregroundStyle(ATMTheme.railMuted)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.bottom, 8)
-            } else {
-                Spacer().frame(height: 8)
-            }
+                .padding(.bottom, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(ATMTheme.rail)
-    }
-
-    private var appVersionLabel: String {
-        let info = Bundle.main.infoDictionary
-        guard let version = info?["CFBundleShortVersionString"] as? String, !version.isEmpty else {
-            return "开发版"
-        }
-        let build = info?["CFBundleVersion"] as? String
-        return build.map { "v\(version) (\($0))" } ?? "v\(version)"
-    }
-
-    private var searchSidebarButton: some View {
-        Button {
-            showingSearch = true
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "magnifyingglass").frame(width: 18)
-                if !sidebarCollapsed {
-                    Text("搜索")
-                    Spacer()
-                    Text("⌘K")
-                        .font(ATMFont.mono(.footnote, .medium))
-                        .foregroundStyle(ATMTheme.railMuted)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
-            .font(ATMFont.font(.body, weight: .medium))
-            .foregroundStyle(ATMTheme.railPrimary)
-            .padding(.horizontal, sidebarCollapsed ? 0 : 10)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-            .background(ATMTheme.railRaised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(ATMTheme.railBorder)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .keyboardShortcut("k", modifiers: .command)
-        .help("搜索（⌘K）")
     }
 
     private func sidebarButton(_ section: ATMDesktopSection) -> some View {
@@ -742,26 +751,6 @@ struct DesktopContentView: View {
         }
         .buttonStyle(.plain)
         .help(section.title)
-    }
-
-    private var sidebarCollapseButton: some View {
-        Button {
-            sidebarCollapsed.toggle()
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: sidebarCollapsed ? "chevron.right" : "chevron.left")
-                    .frame(width: 18)
-                if !sidebarCollapsed {
-                    Text("收起侧栏")
-                    Spacer()
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
-            .font(ATMFont.font(.footnote, weight: .medium))
-            .atmDesktopRailSurface(isSelected: false)
-        }
-        .buttonStyle(.plain)
-        .help(sidebarCollapsed ? "展开侧栏" : "收起侧栏")
     }
 
     private var sortedKnowledgeCollections: [ATMKnowledgeCollection] {
@@ -931,7 +920,7 @@ private struct DesktopTasksView: View {
 
     private var taskList: some View {
         VStack(spacing: 0) {
-            ATMDrawerHeader(title: showingTrash ? "回收站" : "我的任务", count: visibleTodos.count) {
+            ATMDrawerHeader(title: showingTrash ? "回收站" : "任务", count: visibleTodos.count) {
                 if showingTrash {
                     Button {
                         showingTrash = false
@@ -993,8 +982,7 @@ private struct DesktopTasksView: View {
                                 }
                                     .buttonStyle(.plain)
                                     .focusable(false)
-                                    .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-                                    .listRowBackground(Color.clear)
+                                    .atmContentListRow()
                                     .atmRightClickMenu { todoMenuEntries(for: todo) }
                             }
                         }
@@ -1100,7 +1088,7 @@ private struct DesktopTodoRow: View {
         // Dropping it gives the title back ~38pt of a 260–420pt column and takes a
         // line's worth of height off each row, which is the whole point of the list:
         // scan ids and titles, not re-read the section you are already inside.
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
             // The id leads the title rather than sitting in the meta line: it
             // is what you scan the list for and what you type back at the CLI,
             // and below the title it was the one thing you had to look away to
@@ -1262,7 +1250,7 @@ struct DesktopTodoDetail: View {
     }
 
     private var detailTabs: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 0) {
             detailTabButton(.detail, title: "任务描述", icon: "doc.text")
             if !isTrashed {
                 detailTabButton(.activity, title: "动态", icon: "clock.arrow.circlepath")
@@ -1270,7 +1258,8 @@ struct DesktopTodoDetail: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 24)
+        // 视觉间距放进各按钮自身，避免 Tab 之间出现看得见却点不到的空白带。
+        .padding(.horizontal, 12)
         .frame(height: 46)
         .background(ATMTheme.elevated)
         .overlay(alignment: .bottom) { Rectangle().fill(ATMTheme.border).frame(height: 1) }
@@ -1284,13 +1273,14 @@ struct DesktopTodoDetail: View {
             Label(title, systemImage: icon)
                 .font(ATMFont.font(.body, weight: .semibold))
                 .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
-                .padding(.horizontal, 2)
+                .padding(.horizontal, 12)
                 .frame(height: 46)
                 .overlay(alignment: .bottom) {
                     Capsule()
                         .fill(selected ? ATMTheme.accent : Color.clear)
                         .frame(height: 2)
                 }
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityAddTraits(selected ? .isSelected : [])

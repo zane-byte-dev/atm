@@ -248,8 +248,8 @@ struct DesktopSettingsView: View {
                 }
             }
         }
-        // 设置内容是阅读/编辑画布，和任务、Agent 的详情栏一样保持白色；
-        // 灰色 listPane 只属于左侧分类抽屉。
+        // 设置内容是阅读/编辑画布，和任务、Agent 的详情栏一样保持清晰；
+        // 冷中性色 listPane 只属于左侧分类抽屉。
         .background(ATMTheme.elevated)
     }
 
@@ -321,6 +321,7 @@ struct DesktopSettingsView: View {
                 }
 
                 card { globalHotKeySection }
+                card { aboutSection }
 
                 Spacer(minLength: 0)
             }
@@ -328,6 +329,28 @@ struct DesktopSettingsView: View {
             .frame(maxWidth: 980, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private var aboutSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("关于 ATM")
+                .font(ATMFont.font(.bodyLarge, weight: .semibold))
+            Text(appVersionLabel)
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var appVersionLabel: String {
+        let info = Bundle.main.infoDictionary
+        guard let version = info?["CFBundleShortVersionString"] as? String, !version.isEmpty else {
+            return "开发版"
+        }
+        guard let build = info?["CFBundleVersion"] as? String, !build.isEmpty else {
+            return "版本 \(version)"
+        }
+        return "版本 \(version) · 构建 \(build)"
     }
 
     /// The global shortcut lives in 通用 rather than in a tab of its own: it is a

@@ -29,7 +29,10 @@ struct QuickPanelView: View {
                 .padding(.bottom, 8)
             }
         }
-        .background(ATMTheme.listPane)
+        // The panel already owns a behind-window `.popover` material. Keep the
+        // SwiftUI content transparent so workspace list colours cannot cover or
+        // otherwise change the Menubar panel's translucency.
+        .background(Color.clear)
         .ignoresSafeArea()
         .frame(minWidth: 360, minHeight: 320)
         .atmHidesScrollBars()

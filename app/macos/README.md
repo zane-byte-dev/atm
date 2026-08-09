@@ -91,7 +91,7 @@ Agent 自己写进索引的会话标题，Codex 不写标题就读它的 thread 
 accent 前景色切换保留，标签短不存在抖动问题。hover 一律是 `primary` 4%，选中优先于 hover 不叠色。
 收集工作区的两栏因此不用系统原生 `List(selection:)` 的实心高亮——那是这套里唯一一个和其他
 tab 长得不一样的选中态，代价是失去原生的上下方向键切换（任务 / Agent / 知识三栏本来也没有）。
-三栏底色也统一为「侧栏 sidebar / 列表栏 surface / 详情栏 canvas」；收集的列表栏此前是 canvas，
+三栏底色也统一为「导航 rail / 列表栏 listPane / 详情栏 canvas」；收集的列表栏此前是 canvas，
 和详情栏同色，三栏之间只剩一根 Divider。
 
 状态色只有 `ATMTheme` 的 `success` / `warning` / `danger` 三个（外加 `…Fill` 淡底），额度卡的

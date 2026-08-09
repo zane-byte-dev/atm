@@ -15,6 +15,7 @@ struct DesktopKnowledgeView: View {
     let onDeleteCollection: (ATMKnowledgeCollection) -> Void
 
     @State private var items: [KnowledgeListItem] = []
+    @State private var itemsByLibraryID: [String: [KnowledgeListItem]] = [:]
     @State private var selectedItemID: String?
     @State private var document: ATMKnowledgeDocument?
     @State private var documentCache: [String: ATMKnowledgeDocument] = [:]
@@ -46,7 +47,7 @@ struct DesktopKnowledgeView: View {
     @State private var feedbackDraft: KnowledgeFeedbackDraft?
     @State private var feedbackStatus: String?
     @State private var isFeedbackSaving = false
-    @State private var expandedLibraryID: String?
+    @State private var expandedLibraryIDs: Set<String> = []
     @State private var drawerTab = KnowledgeDrawerTab.articles
     @FocusState private var editorFocused: Bool
 
@@ -111,17 +112,15 @@ struct DesktopKnowledgeView: View {
         .onChange(of: navigation.locateKnowledgeDocumentID) { target in
             guard let target else { return }
             drawerTab = .articles
-            expandedLibraryID = selectedLibraryID
+            expandedLibraryIDs.insert(selectedLibraryID)
             selectedItemID = target
             navigation.locateKnowledgeDocumentID = nil
         }
         .onAppear {
-            if expandedLibraryID == nil {
-                expandedLibraryID = selectedLibraryID
-            }
+            expandedLibraryIDs.insert(selectedLibraryID)
             guard let target = navigation.locateKnowledgeDocumentID else { return }
             drawerTab = .articles
-            expandedLibraryID = selectedLibraryID
+            expandedLibraryIDs.insert(selectedLibraryID)
             selectedItemID = target
             navigation.locateKnowledgeDocumentID = nil
         }
@@ -244,7 +243,9 @@ struct DesktopKnowledgeView: View {
             Button("取消", role: .cancel) { renameSummary = nil }
         }
         .onChange(of: selectedLibraryID) { libraryID in
-            expandedLibraryID = libraryID
+            expandedLibraryIDs.insert(libraryID)
+            items = itemsByLibraryID[libraryID] ?? []
+            selectFirstItemIfNeeded()
         }
         .onChange(of: navigation.knowledgeCreateRequest) { _ in
             drawerTab = .articles
@@ -398,7 +399,7 @@ struct DesktopKnowledgeView: View {
         return HStack(spacing: 4) {
             Button {
                 navigation.selectedKnowledgeLibraryID = collection.id
-                expandedLibraryID = collection.id
+                expandedLibraryIDs.insert(collection.id)
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: collection.id == "inbox" ? "tray" : "folder")
@@ -433,14 +434,14 @@ struct DesktopKnowledgeView: View {
             Menu {
                 Button {
                     navigation.selectedKnowledgeLibraryID = collection.id
-                    expandedLibraryID = collection.id
+                    expandedLibraryIDs.insert(collection.id)
                     drawerTab = .articles
                 } label: {
                     Label("查看文章", systemImage: "doc.text")
                 }
                 Button {
                     navigation.selectedKnowledgeLibraryID = collection.id
-                    expandedLibraryID = collection.id
+                    expandedLibraryIDs.insert(collection.id)
                     drawerTab = .articles
                     showingCreateSheet = true
                 } label: {
@@ -483,12 +484,12 @@ struct DesktopKnowledgeView: View {
     ) -> [ATMMenuEntry] {
         ATMMenuItem("查看文章") {
             navigation.selectedKnowledgeLibraryID = collection.id
-            expandedLibraryID = collection.id
+            expandedLibraryIDs.insert(collection.id)
             drawerTab = .articles
         }
         ATMMenuItem("在此新建知识…") {
             navigation.selectedKnowledgeLibraryID = collection.id
-            expandedLibraryID = collection.id
+            expandedLibraryIDs.insert(collection.id)
             drawerTab = .articles
             showingCreateSheet = true
         }
@@ -511,17 +512,25 @@ struct DesktopKnowledgeView: View {
         collection: ATMKnowledgeCollection?
     ) -> some View {
         let isSelected = selectedLibraryID == id
-        let isExpanded = expandedLibraryID == id
+        let isExpanded = expandedLibraryIDs.contains(id)
         let isArchiveLibrary = id == ATMKnowledgeLibrary.archiveID
+        let displayedItems = isSelected ? items : (itemsByLibraryID[id] ?? [])
+        let hasLoadedItems = isSelected || itemsByLibraryID[id] != nil
 
         VStack(spacing: 3) {
             HStack(spacing: 3) {
                 Button {
-                    if isSelected {
-                        expandedLibraryID = isExpanded ? nil : id
+                    if isExpanded {
+                        if isSelected {
+                            expandedLibraryIDs.remove(id)
+                        } else {
+                            navigation.selectedKnowledgeLibraryID = id
+                        }
                     } else {
-                        navigation.selectedKnowledgeLibraryID = id
-                        expandedLibraryID = id
+                        expandedLibraryIDs.insert(id)
+                        if !isSelected {
+                            navigation.selectedKnowledgeLibraryID = id
+                        }
                     }
                 } label: {
                     HStack(spacing: 7) {
@@ -562,7 +571,7 @@ struct DesktopKnowledgeView: View {
                         if let collection {
                             ATMMenuItem("在此新建知识…") {
                                 navigation.selectedKnowledgeLibraryID = collection.id
-                                expandedLibraryID = collection.id
+                                expandedLibraryIDs.insert(collection.id)
                                 showingCreateSheet = true
                             }
                             ATMMenuSeparator()
@@ -611,21 +620,24 @@ struct DesktopKnowledgeView: View {
                 }
             }
 
-            if isExpanded, isSelected {
+            if isExpanded {
                 Group {
-                    if isListLoading && items.isEmpty {
+                    if isSelected && isListLoading && displayedItems.isEmpty {
                         knowledgeInlineState(icon: "hourglass", title: "正在读取知识")
-                    } else if let listError {
+                    } else if isSelected, let listError {
                         knowledgeInlineState(icon: "exclamationmark.triangle", title: "加载失败", detail: listError)
-                    } else if items.isEmpty {
+                    } else if !hasLoadedItems {
+                        knowledgeInlineState(icon: "hourglass", title: "正在读取知识")
+                    } else if displayedItems.isEmpty {
                         knowledgeInlineState(
                             icon: isArchiveLibrary ? "archivebox" : "doc",
                             title: isArchiveLibrary ? "归档中没有内容" : "这个知识库还是空的"
                         )
                     } else {
-                        LazyVStack(spacing: 4) {
-                            ForEach(items) { item in
-                                knowledgeRow(item)
+                        LazyVStack(spacing: 0) {
+                            ForEach(displayedItems) { item in
+                                knowledgeRow(item, libraryID: id)
+                                    .atmContentStackRow()
                             }
                         }
                     }
@@ -685,19 +697,29 @@ struct DesktopKnowledgeView: View {
         }
     }
 
-    private func knowledgeRow(_ item: KnowledgeListItem) -> some View {
+    private func knowledgeRow(_ item: KnowledgeListItem, libraryID: String) -> some View {
         let selected = selectedItemID == item.id
+        let iconColor = selected ? ATMTheme.accent : ATMTheme.secondary
         return Button {
+            if selectedLibraryID != libraryID {
+                navigation.selectedKnowledgeLibraryID = libraryID
+                expandedLibraryIDs.insert(libraryID)
+                items = itemsByLibraryID[libraryID] ?? []
+            }
             requestSelection(item.id)
         } label: {
-            HStack(alignment: .top, spacing: 9) {
+            HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
                 Image(systemName: item.icon)
                     .font(ATMFont.font(.body, weight: .medium))
-                    .foregroundStyle(selected ? ATMTheme.accent : ATMTheme.secondary)
-                    .frame(width: 17, height: 20)
-                VStack(alignment: .leading, spacing: 5) {
+                    .foregroundStyle(iconColor)
+                    .frame(
+                        width: ATMContentRowLayout.leadingVisualSize,
+                        height: ATMContentRowLayout.leadingVisualSize
+                    )
+                    .background(iconColor.opacity(0.10), in: Circle())
+                VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                     Text(item.title)
-                        .font(ATMFont.font(.body, weight: .semibold))
+                        .font(ATMFont.font(.body, weight: .medium))
                         .foregroundStyle(ATMTheme.primary)
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
@@ -708,12 +730,14 @@ struct DesktopKnowledgeView: View {
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                     }
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
+                        Text(item.kindTitle)
                         if let date = item.dateText, !date.isEmpty {
+                            Text("·")
                             Text(date)
                         }
                     }
-                    .font(ATMFont.mono(.caption))
+                    .font(ATMFont.caption)
                     .foregroundStyle(ATMTheme.secondary)
                 }
                 Spacer(minLength: 0)
@@ -1382,30 +1406,33 @@ struct DesktopKnowledgeView: View {
 
     @MainActor
     private func loadItems() async {
+        let libraryID = selectedLibraryID
         isListLoading = true
         listError = nil
         defer { isListLoading = false }
 
         do {
             let loaded: [KnowledgeListItem]
-            if selectedLibraryID == ATMKnowledgeLibrary.memoryID {
+            if libraryID == ATMKnowledgeLibrary.memoryID {
                 loaded = try await store.memories(query: "").map(KnowledgeListItem.memory)
-            } else if selectedLibraryID == ATMKnowledgeLibrary.archiveID {
+            } else if libraryID == ATMKnowledgeLibrary.archiveID {
                 loaded = try await store.archivedKnowledgeDocuments().map(KnowledgeListItem.document)
             } else {
                 loaded = try await store.knowledgeDocuments(
-                    collectionID: selectedLibraryID,
+                    collectionID: libraryID,
                     status: "active"
                 )
                     .map(KnowledgeListItem.document)
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, selectedLibraryID == libraryID else { return }
+            itemsByLibraryID[libraryID] = loaded
             items = loaded
             selectFirstItemIfNeeded()
         } catch is CancellationError {
             return
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, selectedLibraryID == libraryID else { return }
+            itemsByLibraryID.removeValue(forKey: libraryID)
             items = []
             selectedItemID = nil
             document = nil
@@ -1568,6 +1595,13 @@ private enum KnowledgeListItem: Identifiable, Equatable {
         switch self {
         case .document: return "doc.text"
         case .memory: return "brain.head.profile"
+        }
+    }
+
+    var kindTitle: String {
+        switch self {
+        case .document: return "文章"
+        case .memory: return "记忆"
         }
     }
 

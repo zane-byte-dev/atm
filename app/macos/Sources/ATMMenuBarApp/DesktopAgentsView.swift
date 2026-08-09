@@ -130,15 +130,13 @@ struct DesktopAgentsView: View {
                                         } label: {
                                             DesktopAgentPresenceRow(
                                                 session: session,
-                                                isSelected: navigation.selectedAgentID == session.id,
-                                                showsOrigin: originLabel(session) != dominantOrigin
+                                                isSelected: navigation.selectedAgentID == session.id
                                             )
                                         }
                                         .buttonStyle(.plain)
                                         // 行里不再逐张画来源，tooltip 兜住完整来源。
                                         .help(originLabel(session))
-                                        .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-                                        .listRowBackground(Color.clear)
+                                        .atmContentListRow()
                                     }
                                 }
                             } header: {
@@ -282,26 +280,26 @@ private extension ATMAgentPresenceState {
     }
 }
 
-/// 两行卡片：第一行是身份与状态，第二行是上下文，两行都只画各行之间**不一样**的东西。
+/// 紧凑卡片：第一行是身份与状态；只有关联任务或最新输入时才出现第二行。
 ///
 /// 之前是四行，其中三行在同一栏里逐张复读：`Codex Desktop · atm`（栏内恒定，且占着
 /// 卡片首行最抢眼的位置）、`未绑定`（默认态，等于把「什么都没发生」高亮成胶囊）、
 /// 模型名（同一客户端下几乎恒定，详情页「技术信息」已有）。状态本身也被说了三遍——
 /// 分区标题、彩色圆点、`N 分钟活跃` 里的「活跃」二字。分区标题已经承载状态语义，
-/// 圆点在同色分区里没有信息，时长因此退回纯时长。
+/// 圆点在同色分区里没有信息，时长因此退回纯时长。来源与项目也已经在详情头部完整展示，
+/// 不再作为每张卡的标签复读。
 private struct DesktopAgentPresenceRow: View {
     let session: ATMLiveSession
     let isSelected: Bool
-    /// 该会话的来源是否偏离列表头写明的默认来源。
-    let showsOrigin: Bool
 
-    @State private var isHovered = false
-
-    // 只有 chevron 用得到 hover，行表面的 hover 由 atmRowSurface 自己管。
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 7) {
+        VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
+            HStack(spacing: ATMContentRowLayout.leadingSpacing) {
                 ATMAgentMark(agent: session.tool, size: 16)
+                    .frame(
+                        width: ATMContentRowLayout.leadingVisualSize,
+                        height: ATMContentRowLayout.leadingVisualSize
+                    )
                 Text(session.presenceTitle)
                     // 固定字重 —— 见 ATMRowSurface：选中不切字重，否则标题会抖。
                     .font(ATMFont.font(.body, weight: .medium))
@@ -311,8 +309,16 @@ private struct DesktopAgentPresenceRow: View {
                 trailingMeta
             }
 
-            if session.latestUserInputBelowTitle != nil || showsOrigin {
+            if session.bindingTodoID != nil || session.latestUserInputBelowTitle != nil {
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    if let todoID = session.bindingTodoID {
+                        Text(todoID.uppercased())
+                            .font(ATMFont.mono(.caption, .medium))
+                            .foregroundStyle(ATMTheme.accent)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(ATMTheme.accent.opacity(0.08), in: Capsule())
+                    }
                     if let input = session.latestUserInputBelowTitle {
                         Text("你")
                             .font(ATMFont.font(.caption, weight: .semibold))
@@ -320,23 +326,15 @@ private struct DesktopAgentPresenceRow: View {
                             .font(ATMFont.footnote)
                             .lineLimit(1)
                     }
-                    Spacer(minLength: 6)
-                    if showsOrigin {
-                        Text("\(ATMAgentDisplay.clientName(session)) · \(ATMAgentDisplay.projectName(session))")
-                            .font(ATMFont.font(.caption, weight: .medium))
-                            .lineLimit(1)
-                            .layoutPriority(1)
-                    }
+                    Spacer(minLength: 0)
                 }
                 .foregroundStyle(ATMTheme.secondary)
             }
         }
         .atmRowSurface(isSelected: isSelected)
-        .onHover { isHovered = $0 }
     }
 
-    /// 尾部整块 `fixedSize`：让长标题先被截断，而不是把时长挤没。chevron 用 opacity
-    /// 而不是条件插入，否则悬停时它挤掉的那点宽度会改变标题截断位置，行文字跟着抖一下。
+    /// 尾部整块 `fixedSize`：让长标题先被截断，而不是把介入状态和时长挤没。
     private var trailingMeta: some View {
         HStack(spacing: 6) {
             if session.presenceState == .attention {
@@ -344,21 +342,9 @@ private struct DesktopAgentPresenceRow: View {
                     .font(ATMFont.font(.caption, weight: .semibold))
                     .foregroundStyle(ATMTheme.danger)
             }
-            if let todoID = session.bindingTodoID {
-                Text(todoID.uppercased())
-                    .font(ATMFont.mono(.caption, .medium))
-                    .foregroundStyle(ATMTheme.accent)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(ATMTheme.accent.opacity(0.08), in: Capsule())
-            }
             Text(NumberFormat.age(session.ageSeconds))
                 .font(ATMFont.mono(.caption, .medium))
                 .foregroundStyle(ATMTheme.secondary)
-            Image(systemName: "chevron.right")
-                .font(ATMFont.font(.caption, weight: .semibold))
-                .foregroundStyle(ATMTheme.secondary)
-                .opacity(isHovered ? 1 : 0)
         }
         .fixedSize()
     }
