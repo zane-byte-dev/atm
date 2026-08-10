@@ -754,6 +754,7 @@ private struct CollectionSourceDetail: View {
             sourceValueRow("状态", source.enabled ? "已启用" : "已暂停")
             sourceValueRow("间隔", "每 (source.effectiveIntervalMinutes) 分钟")
             sourceValueRow("处理方式", source.effectiveStrategy == "observe" ? "只观察，不创建 Todo" : "创建或补充 Todo")
+            sourceValueRow("Agent 派发", source.automaticallyDispatches ? "新 Todo 自动交给 Codex" : "仅收集，由人决定")
             sourceValueRow("判断单位", source.effectiveDecisionUnit == "message" ? "单条消息" : "消息窗口")
             sourceValueRow("默认优先级", source.priority)
         }
@@ -894,6 +895,13 @@ private struct CollectionItemRow: View {
                     Text(itemType.title)
                     Text("·")
                     Text(collectionActionTitle(item.action, retryStopped: retryStopped))
+                    if item.dispatchStatus == "failed" {
+                        Text("·")
+                        Text("Agent 派发失败")
+                            .foregroundStyle(ATMTheme.danger)
+                    } else if item.dispatchStatus == "dispatched" {
+                        Text("· 已交给 Codex")
+                    }
                     if item.todoClosed, let todoID = item.todoID, let status = item.todoStatus {
                         Text("·")
                         Text("\(todoID) \(ATMTodoStatusStyle.label(forStatus: status))")
@@ -1022,8 +1030,7 @@ private struct CollectionItemDetail: View {
         }
         .padding(.horizontal, 24)
         .frame(height: 46)
-        .background(ATMTheme.elevated)
-        .overlay(alignment: .bottom) { Rectangle().fill(ATMTheme.border).frame(height: 1) }
+        .background(ATMTheme.canvas)
     }
 
     private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
@@ -1218,6 +1225,22 @@ private struct CollectionItemDetail: View {
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
             }
+            if item.dispatchStatus == "failed" {
+                Label(
+                    item.dispatchError?.isEmpty == false ? item.dispatchError! : "Agent 派发失败",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.danger)
+                .textSelection(.enabled)
+                Text("Todo 已保留；打开 Todo 后可点击“重试”再次交给 Codex。")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            } else if item.dispatchStatus == "dispatched" {
+                Label("已自动交给 Codex，可在 Todo 详情查看进度和日志。", systemImage: "play.circle.fill")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.success)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1403,6 +1426,7 @@ private struct AddCollectionSourceSheet: View {
     @State private var strategy = "tasks"
     @State private var decisionUnit = "window"
     @State private var intervalMinutes = 5
+    @State private var autoDispatch = false
 
     @State private var searchKind = ATMCollectionSearchKind.all
     @State private var keyword = ""
@@ -1448,6 +1472,7 @@ private struct AddCollectionSourceSheet: View {
         _strategy = State(initialValue: source?.effectiveStrategy ?? "tasks")
         _decisionUnit = State(initialValue: source?.effectiveDecisionUnit ?? "window")
         _intervalMinutes = State(initialValue: source?.effectiveIntervalMinutes ?? 5)
+        _autoDispatch = State(initialValue: source?.automaticallyDispatches ?? false)
     }
 
     var body: some View {
@@ -1505,7 +1530,7 @@ private struct AddCollectionSourceSheet: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if let reason = identity.blockReason {
+            if let reason = saveBlockReason {
                 Label(reason, systemImage: "arrow.up.circle")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
@@ -1520,11 +1545,19 @@ private struct AddCollectionSourceSheet: View {
             Button(source == nil ? "添加" : "保存", action: save)
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(identity.blockReason != nil)
+                .disabled(saveBlockReason != nil)
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 14)
         .background(ATMTheme.surface)
+    }
+
+    private var saveBlockReason: String? {
+        if let reason = identity.blockReason { return reason }
+        if autoDispatch && project.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "自动派发前请指定项目"
+        }
+        return nil
     }
 
     private func save() {
@@ -1535,7 +1568,8 @@ private struct AddCollectionSourceSheet: View {
             excludePattern: excludePattern, instruction: instruction,
             knowledgeCollection: knowledgeCollection, strategy: strategy,
             decisionUnit: decisionUnit,
-            intervalMinutes: intervalMinutes, enabled: source?.enabled ?? true
+            intervalMinutes: intervalMinutes, autoDispatch: autoDispatch,
+            enabled: source?.enabled ?? true
         )
         onClose()
     }
@@ -1940,6 +1974,7 @@ private struct AddCollectionSourceSheet: View {
                         if intervalMinutes == previousDefault {
                             intervalMinutes = value == "observe" ? 60 : 5
                         }
+                        if value == "observe" { autoDispatch = false }
                     }
                 }
 
@@ -1983,6 +2018,17 @@ private struct AddCollectionSourceSheet: View {
                         TextField("例如：atm", text: $project)
                             .textFieldStyle(.roundedBorder)
                     }
+
+                    Toggle(isOn: $autoDispatch) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("新 Todo 自动交给 Codex")
+                                .font(ATMFont.font(.body, weight: .medium))
+                            Text("使用受保护策略在项目目录启动 Agent；成功后进入待验收")
+                                .font(ATMFont.footnote)
+                                .foregroundStyle(ATMTheme.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch)
                 }
             }
         }

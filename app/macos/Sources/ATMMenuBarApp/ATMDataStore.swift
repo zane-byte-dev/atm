@@ -265,6 +265,50 @@ struct ATMTodoPrompt: Decodable {
     let prompt: String
 }
 
+struct ATMTaskRun: Decodable, Identifiable, Equatable {
+    let id: String
+    let todoID: String
+    let agent: String
+    let project: String?
+    let workDir: String
+    let policy: String
+    let logPath: String
+    let status: String
+    let pid: Int?
+    let startTS: Int64
+    let endTS: Int64?
+    let exitCode: Int?
+    let message: String?
+    let sessionID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, agent, project, policy, status, pid, message
+        case todoID = "todo_id"
+        case workDir = "work_dir"
+        case logPath = "log_path"
+        case startTS = "start_ts"
+        case endTS = "end_ts"
+        case exitCode = "exit_code"
+        case sessionID = "session_id"
+    }
+
+    var isActive: Bool { status == "starting" || status == "running" }
+}
+
+struct ATMTaskRunDispatch: Decodable {
+    let run: ATMTaskRun
+}
+
+enum ATMTaskRunLogPolicy {
+    /// Enough context for recent tool output without sending an ever-growing
+    /// JSON event stream through SwiftUI on every live refresh.
+    static let maximumBytes = 64 * 1024
+
+    static func arguments(todoID: String) -> [String] {
+        ["todo", "tail", todoID, "--bytes", String(maximumBytes)]
+    }
+}
+
 enum ATMProjectFolderResolver {
     static func resolve(
         todo: ATMTodo,
@@ -570,9 +614,10 @@ enum ATMTodoStatusActions {
         items(for: todo).filter { $0.action != .start && $0.action != .complete }
     }
 
-    /// Launch prompt is for handing work to an agent; review is the human gate.
+    /// Launch actions are for active work; review and closed states are human
+    /// gates/history and must not silently restart implementation.
     static func showsLaunchPrompt(for todo: ATMTodo) -> Bool {
-        todo.status != "review"
+        ["open", "in_progress", "waiting", "blocked"].contains(todo.status)
     }
 
     private static func item(
@@ -845,6 +890,10 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var loadingProgressTodoIDs: Set<String> = []
     @Published private(set) var boundSessionsByTodoID: [String: [ATMBoundSession]] = [:]
     @Published private(set) var loadingBoundSessionTodoIDs: Set<String> = []
+    @Published private(set) var taskRunsByTodoID: [String: [ATMTaskRun]] = [:]
+    @Published private(set) var taskRunLogsByTodoID: [String: String] = [:]
+    @Published private(set) var loadingTaskRunTodoIDs: Set<String> = []
+    private var loadingTaskRunLogTodoIDs: Set<String> = []
     @Published private(set) var collectionOverview = ATMCollectionOverview.empty
     @Published private(set) var isCollecting = false
     @Published var collectionErrorMessage: String?
@@ -1311,6 +1360,7 @@ final class ATMDataStore: ObservableObject {
         strategy: String,
         decisionUnit: String,
         intervalMinutes: Int,
+        autoDispatch: Bool,
         enabled: Bool
     ) {
         let connectorID = connector.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1333,6 +1383,7 @@ final class ATMDataStore: ObservableObject {
                 if !trimmedExclude.isEmpty { arguments += ["--exclude", trimmedExclude] }
                 if !trimmedInstruction.isEmpty { arguments += ["--instruction", trimmedInstruction] }
                 if !trimmedKnowledge.isEmpty { arguments += ["--knowledge-collection", trimmedKnowledge] }
+                if autoDispatch && strategy == "tasks" { arguments.append("--auto-dispatch") }
                 if !enabled { arguments.append("--disabled") }
                 _ = try await runner.run(arguments)
                 refreshCollection(runIfDue: collectionOverview.enabled)
@@ -1964,6 +2015,74 @@ final class ATMDataStore: ObservableObject {
                 boundSessionsByTodoID[todoID] = detail.sessions ?? []
             } catch {
                 boundSessionsByTodoID[todoID] = []
+            }
+        }
+    }
+
+    func taskRuns(for todoID: String) -> [ATMTaskRun] {
+        taskRunsByTodoID[todoID] ?? []
+    }
+
+    func taskRunLog(for todoID: String) -> String? {
+        taskRunLogsByTodoID[todoID]
+    }
+
+    func loadTaskRuns(for todoID: String) {
+        guard !loadingTaskRunTodoIDs.contains(todoID) else { return }
+        loadingTaskRunTodoIDs.insert(todoID)
+        Task {
+            defer { loadingTaskRunTodoIDs.remove(todoID) }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(["todo", "runs", todoID, "--json"])
+                let runs = try JSONDecoder().decode([ATMTaskRun].self, from: data)
+                if taskRunsByTodoID[todoID] != runs {
+                    taskRunsByTodoID[todoID] = runs
+                }
+            } catch {
+                // Older CLI builds have no task-run endpoint. Leave the rest of
+                // task detail usable; explicit dispatch still surfaces its error.
+                taskRunsByTodoID[todoID] = taskRunsByTodoID[todoID] ?? []
+            }
+        }
+    }
+
+    func loadTaskRunLog(for todoID: String) {
+        guard !loadingTaskRunLogTodoIDs.contains(todoID) else { return }
+        guard !(taskRunsByTodoID[todoID] ?? []).isEmpty else { return }
+        loadingTaskRunLogTodoIDs.insert(todoID)
+        Task {
+            defer { loadingTaskRunLogTodoIDs.remove(todoID) }
+            do {
+                let runner = try ATMCommandRunner()
+                let log = try await runner.run(ATMTaskRunLogPolicy.arguments(todoID: todoID))
+                let text = String(decoding: log, as: UTF8.self)
+                if taskRunLogsByTodoID[todoID] != text {
+                    taskRunLogsByTodoID[todoID] = text
+                }
+            } catch {
+                // A transient tail failure must not replace the last readable
+                // excerpt or make the rest of Todo detail unusable.
+            }
+        }
+    }
+
+    func dispatchTodoToCodex(_ todo: ATMTodo) {
+        guard !isActing else { return }
+        isActing = true
+        errorMessage = nil
+        Task {
+            defer { isActing = false }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(["todo", "run", todo.id, "--json"])
+                let result = try JSONDecoder().decode(ATMTaskRunDispatch.self, from: data)
+                let previous = taskRunsByTodoID[todo.id] ?? []
+                taskRunsByTodoID[todo.id] = [result.run] + previous.filter { $0.id != result.run.id }
+                refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+                loadTaskRuns(for: todo.id)
             }
         }
     }

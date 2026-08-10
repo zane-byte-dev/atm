@@ -53,6 +53,10 @@ var (
 	todoMaintainLimitFlag  int
 	todoContextCWD         string
 	todoSubmitReasonFlag   string
+	todoRunPolicyFlag      string
+	todoRunCWDFlag         string
+	todoRunTailFollowFlag  bool
+	todoRunTailBytesFlag   int64
 )
 
 func init() {
@@ -107,6 +111,10 @@ func init() {
 	todoCaptureCmd.Flags().StringVar(&todoCaptureProjectFlag, "project", "", "project name (default: cwd basename)")
 
 	todoPromptCmd.Flags().BoolVar(&todoPromptCopyFlag, "copy", false, "copy the prompt to the clipboard")
+	todoRunCmd.Flags().StringVar(&todoRunPolicyFlag, "policy", "guarded", "permission policy: guarded or trusted")
+	todoRunCmd.Flags().StringVar(&todoRunCWDFlag, "cwd", "", "working directory (defaults from Todo bindings or current directory)")
+	todoRunTailCmd.Flags().BoolVarP(&todoRunTailFollowFlag, "follow", "f", false, "keep following while the run is active")
+	todoRunTailCmd.Flags().Int64Var(&todoRunTailBytesFlag, "bytes", 0, "show only the latest N bytes (0 means the full log)")
 
 	todoWaitCmd.Flags().StringVar(&todoWaitWakeFlag, "wake", "", "condition that should wake the todo")
 	todoWaitCmd.Flags().StringVar(&todoWaitReviewAtFlag, "review-at", "", "next review date (YYYY-MM-DD)")
@@ -115,7 +123,7 @@ func init() {
 		contextCmd.Flags().StringVar(&todoContextCWD, "cwd", "", "Git worktree to inspect (required when active todo bindings use multiple worktrees)")
 	}
 
-	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
+	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoRunCmd, todoRunsCmd, todoRunTailCmd, todoRunControllerCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
 	rootCmd.AddCommand(todoCmd)
 }
 
@@ -211,6 +219,41 @@ than a copied snapshot.`,
   atm todo prompt t89 --copy`,
 	Args: cobra.ExactArgs(1),
 	RunE: runTodoPrompt,
+}
+
+var todoRunCmd = &cobra.Command{
+	Use:   "run <id>",
+	Short: "Dispatch a Todo to an Agent CLI",
+	Long: `Start the Todo, claim one durable task run, then launch a background
+controller that runs the selected Agent. A successful Agent exit submits the
+Todo to review; it never marks the Todo done.`,
+	Example: `  atm todo run t240
+  atm todo run t240 --cwd /path/to/repo
+  atm todo runs t240
+  atm todo tail t240 -f`,
+	Args: cobra.ExactArgs(1),
+	RunE: runTodoRun,
+}
+
+var todoRunsCmd = &cobra.Command{
+	Use:   "runs <id>",
+	Short: "List Agent runs for a Todo",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTodoRuns,
+}
+
+var todoRunTailCmd = &cobra.Command{
+	Use:   "tail <id>",
+	Short: "Print the latest Agent run log",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTodoRunTail,
+}
+
+var todoRunControllerCmd = &cobra.Command{
+	Use:    "run-controller <run-id>",
+	Hidden: true,
+	Args:   cobra.ExactArgs(1),
+	RunE:   runTodoRunController,
 }
 
 var todoDropCmd = &cobra.Command{

@@ -38,6 +38,18 @@ type fakeExtractor struct {
 	batches []MessageBatch
 }
 
+type fakeTodoDispatcher struct {
+	todoIDs  []string
+	projects []string
+	err      error
+}
+
+func (dispatcher *fakeTodoDispatcher) Dispatch(_ context.Context, todoID, project string) error {
+	dispatcher.todoIDs = append(dispatcher.todoIDs, todoID)
+	dispatcher.projects = append(dispatcher.projects, project)
+	return dispatcher.err
+}
+
 func (extractor *fakeExtractor) Extract(_ context.Context, batch MessageBatch, _ []store.Todo) (Decision, error) {
 	extractor.calls++
 	extractor.batches = append(extractor.batches, batch)
@@ -139,6 +151,118 @@ func TestServiceCreatesOnceAndAdvancesCheckpoint(t *testing.T) {
 	}
 	if !strings.Contains(items[0].RawContext, "我想把需求收集做成全自动的") {
 		t.Fatalf("collection audit lost raw conversation: %+v", items[0])
+	}
+}
+
+func TestServiceAutoDispatchesNewTodoOnce(t *testing.T) {
+	withCollectorStore(t)
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-auto", Name: "自动执行群",
+		Project: "atm", Priority: "P1", Strategy: store.CollectionStrategyTasks,
+		AutoDispatch: true, Enabled: true,
+	})
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &fakeFetcher{messages: []Message{{ID: "auto-1", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 13_000, Content: "请实现自动派发"}}, newest: 13_000}
+	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "实现自动派发",
+		Summary: "采集后交给 Agent", ItemType: "requirement", Project: "/tmp/untrusted-message-project",
+		Priority: "P1", Reason: "明确需求", Confidence: 0.98}}
+	dispatcher := &fakeTodoDispatcher{}
+	service := Service{Fetcher: fetcher, Extractor: extractor, Dispatcher: dispatcher, Now: tickingClock()}
+
+	if _, err := service.Run(context.Background(), source.ID); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+	if _, err := service.Run(context.Background(), source.ID); err != nil {
+		t.Fatalf("repeat run: %v", err)
+	}
+	if len(dispatcher.todoIDs) != 1 || dispatcher.todoIDs[0] == "" {
+		t.Fatalf("dispatches = %v, want exactly one Todo", dispatcher.todoIDs)
+	}
+	if len(dispatcher.projects) != 1 || dispatcher.projects[0] != "atm" {
+		t.Fatalf("dispatch projects = %v", dispatcher.projects)
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil || len(todos.Items) != 1 || todos.Items[0].Project != "atm" {
+		t.Fatalf("automatic Todo escaped configured project: %+v err=%v", todos, err)
+	}
+	db, err = store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	items, err := store.ListCollectionItems(db, source.ID, 10)
+	if err != nil || len(items) != 1 || items[0].DispatchStatus != "dispatched" || items[0].DispatchError != "" {
+		t.Fatalf("items = %+v, err=%v", items, err)
+	}
+}
+
+func TestServiceRecordsDispatchFailureWithoutLosingCreatedTodo(t *testing.T) {
+	withCollectorStore(t)
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-auto-fail", Project: "atm",
+		Priority: "P1", AutoDispatch: true, Enabled: true,
+	})
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := Service{
+		Fetcher: &fakeFetcher{messages: []Message{{ID: "fail-1", ConversationID: source.ExternalID,
+			CreatedAt: 14_000, Content: "实现失败可重试"}}, newest: 14_000},
+		Extractor: &fakeExtractor{decision: Decision{Action: "create", Title: "实现失败重试",
+			Summary: "保留 Todo 和证据", ItemType: "requirement", Project: "atm", Priority: "P1",
+			Reason: "明确需求", Confidence: 0.98}},
+		Dispatcher: &fakeTodoDispatcher{err: errors.New("codex unavailable")}, Now: tickingClock(),
+	}
+	report, err := service.Run(context.Background(), source.ID)
+	if err == nil || len(report.Runs) != 1 || report.Runs[0].Status != "failed" {
+		t.Fatalf("run=%+v err=%v", report, err)
+	}
+	todos, loadErr := store.LoadTodosReadOnly()
+	if loadErr != nil || len(todos.Items) != 1 || todos.Items[0].Status != store.TodoStatusOpen {
+		t.Fatalf("created Todo was lost or advanced: %+v err=%v", todos, loadErr)
+	}
+	db, err = store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	items, err := store.ListCollectionItems(db, source.ID, 10)
+	if err != nil || len(items) != 1 || items[0].Status != "processed" ||
+		items[0].DispatchStatus != "failed" || !strings.Contains(items[0].DispatchError, "codex unavailable") {
+		t.Fatalf("items = %+v, err=%v", items, err)
+	}
+	checkpoint, err := store.GetCollectionCheckpoint(db, source.ID)
+	if err != nil || checkpoint.CursorTime != 14_000 {
+		t.Fatalf("checkpoint = %+v, err=%v", checkpoint, err)
+	}
+}
+
+func TestCollectionProjectWorkDirUsesConfiguredProjectRoots(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	want := filepath.Join(home, "mox", "atm")
+	if err := os.MkdirAll(want, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := collectionProjectWorkDir("atm")
+	if err != nil || got != want {
+		t.Fatalf("work dir=%q err=%v, want %q", got, err, want)
+	}
+	if _, err := collectionProjectWorkDir(""); err == nil {
+		t.Fatal("empty project resolved for automatic dispatch")
 	}
 }
 

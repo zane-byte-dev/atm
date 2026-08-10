@@ -633,7 +633,9 @@ func CodexLiveSessions(maxAge time.Duration) []Session {
 			if message := codexLastEventMessage(fp, "user_message"); message != "" {
 				lastUserMsg = codexVisibleUserMessage(message)
 			}
-			agentEvents := codexRecentAgentEvents(fp, 8)
+			// Keep enough agent_message rows to still fill 10 commentary updates
+			// after final_answer phases are filtered out.
+			agentEvents := codexRecentAgentEvents(fp, 24)
 			var latestResult string
 			var recentUpdates []string
 			if len(agentEvents) > 0 {
@@ -647,8 +649,8 @@ func CodexLiveSessions(maxAge time.Duration) []Session {
 					recentUpdates = append(recentUpdates, truncateText(event.Message, 400))
 				}
 			}
-			if len(recentUpdates) > 3 {
-				recentUpdates = recentUpdates[len(recentUpdates)-3:]
+			if len(recentUpdates) > 10 {
+				recentUpdates = recentUpdates[len(recentUpdates)-10:]
 			}
 			project := ""
 			if cwd != "" {

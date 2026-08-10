@@ -186,6 +186,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 35
+		case 35:
+			if err := migrateV35ToV36(db); err != nil {
+				return err
+			}
+			version = 36
+		case 36:
+			if err := migrateV36ToV37(db); err != nil {
+				return err
+			}
+			version = 37
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -811,6 +821,87 @@ func migrateV34ToV35(db *sql.DB) error {
 		}
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 35`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV35ToV36 adds the durable execution record used by `atm todo run`.
+// Nothing is backfilled: v35 deliberately had no detached Agent execution, so
+// there are no truthful historical runs to invent.
+func migrateV35ToV36(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS task_runs (
+			id         TEXT PRIMARY KEY,
+			todo_id    TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			agent      TEXT NOT NULL,
+			project    TEXT NOT NULL DEFAULT '',
+			work_dir   TEXT NOT NULL,
+			prompt     TEXT NOT NULL DEFAULT '',
+			policy     TEXT NOT NULL CHECK (policy IN ('guarded','trusted')),
+			log_path   TEXT NOT NULL,
+			status     TEXT NOT NULL CHECK (status IN ('starting','running','completed','failed')),
+			pid        INTEGER NOT NULL DEFAULT 0,
+			start_ts   INTEGER NOT NULL,
+			end_ts     INTEGER,
+			exit_code  INTEGER,
+			message    TEXT NOT NULL DEFAULT '',
+			session_id TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_task_runs_todo_started ON task_runs(todo_id, start_ts DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_task_runs_active_todo ON task_runs(todo_id)
+			WHERE status IN ('starting','running')`,
+		`UPDATE schema_version SET version = 36`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// migrateV36ToV37 adds the explicit collection-to-Agent handoff policy and its
+// audit result. Existing sources remain collection-only, preserving the
+// authority they had before this feature existed; existing items have no
+// dispatch outcome because no automatic dispatch was attempted.
+func migrateV36ToV37(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	columns := []struct {
+		table, name, statement string
+	}{
+		{"collection_sources", "auto_dispatch", `ALTER TABLE collection_sources
+			ADD COLUMN auto_dispatch INTEGER NOT NULL DEFAULT 0 CHECK (auto_dispatch IN (0,1))`},
+		{"collection_items", "dispatch_status", `ALTER TABLE collection_items
+			ADD COLUMN dispatch_status TEXT NOT NULL DEFAULT ''
+			CHECK (dispatch_status IN ('','pending','dispatched','failed'))`},
+		{"collection_items", "dispatch_error", `ALTER TABLE collection_items
+			ADD COLUMN dispatch_error TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, column := range columns {
+		hasColumn, err := tableHasColumn(tx, column.table, column.name)
+		if err != nil {
+			return err
+		}
+		if !hasColumn {
+			if _, err := tx.Exec(column.statement); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(`UPDATE collection_sources SET auto_dispatch=0 WHERE strategy='observe'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 37`); err != nil {
 		return err
 	}
 	return tx.Commit()

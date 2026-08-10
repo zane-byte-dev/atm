@@ -49,6 +49,7 @@ type CollectionSource struct {
 	DecisionUnit    string `json:"decision_unit"`
 	IntervalMinutes int    `json:"interval_minutes"`
 	Priority        string `json:"priority"`
+	AutoDispatch    bool   `json:"auto_dispatch"`
 	Enabled         bool   `json:"enabled"`
 	CreatedAt       int64  `json:"created_at"`
 	UpdatedAt       int64  `json:"updated_at"`
@@ -134,6 +135,10 @@ type CollectionItem struct {
 	// Automatic retries stop at MaxCollectionAttempts; see
 	// CollectionRetriesExhausted.
 	Attempts int `json:"attempts,omitempty"`
+	// DispatchStatus describes only the optional Todo -> Agent handoff. The
+	// collection decision remains processed even if Codex cannot be launched.
+	DispatchStatus string `json:"dispatch_status,omitempty"`
+	DispatchError  string `json:"dispatch_error,omitempty"`
 	// RetryStopped is Attempts read against the ceiling, derived on every query
 	// so that what "failed" means for a reader — comes back on its own, or waits
 	// for a person — is decided here instead of by every caller keeping its own
@@ -225,6 +230,12 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 	if source.Strategy != CollectionStrategyTasks && source.Strategy != CollectionStrategyObserve {
 		return CollectionSource{}, fmt.Errorf("invalid collection strategy: %s", source.Strategy)
 	}
+	if source.Strategy == CollectionStrategyObserve {
+		source.AutoDispatch = false
+	}
+	if source.AutoDispatch && source.Project == "" {
+		return CollectionSource{}, fmt.Errorf("automatic dispatch requires a source project")
+	}
 	if source.DecisionUnit == "" {
 		source.DecisionUnit = CollectionDecisionUnitWindow
 	}
@@ -251,17 +262,19 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 	source.UpdatedAt = now
 	_, err := db.Exec(`INSERT INTO collection_sources
 		(id,connector,kind,external_id,name,project,exclude_pattern,instruction,knowledge_collection,
-		 strategy,decision_unit,interval_minutes,priority,enabled,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 strategy,decision_unit,interval_minutes,priority,auto_dispatch,enabled,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(connector,kind,external_id) DO UPDATE SET
 			name=excluded.name,project=excluded.project,exclude_pattern=excluded.exclude_pattern,
 			instruction=excluded.instruction,knowledge_collection=excluded.knowledge_collection,
 			strategy=excluded.strategy,decision_unit=excluded.decision_unit,
 			interval_minutes=excluded.interval_minutes,priority=excluded.priority,
+			auto_dispatch=excluded.auto_dispatch,
 			enabled=excluded.enabled,updated_at=excluded.updated_at`,
 		source.ID, source.Connector, source.Kind, source.ExternalID, source.Name,
 		source.Project, source.ExcludePattern, source.Instruction, source.KnowledgeCollection,
 		source.Strategy, source.DecisionUnit, source.IntervalMinutes, source.Priority,
+		boolInt(source.AutoDispatch),
 		boolInt(source.Enabled), source.CreatedAt, source.UpdatedAt)
 	if err != nil {
 		return CollectionSource{}, err
@@ -452,12 +465,13 @@ func PutCollectionItem(db *sql.DB, item CollectionItem) (CollectionItem, bool, e
 	result, err := db.Exec(`INSERT INTO collection_items
 		(id,source_id,connector,conversation_id,fingerprint,message_ids,sender,occurred_at,
 		 raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,todo_id,
-		 status,attempts,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
+		 status,attempts,dispatch_status,dispatch_error,error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
 		item.ID, item.SourceID, item.Connector, item.ConversationID, item.Fingerprint,
 		string(messageIDs), item.Sender, item.OccurredAt, item.RawContext, item.Action,
 		item.ProposedAction, item.Title, item.Summary, item.ItemType, item.Project, item.Priority, item.Reason,
-		item.Confidence, nullableString(item.TodoID), item.Status, item.Attempts, item.Error, item.CreatedAt, item.UpdatedAt)
+		item.Confidence, nullableString(item.TodoID), item.Status, item.Attempts,
+		item.DispatchStatus, item.DispatchError, item.Error, item.CreatedAt, item.UpdatedAt)
 	if err != nil {
 		return CollectionItem{}, false, err
 	}
@@ -477,10 +491,11 @@ func UpdateCollectionItem(db *sql.DB, item CollectionItem) error {
 	item.UpdatedAt = time.Now().In(config.Loc).Unix()
 	_, err = db.Exec(`UPDATE collection_items SET conversation_id=?,message_ids=?,sender=?,occurred_at=?,
 		raw_context=?,action=?,proposed_action=?,title=?,summary=?,item_type=?,project=?,priority=?,reason=?,confidence=?,
-		todo_id=?,status=?,attempts=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
+		todo_id=?,status=?,attempts=?,dispatch_status=?,dispatch_error=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
 		item.Sender, item.OccurredAt, item.RawContext, item.Action, item.ProposedAction, item.Title, item.Summary,
 		item.ItemType, item.Project, item.Priority, item.Reason, item.Confidence,
-		nullableString(item.TodoID), item.Status, item.Attempts, item.Error, item.UpdatedAt, item.ID)
+		nullableString(item.TodoID), item.Status, item.Attempts, item.DispatchStatus,
+		item.DispatchError, item.Error, item.UpdatedAt, item.ID)
 	return err
 }
 
@@ -824,12 +839,13 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 // created_at and updated_at exist on both sides of the join.
 const collectionItemSelect = `SELECT i.id,i.source_id,i.connector,i.conversation_id,i.fingerprint,
 	i.message_ids,i.sender,i.occurred_at,i.raw_context,i.action,i.proposed_action,i.title,i.summary,
-	i.item_type,i.project,i.priority,i.reason,i.confidence,COALESCE(i.todo_id,''),i.status,i.attempts,i.error,
+	i.item_type,i.project,i.priority,i.reason,i.confidence,COALESCE(i.todo_id,''),i.status,i.attempts,
+	i.dispatch_status,i.dispatch_error,i.error,
 	i.created_at,i.updated_at,COALESCE(t.status,''),t.archived_at IS NOT NULL
 	FROM collection_items i LEFT JOIN todos t ON t.id=i.todo_id`
 
 const collectionSourceSelect = `SELECT id,connector,kind,external_id,name,project,exclude_pattern,
-	instruction,knowledge_collection,strategy,decision_unit,interval_minutes,priority,enabled,
+	instruction,knowledge_collection,strategy,decision_unit,interval_minutes,priority,auto_dispatch,enabled,
 	created_at,updated_at
 	FROM collection_sources`
 
@@ -839,11 +855,12 @@ type collectionScanner interface {
 
 func scanCollectionSource(scanner collectionScanner) (CollectionSource, error) {
 	var source CollectionSource
-	var enabled int
+	var autoDispatch, enabled int
 	err := scanner.Scan(&source.ID, &source.Connector, &source.Kind, &source.ExternalID,
 		&source.Name, &source.Project, &source.ExcludePattern, &source.Instruction,
 		&source.KnowledgeCollection, &source.Strategy, &source.DecisionUnit,
-		&source.IntervalMinutes, &source.Priority, &enabled, &source.CreatedAt, &source.UpdatedAt)
+		&source.IntervalMinutes, &source.Priority, &autoDispatch, &enabled, &source.CreatedAt, &source.UpdatedAt)
+	source.AutoDispatch = autoDispatch != 0
 	source.Enabled = enabled != 0
 	return source, err
 }
@@ -856,7 +873,8 @@ func scanCollectionItem(scanner collectionScanner) (CollectionItem, error) {
 		&item.Fingerprint, &messageIDs, &item.Sender, &item.OccurredAt, &item.RawContext,
 		&item.Action, &item.ProposedAction, &item.Title, &item.Summary, &item.ItemType, &item.Project,
 		&item.Priority, &item.Reason, &item.Confidence, &item.TodoID, &item.Status, &item.Attempts,
-		&item.Error, &item.CreatedAt, &item.UpdatedAt, &item.TodoStatus, &todoArchived)
+		&item.DispatchStatus, &item.DispatchError, &item.Error, &item.CreatedAt, &item.UpdatedAt,
+		&item.TodoStatus, &todoArchived)
 	item.TodoArchived = todoArchived != 0
 	item.RetryStopped = CollectionRetriesExhausted(item)
 	if err == nil {

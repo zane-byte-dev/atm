@@ -48,12 +48,14 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     let decisionUnit: String?
     let intervalMinutes: Int?
     let priority: String
+    let autoDispatch: Bool?
     let enabled: Bool
     let createdAt: Int64
     let updatedAt: Int64
 
     enum CodingKeys: String, CodingKey {
         case id, connector, kind, name, project, priority, enabled, strategy, instruction
+        case autoDispatch = "auto_dispatch"
         case externalID = "external_id"
         case decisionUnit = "decision_unit"
         case excludePattern = "exclude_pattern"
@@ -69,6 +71,7 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     }
 
     var effectiveStrategy: String { strategy == "observe" ? "observe" : "tasks" }
+    var automaticallyDispatches: Bool { effectiveStrategy == "tasks" && autoDispatch == true }
 
     /// Older databases and hand-written fixtures predate the column, and window
     /// is what they behaved as.
@@ -404,6 +407,8 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     /// describes an item the next run will pick up rather than one already
     /// retired.
     let attempts: Int?
+    let dispatchStatus: String?
+    let dispatchError: String?
     /// Whether the automatic retry has stopped. Derived by the CLI so the
     /// attempt ceiling lives in one place instead of being restated here.
     let retryStopped: Bool?
@@ -418,6 +423,8 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, connector, fingerprint, sender, action, title, summary, project,
              priority, reason, confidence, status, attempts, error
+        case dispatchStatus = "dispatch_status"
+        case dispatchError = "dispatch_error"
         case sourceID = "source_id"
         case conversationID = "conversation_id"
         case messageIDs = "message_ids"

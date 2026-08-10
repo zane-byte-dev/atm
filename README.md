@@ -64,7 +64,7 @@ atm session forget  <session-id> [-y]                    # 永久移除源文件
 # 待办与工作状态
 atm now                                     # 工作中、等待中、待验收、阻塞和到期复查
 atm dashboard --json                       # 一次返回带 schema_version 的桌面聚合快照
-atm todo    [list|add|start|submit|done|drop|trash|restore|show|context|edit|move|log|doc|prompt]
+atm todo    [list|add|start|run|runs|tail|submit|done|drop|trash|restore|show|context|edit|move|log|doc|prompt]
 atm todo start <id>                         # 进入工作中；done/dropped 会重新开始
 atm todo context [id] --json                # 临时、只读汇总 Todo、Session 与 Git 上下文
 atm todo submit [id] --reason "实现及证据"   # 显式提交待确认，不直接标记 done
@@ -80,6 +80,9 @@ atm todo wake <id> --reason "流水线完成"     # 外部事件/人工条件显
 atm todo reconcile                          # 补偿唤醒并审计缺失、放弃、循环依赖
 atm todo bulk done <id>... --reason "完成"  # 批量完成（也支持 drop/move/edit）
 atm todo prompt <id> --copy                 # 复制一行启动提示，粘贴进新的 Agent 会话
+atm todo run <id> [--cwd /path/to/repo]      # 后台派发给 Codex；默认 guarded
+atm todo runs <id>                           # 查看每次派发的状态、PID 与退出结果
+atm todo tail <id> [-f] [--bytes N]          # 查看/持续跟随最近一次派发日志，可限制最近 N 字节
 atm todo match --prompt                 # 启动时只给当前仓库最多 3 个候选
 atm session bind <id>                   # 当前 agent 会话接手 TODO，并自动 start
 atm session current                     # 查看当前会话绑定
@@ -118,6 +121,7 @@ atm collect status --json                         # 健康状态、来源、运�
 atm collect source search deploy --connector slack --kind channel --limit 10
 atm collect source add --connector slack --kind channel --id C123 --name deploys
 atm collect source add --connector github --kind issue --id owner/repo#42 --project atm
+atm collect source add --connector slack --kind channel --id C123 --project atm --auto-dispatch
 atm collect source add --connector slack --kind channel --id C456 --strategy observe --interval 60
 atm collect source add --connector slack --kind channel --id C456 --knowledge-collection inbox
 atm collect source add --connector slack --kind channel --id C456 --instruction "只关注 MR 和需求"
@@ -173,13 +177,24 @@ atm artifact save <title> --file report.md
 
 `todo prompt` 输出一行交给人粘贴进新 Agent 会话的指针，不搬运需求本身：Agent 按指针自己去读
 `todo doc`，拿到的永远是当前版本。想在会话之外补充需求就用 `todo log --section 补充`，它写进同一份
-文档，接手的 Agent 一并读到。ATM 不代管 Agent 执行，所以没有 Agent 任务后台进程；任务完成后由 Agent 自己
-`todo submit` 进入 `review`。
+文档，接手的 Agent 一并读到。
+
+`todo run` 是显式的本地执行入口，目前只支持 Codex。它先创建唯一的 `task_runs` claim，再启动一个脱离
+调用终端的 ATM controller；controller 以 `workspace-write` sandbox 运行 Codex，并只额外开放 ATM 数据目录，
+因此 Agent 可以读取任务、绑定 Session 和记录进展。`--policy trusted` 会绕过 Codex 的审批与 sandbox，必须
+显式传入并会输出警告。同一 Todo 同时最多一个 starting/running Run；进程异常消失后，下次派发会把旧 claim
+记为失败再重试。Agent 退出 0 只会把仍在进行中的 Todo 提交到 `review`，永远不会自动 `done`；非零退出只记录
+Run 失败，不改变 Todo 生命周期。每次派发的工作目录、策略、controller PID、时间、退出码和日志路径均独立保存。
+macOS 任务详情提供“交给 Codex”、实时状态、日志与失败重试；来源开启自动派发时也复用完全相同的入口。
 
 `collect` 是连接器采集面，不是 Agent 调度器。来源通过注册表按 `connector` 路由；连接器使用
 [版本化 stdin/stdout JSON 协议](docs/connector-protocol.md)，无需链接进 ATM。公开核心不内置服务专属适配器。
 macOS 菜单栏 App 常驻时按默认 5 分钟间隔采集；主窗口关闭不影响采集，退出 App 后停止。每个白名单来源有独立
 checkpoint，并重叠回读 20 分钟，消息 ID 与来源标记共同保证重复拉取不会重复新建。语义匹配只用于在新 Todo 中记录相关历史 Todo，不会把新事项补充进旧 Todo。认证由连接器管理，ATM 不保存连接器 token/Cookie。
+`tasks` 来源可用 `--auto-dispatch`（App 中为“新 Todo 自动交给 Codex”）显式开启一次性派发，默认关闭；
+`observe` 在存储层强制禁止派发。分类完成和 Agent 派发分别记账：Codex 启动失败时 Todo 仍保留，处理记录展示
+失败证据，可从 Todo 详情人工重试；成功 Run 仍只进入 `review`。自动派发来源必须配置项目，工作目录只从这项
+可信配置解析（`~/mox/<project>`、`~/work/<project>` 或绝对路径），不接受聊天或分类模型改写执行目录。
 模型只输出固定决策 JSON，TodoWriter 才能写 ATM；权限、模型或写入失败会显示为等待重试且不会推进 checkpoint。
 采集默认关闭，启用前需在 `collection_connectors` 中配置并验证连接器。
 
@@ -374,9 +389,10 @@ Knowledge、Memory 和 Artifact 只通过 ATM CLI 访问。搜索时传入 sessi
 回答后用 feedback 标记采纳、纠正或拒绝；聚合质量分会温和影响后续检索排序。
 `knowledge audit` 只输出重复、陈旧、源文件漂移和低质量建议，不自动归档。
 
-ATM 不再提供 Agent Schedule/Run、HTTP、Webhook、独立 daemon/serve 或 MCP 服务。Agent 定时任务属于运行 Agent
-的客户端；Enchanted 只在应用打开且 Mac 唤醒期间执行，错过的 occurrence 不补跑。ATM 也不代管
-Agent 执行：把任务交给 Agent 是 `todo prompt` 复制一行指针，由人粘贴进自己看得见的会话。
+ATM 不提供 Agent Schedule、HTTP、Webhook、独立 daemon/serve 或 MCP 服务。Agent 定时任务属于运行 Agent 的客户端；
+Enchanted 只在应用打开且 Mac 唤醒期间执行，错过的 occurrence 不补跑。ATM 代管显式发起的 `todo run`，以及
+来源明确开启 `auto_dispatch` 后对新 Todo 的一次性同路径派发；它不是 Agent 自循环，失败不会自动无限重启。
+需要人在可见会话里工作时仍使用 `todo prompt`。
 
 ```json
 {

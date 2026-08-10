@@ -289,12 +289,17 @@ func runTodoShow(cmd *cobra.Command, args []string) error {
 	}
 
 	var boundSessions []store.TodoBoundSession
+	var latestRun *store.TaskRun
 	if err := withDB(true, func(db *sql.DB) error {
 		var e error
 		if boundSessions, e = store.FindSessionsForTodo(db, t.ID); e != nil {
 			return e
 		}
-		return nameBoundSessions(db, boundSessions)
+		if err := nameBoundSessions(db, boundSessions); err != nil {
+			return err
+		}
+		latestRun, e = store.LatestTaskRun(db, t.ID)
+		return e
 	}); err != nil {
 		return err
 	}
@@ -338,6 +343,9 @@ func runTodoShow(cmd *cobra.Command, args []string) error {
 				"tool_calls": totalTools,
 				"cost_usd":   totalCost,
 			}
+		}
+		if latestRun != nil {
+			out["latest_run"] = latestRun
 		}
 		output.JSON(out)
 		return nil
@@ -388,6 +396,16 @@ func runTodoShow(cmd *cobra.Command, args []string) error {
 	}
 	if t.StartTS != nil {
 		fmt.Printf("Started:  %s\n", time.Unix(*t.StartTS, 0).In(config.Loc).Format("2006-01-02 15:04:05"))
+	}
+	if latestRun != nil {
+		fmt.Printf("Agent:    %s (%s, PID %d)\n", latestRun.Agent, latestRun.Status, latestRun.PID)
+		if latestRun.SessionID != nil {
+			fmt.Printf("Session:  %s\n", shortSessionID(*latestRun.SessionID))
+		}
+		fmt.Printf("Run log:  %s\n", latestRun.LogPath)
+		if latestRun.Message != "" {
+			fmt.Printf("Run note: %s\n", latestRun.Message)
+		}
 	}
 	if t.Closed != nil {
 		fmt.Printf("Closed:   %s\n", *t.Closed)

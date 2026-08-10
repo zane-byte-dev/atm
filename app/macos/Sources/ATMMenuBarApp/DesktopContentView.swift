@@ -401,11 +401,37 @@ private extension View {
     }
 }
 
-private enum ATMDesktopLayout {
+enum ATMDesktopLayout {
     static let titleBarHeight: CGFloat = 38
-    static let expandedSidebarWidth: CGFloat = 176
+    static let expandedSidebarWidth: CGFloat = 160
     static let collapsedSidebarWidth: CGFloat = 58
     static let railDividerWidth: CGFloat = 1
+    static let railDragHandleWidth: CGFloat = 10
+    static let minimumExpandedSidebarWidth: CGFloat = 132
+    static let maximumExpandedSidebarWidth: CGFloat = 280
+    static let sidebarCollapseThreshold: CGFloat = 100
+    static let sidebarExpansionThreshold: CGFloat = 116
+
+    static let sidebarWidthDefaultsKey = "ATMDesktopSidebarWidth"
+
+    static func resolvedExpandedSidebarWidth(_ requested: CGFloat) -> CGFloat {
+        let requested = requested.isFinite ? requested : expandedSidebarWidth
+        return min(
+            max(requested.rounded(), minimumExpandedSidebarWidth),
+            maximumExpandedSidebarWidth
+        )
+    }
+
+    static func sidebarIsCollapsed(
+        at requestedWidth: CGFloat,
+        wasCollapsed: Bool
+    ) -> Bool {
+        if requestedWidth.isNaN { return true }
+        // A small dead zone stops the rail flickering between text and icon modes
+        // when the pointer pauses on the snap point.
+        if wasCollapsed { return requestedWidth < sidebarExpansionThreshold }
+        return requestedWidth <= sidebarCollapseThreshold
+    }
 }
 
 struct DesktopContentView: View {
@@ -413,6 +439,12 @@ struct DesktopContentView: View {
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
     @AppStorage("ATMDesktopSidebarCollapsed") private var sidebarCollapsed = false
+    @AppStorage(ATMDesktopLayout.sidebarWidthDefaultsKey)
+    private var storedSidebarWidth = Double(ATMDesktopLayout.expandedSidebarWidth)
+    @State private var draggedSidebarWidth: CGFloat?
+    @State private var sidebarDragOrigin: CGFloat?
+    @State private var isHoveringSidebarDivider = false
+    @State private var sidebarResizeCursorPushed = false
     @State private var showingCollectionCreate = false
     @State private var newCollectionID = ""
     @State private var newCollectionName = ""
@@ -465,7 +497,12 @@ struct DesktopContentView: View {
             }
         }
         .animation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion), value: navigation.showAddTodo)
-        .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: sidebarCollapsed)
+        .animation(
+            sidebarDragOrigin == nil
+                ? ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion)
+                : nil,
+            value: sidebarCollapsed
+        )
         .sheet(isPresented: $showingCollectionCreate) {
             collectionCreateSheet
         }
@@ -527,15 +564,12 @@ struct DesktopContentView: View {
         HStack(spacing: 0) {
             desktopSidebar
                 .frame(
-                    width: sidebarCollapsed
-                        ? ATMDesktopLayout.collapsedSidebarWidth
-                        : ATMDesktopLayout.expandedSidebarWidth,
+                    width: currentSidebarWidth,
                     alignment: .leading
                 )
                 .clipped()
-            Rectangle()
-                .fill(ATMTheme.railBorder)
-                .frame(width: ATMDesktopLayout.railDividerWidth)
+            sidebarDivider
+                .zIndex(1)
             Group {
                 switch navigation.section {
                 case .tasks:
@@ -583,6 +617,83 @@ struct DesktopContentView: View {
         .background(ATMTheme.canvas)
     }
 
+    private var currentSidebarWidth: CGFloat {
+        if sidebarCollapsed { return ATMDesktopLayout.collapsedSidebarWidth }
+        return draggedSidebarWidth
+            ?? ATMDesktopLayout.resolvedExpandedSidebarWidth(CGFloat(storedSidebarWidth))
+    }
+
+    private var sidebarDivider: some View {
+        Color.clear
+            .frame(width: ATMDesktopLayout.railDividerWidth)
+            .overlay {
+                Capsule()
+                    .fill(
+                        ATMTheme.accent.opacity(
+                            isHoveringSidebarDivider || sidebarDragOrigin != nil ? 0.62 : 0
+                        )
+                    )
+                    .frame(width: 2, height: 36)
+                    .animation(
+                        ATMMotion.hover,
+                        value: isHoveringSidebarDivider || sidebarDragOrigin != nil
+                    )
+            }
+            .overlay {
+                Color.clear
+                    .frame(width: ATMDesktopLayout.railDragHandleWidth)
+                    .contentShape(Rectangle())
+                    .help("拖拽调整侧栏宽度")
+                    .onHover { hovering in
+                        isHoveringSidebarDivider = hovering
+                        setSidebarResizeCursorPushed(hovering || sidebarDragOrigin != nil)
+                    }
+                    .onDisappear { setSidebarResizeCursorPushed(false) }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged(handleSidebarDrag)
+                            .onEnded { _ in finishSidebarDrag() }
+                    )
+            }
+    }
+
+    private func handleSidebarDrag(_ value: DragGesture.Value) {
+        let origin = sidebarDragOrigin ?? currentSidebarWidth
+        sidebarDragOrigin = origin
+        let requested = origin + value.translation.width
+
+        if ATMDesktopLayout.sidebarIsCollapsed(
+            at: requested,
+            wasCollapsed: sidebarCollapsed
+        ) {
+            sidebarCollapsed = true
+            draggedSidebarWidth = nil
+        } else {
+            sidebarCollapsed = false
+            draggedSidebarWidth = ATMDesktopLayout.resolvedExpandedSidebarWidth(requested)
+        }
+        setSidebarResizeCursorPushed(true)
+    }
+
+    private func finishSidebarDrag() {
+        if !sidebarCollapsed, let draggedSidebarWidth {
+            storedSidebarWidth = Double(draggedSidebarWidth)
+        }
+        draggedSidebarWidth = nil
+        sidebarDragOrigin = nil
+        setSidebarResizeCursorPushed(isHoveringSidebarDivider)
+    }
+
+    private func setSidebarResizeCursorPushed(_ pushed: Bool) {
+        guard pushed != sidebarResizeCursorPushed else { return }
+        sidebarResizeCursorPushed = pushed
+        if pushed {
+            NSCursor.resizeLeftRight.push()
+        } else {
+            NSCursor.pop()
+        }
+    }
+
     private var desktopTitleBar: some View {
         ZStack {
             Button {
@@ -604,10 +715,6 @@ struct DesktopContentView: View {
                     ATMTheme.controlFill.opacity(0.72),
                     in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                 )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                        .stroke(ATMTheme.border)
-                }
             }
             .buttonStyle(.plain)
             .keyboardShortcut("k", modifiers: .command)
@@ -633,11 +740,7 @@ struct DesktopContentView: View {
         .frame(maxWidth: .infinity)
         .frame(height: ATMDesktopLayout.titleBarHeight)
         .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(ATMTheme.borderStrong)
-                .frame(height: 1)
-        }
+        .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
     }
 
     private var collectionCreateSheet: some View {
@@ -1183,6 +1286,7 @@ struct DesktopTodoDetail: View {
     private enum DetailTab: String, CaseIterable {
         case detail
         case activity
+        case taskRun
         case sessions
     }
 
@@ -1225,6 +1329,8 @@ struct DesktopTodoDetail: View {
                     readContent
                 } else if selectedTab == .activity {
                     activityContent
+                } else if selectedTab == .taskRun {
+                    taskRunContent
                 } else {
                     sessionContent
                 }
@@ -1232,7 +1338,10 @@ struct DesktopTodoDetail: View {
         }
         .background(ATMTheme.canvas)
         .onAppear {
-            if !isTrashed { store.loadBoundSessions(for: todo.id) }
+            if !isTrashed {
+                store.loadBoundSessions(for: todo.id)
+                store.loadTaskRuns(for: todo.id)
+            }
             // Selecting another row rebuilds this view (`.id(todo.id)`), so a
             // request aimed at a not-yet-selected todo arrives here rather than in
             // onChange.
@@ -1240,7 +1349,28 @@ struct DesktopTodoDetail: View {
         }
         .onChange(of: navigation.editTodoID) { _ in consumeEditRequest() }
         .onChange(of: store.snapshot.refreshedAt) { _ in
-            if !isTrashed { store.loadBoundSessions(for: todo.id) }
+            if !isTrashed {
+                store.loadBoundSessions(for: todo.id)
+                store.loadTaskRuns(for: todo.id)
+            }
+        }
+        .task(id: taskRunRefreshKey) {
+            guard !isTrashed else { return }
+            store.loadTaskRuns(for: todo.id)
+            if selectedTab == .taskRun {
+                store.loadTaskRunLog(for: todo.id)
+            }
+            while latestTaskRun?.isActive == true, !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    break
+                }
+                store.loadTaskRuns(for: todo.id)
+                if selectedTab == .taskRun {
+                    store.loadTaskRunLog(for: todo.id)
+                }
+            }
         }
         .confirmationDialog(
             "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
@@ -1267,6 +1397,7 @@ struct DesktopTodoDetail: View {
             detailTabButton(.detail, title: "任务描述", icon: "doc.text")
             if !isTrashed {
                 detailTabButton(.activity, title: "动态", icon: "clock.arrow.circlepath")
+                detailTabButton(.taskRun, title: "Codex 日志", icon: "doc.text.magnifyingglass")
                 detailTabButton(.sessions, title: sessionTabTitle, icon: "terminal")
             }
             Spacer(minLength: 0)
@@ -1274,8 +1405,7 @@ struct DesktopTodoDetail: View {
         // 视觉间距放进各按钮自身，避免 Tab 之间出现看得见却点不到的空白带。
         .padding(.horizontal, 12)
         .frame(height: 46)
-        .background(ATMTheme.elevated)
-        .overlay(alignment: .bottom) { Rectangle().fill(ATMTheme.border).frame(height: 1) }
+        .background(ATMTheme.canvas)
     }
 
     private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
@@ -1393,6 +1523,13 @@ struct DesktopTodoDetail: View {
                 }
                 if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
                     actionButton(
+                        latestTaskRun?.isActive == true ? "gearshape.2" : "play.fill",
+                        help: taskRunActionHelp
+                    ) {
+                        store.dispatchTodoToCodex(todo)
+                    }
+                    .disabled(latestTaskRun?.isActive == true || store.isActing)
+                    actionButton(
                         copiedPrompt ? "checkmark" : "doc.on.doc",
                         help: copiedPrompt ? "已复制启动提示" : "复制启动提示"
                     ) {
@@ -1488,6 +1625,122 @@ struct DesktopTodoDetail: View {
             .padding(16)
             .frame(maxWidth: 860, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var latestTaskRun: ATMTaskRun? {
+        store.taskRuns(for: todo.id).first
+    }
+
+    private var taskRunRefreshKey: String {
+        [
+            todo.id,
+            selectedTab.rawValue,
+            latestTaskRun?.id ?? "none",
+            latestTaskRun?.status ?? "none",
+        ].joined(separator: "|")
+    }
+
+    private var taskRunActionHelp: String {
+        switch latestTaskRun?.status {
+        case "starting", "running": return "Codex 正在处理"
+        case "failed": return "重试交给 Codex"
+        default: return "交给 Codex"
+        }
+    }
+
+    @ViewBuilder
+    private var taskRunContent: some View {
+        if let run = latestTaskRun {
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(taskRunColor(run.status))
+                            .frame(width: 8, height: 8)
+                        Text(taskRunStatusLabel(run.status))
+                            .font(ATMFont.font(.body, weight: .semibold))
+                        if run.isActive { ProgressView().controlSize(.small) }
+                        Spacer(minLength: 12)
+                        if run.status == "failed" {
+                            Button("重试") { store.dispatchTodoToCodex(todo) }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .disabled(store.isActing)
+                        }
+                        Button("刷新") {
+                            store.loadTaskRuns(for: todo.id)
+                            store.loadTaskRunLog(for: todo.id)
+                        }
+                        .controlSize(.small)
+                    }
+
+                    Text(run.message ?? "run \(run.id)")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .textSelection(.enabled)
+                    HStack(spacing: 8) {
+                        Text(run.workDir)
+                            .font(ATMFont.mono(.caption))
+                            .lineLimit(1)
+                            .textSelection(.enabled)
+                        Spacer(minLength: 12)
+                        Text("最近 \(ATMTaskRunLogPolicy.maximumBytes / 1024) KB")
+                            .font(ATMFont.caption)
+                    }
+                    .foregroundStyle(ATMTheme.secondary)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 13)
+                .background(ATMTheme.listPane)
+
+                ATMTranscriptTextView(
+                    text: store.taskRunLog(for: todo.id) ?? "日志加载中…",
+                    font: .monospacedSystemFont(ofSize: ATMFont.Tier.caption.size, weight: .regular),
+                    insets: NSSize(width: 16, height: 14),
+                    accessibilityLabel: "Codex 执行日志",
+                    scrollsToEndOnUpdate: true
+                )
+                .background(ATMTheme.canvas)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack(spacing: 12) {
+                Image(systemName: "terminal")
+                    .font(ATMFont.font(.display, weight: .light))
+                    .foregroundStyle(ATMTheme.secondary)
+                Text("暂无 Codex 执行记录")
+                    .font(ATMFont.font(.title3, weight: .semibold))
+                Text("交给 Codex 后，执行状态与最近日志会显示在这里。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
+                    Button("交给 Codex") { store.dispatchTodoToCodex(todo) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.isActing)
+                }
+            }
+            .padding(28)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func taskRunStatusLabel(_ status: String) -> String {
+        switch status {
+        case "starting": return "正在启动"
+        case "running": return "正在处理"
+        case "completed": return todo.status == "review" ? "已提交验收" : "Agent 已完成"
+        case "failed": return "执行失败"
+        default: return status
+        }
+    }
+
+    private func taskRunColor(_ status: String) -> Color {
+        switch status {
+        case "starting", "running": return ATMTheme.accent
+        case "completed": return ATMTheme.success
+        case "failed": return ATMTheme.danger
+        default: return ATMTheme.secondary
         }
     }
 

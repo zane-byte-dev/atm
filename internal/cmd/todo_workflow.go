@@ -129,9 +129,28 @@ func runTodoSubmit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	tf, t, alreadyReview, err := submitTodo(id, todoSubmitReasonFlag)
+	if err != nil {
+		return err
+	}
+	if alreadyReview {
+		if jsonOutput {
+			output.JSON(t)
+		} else {
+			fmt.Printf("Submitted %s already review: %s\n", t.ID, t.Title)
+		}
+		return nil
+	}
+	return finishTodoMutation(tf, t, fmt.Sprintf("Submitted %s for confirmation: %s", t.ID, t.Title))
+}
+
+// submitTodo is shared by the foreground command and the detached run
+// controller. It is the only automatic success transition: review is a human
+// gate, so an Agent exit can never call the done path.
+func submitTodo(id, reason string) (*store.TodoFile, *store.Todo, bool, error) {
 	message := "[submit]"
-	if todoSubmitReasonFlag != "" {
-		message += " " + todoSubmitReasonFlag
+	if reason != "" {
+		message += " " + reason
 	}
 	var alreadyReview bool
 	tf, t, err := mutateTodo(id, func(t *store.Todo, tf *store.TodoFile, transaction *workapp.Transaction) error {
@@ -157,22 +176,20 @@ func runTodoSubmit(cmd *cobra.Command, args []string) error {
 		return nil
 	})
 	if err != nil {
-		return err
+		return nil, nil, false, err
 	}
 	if alreadyReview {
-		if jsonOutput {
-			output.JSON(t)
-		} else {
-			fmt.Printf("Submitted %s already review: %s\n", t.ID, t.Title)
-		}
-		return nil
+		return tf, t, true, nil
 	}
 	if _, err := store.AppendTodoLog(t, message, ""); err != nil {
-		return err
+		return nil, nil, false, err
 	}
 	// Submit is the human gate: agent finished, person needs to accept.
 	notifyTodoEvent(t, notifyEventReview)
-	return finishTodoMutation(tf, t, fmt.Sprintf("Submitted %s for confirmation: %s", t.ID, t.Title))
+	if err := syncExistingTodoDocs(tf, t.ID); err != nil {
+		return nil, nil, false, err
+	}
+	return tf, t, false, nil
 }
 
 func runTodoDone(cmd *cobra.Command, args []string) error {

@@ -101,6 +101,13 @@ final class ATMTodoMenuTests: XCTestCase {
         XCTAssertFalse(titles.contains("复制启动提示"))
     }
 
+    func testClosedTodoHidesTheLaunchPrompt() throws {
+        for status in ["done", "dropped"] {
+            let titles = menu(for: try makeTodo(status: status)).items.map(\.title)
+            XCTAssertFalse(titles.contains("复制启动提示"))
+        }
+    }
+
     func testLinksBecomeASubmenuOnlyWhenThereAreLinks() throws {
         let plain = menu(for: try makeTodo()).items.map(\.title)
         XCTAssertFalse(plain.contains("打开链接"))

@@ -12,6 +12,8 @@ struct ATMTranscriptTextView: NSViewRepresentable {
     let text: String
     var font: NSFont = .monospacedSystemFont(ofSize: ATMFont.Tier.body.size, weight: .regular)
     var insets = NSSize(width: 16, height: 14)
+    var accessibilityLabel = "会话完整对话"
+    var scrollsToEndOnUpdate = false
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -41,7 +43,7 @@ struct ATMTranscriptTextView: NSViewRepresentable {
         textView.isIncrementalSearchingEnabled = true
         textView.font = font
         textView.textColor = .labelColor
-        textView.setAccessibilityLabel("会话完整对话")
+        textView.setAccessibilityLabel(accessibilityLabel)
         // TextKit 1 lays the whole document out up front unless told otherwise;
         // TextKit 2 (the default from macOS 14) is already viewport-driven, and
         // reading `layoutManager` on it would silently downgrade the stack.
@@ -56,6 +58,9 @@ struct ATMTranscriptTextView: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
         scrollView.documentView = textView
+        if scrollsToEndOnUpdate {
+            scrollToEnd(textView)
+        }
         return scrollView
     }
 
@@ -64,12 +69,17 @@ struct ATMTranscriptTextView: NSViewRepresentable {
         if textView.font != font {
             textView.font = font
         }
+        textView.setAccessibilityLabel(accessibilityLabel)
         // Compared against the coordinator's copy rather than `textView.string`:
         // SwiftUI re-runs this on unrelated redraws, and diffing a megabyte of
         // transcript out of the text storage each time is the cost we came to avoid.
         guard context.coordinator.appliedText != text else { return }
         apply(text, to: textView, coordinator: context.coordinator)
-        textView.scroll(.zero)
+        if scrollsToEndOnUpdate {
+            scrollToEnd(textView)
+        } else {
+            textView.scroll(.zero)
+        }
     }
 
     private func apply(_ text: String, to textView: NSTextView, coordinator: Coordinator) {
@@ -78,6 +88,11 @@ struct ATMTranscriptTextView: NSViewRepresentable {
         // macOS versions; re-stating it is cheaper than building an attributed copy.
         textView.font = font
         coordinator.appliedText = text
+    }
+
+    private func scrollToEnd(_ textView: NSTextView) {
+        let end = (textView.string as NSString).length
+        textView.scrollRangeToVisible(NSRange(location: end, length: 0))
     }
 
     final class Coordinator {

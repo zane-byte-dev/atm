@@ -353,12 +353,22 @@ private struct DesktopAgentPresenceRow: View {
 }
 
 private struct DesktopAgentPresenceDetail: View {
+    private enum DetailTab: String, CaseIterable {
+        case overview
+        case updates
+    }
+
+    /// 执行动态 tab 里默认展开的条数；更早的收进 DisclosureGroup。
+    /// CLI 侧 RecentUpdates 也截到这个上限，所以常态下不会触发折叠。
+    private static let expandedUpdateLimit = 10
+
     let session: ATMLiveSession
     let relatedTodo: ATMTodo?
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
     let onOpenSession: () -> Void
 
+    @State private var selectedTab: DetailTab = .overview
     @State private var copied = false
     @State private var showingTranscript = false
     @State private var transcript = ""
@@ -368,8 +378,16 @@ private struct DesktopAgentPresenceDetail: View {
     var body: some View {
         VStack(spacing: 0) {
             detailHeader
-            Divider()
-            detailContent
+            detailTabs
+            Group {
+                switch selectedTab {
+                case .overview:
+                    overviewContent
+                case .updates:
+                    updatesContent
+                }
+            }
+            .atmAnimatedSwap(selectedTab.rawValue, style: .detail)
         }
         .background(ATMTheme.canvas)
         .sheet(isPresented: $showingTranscript) {
@@ -464,7 +482,40 @@ private struct DesktopAgentPresenceDetail: View {
         .fixedSize()
     }
 
-    private var detailContent: some View {
+    /// 分页样式沿用任务详情 / 收集详情（见 DesktopTodoDetail.detailTabs）。
+    private var detailTabs: some View {
+        HStack(spacing: 0) {
+            detailTabButton(.overview, title: "概览", icon: "doc.text")
+            detailTabButton(.updates, title: "执行动态", icon: "clock.arrow.circlepath")
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 46)
+        .background(ATMTheme.canvas)
+    }
+
+    private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
+        let selected = selectedTab == tab
+        return Button {
+            selectedTab = tab
+        } label: {
+            Label(title, systemImage: icon)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
+                .padding(.horizontal, 12)
+                .frame(height: 46)
+                .overlay(alignment: .bottom) {
+                    Capsule()
+                        .fill(selected ? ATMTheme.accent : Color.clear)
+                        .frame(height: 2)
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var overviewContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
                 if session.presenceState == .attention {
@@ -476,13 +527,22 @@ private struct DesktopAgentPresenceDetail: View {
                 if let latestResultText = session.latestResultText {
                     latestResult(latestResultText)
                 }
-                if !session.visibleUpdates.isEmpty {
-                    executionUpdates
-                }
                 if session.bindingTodoID != nil {
                     relatedTask
                 }
                 technicalDetails
+            }
+            .frame(maxWidth: 820, alignment: .leading)
+            .padding(.horizontal, 24)
+            .padding(.vertical, 20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var updatesContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                executionUpdates
             }
             .frame(maxWidth: 820, alignment: .leading)
             .padding(.horizontal, 24)
@@ -537,33 +597,55 @@ private struct DesktopAgentPresenceDetail: View {
         }
     }
 
-    /// 最新一条在最上面且默认只展开它。
+    /// 最新一条在最上面；默认展开最近 `expandedUpdateLimit` 条，更早的收进折叠。
     ///
     /// `updates` 从 CLI 出来是按时间正序的（见 parser 里的 `recentUpdates`），全展开时
-    /// 得从上往下读三条才知道现在是什么状态，而越靠上的越旧、越没用——三条往往还是同一件
-    /// 事的三次重述。逐条那个一模一样的 `text.bubble` 图标也去掉了：三条同图标等于没图标。
+    /// 得从上往下读完才知道现在是什么状态，而越靠上的越旧——往往还是同一件事的多次重述。
+    /// 单独 tab 后可以放宽展开窗口；再往上就只挡视线了。
+    /// 不再套带标题或逐条浮起的卡片：tab 自己已经叫「执行动态」，各条之间留白即可。
     private var executionUpdates: some View {
         let updates = Array(session.visibleUpdates.reversed())
-        return detailSection("执行动态") {
-            VStack(alignment: .leading, spacing: 12) {
-                if let latest = updates.first {
-                    ATMMarkdownContentView(source: latest)
+        return Group {
+            if updates.isEmpty {
+                VStack(spacing: 9) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(ATMFont.font(.display, weight: .light))
+                    Text("暂无执行动态")
+                        .font(ATMFont.font(.bodyLarge, weight: .medium))
+                    Text("Agent 输出阶段性进展时，会按时间出现在这里。")
+                        .font(ATMFont.footnote)
+                        .multilineTextAlignment(.center)
                 }
-                if updates.count > 1 {
-                    DisclosureGroup("更早 \(updates.count - 1) 条动态") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(Array(updates.dropFirst().enumerated()), id: \.offset) { _, update in
-                                ATMMarkdownContentView(source: update)
-                            }
+                .foregroundStyle(ATMTheme.secondary)
+                .frame(maxWidth: .infinity, minHeight: 180)
+                .padding(.vertical, 28)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    executionUpdateList(Array(updates.prefix(Self.expandedUpdateLimit)))
+                    if updates.count > Self.expandedUpdateLimit {
+                        let older = Array(updates.dropFirst(Self.expandedUpdateLimit))
+                        DisclosureGroup("更早 \(older.count) 条动态") {
+                            executionUpdateList(older)
+                            .padding(.top, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        .padding(.top, 10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
                     }
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
                 }
             }
         }
+    }
+
+    /// 扁平列表让连续的短进展保持一组，留白负责区分消息，避免形成表格感。
+    private func executionUpdateList(_ updates: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ForEach(Array(updates.enumerated()), id: \.offset) { _, update in
+                ATMMarkdownContentView(source: update)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.vertical, 12)
     }
 
     private var relatedTask: some View {
@@ -599,7 +681,7 @@ private struct DesktopAgentPresenceDetail: View {
     }
 
     private var technicalDetails: some View {
-        DisclosureGroup("技术信息") {
+        detailSection("技术信息") {
             VStack(spacing: 9) {
                 infoRow("来源", ATMAgentDisplay.clientName(session))
                 infoRow("入口", launchRoute.destinationLabel)
@@ -615,12 +697,9 @@ private struct DesktopAgentPresenceDetail: View {
                     infoRow("主题", session.topics.joined(separator: " · "))
                 }
             }
-            .padding(.top, 10)
+            .font(ATMFont.footnote)
+            .foregroundStyle(ATMTheme.secondary)
         }
-        .font(ATMFont.footnote)
-        .foregroundStyle(ATMTheme.secondary)
-        .padding(16)
-        .atmWorkspaceCard()
     }
 
     private var attentionText: String {

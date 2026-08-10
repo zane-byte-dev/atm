@@ -844,3 +844,36 @@ func TestMigrateV34ToV35DropsLaneAndFeaturePath(t *testing.T) {
 		t.Fatalf("migrated todo = %+v", todo)
 	}
 }
+
+func TestMigrateV36ToV37AddsAutomaticDispatchAudit(t *testing.T) {
+	db := openTempDB(t)
+	for _, statement := range []string{
+		`ALTER TABLE collection_sources DROP COLUMN auto_dispatch`,
+		`ALTER TABLE collection_items DROP COLUMN dispatch_status`,
+		`ALTER TABLE collection_items DROP COLUMN dispatch_error`,
+		`UPDATE schema_version SET version = 36`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate v36→v37: %v", err)
+	}
+	var version, itemColumns int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_items')
+		WHERE name IN ('dispatch_status','dispatch_error')`).Scan(&itemColumns); err != nil {
+		t.Fatal(err)
+	}
+	var sourceColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_sources')
+		WHERE name='auto_dispatch'`).Scan(&sourceColumns); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || itemColumns != 2 || sourceColumns != 1 {
+		t.Fatalf("version=%d item columns=%d source columns=%d", version, itemColumns, sourceColumns)
+	}
+}

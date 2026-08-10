@@ -56,6 +56,7 @@ final class ModelsTests: XCTestCase {
                          {"id":"cs2","connector":"example","kind":"bot",
                           "external_id":"bot-1","name":"发布通知",
                           "strategy":"tasks","decision_unit":"message","interval_minutes":15,
+                          "auto_dispatch":true,
                           "priority":"P2","enabled":true,"created_at":12,"updated_at":13}],
               "runs":[{"id":"cr1","connector":"example","source_id":"cs1",
                        "status":"succeeded","started_at":100,"finished_at":110,
@@ -67,6 +68,7 @@ final class ModelsTests: XCTestCase {
                         "action":"create","title":"实现自动收集","item_type":"requirement",
                         "project":"atm","priority":"P1","reason":"明确需求","confidence":0.95,
                         "todo_id":"t1","todo_status":"open",
+                        "dispatch_status":"dispatched",
                         "status":"processed","created_at":100,"updated_at":101},
                        {"id":"ci2","source_id":"cs1","connector":"example",
                         "conversation_id":"channel-1","fingerprint":"fp2","message_ids":["m2"],
@@ -91,12 +93,14 @@ final class ModelsTests: XCTestCase {
         // behaviour it actually had; a notification feed carries its own.
         XCTAssertEqual(overview.sources.first?.effectiveDecisionUnit, "window")
         XCTAssertEqual(overview.sources.last?.effectiveDecisionUnit, "message")
+        XCTAssertEqual(overview.sources.last?.automaticallyDispatches, true)
         XCTAssertEqual(overview.sources.last?.symbolName, "cpu")
         XCTAssertEqual(overview.sources.first?.effectiveIntervalMinutes, 60)
         XCTAssertEqual(overview.latestRun?.id, "cr1")
         XCTAssertEqual(overview.connectorHealth.first?.status, "ready")
         XCTAssertEqual(overview.items.first?.todoID, "t1")
         XCTAssertEqual(overview.items.first?.messageIDs, ["m1"])
+        XCTAssertEqual(overview.items.first?.dispatchStatus, "dispatched")
         // A record is only settled once the Todo it filed is: the open one stays in
         // the main list, the finished one folds away with the insights and noise.
         XCTAssertEqual(overview.items.first?.todoClosed, false)
@@ -113,6 +117,31 @@ final class ModelsTests: XCTestCase {
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)
         XCTAssertEqual(notification?.subtitle, "自动收集完成")
         XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 沉淀 0 · 失败 0")
+    }
+
+    func testTaskRunDecodesExecutionEvidence() throws {
+        let run = try JSONDecoder().decode(
+            ATMTaskRun.self,
+            from: Data(
+                """
+                {"id":"r1","todo_id":"t1","agent":"codex","project":"atm",
+                 "work_dir":"/tmp/atm","policy":"guarded","log_path":"/tmp/r1.log",
+                 "status":"failed","pid":42,"start_ts":100,"end_ts":110,
+                 "exit_code":7,"message":"agent exited with code 7"}
+                """.utf8
+            )
+        )
+        XCTAssertEqual(run.todoID, "t1")
+        XCTAssertEqual(run.exitCode, 7)
+        XCTAssertFalse(run.isActive)
+    }
+
+    func testTaskRunLogPolicyRequestsABoundedTail() {
+        XCTAssertEqual(ATMTaskRunLogPolicy.maximumBytes, 65_536)
+        XCTAssertEqual(
+            ATMTaskRunLogPolicy.arguments(todoID: "t242"),
+            ["todo", "tail", "t242", "--bytes", "65536"]
+        )
     }
 
     func testCollectionItemTypesExplainClassifierVocabulary() {

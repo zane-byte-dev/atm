@@ -151,6 +151,9 @@ func upsertSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, si
 		p.SessionID, p.ShortID, p.Agent, p.Project, fp, p.CreatedAt, p.CreatedTS, p.Summary, lastTS); err != nil {
 		return err
 	}
+	if err := linkTaskRun(tx, p.SessionID, p.Agent, p.Project, p.CreatedTS); err != nil {
+		return err
+	}
 	seq := 0
 	if len(p.Messages) > 0 {
 		for _, m := range p.Messages {
