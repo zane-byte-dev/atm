@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -122,6 +123,24 @@ func runSessionBind(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	// An unattended task run carries its durable run id in the environment. The
+	// explicit bind is the first point where the child knows its real session id,
+	// and is therefore more reliable than associating concurrent runs by start
+	// time during transcript sync.
+	//
+	// The link is execution evidence, not part of the binding contract, and the
+	// binding above has already been committed. Failing here would report the
+	// whole command as failed after it succeeded — and this command is exactly
+	// what the dispatched Agent is told to run, so it would see a hard error for
+	// a run row that is merely missing or already reconciled. Warn instead.
+	if runID := strings.TrimSpace(os.Getenv("ATM_RUN_ID")); runID != "" &&
+		strings.TrimSpace(os.Getenv("ATM_TODO_ID")) == todo.ID {
+		if err := withDB(false, func(db *sql.DB) error {
+			return store.LinkTaskRunSession(db, runID, todo.ID, sessionID)
+		}); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not link session to task run %s: %v\n", runID, err)
+		}
 	}
 	tf, err := store.LoadTodosReadOnly()
 	if err != nil {

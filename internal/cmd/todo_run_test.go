@@ -65,7 +65,7 @@ func TestTodoRunClaimsRunAndStartsTodo(t *testing.T) {
 	if runErr != nil {
 		t.Fatal(runErr)
 	}
-	if !strings.Contains(out, "Dispatched t1 to codex") || !strings.Contains(out, "PID:    4242") {
+	if !strings.Contains(out, "Dispatched t1 to Codex") || !strings.Contains(out, "PID:    4242") {
 		t.Fatalf("output = %q", out)
 	}
 	todos, err := store.LoadTodosReadOnly()
@@ -95,6 +95,214 @@ func TestTodoRunClaimsRunAndStartsTodo(t *testing.T) {
 	}
 	if !strings.Contains(show, `"latest_run"`) || !strings.Contains(show, runs[0].ID) {
 		t.Fatalf("todo show = %q", show)
+	}
+}
+
+func TestTaskRunPromptsLeadWithTheUserFacingTodoTitle(t *testing.T) {
+	todo := &store.Todo{ID: "t252", Title: "增加前进后退导航"}
+
+	initial := buildTaskRunPrompt(todo)
+	if !strings.HasPrefix(initial, "增加前进后退导航 (ATM Todo t252)\n") ||
+		strings.HasPrefix(initial, "You are the unattended") {
+		t.Fatalf("initial prompt = %q", initial)
+	}
+
+	continued := buildTaskRunContinuationPrompt(todo, "把按钮换成图标")
+	if !strings.HasPrefix(continued, "增加前进后退导航 (ATM Todo t252)\n") ||
+		!strings.Contains(continued, "把按钮换成图标") ||
+		strings.HasPrefix(continued, "Continue the existing") {
+		t.Fatalf("continuation prompt = %q", continued)
+	}
+}
+
+func TestTodoRunContinuesLatestCodexSessionWithFollowUp(t *testing.T) {
+	withTempAtmDir(t)
+	workDir := t.TempDir()
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Continue me", Priority: "P1", Status: store.TodoStatusReview,
+		Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "019fea8d-a0c4-7130-a984-2c8128705934"
+	// The rollout form is what transcript sync writes, so the continuation path
+	// has to cope with it rather than only with the id `session bind` reports.
+	sessionID := "rollout-2026-08-10T15-19-46-" + threadID
+	previous := store.TaskRun{
+		ID: "run-previous", TodoID: "t1", Agent: "codex", Project: "atm", WorkDir: workDir,
+		Prompt: "initial", Policy: "guarded", LogPath: filepath.Join(workDir, "previous.log"),
+		Status: store.TaskRunStarting, StartTS: 10, SessionID: &sessionID,
+	}
+	if err := store.CreateTaskRun(db, previous); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := store.FinishTaskRun(db, previous.ID, 0, 20, "finished"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	oldPolicy, oldCWD, oldContinue := todoRunPolicyFlag, todoRunCWDFlag, todoRunContinueFlag
+	oldResolve, oldLaunch, oldJSON := resolveTaskRunAgentBinary, launchTaskRunController, jsonOutput
+	t.Cleanup(func() {
+		todoRunPolicyFlag, todoRunCWDFlag, todoRunContinueFlag = oldPolicy, oldCWD, oldContinue
+		resolveTaskRunAgentBinary, launchTaskRunController, jsonOutput = oldResolve, oldLaunch, oldJSON
+	})
+	todoRunPolicyFlag, todoRunCWDFlag = "guarded", workDir
+	todoRunContinueFlag = "把按钮文案改清楚，并补上测试"
+	resolveTaskRunAgentBinary = func(string) (string, error) { return "/fake/codex", nil }
+	var launched store.TaskRun
+	launchTaskRunController = func(run store.TaskRun) (int, error) {
+		launched = run
+		return 4242, nil
+	}
+	jsonOutput = false
+
+	var runErr error
+	out := captureStdout(t, func() { runErr = runTodoRun(todoRunCmd, []string{"t1"}) })
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if !strings.Contains(out, "Continued t1 in its previous Codex session") {
+		t.Fatalf("output = %q", out)
+	}
+	if launched.ResumeSessionID == nil || *launched.ResumeSessionID != threadID ||
+		!strings.Contains(launched.Prompt, todoRunContinueFlag) ||
+		!strings.Contains(launched.Prompt, "atm session bind t1") {
+		t.Fatalf("launched = %#v", launched)
+	}
+	// Intent is not evidence: this run's own session id stays unknown until it
+	// binds, which is also what keeps it visible to transcript sync.
+	if launched.SessionID != nil {
+		t.Fatalf("continuation pre-claimed a session identity: %#v", launched.SessionID)
+	}
+}
+
+func TestTodoRunRefusesToContinueAnUnresumableSession(t *testing.T) {
+	withTempAtmDir(t)
+	workDir := t.TempDir()
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Continue me", Priority: "P1", Status: store.TodoStatusReview,
+		Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No UUID anywhere in the id, so Codex would read it as a thread name and
+	// silently start over rather than reporting a failure.
+	sessionID := "codex-desktop-session"
+	previous := store.TaskRun{
+		ID: "run-previous", TodoID: "t1", Agent: "codex", Project: "atm", WorkDir: workDir,
+		Prompt: "initial", Policy: "guarded", LogPath: filepath.Join(workDir, "previous.log"),
+		Status: store.TaskRunStarting, StartTS: 10, SessionID: &sessionID,
+	}
+	if err := store.CreateTaskRun(db, previous); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := store.FinishTaskRun(db, previous.ID, 0, 20, "finished"); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	oldPolicy, oldCWD, oldContinue := todoRunPolicyFlag, todoRunCWDFlag, todoRunContinueFlag
+	oldResolve, oldLaunch := resolveTaskRunAgentBinary, launchTaskRunController
+	t.Cleanup(func() {
+		todoRunPolicyFlag, todoRunCWDFlag, todoRunContinueFlag = oldPolicy, oldCWD, oldContinue
+		resolveTaskRunAgentBinary, launchTaskRunController = oldResolve, oldLaunch
+	})
+	todoRunPolicyFlag, todoRunCWDFlag = "guarded", workDir
+	todoRunContinueFlag = "再改一版"
+	resolveTaskRunAgentBinary = func(string) (string, error) { return "/fake/codex", nil }
+	launched := false
+	launchTaskRunController = func(store.TaskRun) (int, error) {
+		launched = true
+		return 4242, nil
+	}
+
+	err = runTodoRun(todoRunCmd, []string{"t1"})
+	if err == nil || !strings.Contains(err.Error(), "no resumable") {
+		t.Fatalf("err = %v", err)
+	}
+	if launched {
+		t.Fatal("an unresumable session must not reach the controller")
+	}
+}
+
+func TestTodoRunInterruptStopsControllerWithoutChangingTodoLifecycle(t *testing.T) {
+	withTempAtmDir(t)
+	workDir := t.TempDir()
+	logPath := filepath.Join(workDir, "run.log")
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Interrupt me", Priority: "P1", Status: store.TodoStatusInProgress,
+		Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTaskRun(db, store.TaskRun{
+		ID: "run-1", TodoID: "t1", Agent: "codex", Project: "atm", WorkDir: workDir,
+		Prompt: "test", Policy: "guarded", LogPath: logPath, Status: store.TaskRunRunning,
+		PID: 4321, StartTS: 1,
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	oldInterrupt, oldJSON := interruptTaskRunProcess, jsonOutput
+	t.Cleanup(func() { interruptTaskRunProcess, jsonOutput = oldInterrupt, oldJSON })
+	interruptedPID := 0
+	interruptTaskRunProcess = func(pid int) error {
+		interruptedPID = pid
+		return nil
+	}
+	jsonOutput = false
+
+	var interruptErr error
+	out := captureStdout(t, func() {
+		interruptErr = runTodoRunInterrupt(todoRunInterruptCmd, []string{"t1"})
+	})
+	if interruptErr != nil {
+		t.Fatal(interruptErr)
+	}
+	if interruptedPID != 4321 || !strings.Contains(out, "Interrupted t1 agent run run-1") {
+		t.Fatalf("pid=%d output=%q", interruptedPID, out)
+	}
+	readDB, err := store.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.GetTaskRun(readDB, "run-1")
+	readDB.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || run.Status != store.TaskRunInterrupted || run.ExitCode != nil {
+		t.Fatalf("run = %#v", run)
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if todo := store.FindTodo(todos, "t1"); todo == nil || todo.Status != store.TodoStatusInProgress {
+		t.Fatalf("todo = %#v", todo)
+	}
+	logBody, err := os.ReadFile(logPath)
+	if err != nil || !strings.Contains(string(logBody), "ATM run interrupted by user") {
+		t.Fatalf("log=%q err=%v", logBody, err)
 	}
 }
 
@@ -178,6 +386,127 @@ func TestExecuteTaskRunRecordsAgentOutcomeAndOnlySuccessSubmits(t *testing.T) {
 	}
 }
 
+func TestExecuteCodexTaskRunAttachesThreadWithoutAgentBind(t *testing.T) {
+	withTempAtmDir(t)
+	t.Setenv("ATM_SKIP_LOCAL_NOTIFICATION", "1")
+	workDir := t.TempDir()
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Attach Codex thread", Priority: "P1", Status: store.TodoStatusInProgress,
+		Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(config.AtmDir, "exec", "run-thread.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTaskRun(db, store.TaskRun{
+		ID: "run-thread", TodoID: "t1", Agent: "codex", Project: "atm", WorkDir: workDir,
+		Prompt: "test", Policy: "guarded", LogPath: logPath,
+		Status: store.TaskRunStarting, StartTS: 1,
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	// Reproduce transcript sync racing ahead with a nearby, unrelated Codex
+	// session. The controller-owned thread.started event must replace this guess.
+	if _, err := db.Exec(`UPDATE task_runs SET session_id='wrong-nearby-session' WHERE id='run-thread'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	oldBuild := buildTaskRunAgentCommand
+	t.Cleanup(func() { buildTaskRunAgentCommand = oldBuild })
+	buildTaskRunAgentCommand = func(store.TaskRun) (*exec.Cmd, error) {
+		command := exec.Command(os.Args[0], "-test.run=TestTaskRunHelperProcess", "--")
+		command.Env = append(os.Environ(), "ATM_TASK_RUN_TEST_MODE=codex-thread")
+		return command, nil
+	}
+	if err := executeTaskRun("run-thread"); err != nil {
+		t.Fatal(err)
+	}
+
+	const threadID = "019feaa4-f7fd-77e3-b160-18fc1c86e69e"
+	readDB, err := store.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.GetTaskRun(readDB, "run-thread")
+	readDB.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || run.SessionID == nil || *run.SessionID != threadID {
+		t.Fatalf("run = %#v", run)
+	}
+	bindings, err := store.ListTodoSessionBindings("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0].SessionID != threadID || bindings[0].UnboundAt == nil ||
+		bindings[0].Reason != "submit:review" {
+		t.Fatalf("bindings = %#v", bindings)
+	}
+	logBody, err := os.ReadFile(logPath)
+	if err != nil || !strings.Contains(string(logBody), `"type":"thread.started"`) {
+		t.Fatalf("log=%q err=%v", logBody, err)
+	}
+}
+
+func TestCodexThreadStartedWriterHandlesChunkedJSONOnce(t *testing.T) {
+	var destination bytes.Buffer
+	var linked []string
+	writer := newCodexThreadStartedWriter(&destination, func(sessionID string) error {
+		linked = append(linked, sessionID)
+		return nil
+	})
+	chunks := []string{
+		`{"type":"thr`,
+		`ead.started","thread_id":"019feaa4-f7fd-77e3-b160-18fc1c86e69e"}` + "\n",
+		`{"type":"thread.started","thread_id":"019feaa5-f7fd-77e3-b160-18fc1c86e69e"}` + "\n",
+	}
+	for _, chunk := range chunks {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(linked) != 1 || linked[0] != "019feaa4-f7fd-77e3-b160-18fc1c86e69e" {
+		t.Fatalf("linked = %#v", linked)
+	}
+	if destination.String() != strings.Join(chunks, "") {
+		t.Fatalf("destination = %q", destination.String())
+	}
+}
+
+func TestCodexThreadStartedWriterRetriesTransientLinkFailure(t *testing.T) {
+	var destination bytes.Buffer
+	attempts := 0
+	writer := newCodexThreadStartedWriter(&destination, func(string) error {
+		attempts++
+		if attempts == 1 {
+			return fmt.Errorf("database is locked")
+		}
+		return nil
+	})
+	if _, err := writer.Write([]byte(
+		`{"type":"thread.started","thread_id":"019feaa4-f7fd-77e3-b160-18fc1c86e69e"}` + "\n",
+	)); err != nil {
+		t.Fatal(err)
+	}
+	if writer.linkErr == nil || writer.linked {
+		t.Fatalf("first attempt: linked=%t err=%v", writer.linked, writer.linkErr)
+	}
+	writer.retryLink()
+	if !writer.linked || writer.linkErr != nil || attempts != 2 {
+		t.Fatalf("retry: linked=%t err=%v attempts=%d", writer.linked, writer.linkErr, attempts)
+	}
+}
+
 func TestCollectionToAgentRunToReviewFlywheel(t *testing.T) {
 	withTempAtmDir(t)
 	t.Setenv("ATM_SKIP_LOCAL_NOTIFICATION", "1")
@@ -251,6 +580,10 @@ func TestTaskRunHelperProcess(t *testing.T) {
 	if mode == "" {
 		return
 	}
+	if mode == "codex-thread" {
+		fmt.Println(`{"type":"thread.started","thread_id":"019feaa4-f7fd-77e3-b160-18fc1c86e69e"}`)
+		os.Exit(0)
+	}
 	fmt.Println("helper " + mode)
 	if mode == "failure" {
 		os.Exit(7)
@@ -282,6 +615,50 @@ func TestBuildCodexTaskRunCommandKeepsGuardedAndTrustedDistinct(t *testing.T) {
 	if !strings.Contains(trustedArgs, "--dangerously-bypass-approvals-and-sandbox") ||
 		strings.Contains(trustedArgs, "--sandbox workspace-write") {
 		t.Fatalf("trusted args = %q", trustedArgs)
+	}
+
+	resumeID := "019fea8d-a0c4-7130-a984-2c8128705934"
+	run.SessionID = &resumeID
+	linkedFresh, err := buildCodexTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(linkedFresh.Args, " "), " resume ") {
+		t.Fatalf("a sync-linked fresh run must not resume: %q", strings.Join(linkedFresh.Args, " "))
+	}
+	// An outcome message must never be able to turn a run into a resume: intent
+	// lives in its own column now.
+	run.Message = "continuing previous agent session"
+	stillFresh, err := buildCodexTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(stillFresh.Args, " "), " resume ") {
+		t.Fatalf("display text must not drive execution: %q", strings.Join(stillFresh.Args, " "))
+	}
+
+	run.ResumeSessionID = &resumeID
+	resumed, err := buildCodexTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedArgs := strings.Join(resumed.Args, " ")
+	if !strings.Contains(resumedArgs, "resume "+resumeID+" -") {
+		t.Fatalf("resumed args = %q", resumedArgs)
+	}
+
+	// The rollout form is what transcript sync stores. Codex only accepts the
+	// bare thread UUID and treats anything else as a thread name, which silently
+	// starts a brand-new session instead of failing.
+	rollout := "rollout-2026-08-10T15-19-46-" + resumeID
+	run.ResumeSessionID = &rollout
+	normalized, err := buildCodexTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalizedArgs := strings.Join(normalized.Args, " ")
+	if !strings.Contains(normalizedArgs, "resume "+resumeID+" -") || strings.Contains(normalizedArgs, "rollout-") {
+		t.Fatalf("rollout id was not normalized to a thread UUID: %q", normalizedArgs)
 	}
 }
 

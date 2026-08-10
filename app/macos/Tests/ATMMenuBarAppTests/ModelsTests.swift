@@ -86,6 +86,7 @@ final class ModelsTests: XCTestCase {
         let overview = try JSONDecoder().decode(ATMCollectionOverview.self, from: data)
         XCTAssertTrue(overview.enabled)
         XCTAssertEqual(overview.summary.createdToday, 1)
+        XCTAssertEqual(overview.items.first?.id, "ci1")
         XCTAssertEqual(overview.sources.first?.externalID, "channel-1")
         XCTAssertEqual(overview.sources.first?.excludePattern, "机器人通知")
         XCTAssertEqual(overview.sources.first?.effectiveStrategy, "observe")
@@ -97,6 +98,9 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.sources.last?.symbolName, "cpu")
         XCTAssertEqual(overview.sources.first?.effectiveIntervalMinutes, 60)
         XCTAssertEqual(overview.latestRun?.id, "cr1")
+        XCTAssertEqual(overview.latestRun(for: "cs1")?.id, "cr1")
+        XCTAssertEqual(overview.latestSuccessfulRun(for: "cs1")?.id, "cr1")
+        XCTAssertNil(overview.latestRun(for: "cs2"))
         XCTAssertEqual(overview.connectorHealth.first?.status, "ready")
         XCTAssertEqual(overview.items.first?.todoID, "t1")
         XCTAssertEqual(overview.items.first?.messageIDs, ["m1"])
@@ -119,6 +123,13 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 沉淀 0 · 失败 0")
     }
 
+    func testCollectionManualRunIsScopedToOneSource() {
+        XCTAssertEqual(
+            ATMCollectionRunCommand.arguments(sourceID: "cs-example"),
+            ["collect", "run", "--source", "cs-example", "--json"]
+        )
+    }
+
     func testTaskRunDecodesExecutionEvidence() throws {
         let run = try JSONDecoder().decode(
             ATMTaskRun.self,
@@ -136,12 +147,114 @@ final class ModelsTests: XCTestCase {
         XCTAssertFalse(run.isActive)
     }
 
-    func testTaskRunLogPolicyRequestsABoundedTail() {
-        XCTAssertEqual(ATMTaskRunLogPolicy.maximumBytes, 65_536)
+    /// Codex reads a non-UUID id as a thread *name* and silently starts a brand
+    /// new session when no such thread exists, so “继续修改” must apply exactly the
+    /// same test as `atm todo run --continue` rather than only checking for a
+    /// non-empty session id.
+    func testResumableThreadIDMatchesWhatCodexCanActuallyResume() {
+        let threadID = "019fea8d-a0c4-7130-a984-2c8128705934"
+        XCTAssertEqual(ATMTaskRunSessionRouting.resumableThreadID(threadID), threadID)
+        XCTAssertEqual(
+            ATMTaskRunSessionRouting.resumableThreadID("rollout-2026-08-10T15-19-46-\(threadID)"),
+            threadID
+        )
+        XCTAssertEqual(
+            ATMTaskRunSessionRouting.resumableThreadID(threadID.uppercased()),
+            threadID
+        )
+        XCTAssertNil(ATMTaskRunSessionRouting.resumableThreadID("codex-desktop-session"))
+        XCTAssertNil(ATMTaskRunSessionRouting.resumableThreadID("2c812870"))
+        XCTAssertNil(ATMTaskRunSessionRouting.resumableThreadID("   "))
+        XCTAssertNil(ATMTaskRunSessionRouting.resumableThreadID(nil))
+    }
+
+    func testCollectionWorkspaceNoticeOnlyShowsUnattributedFailures() {
+        XCTAssertEqual(
+            ATMCollectionWorkspaceNotice.message(shared: "删除来源失败", sourceErrors: [:]),
+            "删除来源失败"
+        )
+        // 采集失败已经显示在那个来源的“采集状态”卡片里，横幅不再重复一遍。
+        XCTAssertNil(
+            ATMCollectionWorkspaceNotice.message(
+                shared: "连接器不可用",
+                sourceErrors: ["cs1": "连接器不可用"]
+            )
+        )
+        XCTAssertNil(ATMCollectionWorkspaceNotice.message(shared: "   ", sourceErrors: [:]))
+        XCTAssertNil(ATMCollectionWorkspaceNotice.message(shared: nil, sourceErrors: [:]))
+    }
+
+    func testTaskRunLogPolicyRequestsABoundedTailForTheFullLogTab() {
+        XCTAssertEqual(ATMTaskRunLogPolicy.maximumBytes, 1_048_576)
         XCTAssertEqual(
             ATMTaskRunLogPolicy.arguments(todoID: "t242"),
-            ["todo", "tail", "t242", "--bytes", "65536"]
+            ["todo", "tail", "t242", "--bytes", "1048576"]
         )
+    }
+
+    func testTaskRunContinuationPassesFollowUpWithoutShellEncoding() {
+        XCTAssertEqual(
+            ATMCommandBuilder.continueTaskRun(
+                id: "t253",
+                agent: "codex",
+                policy: "guarded",
+                instructions: "调整按钮文案\n并补测试"
+            ),
+            ["todo", "run", "t253", "--agent", "codex", "--policy", "guarded", "--continue", "调整按钮文案\n并补测试", "--json"]
+        )
+    }
+
+    func testTaskRunInterruptUsesStructuredCLIArguments() {
+        XCTAssertEqual(
+            ATMCommandBuilder.interruptTaskRun(id: "t255"),
+            ["todo", "interrupt", "t255", "--json"]
+        )
+    }
+
+    func testTaskRunRoutingPrefersTheTodoBindingAndMatchesCodexIdentities() throws {
+        let run = try JSONDecoder().decode(
+            ATMTaskRun.self,
+            from: Data(
+                """
+                {"id":"r1","todo_id":"t249","agent":"codex","project":"atm",
+                 "work_dir":"/tmp/atm","policy":"guarded","log_path":"/tmp/r1.log",
+                 "status":"running","start_ts":100,
+                 "session_id":"rollout-2026-08-10-019fea8a-b32c-7c40-8824-618a3df50973"}
+                """.utf8
+            )
+        )
+        let correct = try JSONDecoder().decode(
+            ATMLiveSession.self,
+            from: Data(
+                """
+                {"tool":"Codex","session_id":"2c812870",
+                 "resume_id":"019fea8d-a0c4-7130-a984-2c8128705934",
+                 "project":"atm","age_seconds":2,"activity_state":"active","binding_state":"bound",
+                 "binding":{"session_id":"019fea8d-a0c4-7130-a984-2c8128705934","todo_id":"t249"}}
+                """.utf8
+            )
+        )
+        let staleHeuristicLink = try JSONDecoder().decode(
+            ATMLiveSession.self,
+            from: Data(
+                """
+                {"tool":"Codex","session_id":"618a3df5",
+                 "resume_id":"019fea8a-b32c-7c40-8824-618a3df50973",
+                 "project":"atm","age_seconds":20,"activity_state":"active","binding_state":"bound",
+                 "binding":{"session_id":"019fea8a-b32c-7c40-8824-618a3df50973","todo_id":"t247"}}
+                """.utf8
+            )
+        )
+
+        XCTAssertEqual(
+            ATMTaskRunSessionRouting.session(
+                for: run,
+                todoID: "t249",
+                in: [staleHeuristicLink, correct]
+            )?.id,
+            correct.id
+        )
+        XCTAssertTrue(ATMTaskRunSessionRouting.identifiersMatch(run.sessionID, staleHeuristicLink))
     }
 
     func testCollectionItemTypesExplainClassifierVocabulary() {
@@ -1782,6 +1895,72 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(session.latestUserInputText, "Rework the notch state badges")
     }
 
+    func testATMTaskRunUsesTodoTitleInsteadOfControllerPrompt() throws {
+        let prompt = """
+        You are the unattended Agent run for ATM Todo t252: 增加前进后退导航.
+
+        First run `atm todo doc t252` to load the current requirements.
+        """
+        let boundData = try JSONSerialization.data(withJSONObject: [
+            "tool": "Codex",
+            "session_id": "bound-task-run",
+            "project": "atm",
+            "summary": "You are the unattended Agent run for ATM Todo t252",
+            "age_seconds": 3,
+            "first_q": prompt,
+            "last_q": prompt,
+            "binding": [
+                "session_id": "bound-task-run",
+                "todo_id": "t252",
+                "agent": "codex",
+                "project": "atm",
+                "bound_at": 1,
+            ],
+            "todo": [
+                "id": "t252",
+                "title": "我需要一个前进/后退功能",
+                "project": "atm",
+                "status": "in_progress",
+            ],
+        ])
+        let bound = try JSONDecoder().decode(
+            ATMLiveSession.self,
+            from: boundData
+        )
+
+        XCTAssertEqual(bound.presenceTitle, "我需要一个前进/后退功能")
+        XCTAssertEqual(bound.displayTitle, "我需要一个前进/后退功能")
+        XCTAssertNil(bound.latestUserInputBelowTitle)
+
+        let notYetBound = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "unbound-task-run",
+            project: "atm",
+            summary: "You are the unattended Agent run for ATM Todo t252",
+            ageSeconds: 3,
+            firstQuestion: prompt,
+            lastQuestion: prompt
+        )
+        XCTAssertEqual(notYetBound.presenceTitle, "增加前进后退导航")
+        XCTAssertNil(notYetBound.latestUserInputBelowTitle)
+
+        let currentPrompt = """
+        增加前进后退导航 (ATM Todo t252)
+
+        This is an unattended Codex task run managed by ATM.
+        """
+        let current = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "current-task-run",
+            project: "atm",
+            ageSeconds: 3,
+            firstQuestion: currentPrompt,
+            lastQuestion: currentPrompt
+        )
+        XCTAssertEqual(current.presenceTitle, "增加前进后退导航")
+        XCTAssertNil(current.latestUserInputBelowTitle)
+    }
+
     func testLiveSessionDecodesAgentActivityAndBuildsDisplayState() throws {
         let data = Data(
             """
@@ -1814,6 +1993,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(session.latestReplyText, "Inspecting the live session fields and updating the UI.")
         XCTAssertEqual(session.latestResultText, "The Agent workspace is ready.\n\n- Open the source session")
         XCTAssertEqual(session.visibleUpdates, ["Inspecting the live session fields."])
+        XCTAssertEqual(session.latestVisibleUpdate, "Inspecting the live session fields.")
         XCTAssertEqual(session.recentTools, ["rg", "apply_patch"])
         XCTAssertEqual(session.topics, ["ATM UI", "Agent status"])
         XCTAssertEqual(session.pid, "54007")
@@ -1835,6 +2015,24 @@ final class ModelsTests: XCTestCase {
             lastAnswer: "Updating the Agent workspace"
         )
         XCTAssertNil(duplicate.latestReplyText)
+    }
+
+    func testLiveSessionLatestVisibleUpdatePicksNewestDistinctStage() {
+        let session = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "latest-update",
+            project: "atm",
+            ageSeconds: 1,
+            latestResult: "Implementation complete.",
+            updates: [
+                "Inspecting the Agent detail.",
+                "Adding the overview activity card.",
+                "Adding the overview activity card.",
+                "Implementation complete.",
+            ]
+        )
+
+        XCTAssertEqual(session.latestVisibleUpdate, "Adding the overview activity card.")
     }
 
     /// The Agent list hides a row's origin when it matches the column's dominant

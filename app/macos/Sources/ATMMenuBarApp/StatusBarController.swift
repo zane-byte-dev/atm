@@ -68,6 +68,24 @@ final class StatusBarController {
         stopOutsideClickMonitor()
     }
 
+    var canNavigateBack: Bool {
+        desktopWindow?.isVisible == true && desktopNavigation.canGoBack
+    }
+
+    var canNavigateForward: Bool {
+        desktopWindow?.isVisible == true && desktopNavigation.canGoForward
+    }
+
+    func navigateBack() {
+        guard canNavigateBack else { return }
+        desktopNavigation.goBack()
+    }
+
+    func navigateForward() {
+        guard canNavigateForward else { return }
+        desktopNavigation.goForward()
+    }
+
     private func configureStatusItem() {
         guard let button = statusItem.button else { return }
         button.image = ATMBrandAssets.menuBarImage()
@@ -102,9 +120,12 @@ final class StatusBarController {
         section: ATMDesktopSection = .tasks,
         agentSessionID: String? = nil
     ) {
-        desktopNavigation.section = section
         if let todo { desktopNavigation.selectedTodoID = todo.id }
-        if let agentSessionID { desktopNavigation.selectedAgentID = agentSessionID }
+        if let agentSessionID {
+            desktopNavigation.selectedAgentID = agentSessionID
+            desktopNavigation.selectedAgentRunTodoID = nil
+        }
+        desktopNavigation.section = section
         desktopNavigation.showAddTodo = showAddTodo
 
         let window: NSWindow

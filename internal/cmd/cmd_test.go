@@ -1541,6 +1541,16 @@ func TestTodoQueryIncludesDocumentAndRequiresAllTerms(t *testing.T) {
 	}
 }
 
+func TestTodoQueryRelevancePrefersTitleOverIncidentalDescription(t *testing.T) {
+	titleMatch := store.Todo{ID: "t900", Title: "搜索相关性优化", Description: "调整排序"}
+	incidental := store.Todo{ID: "t901", Title: "整理界面", Description: "最后检查搜索相关性优化是否受影响"}
+	if todoQueryRelevance(titleMatch, "搜索相关性") <= todoQueryRelevance(incidental, "搜索相关性") {
+		t.Fatalf("title score %d should beat description score %d",
+			todoQueryRelevance(titleMatch, "搜索相关性"),
+			todoQueryRelevance(incidental, "搜索相关性"))
+	}
+}
+
 func TestFormatQuotaWindow(t *testing.T) {
 	tests := map[int]string{
 		300:   "5h",

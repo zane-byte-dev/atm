@@ -223,13 +223,13 @@ extension ATMLiveSession {
     }
 
     var displayTitle: String {
-        firstMeaningfulText(summary, lastQuestion, firstQuestion)
+        preferredTitleText(summary, lastQuestion, firstQuestion)
             .map { ATMMarkdown.plainSummary($0, limit: 72) }
             ?? "\(tool) 会话"
     }
 
     var currentObjective: String {
-        firstMeaningfulText(lastQuestion, summary, firstQuestion)
+        preferredTitleText(lastQuestion, summary, firstQuestion)
             .map { ATMMarkdown.plainSummary($0, limit: 180) }
             ?? "暂未提取到当前目标"
     }
@@ -257,7 +257,7 @@ extension ATMLiveSession {
         guard let answer = lastAnswer?.trimmingCharacters(in: .whitespacesAndNewlines),
               !answer.isEmpty,
               !Self.looksLikeInjectedInstructions(answer),
-              let titleSource = firstMeaningfulText(summary, lastQuestion, firstQuestion) else {
+              let titleSource = preferredTitleText(summary, lastQuestion, firstQuestion) else {
             return nil
         }
         let normalizedAnswer = Self.comparableText(answer)
@@ -287,7 +287,7 @@ extension ATMLiveSession {
     var latestUserInputBelowTitle: String? {
         guard let input = latestUserInputText else { return nil }
         guard let question = lastQuestion?.trimmingCharacters(in: .whitespacesAndNewlines),
-              let titleSource = firstMeaningfulText(summary, lastQuestion, firstQuestion, lastAnswer),
+              let titleSource = preferredTitleText(summary, lastQuestion, firstQuestion, lastAnswer),
               Self.comparableText(question) == Self.comparableText(titleSource) else {
             return input
         }
@@ -314,6 +314,13 @@ extension ATMLiveSession {
             guard key != resultKey, seen.insert(key).inserted else { return nil }
             return summary
         }
+    }
+
+    /// The newest stage update that adds information beyond the latest result.
+    /// `updates` arrives oldest-first from the CLI, while `visibleUpdates`
+    /// removes injected instructions, duplicates and the final result itself.
+    var latestVisibleUpdate: String? {
+        visibleUpdates.last
     }
 
     var needsUserAttention: Bool {
@@ -367,13 +374,69 @@ extension ATMLiveSession {
         return nil
     }
 
+    /// ATM dispatch prompts are implementation machinery, not conversation
+    /// titles. Prefer the durable Todo title when a binding is available; for
+    /// the short window before the Agent binds, recover the title from the full
+    /// prompt instead of displaying its repeated controller preamble.
+    private func preferredTitleText(_ candidates: String?...) -> String? {
+        if let title = todo?.title.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
+        for candidate in candidates {
+            if let title = Self.atmTaskRunTitle(from: candidate) {
+                return title
+            }
+        }
+        for candidate in candidates {
+            guard let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty,
+                  !Self.looksLikeInjectedInstructions(value) else { continue }
+            return value.replacingOccurrences(of: "\n", with: " ")
+        }
+        return nil
+    }
+
+    private static func atmTaskRunTitle(from value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        let firstLine = value.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? value
+        let normalized = firstLine.lowercased()
+        if let marker = firstLine.range(of: " (ATM Todo ", options: .caseInsensitive),
+           normalized.hasSuffix(")") {
+            let title = firstLine[..<marker.lowerBound]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !title.isEmpty {
+                return title
+            }
+        }
+        let legacyPrefixes = [
+            "you are the unattended agent run for atm todo ",
+            "continue the existing codex work for atm todo ",
+        ]
+        guard legacyPrefixes.contains(where: { normalized.hasPrefix($0) }),
+              let separator = firstLine.firstIndex(of: ":") else {
+            return nil
+        }
+        let title = firstLine[firstLine.index(after: separator)...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return title.isEmpty ? nil : title
+    }
+
     private static func looksLikeInjectedInstructions(_ value: String) -> Bool {
         let prefix = value.prefix(240).lowercased()
+        let isCurrentATMRunPrompt = prefix.contains("(atm todo ")
+            && (prefix.contains("this is an unattended codex task run managed by atm")
+                || prefix.contains("continue the existing codex work for this task"))
         return prefix.contains("agents.md instructions")
             || prefix.contains("<instructions>")
             || prefix.contains("system-reminder")
             || prefix.contains("some conversation entries were omitted")
             || prefix.contains("no retained transcript delta entries")
+            || prefix.hasPrefix("you are the unattended agent run for atm todo ")
+            || prefix.hasPrefix("continue the existing codex work for atm todo ")
+            || isCurrentATMRunPrompt
     }
 
     private static func comparableText(_ value: String) -> String {
@@ -459,7 +522,7 @@ extension ATMLiveSession {
     /// summary or retained user turn yet. The latest Agent text is only a final
     /// fallback and still goes through the injected-instruction filter.
     var presenceTitle: String {
-        firstMeaningfulText(summary, lastQuestion, firstQuestion, lastAnswer)
+        preferredTitleText(summary, lastQuestion, firstQuestion, lastAnswer)
             .map { ATMMarkdown.plainSummary($0, limit: 72) }
             ?? "\(ATMAgentDisplay.name(tool)) 会话"
     }

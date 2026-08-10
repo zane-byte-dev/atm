@@ -55,6 +55,7 @@ var (
 	todoSubmitReasonFlag   string
 	todoRunPolicyFlag      string
 	todoRunCWDFlag         string
+	todoRunContinueFlag    string
 	todoRunTailFollowFlag  bool
 	todoRunTailBytesFlag   int64
 )
@@ -113,6 +114,7 @@ func init() {
 	todoPromptCmd.Flags().BoolVar(&todoPromptCopyFlag, "copy", false, "copy the prompt to the clipboard")
 	todoRunCmd.Flags().StringVar(&todoRunPolicyFlag, "policy", "guarded", "permission policy: guarded or trusted")
 	todoRunCmd.Flags().StringVar(&todoRunCWDFlag, "cwd", "", "working directory (defaults from Todo bindings or current directory)")
+	todoRunCmd.Flags().StringVar(&todoRunContinueFlag, "continue", "", "resume the latest Codex session with these follow-up instructions")
 	todoRunTailCmd.Flags().BoolVarP(&todoRunTailFollowFlag, "follow", "f", false, "keep following while the run is active")
 	todoRunTailCmd.Flags().Int64Var(&todoRunTailBytesFlag, "bytes", 0, "show only the latest N bytes (0 means the full log)")
 
@@ -123,7 +125,7 @@ func init() {
 		contextCmd.Flags().StringVar(&todoContextCWD, "cwd", "", "Git worktree to inspect (required when active todo bindings use multiple worktrees)")
 	}
 
-	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoRunCmd, todoRunsCmd, todoRunTailCmd, todoRunControllerCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
+	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoRunCmd, todoRunsCmd, todoRunInterruptCmd, todoRunTailCmd, todoRunControllerCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
 	rootCmd.AddCommand(todoCmd)
 }
 
@@ -228,8 +230,12 @@ var todoRunCmd = &cobra.Command{
 controller that runs the selected Agent. A successful Agent exit submits the
 Todo to review; it never marks the Todo done.`,
 	Example: `  atm todo run t240
+	  atm todo run t240 --agent grokbuild
+	  atm todo run t240 --agent pi --policy trusted
   atm todo run t240 --cwd /path/to/repo
+  atm todo run t240 --continue "按验收意见调整交互"
   atm todo runs t240
+  atm todo interrupt t240
   atm todo tail t240 -f`,
 	Args: cobra.ExactArgs(1),
 	RunE: runTodoRun,
@@ -240,6 +246,14 @@ var todoRunsCmd = &cobra.Command{
 	Short: "List Agent runs for a Todo",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTodoRuns,
+}
+
+var todoRunInterruptCmd = &cobra.Command{
+	Use:     "interrupt <id>",
+	Aliases: []string{"stop", "cancel-run"},
+	Short:   "Interrupt the active Agent run for a Todo",
+	Args:    cobra.ExactArgs(1),
+	RunE:    runTodoRunInterrupt,
 }
 
 var todoRunTailCmd = &cobra.Command{

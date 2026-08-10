@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -656,6 +657,40 @@ func ListCollectionRuns(db *sql.DB, limit int) ([]CollectionRun, error) {
 	return runs, rows.Err()
 }
 
+// ListLatestCollectionRunsBySource keeps source-scoped status honest even when
+// one busy source occupies the entire recent-run page returned above.
+func ListLatestCollectionRunsBySource(db *sql.DB) ([]CollectionRun, error) {
+	rows, err := db.Query(`SELECT r.id,r.connector,r.source_id,r.status,r.started_at,r.finished_at,
+		r.fetched_count,r.analyzed_count,r.created_count,r.appended_count,r.insight_count,
+		r.ignored_count,r.failed_count,r.error
+		FROM collection_runs r
+		JOIN collection_sources s ON s.id=r.source_id
+		WHERE NOT EXISTS (
+			SELECT 1 FROM collection_runs newer
+			WHERE newer.source_id=r.source_id AND (
+				newer.started_at>r.started_at OR
+				(newer.started_at=r.started_at AND newer.id>r.id)
+			)
+		)
+		ORDER BY r.started_at DESC,r.id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	runs := []CollectionRun{}
+	for rows.Next() {
+		var run CollectionRun
+		if err := rows.Scan(&run.ID, &run.Connector, &run.SourceID, &run.Status, &run.StartedAt,
+			&run.FinishedAt, &run.FetchedCount, &run.AnalyzedCount, &run.CreatedCount,
+			&run.AppendedCount, &run.InsightCount, &run.IgnoredCount, &run.FailedCount,
+			&run.Error); err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	return runs, rows.Err()
+}
+
 // CollectionDayBounds returns the half-open Unix range [start, end) of the local
 // day containing the given time. Digests are per local day, so every query that
 // scopes insights to "that day" has to agree on where the day starts.
@@ -795,6 +830,32 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 	runs, err := ListCollectionRuns(db, 20)
 	if err != nil {
 		return CollectionOverview{}, err
+	}
+	latestRuns, err := ListLatestCollectionRunsBySource(db)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	seenRunIDs := make(map[string]bool, len(runs))
+	for _, run := range runs {
+		seenRunIDs[run.ID] = true
+	}
+	merged := false
+	for _, run := range latestRuns {
+		if !seenRunIDs[run.ID] {
+			runs = append(runs, run)
+			merged = true
+		}
+	}
+	// Every reader is entitled to the same "newest first" order the recent-run
+	// page promises, so restore it instead of leaving the per-source backfill
+	// sitting out of order at the tail.
+	if merged {
+		sort.Slice(runs, func(i, j int) bool {
+			if runs[i].StartedAt == runs[j].StartedAt {
+				return runs[i].ID > runs[j].ID
+			}
+			return runs[i].StartedAt > runs[j].StartedAt
+		})
 	}
 	digests, err := ListCollectionDigests(db, 20)
 	if err != nil {

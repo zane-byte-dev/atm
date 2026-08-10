@@ -3,7 +3,9 @@
 package cmd
 
 import (
+	"fmt"
 	"os/exec"
+	"strconv"
 
 	"golang.org/x/sys/windows"
 )
@@ -24,4 +26,16 @@ func processIsRunning(pid int) bool {
 		return false
 	}
 	return exitCode == 259 // STILL_ACTIVE
+}
+
+func terminateTaskRunProcess(pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("task run controller has no process id")
+	}
+	// /T includes the Agent child tree; /F is required because Windows has no
+	// SIGTERM equivalent that a detached console process reliably receives.
+	if output, err := exec.Command("taskkill", "/PID", strconv.Itoa(pid), "/T", "/F").CombinedOutput(); err != nil {
+		return fmt.Errorf("taskkill: %w: %s", err, string(output))
+	}
+	return nil
 }

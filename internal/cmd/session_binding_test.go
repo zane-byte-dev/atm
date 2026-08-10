@@ -46,6 +46,113 @@ func TestSessionBindCreatesMissingTodoDoc(t *testing.T) {
 	}
 }
 
+func TestSessionBindAuthoritativelyLinksDispatchedRun(t *testing.T) {
+	withTempAtmDir(t)
+	oldSession, oldJSON := sessionIDFlag, jsonOutput
+	oldAgent, oldProject, oldCWD := sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag
+	t.Cleanup(func() {
+		sessionIDFlag, jsonOutput = oldSession, oldJSON
+		sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag = oldAgent, oldProject, oldCWD
+	})
+	sessionIDFlag = "actual-session"
+	jsonOutput = false
+	sessionBindAgentFlag = "codex"
+	sessionBindProjectFlag = "atm"
+	sessionBindCWDFlag = "/tmp/atm"
+	t.Setenv("ATM_RUN_ID", "run-1")
+	t.Setenv("ATM_TODO_ID", "t1")
+
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Link dispatched run", Priority: "P1",
+		Status: store.TodoStatusInProgress, Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTaskRun(db, store.TaskRun{
+		ID: "run-1", TodoID: "t1", Agent: "codex", Project: "atm", WorkDir: "/tmp/atm",
+		Policy: "guarded", LogPath: "/tmp/run.log", Status: store.TaskRunRunning, StartTS: 1,
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE task_runs SET session_id='wrong-session' WHERE id='run-1'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	if err := runSessionBind(sessionBindCmd, []string{"t1"}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	db, err = store.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	run, err := store.GetTaskRun(db, "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run == nil || run.SessionID == nil || *run.SessionID != sessionIDFlag {
+		t.Fatalf("run = %#v", run)
+	}
+}
+
+// The dispatched Agent is told to run `atm session bind`, so a run row that has
+// been pruned or reconciled must not turn the whole command into a failure the
+// Agent has to react to — especially since the binding itself has already been
+// committed by the time the link is attempted.
+func TestSessionBindSucceedsWhenTheRunLinkCannotBeRecorded(t *testing.T) {
+	withTempAtmDir(t)
+	oldSession, oldJSON := sessionIDFlag, jsonOutput
+	oldAgent, oldProject, oldCWD := sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag
+	t.Cleanup(func() {
+		sessionIDFlag, jsonOutput = oldSession, oldJSON
+		sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag = oldAgent, oldProject, oldCWD
+	})
+	sessionIDFlag = "actual-session"
+	jsonOutput = false
+	sessionBindAgentFlag = "codex"
+	sessionBindProjectFlag = "atm"
+	sessionBindCWDFlag = "/tmp/atm"
+	t.Setenv("ATM_RUN_ID", "run-that-no-longer-exists")
+	t.Setenv("ATM_TODO_ID", "t1")
+
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Bind without a run", Priority: "P1",
+		Status: store.TodoStatusInProgress, Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings strings.Builder
+	sessionBindCmd.SetErr(&warnings)
+	t.Cleanup(func() { sessionBindCmd.SetErr(nil) })
+	if err := runSessionBind(sessionBindCmd, []string{"t1"}); err != nil {
+		t.Fatalf("bind: %v", err)
+	}
+	if !strings.Contains(warnings.String(), "could not link session to task run") {
+		t.Fatalf("stderr = %q", warnings.String())
+	}
+
+	db, err := store.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	bindings, err := store.ListTodoSessionBindings("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bindings) != 1 || bindings[0].SessionID != sessionIDFlag {
+		t.Fatalf("bindings = %#v", bindings)
+	}
+}
+
 func TestTodoDocMaterializesMissingCard(t *testing.T) {
 	withTempAtmDir(t)
 	oldJSON := jsonOutput

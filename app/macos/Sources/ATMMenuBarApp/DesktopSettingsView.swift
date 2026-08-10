@@ -6,51 +6,56 @@ enum ATMTodoListPreferences {
     static let defaultShowsDropped = false
 }
 
-struct DesktopSettingsView: View {
-    private enum SettingsTab: String, CaseIterable, Identifiable {
-        case general
-        case voice
-        case notch
-        case todo
-        case connectors
+enum ATMSettingsTab: String, CaseIterable, Identifiable {
+    case general
+    case shortcuts
+    case voice
+    case notch
+    case todo
+    case connectors
 
-        var id: String { rawValue }
+    var id: String { rawValue }
 
-        var title: String {
-            switch self {
-            case .general: return "通用"
-            case .voice: return "语音"
-            case .notch: return "刘海"
-            case .todo: return "Todo"
-            case .connectors: return "连接器"
-            }
-        }
-
-        var systemImage: String {
-            switch self {
-            case .general: return "slider.horizontal.3"
-            case .voice: return "waveform"
-            case .notch: return "rectangle.topthird.inset.filled"
-            case .todo: return "checklist"
-            case .connectors: return "link"
-            }
-        }
-
-        var subtitle: String {
-            switch self {
-            case .general: return "主题、字号与快捷键"
-            case .voice: return "按住说话，松手写入"
-            case .notch: return "状态提醒与声音反馈"
-            case .todo: return "任务列表与默认行为"
-            case .connectors: return "自动收集与外部来源"
-            }
+    var title: String {
+        switch self {
+        case .general: return "通用"
+        case .shortcuts: return "快捷键"
+        case .voice: return "语音"
+        case .notch: return "刘海"
+        case .todo: return "Todo"
+        case .connectors: return "连接器"
         }
     }
+
+    var systemImage: String {
+        switch self {
+        case .general: return "slider.horizontal.3"
+        case .shortcuts: return "keyboard"
+        case .voice: return "waveform"
+        case .notch: return "rectangle.topthird.inset.filled"
+        case .todo: return "checklist"
+        case .connectors: return "link"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .general: return "主题、字号与应用信息"
+        case .shortcuts: return "查看全部快捷键并改绑"
+        case .voice: return "识别、文本与权限"
+        case .notch: return "状态提醒与声音反馈"
+        case .todo: return "任务列表与默认行为"
+        case .connectors: return "自动收集与外部来源"
+        }
+    }
+}
+
+struct DesktopSettingsView: View {
 
     @ObservedObject var store: ATMDataStore
     @ObservedObject private var appearance = ATMAppearance.shared
     @ObservedObject private var hotKeys = ATMGlobalHotKeyManager.shared
-    @State private var selectedTab: SettingsTab = .general
+    @State private var selectedTab: ATMSettingsTab = .general
     @AppStorage(ATMTodoListPreferences.showDroppedKey)
     private var showsDropped = ATMTodoListPreferences.defaultShowsDropped
     @AppStorage(ATMGlobalHotKeyPreferences.enabledKey)
@@ -152,7 +157,7 @@ struct DesktopSettingsView: View {
             Divider()
 
             VStack(spacing: 4) {
-                ForEach(SettingsTab.allCases) { tab in
+                ForEach(ATMSettingsTab.allCases) { tab in
                     Button {
                         selectedTab = tab
                     } label: {
@@ -168,7 +173,7 @@ struct DesktopSettingsView: View {
         .background(ATMTheme.listPane)
     }
 
-    private func settingsSidebarRow(_ tab: SettingsTab) -> some View {
+    private func settingsSidebarRow(_ tab: ATMSettingsTab) -> some View {
         let isSelected = selectedTab == tab
 
         return HStack(spacing: 12) {
@@ -237,6 +242,8 @@ struct DesktopSettingsView: View {
                 switch selectedTab {
                 case .general:
                     generalSettings
+                case .shortcuts:
+                    shortcutSettings
                 case .voice:
                     voiceSettings
                 case .notch:
@@ -320,7 +327,6 @@ struct DesktopSettingsView: View {
                     }
                 }
 
-                card { globalHotKeySection }
                 card { aboutSection }
 
                 Spacer(minLength: 0)
@@ -353,9 +359,72 @@ struct DesktopSettingsView: View {
         return "版本 \(version) · 构建 \(build)"
     }
 
-    /// The global shortcut lives in 通用 rather than in a tab of its own: it is a
-    /// single app-wide binding, and the only other place it could sit — 刘海 — is
-    /// about pushed events rather than about opening ATM by hand.
+    // MARK: - 快捷键
+
+    private var shortcutSettings: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                card { globalHotKeySection }
+                card { voiceShortcutSection }
+
+                ForEach(ATMShortcutCatalog.groups) { group in
+                    card { shortcutReferenceGroup(group) }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+            .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func shortcutReferenceGroup(_ group: ATMShortcutGroup) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(group.title)
+                    .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                Text(group.detail)
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, 8)
+
+            ForEach(Array(group.shortcuts.enumerated()), id: \.element.id) { index, shortcut in
+                if index > 0 { Divider() }
+                HStack(alignment: .center, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(shortcut.title)
+                            .font(ATMFont.font(.body, weight: .medium))
+                        Text(shortcut.detail)
+                            .font(ATMFont.caption)
+                            .foregroundStyle(ATMTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 12)
+
+                    Text(shortcut.keys)
+                        .font(ATMFont.mono(.footnote, .semibold))
+                        .foregroundStyle(ATMTheme.primary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(
+                            ATMTheme.controlFill,
+                            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .stroke(ATMTheme.border, lineWidth: 1)
+                        }
+                        .accessibilityLabel("快捷键 \(shortcut.keys)")
+                }
+                .padding(.vertical, 9)
+            }
+        }
+    }
+
     private var globalHotKeySection: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
@@ -411,13 +480,12 @@ struct DesktopSettingsView: View {
 
     // MARK: - 语音
 
-    /// The 语音 tab: hold-to-dictate. A tab of its own rather than another card in
-    /// 通用 because the recognizer, its model download, the language and the
-    /// replacement dictionary are four settings that only make sense together.
+    /// The 语音 tab owns recognition and text handling. Its configurable trigger
+    /// lives with every other binding in 快捷键 so there is one place to discover
+    /// and change keyboard behavior.
     private var voiceSettings: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                card { voiceShortcutSection }
                 card { voiceEngineSection }
                 card { voiceTextSection }
                 card { voicePermissionSection }

@@ -60,6 +60,7 @@ struct DesktopAgentsView: View {
                     DesktopAgentPresenceDetail(
                         session: session,
                         relatedTodo: relatedTodo(for: session),
+                        runTodoID: navigation.selectedAgentRunTodoID ?? session.bindingTodoID,
                         store: store,
                         navigation: navigation,
                         onOpenSession: { openSession(session) }
@@ -129,6 +130,7 @@ struct DesktopAgentsView: View {
                                     ForEach(values) { session in
                                         Button {
                                             navigation.selectedAgentID = session.id
+                                            navigation.selectedAgentRunTodoID = nil
                                         } label: {
                                             DesktopAgentPresenceRow(
                                                 session: session,
@@ -245,6 +247,7 @@ struct DesktopAgentsView: View {
             return
         }
         navigation.selectedAgentID = sessions.first?.id
+        navigation.selectedAgentRunTodoID = nil
     }
 
     private func relatedTodo(for session: ATMLiveSession) -> ATMTodo? {
@@ -356,6 +359,7 @@ private struct DesktopAgentPresenceDetail: View {
     private enum DetailTab: String, CaseIterable {
         case overview
         case updates
+        case logs
     }
 
     /// 执行动态 tab 里默认展开的条数；更早的收进 DisclosureGroup。
@@ -364,6 +368,7 @@ private struct DesktopAgentPresenceDetail: View {
 
     let session: ATMLiveSession
     let relatedTodo: ATMTodo?
+    let runTodoID: String?
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
     let onOpenSession: () -> Void
@@ -374,6 +379,7 @@ private struct DesktopAgentPresenceDetail: View {
     @State private var transcript = ""
     @State private var transcriptError: String?
     @State private var isLoadingTranscript = false
+    @State private var showingInterruptConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -385,6 +391,8 @@ private struct DesktopAgentPresenceDetail: View {
                     overviewContent
                 case .updates:
                     updatesContent
+                case .logs:
+                    fullLogsContent
                 }
             }
             .atmAnimatedSwap(selectedTab.rawValue, style: .detail)
@@ -395,8 +403,38 @@ private struct DesktopAgentPresenceDetail: View {
                 session: session,
                 transcript: transcript,
                 errorMessage: transcriptError,
-                isLoading: isLoadingTranscript
+                isLoading: isLoadingTranscript,
+                onRetry: loadTranscript
             )
+        }
+        .confirmationDialog(
+            "中断当前 Agent 执行？",
+            isPresented: $showingInterruptConfirmation,
+            titleVisibility: .visible
+        ) {
+            // Interrupt the run this session *is*, never a same-Todo run that
+            // belongs to somebody else's process.
+            if let run = taskRun {
+                Button("中断执行", role: .destructive) {
+                    store.interruptTaskRun(todoID: run.todoID)
+                }
+            }
+            Button("继续执行", role: .cancel) {}
+        } message: {
+            Text("Agent 进程会停止，关联 Todo 保持工作中。")
+        }
+        .onAppear { loadTaskRunIfNeeded() }
+        .onChange(of: session.id) { _ in
+            // 全部日志 only exists for a dispatched run, so a different session
+            // must not keep a tab that is no longer on screen selected.
+            if selectedTab == .logs { selectedTab = .overview }
+        }
+        .task(id: fullLogRefreshKey) {
+            guard selectedTab == .logs, let todoID = runTodoID else { return }
+            store.loadTaskRuns(for: todoID)
+            if taskRun != nil {
+                store.loadTaskRunLog(for: todoID)
+            }
         }
     }
 
@@ -451,11 +489,23 @@ private struct DesktopAgentPresenceDetail: View {
 
     private var headerActions: some View {
         HStack(spacing: 6) {
+            if taskRun?.isActive == true {
+                Button {
+                    showingInterruptConfirmation = true
+                } label: {
+                    Label("中断", systemImage: "stop.fill")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(ATMTheme.danger)
+                .disabled(store.isActing)
+                .help("中断当前 Agent 执行")
+            }
             Menu {
                 Button {
                     showTranscript()
                 } label: {
-                    Label("查看完整记录", systemImage: "text.bubble")
+                    Label("查看完整动态", systemImage: "rectangle.on.rectangle")
                 }
                 Button {
                     copySessionID()
@@ -487,6 +537,10 @@ private struct DesktopAgentPresenceDetail: View {
         HStack(spacing: 0) {
             detailTabButton(.overview, title: "概览", icon: "doc.text")
             detailTabButton(.updates, title: "执行动态", icon: "clock.arrow.circlepath")
+            // Only a session that is itself a dispatched run has a raw log.
+            if taskRun != nil {
+                detailTabButton(.logs, title: "全部日志", icon: "terminal")
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
@@ -524,6 +578,9 @@ private struct DesktopAgentPresenceDetail: View {
                 if let input = session.latestUserInputBelowTitle {
                     latestUserInput(input)
                 }
+                if let update = session.latestVisibleUpdate {
+                    latestExecutionUpdate(update)
+                }
                 if let latestResultText = session.latestResultText {
                     latestResult(latestResultText)
                 }
@@ -549,6 +606,106 @@ private struct DesktopAgentPresenceDetail: View {
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    @ViewBuilder
+    private var fullLogsContent: some View {
+        if let todoID = runTodoID, taskRun != nil {
+            VStack(spacing: 0) {
+                HStack(spacing: 8) {
+                    Label("Codex 原始执行日志", systemImage: "terminal")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Spacer(minLength: 12)
+                    Button("刷新") { store.loadTaskRunLog(for: todoID) }
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 16)
+                .frame(height: 42)
+                .background(ATMTheme.listPane)
+
+                if let log = store.taskRunLog(for: todoID) {
+                    ATMTranscriptTextView(
+                        text: log.isEmpty ? "该执行尚未产生日志。" : log,
+                        font: .monospacedSystemFont(ofSize: ATMFont.Tier.caption.size, weight: .regular),
+                        insets: NSSize(width: 16, height: 14),
+                        accessibilityLabel: "Codex 全部执行日志",
+                        scrollsToEndOnUpdate: true
+                    )
+                    .background(ATMTheme.canvas)
+                } else if let error = store.taskRunLogError(for: todoID) {
+                    VStack(spacing: 10) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(ATMFont.font(.display, weight: .light))
+                        Text("无法读取执行日志")
+                            .font(ATMFont.font(.title3, weight: .semibold))
+                        Text(error)
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("重试") { store.loadTaskRunLog(for: todoID) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .padding(28)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    VStack(spacing: 10) {
+                        ProgressView()
+                        Text("正在读取全部日志")
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+        } else {
+            VStack(spacing: 10) {
+                Image(systemName: "terminal")
+                    .font(ATMFont.font(.display, weight: .light))
+                Text("没有 Codex 执行日志")
+                    .font(ATMFont.font(.title3, weight: .semibold))
+                Text("只有通过 Todo 的“交给 Codex”启动的 Agent 会话会保存原始执行日志。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            .padding(28)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// The dispatched run this session actually *is* — never merely a run of the
+    /// same Todo. A hand-bound session (you working the same Todo in another
+    /// Agent) would otherwise inherit that Todo's Codex run, and the raw-log tab
+    /// would present somebody else's log while 中断 would stop somebody else's
+    /// process.
+    private var taskRun: ATMTaskRun? {
+        guard let todoID = runTodoID else { return nil }
+        let runs = store.taskRuns(for: todoID)
+        if let linked = runs.first(where: {
+            ATMTaskRunSessionRouting.identifiersMatch($0.sessionID, session)
+        }) {
+            return linked
+        }
+        // Arriving from that Todo's “Codex 执行” card is itself the pairing: the
+        // card resolved this session from that run, and a run that has not
+        // reported its session id yet has nothing else to match on.
+        guard navigation.selectedAgentRunTodoID == todoID else { return nil }
+        return runs.first
+    }
+
+    private var fullLogRefreshKey: String {
+        [
+            session.id,
+            runTodoID ?? "none",
+            selectedTab.rawValue,
+            taskRun?.id ?? "none",
+            taskRun?.status ?? "none",
+        ].joined(separator: "|")
+    }
+
+    private func loadTaskRunIfNeeded() {
+        guard let runTodoID else { return }
+        store.loadTaskRuns(for: runTodoID)
     }
 
     private var attentionBanner: some View {
@@ -586,6 +743,32 @@ private struct DesktopAgentPresenceDetail: View {
                 }
             }
         }
+    }
+
+    /// Keep the overview useful while the Agent is still working: the newest
+    /// stage update is visible without opening the full timeline. The content
+    /// fades between polling updates, while the small live mark breathes only
+    /// for an active session and honors Reduce Motion.
+    private func latestExecutionUpdate(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(spacing: 8) {
+                DesktopAgentLiveUpdateMark(isActive: session.isCurrentlyActive)
+                Text("最新动态")
+                    .font(ATMFont.font(.body, weight: .semibold))
+                Spacer(minLength: 8)
+                Button("查看全部") { selectedTab = .updates }
+                    .buttonStyle(.plain)
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.accent)
+            }
+
+            ATMMarkdownContentView(source: text)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .atmAnimatedSwap(text, style: .detail)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .atmWorkspaceCard()
     }
 
     /// 不叫「最新完成结果」：`latestResult` 是最后一次 final answer，会话往下可能还在跑，
@@ -761,6 +944,10 @@ private struct DesktopAgentPresenceDetail: View {
 
     private func showTranscript() {
         showingTranscript = true
+        loadTranscript()
+    }
+
+    private func loadTranscript() {
         isLoadingTranscript = true
         transcript = ""
         transcriptError = nil
@@ -775,6 +962,67 @@ private struct DesktopAgentPresenceDetail: View {
     }
 }
 
+enum ATMAgentActivitySheetTab: String, CaseIterable, Identifiable {
+    case updates
+    case transcript
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .updates: return "执行动态"
+        case .transcript: return "完整对话"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .updates: return "clock.arrow.circlepath"
+        case .transcript: return "text.bubble"
+        }
+    }
+}
+
+/// A restrained activity cue for the overview's newest update. It lives only
+/// in the selected Agent detail, so the continuous animation never repaints
+/// background rows or the always-on notch.
+private struct DesktopAgentLiveUpdateMark: View {
+    let isActive: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isBreathing = false
+
+    var body: some View {
+        ZStack {
+            if isActive {
+                Circle()
+                    .stroke(ATMTheme.accent.opacity(0.45), lineWidth: 1)
+                    .frame(width: 12, height: 12)
+                    .scaleEffect(reduceMotion || !isBreathing ? 0.72 : 1.18)
+                    .opacity(reduceMotion ? 0.55 : (isBreathing ? 0.08 : 0.65))
+            }
+            Circle()
+                .fill(isActive ? ATMTheme.accent : ATMTheme.secondary)
+                .frame(width: 6, height: 6)
+        }
+        .frame(width: 12, height: 12)
+        .onAppear { syncBreathing() }
+        .onChange(of: isActive) { _ in syncBreathing() }
+        .onChange(of: reduceMotion) { _ in syncBreathing() }
+        .accessibilityHidden(true)
+    }
+
+    private func syncBreathing() {
+        withAnimation(
+            reduceMotion || !isActive
+                ? .linear(duration: 0)
+                : .easeInOut(duration: 1.2).repeatForever(autoreverses: true)
+        ) {
+            isBreathing = isActive && !reduceMotion
+        }
+    }
+}
+
 private struct DesktopAgentTranscriptSheet: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -782,6 +1030,9 @@ private struct DesktopAgentTranscriptSheet: View {
     let transcript: String
     let errorMessage: String?
     let isLoading: Bool
+    let onRetry: () -> Void
+
+    @State private var selectedTab: ATMAgentActivitySheetTab = .updates
 
     var body: some View {
         VStack(spacing: 0) {
@@ -801,42 +1052,111 @@ private struct DesktopAgentTranscriptSheet: View {
             .padding(16)
             .background(ATMTheme.surface)
 
-            Divider()
+            activityTabs
 
             Group {
-                if isLoading {
-                    VStack(spacing: 10) {
-                        ProgressView()
-                        Text("正在读取完整会话")
-                            .font(ATMFont.body)
-                            .foregroundStyle(ATMTheme.secondary)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if let errorMessage {
-                    VStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(ATMFont.font(.display, weight: .light))
-                        Text("无法读取会话")
-                            .font(ATMFont.font(.title3, weight: .semibold))
-                        Text(errorMessage)
-                            .font(ATMFont.body)
-                            .foregroundStyle(ATMTheme.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(28)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    ScrollView {
-                        Text(transcript.isEmpty ? "该会话暂无可展示内容。" : transcript)
-                            .font(ATMFont.mono(.body))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(18)
-                    }
+                switch selectedTab {
+                case .updates:
+                    fullActivityContent
+                case .transcript:
+                    transcriptContent
                 }
             }
+            .atmAnimatedSwap(selectedTab.rawValue, style: .detail)
             .background(ATMTheme.canvas)
         }
-        .frame(minWidth: 720, minHeight: 600)
+        .frame(minWidth: 760, minHeight: 620)
+    }
+
+    private var activityTabs: some View {
+        HStack(spacing: 0) {
+            ForEach(ATMAgentActivitySheetTab.allCases) { tab in
+                let selected = selectedTab == tab
+                Button {
+                    selectedTab = tab
+                } label: {
+                    Label(tab.title, systemImage: tab.systemImage)
+                        .font(ATMFont.font(.body, weight: .semibold))
+                        .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
+                        .padding(.horizontal, 14)
+                        .frame(height: 46)
+                        .overlay(alignment: .bottom) {
+                            Capsule()
+                                .fill(selected ? ATMTheme.accent : Color.clear)
+                                .frame(height: 2)
+                        }
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 46)
+        .background(ATMTheme.canvas)
+    }
+
+    private var fullActivityContent: some View {
+        let updates = Array(session.visibleUpdates.reversed())
+        return Group {
+            if updates.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(ATMFont.font(.display, weight: .light))
+                    Text("暂无执行动态")
+                        .font(ATMFont.font(.title3, weight: .semibold))
+                    Text("Agent 输出阶段性进展时，会按时间出现在这里。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 20) {
+                        ForEach(Array(updates.enumerated()), id: \.offset) { _, update in
+                            ATMMarkdownContentView(source: update)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .padding(20)
+                    .frame(maxWidth: 900, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var transcriptContent: some View {
+        if isLoading {
+            VStack(spacing: 10) {
+                ProgressView()
+                Text("正在读取完整会话")
+                    .font(ATMFont.body)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage {
+            VStack(spacing: 10) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(ATMFont.font(.display, weight: .light))
+                Text("无法读取会话")
+                    .font(ATMFont.font(.title3, weight: .semibold))
+                Text(errorMessage)
+                    .font(ATMFont.body)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .multilineTextAlignment(.center)
+                Button("重试", action: onRetry)
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(28)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ATMTranscriptTextView(
+                text: transcript.isEmpty ? "该会话暂无可展示内容。" : transcript,
+                accessibilityLabel: "Agent 完整对话"
+            )
+        }
     }
 }

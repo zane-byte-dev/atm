@@ -484,50 +484,25 @@ struct ATMAgentNotchNotification: Equatable {
     let summary: String?
 }
 
-/// Hover rules for the notch, kept pure so the parts that used to oscillate can
-/// be tested.
-///
-/// The panel deliberately does not use SwiftUI's `.onHover`. That reports hover
-/// through a tracking area on the hosting view, and the view resizes every time
-/// the panel expands — which makes AppKit rebuild the tracking area and emit an
-/// exit even though the cursor never moved. Acting on that exit collapsed the
-/// panel, the cursor was then inside the compact strip again, and the whole thing
-/// flapped open and shut. So hover is derived from the real cursor position
-/// instead, and every transition is re-verified against it.
+enum ATMAgentNotchInput {
+    /// Global monitoring is needed only to collapse an open panel after an
+    /// outside click. Hover is scoped to the notch view itself.
+    static let outsideClickMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown]
+}
+
+/// Hover rules for the notch, kept pure so delayed transitions can be tested.
+/// The view reports only enter/exit; delayed work rechecks the real cursor to
+/// tolerate a transient exit while the panel's tracking area is resized.
 enum ATMAgentNotchHover {
-    /// How long the cursor must stay in the strip before the panel opens.
-    ///
-    /// The strip sits on top of the menu bar, so without a dwell every trip to
-    /// the clock or the Wi-Fi menu drags the panel open in passing.
     static let openDelay: TimeInterval = 0.18
-
-    /// Grace period before collapsing, so a momentary exit — rounding at the
-    /// panel's corners, a jitter across the edge — does not close it.
     static let closeDelay: TimeInterval = 0.22
-
-    /// How far the trigger area is pulled in from each side of the compact strip.
-    ///
-    /// The strip has to be wide enough to draw the agent mark and the session
-    /// count, but those outer few points sit right where the menu bar's own items
-    /// are, so treating them as a trigger meant reaching for a status item opened
-    /// the panel. The inset keeps the visual size and shrinks only the target.
-    /// Clicking still works everywhere the strip is drawn.
     static let horizontalTriggerInset: CGFloat = 20
 
-    /// The strip area that counts as hovering, narrower than the strip is drawn.
     static func triggerFrame(compactFrame: CGRect) -> CGRect {
-        // Never inset so far that nothing is left on a narrow strip.
         let inset = min(horizontalTriggerInset, max(0, (compactFrame.width - 80) / 2))
         return compactFrame.insetBy(dx: inset, dy: 0)
     }
 
-    /// The region that counts as hovering.
-    ///
-    /// While compact this is the inset strip, so the panel opens where it is
-    /// visible rather than anywhere the expanded panel would later cover, and not
-    /// from the outer edges that overlap the menu bar's own items. Once open it is
-    /// the full strip plus the whole panel, so moving down into the session list
-    /// keeps it open and the edges stop being a cliff.
     static func region(
         presentation: ATMAgentNotchPresentation,
         compactFrame: CGRect,
@@ -538,7 +513,6 @@ enum ATMAgentNotchHover {
             : compactFrame.union(panelFrame)
     }
 
-    /// Whether a dwell that just elapsed should open the panel.
     static func shouldOpen(
         presentation: ATMAgentNotchPresentation,
         cursorIsInRegion: Bool
@@ -546,20 +520,15 @@ enum ATMAgentNotchHover {
         presentation == .compact && cursorIsInRegion
     }
 
-    /// Whether a grace period that just elapsed should collapse the panel.
     static func shouldClose(
         presentation: ATMAgentNotchPresentation,
         cursorIsInRegion: Bool,
         dismissesNotificationOnExit: Bool
     ) -> Bool {
-        // The cursor really being inside outranks whatever event scheduled this.
-        // This single check is what makes the flapping impossible.
         guard !cursorIsInRegion else { return false }
         switch presentation {
         case .hoverExpanded: return true
         case .notification: return dismissesNotificationOnExit
-        // Pinned by a click: only an explicit dismissal or an outside click closes
-        // it, never the cursor wandering off.
         case .sessionList, .compact: return false
         }
     }
@@ -718,8 +687,6 @@ private final class ATMAgentNotchPanel: NSPanel {
         hidesOnDeactivate = false
         isMovable = false
         isReleasedWhenClosed = false
-        // Needed for the local mouse monitor to see movement while ATM is the
-        // active app; the global monitor covers the usual case, where it is not.
         acceptsMouseMovedEvents = true
         level = .mainMenu + 3
         collectionBehavior = [
@@ -749,8 +716,8 @@ final class ATMAgentNotchController {
     private var shouldDismissNotificationOnHoverExit = false
     private var hoverOpenWorkItem: DispatchWorkItem?
     private var hoverCloseWorkItem: DispatchWorkItem?
-    private var localMouseMonitor: Any?
-    private var globalMouseMonitor: Any?
+    private var localClickMonitor: Any?
+    private var globalClickMonitor: Any?
     private var previousAttentionIDs: Set<String>?
     private var soundTransitionTracker = ATMAgentSoundTransitionTracker()
     private var completionTransitionTracker = ATMAgentCompletionTransitionTracker()
@@ -775,7 +742,7 @@ final class ATMAgentNotchController {
         )
 
         configurePanel()
-        installMouseMonitors()
+        installClickMonitors()
         bindState()
         updateEnabledState()
         refreshPresentation(animated: false)
@@ -785,7 +752,7 @@ final class ATMAgentNotchController {
         notificationDismissWorkItem?.cancel()
         notificationDismissWorkItem = nil
         cancelHoverWork()
-        removeMouseMonitors()
+        removeClickMonitors()
         if isPolling {
             store.stopLiveStatusPolling()
             isPolling = false
@@ -799,6 +766,9 @@ final class ATMAgentNotchController {
             rootView: ATMAgentNotchView(
                 store: store,
                 surfaceModel: surfaceModel,
+                onHoverChanged: { [weak self] inside in
+                    self?.handleHoverChanged(inside)
+                },
                 onExpandSessionList: { [weak self] in
                     self?.expandSessionList()
                 },
@@ -1048,43 +1018,36 @@ final class ATMAgentNotchController {
         return true
     }
 
-    private func installMouseMonitors() {
-        // Both monitors are needed: a global monitor does not see events that get
-        // delivered to our own process, and a local one sees only those.
-        let mask: NSEvent.EventTypeMask = [
-            .leftMouseDown, .rightMouseDown,
-            .mouseMoved, .leftMouseDragged, .rightMouseDragged,
-        ]
-        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
-            // Monitors are delivered on the main thread, so stay synchronous:
-            // mouse-moved arrives up to a hundred times a second and spawning a
-            // Task per event would be pure overhead.
+    private func installClickMonitors() {
+        // A global monitor sees clicks in other apps; a local monitor sees clicks
+        // delivered to ATM itself. Together they collapse an open panel after an
+        // outside click without subscribing the process to mouse-move traffic.
+        let mask = ATMAgentNotchInput.outsideClickMask
+        globalClickMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.handleMouseEvent(event.type, at: NSEvent.mouseLocation)
+                self?.handleMouseDown(at: NSEvent.mouseLocation)
             }
         }
-        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+        localClickMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
             MainActor.assumeIsolated {
-                self?.handleMouseEvent(event.type, at: NSEvent.mouseLocation)
+                self?.handleMouseDown(at: NSEvent.mouseLocation)
             }
             return event
         }
     }
 
-    private func handleMouseEvent(_ type: NSEvent.EventType, at location: CGPoint) {
-        switch type {
-        case .leftMouseDown, .rightMouseDown:
-            handleMouseDown(at: location)
-        default:
-            updateHover(at: location)
+    private func handleHoverChanged(_ inside: Bool) {
+        guard panel.isVisible, inside != isHovering else { return }
+        isHovering = inside
+        if inside {
+            scheduleHoverOpen()
+        } else {
+            scheduleHoverClose()
         }
     }
 
-    /// The screen rect the compact strip occupies, independent of the panel's
-    /// current size.
-    ///
-    /// Hover while compact is measured against this rather than `panel.frame` so
-    /// the trigger area never depends on how many sessions happen to be live.
+    /// Queried only after a hover boundary event or a panel resize. Ordinary
+    /// mouse movement never reaches the controller.
     private var compactStripFrame: CGRect {
         guard let screen = Self.preferredScreen() else { return panel.frame }
         return surfaceModel.metrics.windowFrame(
@@ -1107,26 +1070,8 @@ final class ATMAgentNotchController {
         hoverRegion.contains(NSEvent.mouseLocation)
     }
 
-    private func updateHover(at location: CGPoint) {
-        guard panel.isVisible else { return }
-        let inside = hoverRegion.contains(location)
-        guard inside != isHovering else { return }
-        isHovering = inside
-        if inside {
-            scheduleHoverOpen()
-        } else {
-            scheduleHoverClose()
-        }
-    }
-
-    /// Re-checks hover after the panel resizes.
-    ///
-    /// A resize can move the edge out from under a stationary cursor — the session
-    /// list shrinking by a row, for instance — and no mouse event follows, so
-    /// nothing else would notice the cursor is now outside.
     private func reevaluateHoverAfterFrameChange() {
-        let location = NSEvent.mouseLocation
-        let inside = hoverRegion.contains(location)
+        let inside = cursorIsInHoverRegion
         guard inside != isHovering else { return }
         isHovering = inside
         if inside {
@@ -1143,8 +1088,6 @@ final class ATMAgentNotchController {
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.hoverOpenWorkItem = nil
-            // Read the cursor again instead of trusting the event that scheduled
-            // this: a fast pass across the strip must not leave a panel open.
             let inside = self.cursorIsInHoverRegion
             self.isHovering = inside
             guard ATMAgentNotchHover.shouldOpen(
@@ -1190,14 +1133,14 @@ final class ATMAgentNotchController {
         hoverCloseWorkItem = nil
     }
 
-    private func removeMouseMonitors() {
-        if let globalMouseMonitor {
-            NSEvent.removeMonitor(globalMouseMonitor)
-            self.globalMouseMonitor = nil
+    private func removeClickMonitors() {
+        if let globalClickMonitor {
+            NSEvent.removeMonitor(globalClickMonitor)
+            self.globalClickMonitor = nil
         }
-        if let localMouseMonitor {
-            NSEvent.removeMonitor(localMouseMonitor)
-            self.localMouseMonitor = nil
+        if let localClickMonitor {
+            NSEvent.removeMonitor(localClickMonitor)
+            self.localClickMonitor = nil
         }
     }
 
@@ -1211,8 +1154,6 @@ final class ATMAgentNotchController {
         guard ATMAgentNotchPreferences.isEnabled,
               !liveSessions.isEmpty,
               let screen = Self.preferredScreen() else {
-            // Clear hover state along with the panel, or a pending dwell could
-            // reopen it after it was hidden.
             cancelHoverWork()
             isHovering = false
             panel.orderOut(nil)
@@ -1323,6 +1264,7 @@ private struct ATMAgentNotchView: View {
     @ObservedObject var surfaceModel: ATMAgentNotchSurfaceModel
     @AppStorage(ATMAgentSoundPreferences.enabledKey) private var soundsEnabled = true
     @State private var hoveredSessionID: String?
+    let onHoverChanged: (Bool) -> Void
     let onExpandSessionList: () -> Void
     let onOpenSession: (ATMLiveSession) -> Void
     let onOpenAgents: (ATMLiveSession?) -> Void
@@ -1364,6 +1306,7 @@ private struct ATMAgentNotchView: View {
         }
         .foregroundStyle(Color.white)
         .contentShape(Rectangle())
+        .onHover(perform: onHoverChanged)
         // No drop shadow on purpose. The panel window is sized exactly to this
         // content, so everything a shadow would paint outside the rounded shape is
         // clipped away by the window — except the blur that falls *inside* the
@@ -1372,9 +1315,6 @@ private struct ATMAgentNotchView: View {
         // a transparent margin to shadow into is not an option either: a borderless
         // panel swallows clicks in its transparent area, and this one sits on the
         // menu bar. The hairline stroke carries the edge instead.
-        // No .onHover here on purpose: the controller derives hover from the real
-        // cursor position, because a tracking area on a view that resizes reports
-        // a false exit whenever the panel expands. See ATMAgentNotchHover.
         .accessibilityElement(children: .contain)
         .accessibilityLabel("ATM Agent")
         .atmHidesScrollBars()
@@ -1534,13 +1474,8 @@ private struct ATMAgentNotchView: View {
         }
     }
 
-    /// What a hover gets: the one session that most wants you, and a count of
-    /// the rest.
-    ///
-    /// Hover and click used to render the identical list, which made a 350pt
-    /// panel the price of moving the cursor past the notch and left the click
-    /// with nothing to add but pinning. A peek is one row; the list is what you
-    /// ask for.
+    /// Hover shows one representative session; clicking the compact strip opens
+    /// the persistent list.
     private var hoverPeekContent: some View {
         VStack(spacing: 0) {
             if let session = representativeSession {

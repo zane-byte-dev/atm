@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 private struct ATMSearchOutcome<Value> {
@@ -12,12 +13,163 @@ enum ATMSearchResultAnchor {
     static func memory(_ id: String) -> String { "memory:\(id)" }
 }
 
-/// Spotlight-style global search across ATM work, conversations, knowledge,
-/// and shared memory.
+enum ATMSearchSelection {
+    static func movedIndex(current: Int, resultCount: Int, step: Int) -> Int {
+        guard resultCount > 0 else { return 0 }
+        return min(max(current + step, 0), resultCount - 1)
+    }
+}
+
+enum ATMSearchResultPolicy {
+    /// Keep every domain represented in the compact dropdown. Backends may
+    /// return hundreds of literal matches; showing all of them lets one noisy
+    /// domain bury the next section even after the strongest hits are ranked.
+    static let perSectionLimit = 6
+
+    static func top<Value>(_ values: [Value]) -> [Value] {
+        Array(values.prefix(perSectionLimit))
+    }
+}
+
+/// AppKit owns command dispatch for an actively edited text field on macOS 13.
+/// Handling the four search commands here keeps arrow navigation reliable while
+/// leaving IME candidate selection and ordinary caret movement untouched.
+struct ATMSearchTextField: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isFocused: Bool
+    var placeholder: String
+    var onMove: (Int) -> Void
+    var onSubmit: () -> Void
+    var onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            text: $text,
+            isFocused: $isFocused,
+            onMove: onMove,
+            onSubmit: onSubmit,
+            onCancel: onCancel
+        )
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.delegate = context.coordinator
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = ATMFont.nsFont(.footnote, weight: .medium)
+        field.placeholderString = placeholder
+        field.lineBreakMode = .byTruncatingTail
+        field.usesSingleLineMode = true
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.stringValue = text
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.text = $text
+        context.coordinator.isFocused = $isFocused
+        context.coordinator.onMove = onMove
+        context.coordinator.onSubmit = onSubmit
+        context.coordinator.onCancel = onCancel
+        field.placeholderString = placeholder
+        if field.stringValue != text {
+            // While the field owns the editor, `stringValue` is not what is on
+            // screen — the field editor is. Writing only `stringValue` is why the
+            // ✕ button used to empty `query` while the typed text stayed visible.
+            // Marked text is the one case to leave alone: rewriting the editor
+            // mid-composition would discard an in-progress pinyin candidate.
+            if let editor = field.currentEditor() {
+                if (editor as? NSTextView)?.hasMarkedText() != true {
+                    editor.string = text
+                    editor.selectedRange = NSRange(location: (text as NSString).length, length: 0)
+                }
+            } else {
+                field.stringValue = text
+            }
+        }
+
+        if isFocused, field.currentEditor() == nil {
+            DispatchQueue.main.async { [weak field, weak coordinator = context.coordinator] in
+                guard let field, coordinator?.isFocused.wrappedValue == true else { return }
+                field.window?.makeFirstResponder(field)
+            }
+        } else if !isFocused, field.currentEditor() != nil {
+            DispatchQueue.main.async { [weak field] in
+                guard let field, field.currentEditor() != nil else { return }
+                field.window?.makeFirstResponder(nil)
+            }
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        var isFocused: Binding<Bool>
+        var onMove: (Int) -> Void
+        var onSubmit: () -> Void
+        var onCancel: () -> Void
+
+        init(
+            text: Binding<String>,
+            isFocused: Binding<Bool>,
+            onMove: @escaping (Int) -> Void,
+            onSubmit: @escaping () -> Void,
+            onCancel: @escaping () -> Void
+        ) {
+            self.text = text
+            self.isFocused = isFocused
+            self.onMove = onMove
+            self.onSubmit = onSubmit
+            self.onCancel = onCancel
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            isFocused.wrappedValue = true
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            isFocused.wrappedValue = false
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            // Return and arrows belong to the input method while pinyin/kana is
+            // still marked; consuming them here would make Chinese search unusable.
+            guard !textView.hasMarkedText() else { return false }
+            switch commandSelector {
+            case #selector(NSResponder.moveDown(_:)):
+                onMove(1)
+            case #selector(NSResponder.moveUp(_:)):
+                onMove(-1)
+            case #selector(NSResponder.insertNewline(_:)):
+                onSubmit()
+            case #selector(NSResponder.cancelOperation(_:)):
+                onCancel()
+            default:
+                return false
+            }
+            return true
+        }
+    }
+}
+
+/// Title-bar global search across ATM work, conversations, knowledge, and
+/// shared memory. The field stays in the window chrome and results are drawn as
+/// an in-window dropdown, avoiding both the old modal sheet and native popover.
 struct DesktopSearchPalette: View {
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
-    @Environment(\.dismiss) private var dismiss
 
     @State private var query = ""
     @State private var taskResults: [ATMTodo] = []
@@ -28,14 +180,35 @@ struct DesktopSearchPalette: View {
     @State private var selectedSession: ATMSessionSearchHit?
     @State private var selectedResultIndex = 0
     @State private var searchErrorMessage: String?
-    @FocusState private var searchFocused: Bool
+    @State private var showingResults = false
+    @State private var searchFocused = false
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var hasResults: Bool {
-        !taskResults.isEmpty || !sessionResults.isEmpty || !docResults.isEmpty || !memoryResults.isEmpty
+        totalResultCount > 0
+    }
+
+    private var totalResultCount: Int {
+        taskResults.count + sessionResults.count + docResults.count + memoryResults.count
+    }
+
+    private var resultSectionCount: Int {
+        [taskResults.count, sessionResults.count, docResults.count, memoryResults.count]
+            .filter { $0 > 0 }
+            .count
+    }
+
+    private var resultsBodyHeight: CGFloat {
+        if trimmedQuery.isEmpty { return 118 }
+        if isSearching, !hasResults { return 92 }
+        if !hasResults { return 148 }
+        let rows = CGFloat(min(totalResultCount, 6)) * 58
+        let headers = CGFloat(resultSectionCount) * 28
+        let warning: CGFloat = searchErrorMessage == nil ? 0 : 46
+        return min(max(rows + headers + warning + 16, 156), 382)
     }
 
     private var selectedResultAnchor: String? {
@@ -59,13 +232,17 @@ struct DesktopSearchPalette: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            searchField
-            Divider()
-            content
+        searchField
+        .overlay(alignment: .top) {
+            if showingResults {
+                resultsDropdown
+                    .offset(y: 32)
+                    .zIndex(2)
+                    .transition(
+                        .opacity.combined(with: .scale(scale: 0.985, anchor: .top))
+                    )
+            }
         }
-        .frame(width: 640, height: 520)
-        .background(ATMTheme.surface)
         .task(id: query) { await runSearch() }
         .sheet(item: $selectedSession) { session in
             ATMSessionTranscriptSheet(
@@ -76,19 +253,23 @@ struct DesktopSearchPalette: View {
                 store: store
             )
         }
-        .onMoveCommand(perform: moveSelection)
-        .onExitCommand { dismiss() }
+        .animation(ATMMotion.disclosure, value: showingResults)
+        .onDisappear { searchFocused = false }
     }
 
     private var searchField: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 7) {
             Image(systemName: isSearching ? "hourglass" : "magnifyingglass")
                 .foregroundStyle(ATMTheme.secondary)
-            TextField("搜索任务、会话、知识与记忆", text: $query)
-                .textFieldStyle(.plain)
-                .font(ATMFont.title3)
-                .focused($searchFocused)
-                .onSubmit(openSelectedResult)
+            ATMSearchTextField(
+                text: $query,
+                isFocused: $searchFocused,
+                placeholder: "搜索任务、会话、知识与记忆",
+                onMove: moveSelection,
+                onSubmit: openSelectedResult,
+                onCancel: closeResults
+            )
+            .frame(height: 20)
             if !query.isEmpty {
                 ATMIconButton(
                     systemImage: "xmark.circle.fill",
@@ -96,25 +277,115 @@ struct DesktopSearchPalette: View {
                     chrome: .bare,
                     side: 24,
                     iconTier: .bodyLarge
-                ) { query = "" }
+                ) {
+                    query = ""
+                    showingResults = true
+                    searchFocused = true
+                }
             }
-            Text("esc")
-                .font(ATMFont.mono(.footnote, .medium))
-                .foregroundStyle(ATMTheme.secondary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 4))
-                .onTapGesture { dismiss() }
+            Button {
+                showingResults = true
+                searchFocused = true
+            } label: {
+                Text("⌘K")
+                    .font(ATMFont.mono(.caption, .medium))
+                    .foregroundStyle(ATMTheme.secondary.opacity(0.78))
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut("k", modifiers: .command)
+            .help("全局搜索（⌘K）")
         }
-        .padding(.horizontal, 16)
-        .frame(height: 58)
-        .onAppear { searchFocused = true }
+        .foregroundStyle(ATMTheme.secondary)
+        .padding(.horizontal, 9)
+        .frame(width: 360, height: 26)
+        .background(
+            ATMTheme.controlFill.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(
+                    showingResults ? ATMTheme.accent.opacity(0.48) : ATMTheme.border,
+                    lineWidth: 1
+                )
+        }
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded {
+            showingResults = true
+            searchFocused = true
+        })
+        .onChange(of: searchFocused) { focused in
+            if focused {
+                showingResults = true
+            } else {
+                // Defer until the current click finishes. A result button gets
+                // to perform its navigation first; a click elsewhere simply
+                // dismisses the dropdown on the next run-loop turn.
+                DispatchQueue.main.async {
+                    if !searchFocused { showingResults = false }
+                }
+            }
+        }
+        .onChange(of: query) { _ in
+            if searchFocused { showingResults = true }
+        }
+    }
+
+    private var resultsDropdown: some View {
+        VStack(spacing: 0) {
+            content
+                .frame(height: resultsBodyHeight)
+            Divider()
+            HStack(spacing: 16) {
+                keyboardHint(keys: "↑ ↓", label: "切换")
+                keyboardHint(keys: "↩", label: "打开")
+                keyboardHint(keys: "esc", label: "关闭")
+                Spacer(minLength: 0)
+                if totalResultCount > 0 {
+                    Text("共 \(totalResultCount) 项")
+                        .font(ATMFont.mono(.caption))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 32)
+        }
+        .frame(width: 600)
+        .background(
+            ATMTheme.elevated,
+            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(ATMTheme.borderStrong, lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.14), radius: 18, y: 8)
+    }
+
+    private func keyboardHint(keys: String, label: String) -> some View {
+        HStack(spacing: 5) {
+            Text(keys)
+                .font(ATMFont.mono(.caption, .semibold))
+                .foregroundStyle(ATMTheme.primary)
+            Text(label)
+                .font(ATMFont.font(.caption))
+                .foregroundStyle(ATMTheme.secondary)
+        }
     }
 
     @ViewBuilder
     private var content: some View {
         if trimmedQuery.isEmpty {
             emptyState(icon: "magnifyingglass", title: "搜索 ATM", detail: "输入关键词查找任务、会话、知识与记忆")
+        } else if isSearching, !hasResults {
+            VStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("正在搜索…")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let searchErrorMessage, !hasResults && !isSearching {
             searchFailureState(searchErrorMessage)
         } else if !hasResults && !isSearching {
@@ -342,10 +613,10 @@ struct DesktopSearchPalette: View {
         let docs = await docsRequest
         let memories = await memoriesRequest
         guard !Task.isCancelled, trimmedQuery == needle else { return }
-        taskResults = tasks.value ?? []
-        sessionResults = sessions.value ?? []
-        docResults = docs.value ?? []
-        memoryResults = memories.value ?? []
+        taskResults = ATMSearchResultPolicy.top(tasks.value ?? [])
+        sessionResults = ATMSearchResultPolicy.top(sessions.value ?? [])
+        docResults = ATMSearchResultPolicy.top(docs.value ?? [])
+        memoryResults = ATMSearchResultPolicy.top(memories.value ?? [])
         let errorMessages = [
             tasks.error.map { "任务：\($0)" },
             sessions.error.map { "会话：\($0)" },
@@ -371,17 +642,14 @@ struct DesktopSearchPalette: View {
         }
     }
 
-    private func moveSelection(_ direction: MoveCommandDirection) {
-        let count = taskResults.count + sessionResults.count + docResults.count + memoryResults.count
-        guard count > 0 else { return }
-        switch direction {
-        case .down:
-            selectedResultIndex = min(selectedResultIndex + 1, count - 1)
-        case .up:
-            selectedResultIndex = max(selectedResultIndex - 1, 0)
-        default:
-            break
-        }
+    private func moveSelection(_ step: Int) {
+        guard totalResultCount > 0 else { return }
+        showingResults = true
+        selectedResultIndex = ATMSearchSelection.movedIndex(
+            current: selectedResultIndex,
+            resultCount: totalResultCount,
+            step: step
+        )
     }
 
     private func openSelectedResult() {
@@ -409,25 +677,31 @@ struct DesktopSearchPalette: View {
     private func openTask(_ todo: ATMTodo) {
         navigation.selectedTodoID = todo.id
         navigation.section = .tasks
-        dismiss()
+        closeResults()
     }
 
     private func openDocument(_ doc: ATMKnowledgeDocumentSummary) {
         navigation.selectedKnowledgeLibraryID = doc.collection
         navigation.locateKnowledgeDocumentID = "document:\(doc.documentID)"
         navigation.section = .knowledge
-        dismiss()
+        closeResults()
     }
 
     private func openMemory(_ memory: ATMMemoryHit) {
         navigation.selectedKnowledgeLibraryID = ATMKnowledgeLibrary.memoryID
         navigation.locateKnowledgeDocumentID = "memory:\(memory.id)"
         navigation.section = .knowledge
-        dismiss()
+        closeResults()
     }
 
     private func openSession(_ session: ATMSessionSearchHit) {
+        closeResults()
         selectedSession = session
+    }
+
+    private func closeResults() {
+        showingResults = false
+        searchFocused = false
     }
 
     private func memoryTitle(_ memory: ATMMemoryHit) -> String {

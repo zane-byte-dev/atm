@@ -877,3 +877,39 @@ func TestMigrateV36ToV37AddsAutomaticDispatchAudit(t *testing.T) {
 		t.Fatalf("version=%d item columns=%d source columns=%d", version, itemColumns, sourceColumns)
 	}
 }
+
+func TestMigrateV37ToV38AllowsInterruptedTaskRuns(t *testing.T) {
+	db := openTempDB(t)
+	if _, err := db.Exec(`INSERT INTO todos (id,position,title,priority,status,created)
+		VALUES ('t1',0,'Interrupt migration','P1','in_progress','2026-08-10')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO task_runs
+		(id,todo_id,agent,work_dir,policy,log_path,status,start_ts)
+		VALUES ('run-1','t1','codex','/tmp','guarded','/tmp/run.log','running',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE schema_version SET version = 37`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate v37→v38: %v", err)
+	}
+	if err := InterruptTaskRun(db, "run-1", 2, "interrupted by user"); err != nil {
+		t.Fatalf("record interrupted outcome: %v", err)
+	}
+	var version int
+	var status, title string
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT status FROM task_runs WHERE id='run-1'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT title FROM todos WHERE id='t1'`).Scan(&title); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || status != TaskRunInterrupted || title != "Interrupt migration" {
+		t.Fatalf("version=%d status=%q title=%q", version, status, title)
+	}
+}

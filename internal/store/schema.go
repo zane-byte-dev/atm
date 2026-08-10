@@ -50,7 +50,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 37
+	SchemaVersion        = 39
 	minUpgradableVersion = 21
 )
 
@@ -283,13 +283,18 @@ func createSchema(tx *sql.Tx) error {
 			prompt     TEXT NOT NULL DEFAULT '',
 			policy     TEXT NOT NULL CHECK (policy IN ('guarded','trusted')),
 			log_path   TEXT NOT NULL,
-			status     TEXT NOT NULL CHECK (status IN ('starting','running','completed','failed')),
+			status     TEXT NOT NULL CHECK (status IN ('starting','running','completed','failed','interrupted')),
 			pid        INTEGER NOT NULL DEFAULT 0,
 			start_ts   INTEGER NOT NULL,
 			end_ts     INTEGER,
 			exit_code  INTEGER,
 			message    TEXT NOT NULL DEFAULT '',
-			session_id TEXT
+			session_id TEXT,
+			-- The thread this run was told to continue, as opposed to session_id,
+			-- which is the session this run turned out to be. Keeping intent in
+			-- its own column is what lets the controller decide between a fresh
+			-- dispatch and an agent resume without reading display text.
+			resume_session_id TEXT
 		)`,
 		`CREATE INDEX idx_task_runs_todo_started ON task_runs(todo_id, start_ts DESC)`,
 		// Creating the starting row is the claim. Two App/CLI callers racing to

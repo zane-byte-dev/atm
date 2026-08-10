@@ -951,6 +951,15 @@ final class AgentEventTests: XCTestCase {
 
     // MARK: - Hover
 
+    func testGlobalMonitorObservesClicksButNeverMouseMovement() {
+        let mask = ATMAgentNotchInput.outsideClickMask
+        XCTAssertTrue(mask.contains(.leftMouseDown))
+        XCTAssertTrue(mask.contains(.rightMouseDown))
+        XCTAssertFalse(mask.contains(.mouseMoved))
+        XCTAssertFalse(mask.contains(.leftMouseDragged))
+        XCTAssertFalse(mask.contains(.rightMouseDragged))
+    }
+
     /// Geometry matching a 14" notched Mac: the compact strip sits at the top
     /// centre, and the expanded panel is wider and taller around the same centre.
     private var compactStrip: CGRect { CGRect(x: 590, y: 988, width: 332, height: 34) }

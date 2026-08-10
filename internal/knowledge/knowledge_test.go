@@ -60,9 +60,8 @@ func TestSearchAllowsPartialMatchesRankedByCoverage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A partial-token query no longer returns nothing: dropping a chunk because a
-	// single query token is absent destroyed recall (especially for per-character
-	// Chinese tokens). Both documents match at least one token, so both surface.
+	// Terms are alternatives: one document covers "Skill" and the other covers
+	// "统计", so both surface even though neither covers the whole query.
 	hits, err := Search(dataDir, "Skill 统计", SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -75,6 +74,51 @@ func TestSearchAllowsPartialMatchesRankedByCoverage(t *testing.T) {
 	hits, err = Search(dataDir, "Skill 调用", SearchOptions{Limit: 10})
 	if err != nil || len(hits) == 0 || hits[0].Title != "Skill usage" {
 		t.Fatalf("full-coverage results = %#v, err = %v", hits, err)
+	}
+}
+
+func TestSearchDoesNotMatchOneCharacterOfCompactChineseTerm(t *testing.T) {
+	dataDir := newDataDir(t)
+	if _, err := Add(dataDir, AddDocumentInput{
+		Title: "搜索设计", Content: "改进搜索结果排序。", Collection: "atm",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Add(dataDir, AddDocumentInput{
+		Title: "探索方法", Content: "培养探索力。", Collection: "notes",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	hits, err := Search(dataDir, "搜索", SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) == 0 || hits[0].Title != "搜索设计" {
+		t.Fatalf("search results = %#v", hits)
+	}
+	for _, hit := range hits {
+		if hit.Title == "探索方法" {
+			t.Fatalf("partial Chinese-character match leaked into results: %#v", hits)
+		}
+	}
+}
+
+func TestMemoryRecallDoesNotMatchOneCharacterOfCompactChineseTerm(t *testing.T) {
+	newDataDir(t)
+	if _, err := RememberWithMetadata("global", "培养探索力", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	wanted, err := RememberWithMetadata("global", "优化搜索结果", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hits, err := Recall("搜索", "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].ID != wanted.ID {
+		t.Fatalf("memory results = %#v", hits)
 	}
 }
 

@@ -321,6 +321,28 @@ struct ATMCollectionRun: Decodable, Identifiable, Equatable {
     }
 }
 
+/// Keeps the App's manual action on the same source-scoped CLI path as the
+/// scheduler. A source ID is mandatory here: the Collection workspace no
+/// longer exposes the old "run every source" action.
+enum ATMCollectionRunCommand {
+    static func arguments(sourceID: String) -> [String] {
+        ["collect", "run", "--source", sourceID, "--json"]
+    }
+}
+
+/// Which failure the Collection workspace still has to announce itself. Source
+/// level failures already have a home in that source's 采集状态 card, while
+/// 添加/删除来源、修正、撤销、生成知识文档 have no source to hang on and would
+/// otherwise fail silently in the very workspace that triggered them.
+enum ATMCollectionWorkspaceNotice {
+    static func message(shared: String?, sourceErrors: [String: String]) -> String? {
+        guard let shared = shared?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !shared.isEmpty,
+              !sourceErrors.values.contains(shared) else { return nil }
+        return shared
+    }
+}
+
 /// One day's knowledge document for one source, produced by `atm collect digest`
 /// from that day's insight items. Rewritten in place as more insights arrive, so
 /// there is at most one of these per source per day.
@@ -682,7 +704,22 @@ struct ATMCollectionOverview: Decodable, Equatable {
     )
 
     var latestRun: ATMCollectionRun? { runs.max { $0.startedAt < $1.startedAt } }
-    var latestSuccessfulRun: ATMCollectionRun? {
-        runs.filter { $0.status == "succeeded" }.max { $0.startedAt < $1.startedAt }
+
+    func latestRun(for sourceID: String) -> ATMCollectionRun? {
+        runs
+            .filter { $0.sourceID == sourceID }
+            .max { lhs, rhs in
+                if lhs.startedAt == rhs.startedAt { return lhs.id < rhs.id }
+                return lhs.startedAt < rhs.startedAt
+            }
+    }
+
+    func latestSuccessfulRun(for sourceID: String) -> ATMCollectionRun? {
+        runs
+            .filter { $0.sourceID == sourceID && $0.status == "succeeded" }
+            .max { lhs, rhs in
+                if lhs.startedAt == rhs.startedAt { return lhs.id < rhs.id }
+                return lhs.startedAt < rhs.startedAt
+            }
     }
 }

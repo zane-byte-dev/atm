@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,21 +18,73 @@ import (
 )
 
 func todoMatchesQuery(todo store.Todo, rawQuery string) bool {
+	return todoQueryRelevance(todo, rawQuery) >= 0
+}
+
+// todoQueryRelevance keeps the existing AND matching contract and adds field
+// weighting for query mode. A title or exact Todo ID is a stronger answer than
+// a passing mention buried in the generated Todo document.
+func todoQueryRelevance(todo store.Todo, rawQuery string) int {
 	query := strings.ToLower(strings.TrimSpace(rawQuery))
 	if query == "" {
-		return true
+		return 0
 	}
-	parts := []string{todo.ID, todo.Title, todo.Description, todo.Project, todo.Source}
-	if document, err := store.ReadTodoDoc(todo.ID); err == nil {
-		parts = append(parts, document)
+	document := ""
+	if loaded, err := store.ReadTodoDoc(todo.ID); err == nil {
+		document = strings.ToLower(loaded)
 	}
-	haystack := strings.ToLower(strings.Join(parts, "\n"))
-	for _, term := range strings.Fields(query) {
+	id := strings.ToLower(todo.ID)
+	title := strings.ToLower(todo.Title)
+	description := strings.ToLower(todo.Description)
+	project := strings.ToLower(todo.Project)
+	source := strings.ToLower(todo.Source)
+	haystack := strings.Join([]string{id, title, description, project, source, document}, "\n")
+	terms := strings.Fields(query)
+	for _, term := range terms {
 		if !strings.Contains(haystack, term) {
-			return false
+			return -1
 		}
 	}
-	return true
+
+	score := 0
+	if id == query {
+		score += 1000
+	} else if strings.Contains(id, query) {
+		score += 300
+	}
+	if strings.Contains(title, query) {
+		score += 500
+		titleRunes := len([]rune(title))
+		queryRunes := len([]rune(query))
+		score += 1000 * queryRunes / max(titleRunes, 1)
+		if position := strings.Index(title, query); position >= 0 {
+			score += 100 / (1 + len([]rune(title[:position])))
+		}
+	}
+	if strings.Contains(description, query) {
+		score += 180
+	}
+	if project == query {
+		score += 100
+	}
+	if source == query {
+		score += 60
+	}
+	if strings.Contains(document, query) {
+		score += 30
+	}
+	for _, term := range terms {
+		if strings.Contains(title, term) {
+			score += 120
+		}
+		if strings.Contains(description, term) {
+			score += 40
+		}
+		if strings.Contains(document, term) {
+			score += 5
+		}
+	}
+	return score
 }
 
 func runTodoList(cmd *cobra.Command, args []string) error {
@@ -82,6 +135,13 @@ func runTodoList(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		filtered = append(filtered, t)
+	}
+	if strings.TrimSpace(todoListQueryFlag) != "" {
+		sort.SliceStable(filtered, func(i, j int) bool {
+			left := todoQueryRelevance(filtered[i], todoListQueryFlag)
+			right := todoQueryRelevance(filtered[j], todoListQueryFlag)
+			return left > right
+		})
 	}
 	filtered, err = paginate(filtered, todoListOffsetFlag, todoListLimitFlag)
 	if err != nil {

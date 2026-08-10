@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -83,6 +84,66 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 	if overview.Summary.Sources != 1 || overview.Summary.Enabled != 0 || overview.Summary.Fetched != 2 ||
 		overview.Summary.Created != 1 || len(overview.Items) != 1 || len(overview.Runs) != 1 {
 		t.Fatalf("unexpected overview: %+v", overview)
+	}
+}
+
+func TestCollectionOverviewKeepsLatestRunForEverySource(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	busy, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "busy", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "quiet", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveCollectionRun(db, CollectionRun{
+		ID: "quiet-latest", Connector: "test", SourceID: quiet.ID,
+		Status: "succeeded", StartedAt: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 21; index++ {
+		if err := SaveCollectionRun(db, CollectionRun{
+			ID: fmt.Sprintf("busy-%02d", index), Connector: "test", SourceID: busy.ID,
+			Status: "succeeded", StartedAt: int64(100 + index),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	overview, err := LoadCollectionOverview(db, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundQuiet := false
+	for _, run := range overview.Runs {
+		if run.ID == "quiet-latest" {
+			foundQuiet = true
+			break
+		}
+	}
+	if !foundQuiet {
+		t.Fatalf("quiet source's latest run was dropped from overview: %+v", overview.Runs)
+	}
+	// Backfilling a quiet source must not leave the page out of order: readers
+	// that take "the first run for this connector" rely on newest-first.
+	for index := 1; index < len(overview.Runs); index++ {
+		previous, current := overview.Runs[index-1], overview.Runs[index]
+		if previous.StartedAt < current.StartedAt ||
+			(previous.StartedAt == current.StartedAt && previous.ID < current.ID) {
+			t.Fatalf("runs are not newest-first at %d: %+v", index, overview.Runs)
+		}
 	}
 }
 

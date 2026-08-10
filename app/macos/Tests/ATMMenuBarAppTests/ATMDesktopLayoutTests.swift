@@ -6,4 +6,49 @@ final class ATMDesktopLayoutTests: XCTestCase {
         XCTAssertEqual(ATMDesktopLayout.expandedSidebarWidth, 160)
         XCTAssertEqual(ATMDesktopLayout.collapsedSidebarWidth, 58)
     }
+
+    @MainActor
+    func testNavigationHistoryRestoresSectionAndDetailSelection() {
+        let navigation = ATMDesktopNavigation()
+
+        navigation.selectedTodoID = "t1"
+        navigation.selectedAgentID = "session-1"
+        navigation.selectedAgentRunTodoID = "t1"
+        navigation.section = .agents
+
+        XCTAssertTrue(navigation.canGoBack)
+        XCTAssertFalse(navigation.canGoForward)
+
+        navigation.goBack()
+        XCTAssertEqual(navigation.section, .tasks)
+        XCTAssertEqual(navigation.selectedTodoID, "t1")
+        // The task detail itself is also a destination; one more back returns
+        // to the initial unselected task page.
+        XCTAssertTrue(navigation.canGoBack)
+        XCTAssertTrue(navigation.canGoForward)
+
+        navigation.goForward()
+        XCTAssertEqual(navigation.section, .agents)
+        XCTAssertEqual(navigation.selectedAgentID, "session-1")
+        XCTAssertEqual(navigation.selectedAgentRunTodoID, "t1")
+        XCTAssertTrue(navigation.canGoBack)
+        XCTAssertFalse(navigation.canGoForward)
+    }
+
+    @MainActor
+    func testNewNavigationClearsForwardHistory() {
+        let navigation = ATMDesktopNavigation()
+        navigation.section = .usage
+        navigation.section = .settings
+
+        navigation.goBack()
+        XCTAssertEqual(navigation.section, .usage)
+        XCTAssertTrue(navigation.canGoForward)
+
+        navigation.section = .collection
+        XCTAssertFalse(navigation.canGoForward)
+
+        navigation.goBack()
+        XCTAssertEqual(navigation.section, .usage)
+    }
 }

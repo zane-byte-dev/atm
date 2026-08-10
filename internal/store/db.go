@@ -196,6 +196,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 37
+		case 37:
+			if err := migrateV37ToV38(db); err != nil {
+				return err
+			}
+			version = 38
+		case 38:
+			if err := migrateV38ToV39(db); err != nil {
+				return err
+			}
+			version = 39
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -902,6 +912,78 @@ func migrateV36ToV37(db *sql.DB) error {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 37`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV37ToV38 gives user-requested interruption its own durable outcome.
+// SQLite cannot alter a CHECK constraint in place, so rebuild just this table
+// while preserving every run and recreating its two indexes.
+func migrateV37ToV38(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`ALTER TABLE task_runs RENAME TO task_runs_v37`,
+		`CREATE TABLE task_runs (
+			id         TEXT PRIMARY KEY,
+			todo_id    TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			agent      TEXT NOT NULL,
+			project    TEXT NOT NULL DEFAULT '',
+			work_dir   TEXT NOT NULL,
+			prompt     TEXT NOT NULL DEFAULT '',
+			policy     TEXT NOT NULL CHECK (policy IN ('guarded','trusted')),
+			log_path   TEXT NOT NULL,
+			status     TEXT NOT NULL CHECK (status IN ('starting','running','completed','failed','interrupted')),
+			pid        INTEGER NOT NULL DEFAULT 0,
+			start_ts   INTEGER NOT NULL,
+			end_ts     INTEGER,
+			exit_code  INTEGER,
+			message    TEXT NOT NULL DEFAULT '',
+			session_id TEXT
+		)`,
+		`INSERT INTO task_runs
+			(id,todo_id,agent,project,work_dir,prompt,policy,log_path,status,pid,start_ts,end_ts,exit_code,message,session_id)
+		 SELECT id,todo_id,agent,project,work_dir,prompt,policy,log_path,status,pid,start_ts,end_ts,exit_code,message,session_id
+		 FROM task_runs_v37`,
+		`DROP TABLE task_runs_v37`,
+		`CREATE INDEX idx_task_runs_todo_started ON task_runs(todo_id, start_ts DESC)`,
+		`CREATE UNIQUE INDEX idx_task_runs_active_todo ON task_runs(todo_id)
+			WHERE status IN ('starting','running')`,
+		`UPDATE schema_version SET version = 38`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// migrateV38ToV39 separates "the thread this run was told to continue" from
+// "the session this run turned out to be". Before this column the continuation
+// marker lived in task_runs.message, which is display text the controller
+// overwrites with the run's outcome — so execution behaviour and a
+// human-readable string were the same field.
+func migrateV38ToV39(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	exists, err := tableHasColumn(tx, "task_runs", "resume_session_id")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := tx.Exec(`ALTER TABLE task_runs ADD COLUMN resume_session_id TEXT`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 39`); err != nil {
 		return err
 	}
 	return tx.Commit()
