@@ -25,7 +25,7 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .tasks: return "checklist"
-        case .collection: return "tray.full"
+        case .collection: return "tray.and.arrow.down"
         case .agents: return "cpu"
         case .knowledge: return "books.vertical"
         case .usage: return "chart.xyaxis.line"
@@ -370,6 +370,7 @@ struct ATMTextAlert: Identifiable {
 /// ATM's app-wide navigation rail follows the active app appearance while using
 /// dedicated tokens for its hover, selection and hierarchy states.
 private struct ATMDesktopRailSurfaceModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isSelected: Bool
     var isNested = false
 
@@ -383,6 +384,8 @@ private struct ATMDesktopRailSurfaceModifier: ViewModifier {
             .background(fill, in: RoundedRectangle(cornerRadius: isNested ? 7 : 9, style: .continuous))
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
+            .animation(ATMMotion.resolved(ATMMotion.hover, reduceMotion: reduceMotion), value: isHovered)
+            .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: isSelected)
     }
 
     private var fill: Color {
@@ -406,6 +409,7 @@ private enum ATMDesktopLayout {
 }
 
 struct DesktopContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
     @AppStorage("ATMDesktopSidebarCollapsed") private var sidebarCollapsed = false
@@ -460,8 +464,8 @@ struct DesktopContentView: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: navigation.showAddTodo)
-        .animation(.easeInOut(duration: 0.18), value: sidebarCollapsed)
+        .animation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion), value: navigation.showAddTodo)
+        .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: sidebarCollapsed)
         .sheet(isPresented: $showingCollectionCreate) {
             collectionCreateSheet
         }
@@ -573,6 +577,7 @@ struct DesktopContentView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .atmAnimatedSwap(navigation.section, style: .workspace)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(ATMTheme.canvas)
@@ -779,6 +784,7 @@ struct DesktopContentView: View {
 }
 
 private struct DesktopTasksView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
 
@@ -809,7 +815,9 @@ private struct DesktopTasksView: View {
     @ViewBuilder
     private func groupHeader(_ group: ATMTaskGroup, expanded: Binding<Bool>) -> some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) { expanded.wrappedValue.toggle() }
+            withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
+                expanded.wrappedValue.toggle()
+            }
         } label: {
             HStack {
                 ATMDrawerDisclosureLabel(
@@ -901,6 +909,10 @@ private struct DesktopTasksView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ATMTheme.canvas)
+            .atmAnimatedSwap(
+                "todo:\(selectedTodo?.id ?? "empty"):\(showingTrash)",
+                style: .detail
+            )
         }
         .onAppear {
             applyDefaultCollapsedGroupsIfNeeded()
@@ -953,17 +965,18 @@ private struct DesktopTasksView: View {
             }
 
             if let error = store.errorMessage {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.danger)
-                    // Wraps rather than truncates: the version-mismatch message
-                    // ends in the command to run, and a clipped instruction is no
-                    // instruction.
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
+                let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "任务加载失败")
+                ATMInlineNotice(
+                    severity: .error,
+                    title: presentation.title,
+                    message: presentation.message,
+                    details: error,
+                    actionTitle: "重试",
+                    onAction: { store.refresh() },
+                    onDismiss: { store.dismissDashboardError() }
+                )
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
 
             List {

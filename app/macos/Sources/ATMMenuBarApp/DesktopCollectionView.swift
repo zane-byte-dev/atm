@@ -32,6 +32,7 @@ private struct CollectionItemDeletion {
 }
 
 struct DesktopCollectionView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
 
@@ -42,6 +43,7 @@ struct DesktopCollectionView: View {
     @State private var historySource: ATMCollectionSource?
     @State private var showingIgnoredItems = false
     @State private var drawerTab = CollectionDrawerTab.records
+    @State private var selectedSourceID: String?
     @AppStorage("ATMCollapsedCollectionSourceGroups") private var collapsedSourceGroupsRaw = ""
 
     private var collapsedSourceGroups: Set<String> {
@@ -68,6 +70,12 @@ struct DesktopCollectionView: View {
         return displayedItems.first { $0.id == id } ?? displayedItems.first
     }
 
+    private var selectedSource: ATMCollectionSource? {
+        let sources = store.collectionOverview.sources
+        guard let selectedSourceID else { return sources.first }
+        return sources.first { $0.id == selectedSourceID } ?? sources.first
+    }
+
     private var primaryItems: [ATMCollectionItem] {
         filteredItems.filter { !shouldCollapse($0) }
     }
@@ -92,11 +100,14 @@ struct DesktopCollectionView: View {
                 collectionDrawerTabs
                 Divider()
                 collectionErrorBanner
-                if drawerTab == .records {
-                    itemColumn
-                } else {
-                    sourceManagementColumn
+                Group {
+                    if drawerTab == .records {
+                        itemColumn
+                    } else {
+                        sourceManagementColumn
+                    }
                 }
+                .atmAnimatedSwap(drawerTab.rawValue, style: .tab)
             }
             // 中栏 surface / 右栏 canvas —— 和任务、Agent、知识一致，标题区也算中栏，
             // 底色铺在整根列上；只铺在列表上时标题区会漏出根视图的 canvas。
@@ -104,14 +115,20 @@ struct DesktopCollectionView: View {
         } detail: {
             detailColumn
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .atmAnimatedSwap(collectionDetailIdentity, style: .detail)
         }
         .background(ATMTheme.canvas)
         .onAppear {
             store.refreshCollection()
             selectDefaultItem()
+            selectDefaultSource()
             revealSelectedSourceGroup()
         }
         .onChange(of: store.collectionOverview.items.map(\.id)) { _ in selectDefaultItem() }
+        .onChange(of: store.collectionOverview.sources.map(\.id)) { _ in selectDefaultSource() }
+        .onChange(of: drawerTab) { tab in
+            if tab == .sources { selectDefaultSource() }
+        }
         .onChange(of: showingIgnoredItems) { _ in selectDefaultItem() }
         .onChange(of: navigation.selectedCollectionItemID) { _ in revealSelectedSourceGroup() }
         .sheet(isPresented: $showingAddSource) {
@@ -143,10 +160,19 @@ struct DesktopCollectionView: View {
         }
     }
 
+    private var collectionDetailIdentity: String {
+        switch drawerTab {
+        case .records: return "record:\(selectedItem?.id ?? "empty")"
+        case .sources: return "source:\(selectedSource?.id ?? "empty")"
+        }
+    }
+
     private var collectionDrawerTabs: some View {
         HStack(spacing: 12) {
-            collectionDrawerTabButton(.records, title: "记录")
-            collectionDrawerTabButton(.sources, title: "来源")
+            ATMCompactSegmentedTabs(
+                selection: $drawerTab,
+                items: [(.records, "记录"), (.sources, "来源")]
+            )
             Spacer(minLength: 4)
 
             Circle()
@@ -192,42 +218,21 @@ struct DesktopCollectionView: View {
         .frame(height: 64)
     }
 
-    private func collectionDrawerTabButton(
-        _ tab: CollectionDrawerTab,
-        title: String
-    ) -> some View {
-        let isSelected = drawerTab == tab
-        return Button {
-            drawerTab = tab
-        } label: {
-            Text(title)
-                .font(ATMFont.font(.body, weight: .semibold))
-                .foregroundStyle(isSelected ? ATMTheme.primary : ATMTheme.secondary)
-                .padding(.vertical, 12)
-                .overlay(alignment: .bottom) {
-                    Rectangle()
-                        .fill(isSelected ? ATMTheme.accent : .clear)
-                        .frame(height: 2)
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
     @ViewBuilder
     private var collectionErrorBanner: some View {
         if let error = store.collectionErrorMessage, !error.isEmpty {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(ATMTheme.warning)
-                Text(error)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .textSelection(.enabled)
-                Spacer()
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
+            let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "收集暂时失败")
+            ATMInlineNotice(
+                severity: .warning,
+                title: presentation.title,
+                message: presentation.message,
+                details: error,
+                actionTitle: store.isCollecting ? "正在重试" : "重试",
+                isActionEnabled: !store.isCollecting,
+                onAction: { store.runCollectionNow() },
+                onDismiss: { store.collectionErrorMessage = nil }
+            )
+            .padding(8)
         }
     }
 
@@ -255,69 +260,56 @@ struct DesktopCollectionView: View {
     }
 
     private func sourceManagementRow(_ source: ATMCollectionSource) -> some View {
-        HStack(spacing: 4) {
-            Button {
-                editingSource = source
-            } label: {
-                HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
-                    Image(systemName: source.symbolName)
-                        .font(ATMFont.font(.body, weight: .medium))
-                        .foregroundStyle(source.enabled ? ATMTheme.accent : ATMTheme.secondary)
-                        .frame(
-                            width: ATMContentRowLayout.leadingVisualSize,
-                            height: ATMContentRowLayout.leadingVisualSize
-                        )
-                        .background(
-                            (source.enabled ? ATMTheme.accent : ATMTheme.secondary).opacity(0.10),
-                            in: Circle()
-                        )
-                    VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
-                        HStack(spacing: 6) {
-                            Text(source.displayName)
-                                .font(ATMFont.font(.body, weight: .medium))
-                                .foregroundStyle(ATMTheme.primary)
-                                .lineLimit(1)
-                            if !source.enabled {
-                                Text("已暂停")
-                                    .font(ATMFont.caption)
-                                    .foregroundStyle(ATMTheme.secondary)
-                            }
+        let selected = selectedSource?.id == source.id
+        return Button {
+            selectedSourceID = source.id
+        } label: {
+            HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
+                Image(systemName: source.symbolName)
+                    .font(ATMFont.font(.body, weight: .medium))
+                    .foregroundStyle(source.enabled ? ATMTheme.accent : ATMTheme.secondary)
+                    .frame(
+                        width: ATMContentRowLayout.leadingVisualSize,
+                        height: ATMContentRowLayout.leadingVisualSize
+                    )
+                    .background(
+                        (source.enabled ? ATMTheme.accent : ATMTheme.secondary).opacity(0.10),
+                        in: Circle()
+                    )
+                VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
+                    HStack(spacing: 6) {
+                        Text(source.displayName)
+                            .font(ATMFont.font(.body, weight: .medium))
+                            .foregroundStyle(ATMTheme.primary)
+                            .lineLimit(1)
+                        if !source.enabled {
+                            Text("已暂停")
+                                .font(ATMFont.caption)
+                                .foregroundStyle(ATMTheme.secondary)
                         }
-                        Text(
-                            "\(source.connector) · \(collectionKindLabel(source.kind)) · 每 \(source.effectiveIntervalMinutes) 分钟"
-                        )
-                        .font(ATMFont.caption)
-                        .foregroundStyle(ATMTheme.secondary)
-                        .lineLimit(1)
                     }
-                    Spacer(minLength: 0)
+                    Text(
+                        "\(source.connector) · \(collectionKindLabel(source.kind)) · 每 \(source.effectiveIntervalMinutes) 分钟"
+                    )
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
                 }
-                .atmRowSurface(isSelected: false)
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.plain)
-            .help("编辑来源")
-
-            Menu {
-                Button("查看聊天记录") {
-                    historySource = source
-                }
-                Button("编辑") { editingSource = source }
-                Button(source.enabled ? "暂停" : "启用") {
-                    store.setCollectionSource(source, enabled: !source.enabled)
-                }
-                Divider()
-                Button("删除", role: .destructive) { deleteCandidate = source }
-            } label: {
-                ATMIconMenuLabel(
-                    systemImage: "ellipsis",
-                    help: "来源操作",
-                    side: 28,
-                    iconTier: .bodyLarge
-                )
+            .atmRowSurface(isSelected: selected)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("查看来源配置")
+        .atmRightClickMenu {
+            ATMMenuItem("查看聊天记录") { historySource = source }
+            ATMMenuItem("编辑") { editingSource = source }
+            ATMMenuItem(source.enabled ? "暂停" : "启用") {
+                store.setCollectionSource(source, enabled: !source.enabled)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
+            ATMMenuSeparator()
+            ATMMenuItem("删除", destructive: true) { deleteCandidate = source }
         }
     }
 
@@ -475,7 +467,7 @@ struct DesktopCollectionView: View {
     ) -> some View {
         HStack(spacing: 7) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
+                withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
                     expanded.wrappedValue.toggle()
                 }
             } label: {
@@ -525,7 +517,7 @@ struct DesktopCollectionView: View {
     ) -> some View {
         HStack(spacing: 7) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
+                withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
                     expanded.wrappedValue.toggle()
                 }
             } label: {
@@ -594,7 +586,21 @@ struct DesktopCollectionView: View {
 
     @ViewBuilder
     private var detailColumn: some View {
-        if let item = selectedItem {
+        if drawerTab == .sources, let source = selectedSource {
+            CollectionSourceDetail(
+                source: source,
+                onEdit: { editingSource = source },
+                onHistory: { historySource = source },
+                onToggle: { store.setCollectionSource(source, enabled: !source.enabled) },
+                onDelete: { deleteCandidate = source }
+            )
+        } else if drawerTab == .sources {
+            CollectionEmptyState(
+                title: "还没有收集来源",
+                systemImage: "tray.2",
+                detail: "在中栏点击添加来源后，这里会显示它的配置。"
+            )
+        } else if let item = selectedItem {
             CollectionItemDetail(
                 store: store,
                 item: item,
@@ -629,12 +635,205 @@ struct DesktopCollectionView: View {
         navigation.selectedCollectionItemID = displayedItems.first?.id
     }
 
+    private func selectDefaultSource() {
+        let sources = store.collectionOverview.sources
+        guard !sources.contains(where: { $0.id == selectedSourceID }) else { return }
+        selectedSourceID = sources.first?.id
+    }
+
     private func revealSelectedSourceGroup() {
         guard let item = selectedItem, !shouldCollapse(item) else { return }
         let groupID = source(for: item)?.id ?? "__unknown__"
         var set = collapsedSourceGroups
         guard set.remove(groupID) != nil else { return }
         collapsedSourceGroupsRaw = set.sorted().joined(separator: ",")
+    }
+}
+
+/// “来源”tab 的右栏。中栏负责选择来源，右栏只展示一个来源的完整配置和操作；
+/// 真正修改时再进入表单，避免列表行一点就弹窗、同时让右栏还停留在上一条处理记录。
+private struct CollectionSourceDetail: View {
+    let source: ATMCollectionSource
+    let onEdit: () -> Void
+    let onHistory: () -> Void
+    let onToggle: () -> Void
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    identityCard
+                    scheduleCard
+                    rulesCard
+                }
+                .padding(24)
+                .frame(maxWidth: 760, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .background(ATMTheme.canvas)
+    }
+
+    private var header: some View {
+        HStack(spacing: 13) {
+            Image(systemName: source.symbolName)
+                .font(ATMFont.font(.title3, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(source.enabled ? ATMTheme.accent : ATMTheme.secondary)
+                .frame(width: 40, height: 40)
+                .background(
+                    (source.enabled ? ATMTheme.accent : ATMTheme.secondary).opacity(0.10),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(source.displayName)
+                    .font(ATMFont.font(.title2, weight: .bold))
+                    .lineLimit(1)
+                Label(
+                    source.enabled ? "正在自动收集" : "已暂停",
+                    systemImage: source.enabled ? "checkmark.circle.fill" : "pause.circle.fill"
+                )
+                .font(ATMFont.caption)
+                .foregroundStyle(source.enabled ? ATMTheme.success : ATMTheme.secondary)
+            }
+
+            Spacer(minLength: 16)
+
+            Button(action: onEdit) {
+                Label("编辑", systemImage: "slider.horizontal.3")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+
+            Menu {
+                Button(action: onHistory) {
+                    Label("查看聊天记录", systemImage: "bubble.left.and.bubble.right")
+                }
+                Button(action: onToggle) {
+                    Label(
+                        source.enabled ? "暂停自动收集" : "启用自动收集",
+                        systemImage: source.enabled ? "pause.circle" : "play.circle"
+                    )
+                }
+                Divider()
+                Button(role: .destructive, action: onDelete) {
+                    Label("删除来源", systemImage: "trash")
+                }
+            } label: {
+                ATMIconMenuLabel(
+                    systemImage: "ellipsis",
+                    help: "来源操作",
+                    side: 28,
+                    iconTier: .bodyLarge
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 18)
+        .background(ATMTheme.surface)
+    }
+
+    private var identityCard: some View {
+        sourceCard("来源", systemImage: "point.3.connected.trianglepath.dotted") {
+            sourceValueRow("连接器", source.connector, monospaced: true)
+            sourceValueRow("类型", collectionKindLabel(source.kind))
+            sourceValueRow("来源 ID", source.externalID, monospaced: true)
+            sourceValueRow("项目", value(source.project, fallback: "未指定") ?? "未指定")
+        }
+    }
+
+    private var scheduleCard: some View {
+        sourceCard("自动收集", systemImage: "clock") {
+            sourceValueRow("状态", source.enabled ? "已启用" : "已暂停")
+            sourceValueRow("间隔", "每 (source.effectiveIntervalMinutes) 分钟")
+            sourceValueRow("处理方式", source.effectiveStrategy == "observe" ? "只观察，不创建 Todo" : "创建或补充 Todo")
+            sourceValueRow("判断单位", source.effectiveDecisionUnit == "message" ? "单条消息" : "消息窗口")
+            sourceValueRow("默认优先级", source.priority)
+        }
+    }
+
+    @ViewBuilder
+    private var rulesCard: some View {
+        let instruction = value(source.instruction)
+        let excludePattern = value(source.excludePattern)
+        let knowledgeCollection = value(source.knowledgeCollection)
+        sourceCard("处理规则", systemImage: "line.3.horizontal.decrease.circle") {
+            if instruction == nil, excludePattern == nil, knowledgeCollection == nil {
+                Text("没有额外规则，使用默认处理方式。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            } else {
+                if let instruction {
+                    sourceTextBlock("补充指令", instruction)
+                }
+                if let excludePattern {
+                    sourceTextBlock("排除规则", excludePattern, monospaced: true)
+                }
+                if let knowledgeCollection {
+                    sourceValueRow("知识库", knowledgeCollection)
+                }
+            }
+        }
+    }
+
+    private func sourceCard<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label(title, systemImage: systemImage)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+            content()
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .atmWorkspaceCard(cornerRadius: 11)
+    }
+
+    private func sourceValueRow(
+        _ label: String,
+        _ value: String,
+        monospaced: Bool = false
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(label)
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+                .frame(width: 88, alignment: .leading)
+            Text(value)
+                .font(monospaced ? ATMFont.mono(.footnote) : ATMFont.footnote)
+                .foregroundStyle(ATMTheme.primary)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func sourceTextBlock(_ label: String, _ text: String, monospaced: Bool = false) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(ATMFont.caption)
+                .foregroundStyle(ATMTheme.secondary)
+            Text(text)
+                .font(monospaced ? ATMFont.mono(.footnote) : ATMFont.footnote)
+                .foregroundStyle(ATMTheme.primary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func value(_ rawValue: String?, fallback: String? = nil) -> String? {
+        let trimmed = (rawValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? fallback : trimmed
     }
 }
 
@@ -674,6 +873,8 @@ private struct CollectionItemRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
             Image(systemName: collectionActionIcon(item.action, retryStopped: retryStopped))
+                .font(ATMFont.font(.footnote, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
                 .foregroundStyle(collectionActionColor(item.action, retryStopped: retryStopped))
                 .frame(
                     width: ATMContentRowLayout.leadingVisualSize,
@@ -2059,12 +2260,14 @@ private func collectionActionTitle(_ action: String, retryStopped: Bool = false)
 
 private func collectionActionIcon(_ action: String, retryStopped: Bool = false) -> String {
     switch action {
-    case "create": return "plus.circle.fill"
-    case "append": return "arrow.triangle.branch"
-    case "insight": return "book.closed.fill"
-    case "ignore": return "minus.circle"
-    case "failed": return retryStopped ? "exclamationmark.triangle.fill" : "arrow.clockwise"
-    case "reverted": return "arrow.uturn.backward.circle.fill"
+    // 行本身已经提供统一的圆形底板，这里只返回裸字形；否则 plus.circle、book、
+    // branch 等符号各自带一套轮廓，虽然布局 frame 相同，视觉宽度仍然忽大忽小。
+    case "create": return "plus"
+    case "append": return "arrow.down"
+    case "insight": return "book.closed"
+    case "ignore": return "minus"
+    case "failed": return retryStopped ? "exclamationmark" : "arrow.clockwise"
+    case "reverted": return "arrow.uturn.backward"
     default: return "clock"
     }
 }

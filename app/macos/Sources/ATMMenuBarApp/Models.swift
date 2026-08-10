@@ -268,7 +268,7 @@ enum ATMTodoCreator {
         guard let creator = normalized(creator) else { return nil }
         switch creator {
         case "me": return "person.fill"
-        case "collect": return "tray.full"
+        case "collect": return "tray.and.arrow.down"
         default: return "cpu"
         }
     }

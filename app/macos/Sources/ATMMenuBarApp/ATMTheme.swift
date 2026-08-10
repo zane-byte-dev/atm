@@ -138,6 +138,52 @@ enum ATMTheme {
     }
 }
 
+/// 全桌面统一的动效语言。高频反馈短、页面替换稍慢，但都不做明显回弹；
+/// 动效只解释“状态去了哪里”，不抢内容本身的注意力。
+enum ATMMotion {
+    static let hover = Animation.easeOut(duration: 0.10)
+    static let disclosure = Animation.easeInOut(duration: 0.16)
+    static let selection = Animation.easeInOut(duration: 0.20)
+
+    enum SwapStyle {
+        case workspace
+        case tab
+        case detail
+
+        fileprivate var animation: Animation {
+            switch self {
+            case .workspace: return .easeInOut(duration: 0.22)
+            case .tab: return .easeOut(duration: 0.18)
+            case .detail: return .easeOut(duration: 0.20)
+            }
+        }
+
+        fileprivate var transition: AnyTransition {
+            .opacity
+        }
+    }
+
+    static func resolved(_ animation: Animation, reduceMotion: Bool) -> Animation {
+        reduceMotion ? .linear(duration: 0.06) : animation
+    }
+}
+
+private struct ATMAnimatedSwapModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let identity: AnyHashable
+    let style: ATMMotion.SwapStyle
+
+    func body(content: Content) -> some View {
+        content
+            .id(identity)
+            .transition(reduceMotion ? .opacity : style.transition)
+            .animation(
+                ATMMotion.resolved(style.animation, reduceMotion: reduceMotion),
+                value: identity
+            )
+    }
+}
+
 extension View {
     /// ATM keeps its scroll bars out of sight. The panes are dense — nested cards,
     /// list columns, Markdown descriptions — and an overlay scroller drew a grey
@@ -166,5 +212,15 @@ extension View {
                 .stroke(ATMTheme.border, lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+    }
+
+    /// Animate an identity-backed replacement (workspace, tab body or detail)
+    /// with the shared motion rhythm. The modifier automatically falls back to
+    /// a short fade when macOS Reduce Motion is enabled.
+    func atmAnimatedSwap<ID: Hashable>(
+        _ identity: ID,
+        style: ATMMotion.SwapStyle
+    ) -> some View {
+        modifier(ATMAnimatedSwapModifier(identity: AnyHashable(identity), style: style))
     }
 }

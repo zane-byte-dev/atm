@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct DesktopAgentsView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
 
@@ -69,6 +70,7 @@ struct DesktopAgentsView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .atmAnimatedSwap(selectedSession?.id ?? "empty", style: .detail)
         }
         .onAppear {
             selectFirstIfNeeded()
@@ -141,7 +143,7 @@ struct DesktopAgentsView: View {
                                 }
                             } header: {
                                 Button {
-                                    withAnimation(.easeInOut(duration: 0.15)) {
+                                    withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
                                         expanded.wrappedValue.toggle()
                                     }
                                 } label: {

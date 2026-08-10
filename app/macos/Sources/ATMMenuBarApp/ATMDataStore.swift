@@ -1701,6 +1701,10 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
+    func dismissDashboardError() {
+        errorMessage = nil
+    }
+
     func perform(_ action: ATMTodoAction, on todo: ATMTodo) {
         guard !isActing else { return }
         isActing = true

@@ -3376,6 +3376,20 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMErrorText.compact("123456", limit: 5), "12345…")
     }
 
+    func testErrorPresentationTurnsNetworkPayloadIntoActionableCopy() {
+        let presentation = ATMErrorPresentation.resolve(
+            "[NETWORK_UNREACHABLE] Cannot connect to MCP server: dial tcp: i/o timeout",
+            fallbackTitle: "收集失败"
+        )
+        XCTAssertEqual(presentation.title, "网络连接失败")
+        XCTAssertEqual(presentation.message, "无法连接到服务。请检查网络、代理或 DNS 设置后重试。")
+    }
+
+    func testErrorPresentationKeepsConciseUnknownError() {
+        let presentation = ATMErrorPresentation.resolve("配置文件不存在", fallbackTitle: "加载失败")
+        XCTAssertEqual(presentation, ATMErrorPresentation(title: "加载失败", message: "配置文件不存在"))
+    }
+
     func testKnowledgeCatalogDecodesOptionalRoutingFields() throws {
         let data = Data(
             """

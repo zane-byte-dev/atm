@@ -74,6 +74,61 @@ struct ATMDrawerDisclosureLabel: View {
     }
 }
 
+/// 中栏标题区的双态 / 多态切换。视觉跟 macOS 的紧凑 segmented control 一致：
+/// 一块安静的底板承载所有选项，当前项用轻微抬升的实心表面表示，不再用网页式下划线。
+struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var selection: Selection
+    let items: [(value: Selection, title: String)]
+
+    private let segmentWidth: CGFloat = 56
+    private let segmentHeight: CGFloat = 24
+
+    private var selectedIndex: Int {
+        items.firstIndex { $0.value == selection } ?? 0
+    }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            // 始终是同一个实体视图，只改变横向位置。相比在两个 Button 中条件创建背景，
+            // 这在 macOS 上不会被当成一次无动画的视图替换。
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(ATMTheme.elevated)
+                .frame(width: segmentWidth, height: segmentHeight)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(ATMTheme.border.opacity(0.75))
+                }
+                .shadow(color: .black.opacity(0.07), radius: 2, y: 1)
+                .offset(x: CGFloat(selectedIndex) * segmentWidth)
+                .allowsHitTesting(false)
+
+            HStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    let isSelected = selection == item.value
+                    Button {
+                        withAnimation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion)) {
+                            selection = item.value
+                        }
+                    } label: {
+                        Text(item.title)
+                            // 选中前后保持相同字重，否则文字度量变化会让整个控件横向跳动。
+                            .font(ATMFont.font(.footnote, weight: .medium))
+                            .foregroundStyle(isSelected ? ATMTheme.primary : ATMTheme.secondary)
+                            .frame(width: segmentWidth, height: segmentHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                }
+            }
+        }
+        .padding(2)
+        .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: selectedIndex)
+    }
+}
+
 /// 列表行与导航行的选中/悬停表面。
 ///
 /// 选中态**只用填充**：不描边，也不在选中时切字重。两者都会让行内文字重排——描边挤掉
@@ -152,6 +207,7 @@ enum ATMContentRowLayout {
 }
 
 private struct ATMRowSurfaceModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let surface: ATMRowSurface
     let isSelected: Bool
 
@@ -174,6 +230,8 @@ private struct ATMRowSurfaceModifier: ViewModifier {
             .shadow(color: selectionShadow, radius: 9, y: 3)
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
+            .animation(ATMMotion.resolved(ATMMotion.hover, reduceMotion: reduceMotion), value: isHovered)
+            .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: isSelected)
             .accessibilityValue(isSelected ? "已选择" : "")
             .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
