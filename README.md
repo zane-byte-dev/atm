@@ -185,14 +185,18 @@ atm artifact save <title> --file report.md
 
 `todo run` 是显式的本地执行入口，默认派发 Codex，`--agent` 可选 `claude`、`grokbuild`、`pi`
 （`todo agents` 列出本机是否已安装、费用与安全说明）。它先创建唯一的 `task_runs` claim，再启动一个脱离
-调用终端的 ATM controller，由 controller 以受限权限运行所选 Agent，并额外开放 ATM 数据目录，
-因此 Agent 可以读取任务、绑定 Session 和记录进展。受限的形式取决于 Agent 自己提供的能力：Codex 是
-`workspace-write` sandbox，Grok 是 workspace sandbox，Claude Code 没有可由 ATM 强制的文件系统 sandbox，
-guarded 用它自己的权限规则——工作目录内的编辑自动放行、其余工具在非交互下按未授权拒绝，只额外放行 `atm` 命令；
+调用终端的 ATM controller，由 controller 以受限权限运行所选 Agent。受限的形式取决于 Agent 自己提供的
+能力：Codex 是 `workspace-write` sandbox 并额外开放 ATM 数据目录，因此 Agent 可以读取任务、绑定 Session
+和记录进展；Grok 是 workspace sandbox，权限模式用 `auto` 并额外放行 `atm` 命令——它的 `acceptEdits`
+只自动放行文件编辑，其余工具仍会发起审批请求，无人应答的无头执行会把整轮取消，`auto` 则只把被拦截的调用
+回报给模型；Grok 没有等价的 `--add-dir`，因此 workspace sandbox 下 `~/.atm` 只读，写入类 `atm` 命令会
+失败，会话绑定由 controller 在派发前完成。Claude Code 没有可由 ATM 强制的文件系统 sandbox，guarded 用
+它自己的权限规则——工作目录内的编辑自动放行、其余工具在非交互下按未授权拒绝，只额外放行 `atm` 命令；
 Pi 两者都没有，因此只能以 trusted 运行。`--policy trusted` 会绕过所选 Agent 的审批与 sandbox，必须
 显式传入并会输出警告。同一 Todo 同时最多一个 starting/running Run；进程异常消失后，下次派发会把旧 claim
 记为失败再重试。Agent 退出 0 只会把仍在进行中的 Todo 提交到 `review`，永远不会自动 `done`；非零退出只记录
-Run 失败，不改变 Todo 生命周期。`todo interrupt` 会停止 controller 及其 Agent 子进程树，将 Run 单独记为
+Run 失败，不改变 Todo 生命周期。退出码不是唯一证据：Grok 在整轮被取消时同样退出 0，ATM 解析它的终局
+`end` 事件，只有 `stopReason=end_turn` 才算完成，否则记为失败且不提交 review。`todo interrupt` 会停止 controller 及其 Agent 子进程树，将 Run 单独记为
 `interrupted`，并让 Todo 保持 `in_progress`，之后仍可重新派发或继续已有会话。每次派发的工作目录、策略、
 controller PID、时间、退出码和日志路径均独立保存。
 已有执行关联到 Codex 线程后，可用 `--continue` 发送新的修改要求：ATM 创建新的 Run 审计记录（续跑的意图记在
@@ -255,9 +259,11 @@ Parser 层自动处理以下噪音，保证存储和展示的数据是真实用�
 - **Codex**：SessionStart hook 可调用 [`integrations/codex-atm-context.sh`](integrations/codex-atm-context.sh)，避免把完整 `atm now --json` 反复塞入上下文
 - **其他 agent**（Claude Code 等）：以该文件内容作为 prompt/skill 参考
 
-## 刘海事件推送
+## Agent 事件推送与通知
 
-刘海默认靠每 3 秒扫一遍会话记录来判断「这个会话是不是在等你」。这条路有两个躲不开的短板：会话记录是异步落盘的，而 Agent 卡在工具授权那一刻**根本不会写下任何文字**——恰恰是最该提醒你的时刻反而看不见。
+Agent 卡住等你时，ATM 发一条系统通知，点击直接跳到它所在的终端；Agent 继续往下走之后通知自动撤回。菜单栏同时显示「需要你 N」，不看通知也能一眼扫到。跑完一轮不发通知——那不是被挡住，用提示音就够。
+
+通知**只在 hook 报出确切原因时触发**。不装 hook 的话，ATM 只能每 3 秒扫一遍会话记录去猜「这个会话是不是在等你」，而这条路有两个躲不开的短板：会话记录是异步落盘的，而 Agent 卡在工具授权那一刻**根本不会写下任何文字**——恰恰是最该提醒你的时刻反而看不见。所以那种关键词推测只计入菜单栏计数和 Agent 页，不会弹通知。
 
 装上 hook 后，Agent 会在事件发生时直接推给 ATM：
 
@@ -271,13 +277,13 @@ atm agent hook uninstall          # 原样摘掉
 
 - 写入的是 Agent 自己的配置（`~/.claude/settings.json`、`~/.codex/hooks.json`、`~/.grok/hooks/atm-notch.json`、`~/.qoder/settings.json`），**只增删 ATM 自己那几条**，同一份配置里其他工具的 hook 一条不动
 - 装的都是只上报的 hook（`SessionStart` / `UserPromptSubmit` / `Stop` / `SessionEnd` / `Notification`），**不会拦住工具调用，也不会替你做授权决定**；App 没在跑时 hook 立刻静默退出，不影响 Agent
-- 事件走 `~/.atm/notch.sock`（0600），只在本机；带的是会话 ID、cwd 和一句提示文字
+- 事件走 `~/.atm/notch.sock`（0600），只在本机；带的是会话 ID、cwd 和一句提示文字。socket 与 hook 文件沿用 `notch` 这个名字只是历史包袱（那套 UI 已经被通知取代），改名会让已装好的 hook 全部失效，因此保持不动
 - **Grok Build** 使用独立文件 `~/.grok/hooks/atm-notch.json`，与同目录其他 hook 文件合并加载；payload 支持 Grok 的 camelCase 字段
-- **Qoder** 的 hook 事件名与 payload 与 Claude 同构，一份 `~/.qoder/settings.json` 同时覆盖 Qoder IDE 与 Qoder CLI。Qoder 只在启动时读这份配置，**装完要重启 Qoder 才生效**；刘海因此不看「文件里装了」而只认真实收到的事件，重启前维持原来的关键词判断，收到第一个事件后自动切换
-- **Pi** 没有 hook 配置文件，把 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 复制到 `~/.pi/agent/extensions/` 即可。Pi 的 `agent_settled` 上报为「已完成」而不是「需要你」——它分不清是做完了还是卡住了，而 attention 是刘海最高优先级的状态，猜错会让每一轮结束都变橙
-- 没接 hook 的 Agent（copilot / qoderwork）继续走原来的关键词判断，行为不变
+- **Qoder** 的 hook 事件名与 payload 与 Claude 同构，一份 `~/.qoder/settings.json` 同时覆盖 Qoder IDE 与 Qoder CLI。Qoder 只在启动时读这份配置，**装完要重启 Qoder 才生效**；ATM 因此不看「文件里装了」而只认真实收到的事件，重启前维持原来的关键词判断，收到第一个事件后自动切换
+- **Pi** 没有 hook 配置文件，把 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 复制到 `~/.pi/agent/extensions/` 即可。Pi 的 `agent_settled` 上报为「已完成」而不是「需要你」——它分不清是做完了还是卡住了，而只有「需要你」会弹通知，猜错会让每一轮结束都弹一条
+- 没接 hook 的 Agent（copilot / qoderwork）继续走关键词判断：仍会计入菜单栏的「需要你」计数，但不发通知
 
-也可以在 App 的「设置 → 通用 → Agent 事件推送」里一键安装并查看接入状态。
+也可以在 App 的「设置 → 通知」里一键安装并查看接入状态，以及开关通知本身。
 
 ## 数据源
 

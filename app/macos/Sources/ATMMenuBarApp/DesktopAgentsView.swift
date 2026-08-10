@@ -532,41 +532,27 @@ private struct DesktopAgentPresenceDetail: View {
         .fixedSize()
     }
 
-    /// 分页样式沿用任务详情 / 收集详情（见 DesktopTodoDetail.detailTabs）。
+    /// 胶囊分页与任务 / 收集详情共用 `ATMCapsuleTabs`。
     private var detailTabs: some View {
-        HStack(spacing: 0) {
-            detailTabButton(.overview, title: "概览", icon: "doc.text")
-            detailTabButton(.updates, title: "执行动态", icon: "clock.arrow.circlepath")
-            // Only a session that is itself a dispatched run has a raw log.
-            if taskRun != nil {
-                detailTabButton(.logs, title: "全部日志", icon: "terminal")
-            }
+        HStack {
+            ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 46)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
         .background(ATMTheme.canvas)
     }
 
-    private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
-        let selected = selectedTab == tab
-        return Button {
-            selectedTab = tab
-        } label: {
-            Label(title, systemImage: icon)
-                .font(ATMFont.font(.body, weight: .semibold))
-                .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
-                .padding(.horizontal, 12)
-                .frame(height: 46)
-                .overlay(alignment: .bottom) {
-                    Capsule()
-                        .fill(selected ? ATMTheme.accent : Color.clear)
-                        .frame(height: 2)
-                }
-                .contentShape(Rectangle())
+    private var detailTabItems: [(value: DetailTab, title: String)] {
+        var items: [(value: DetailTab, title: String)] = [
+            (.overview, "概览"),
+            (.updates, "执行动态"),
+        ]
+        // Only a session that is itself a dispatched run has a raw log.
+        if taskRun != nil {
+            items.append((.logs, "全部日志"))
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        return items
     }
 
     private var overviewContent: some View {
@@ -985,7 +971,7 @@ enum ATMAgentActivitySheetTab: String, CaseIterable, Identifiable {
 
 /// A restrained activity cue for the overview's newest update. It lives only
 /// in the selected Agent detail, so the continuous animation never repaints
-/// background rows or the always-on notch.
+/// background rows.
 private struct DesktopAgentLiveUpdateMark: View {
     let isActive: Bool
 
@@ -1069,31 +1055,15 @@ private struct DesktopAgentTranscriptSheet: View {
     }
 
     private var activityTabs: some View {
-        HStack(spacing: 0) {
-            ForEach(ATMAgentActivitySheetTab.allCases) { tab in
-                let selected = selectedTab == tab
-                Button {
-                    selectedTab = tab
-                } label: {
-                    Label(tab.title, systemImage: tab.systemImage)
-                        .font(ATMFont.font(.body, weight: .semibold))
-                        .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
-                        .padding(.horizontal, 14)
-                        .frame(height: 46)
-                        .overlay(alignment: .bottom) {
-                            Capsule()
-                                .fill(selected ? ATMTheme.accent : Color.clear)
-                                .frame(height: 2)
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-            }
+        HStack {
+            ATMCapsuleTabs(
+                selection: $selectedTab,
+                items: ATMAgentActivitySheetTab.allCases.map { ($0, $0.title) }
+            )
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 46)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
         .background(ATMTheme.canvas)
     }
 

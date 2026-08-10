@@ -9,7 +9,7 @@ final class StatusBarController {
     private let statusItem: NSStatusItem
     private let panel: FloatingPanel
     private var desktopWindow: NSWindow?
-    private var agentNotchController: ATMAgentNotchController?
+    private var agentAttentionNotifier: ATMAgentAttentionNotifier?
     private var outsideClickMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
@@ -20,22 +20,11 @@ final class StatusBarController {
         bindAppearance()
         configurePanel()
         bindStore()
-        ATMNotificationManager.shared.start { [weak self] in
-            Task { @MainActor in self?.openDesktop() }
+        ATMNotificationManager.shared.start { [weak self] route in
+            Task { @MainActor in self?.handleNotificationRoute(route) }
         }
         store.start()
-        agentNotchController = ATMAgentNotchController(
-            store: store,
-            onOpenSession: { [weak self] session in
-                self?.openAgentSession(session)
-            },
-            onOpenAgents: { [weak self] session in
-                self?.openAgents(session: session)
-            },
-            onOpenSettings: { [weak self] in
-                self?.openDesktop(section: .settings)
-            }
-        )
+        agentAttentionNotifier = ATMAgentAttentionNotifier(store: store)
         if ProcessInfo.processInfo.environment["ATM_OPEN_PANEL"] == "1" {
             DispatchQueue.main.async { [weak self] in self?.openPanel() }
         }
@@ -63,7 +52,7 @@ final class StatusBarController {
         // microphone and a transient ⎋ registration, and both are its to release.
         ATMVoiceInputCoordinator.shared.cancel()
         ATMGlobalHotKeyManager.shared.stop()
-        agentNotchController?.stop()
+        agentAttentionNotifier?.stop()
         store.stop()
         stopOutsideClickMonitor()
     }
@@ -174,6 +163,39 @@ final class StatusBarController {
                 return
             }
             openAgents(session: session)
+        }
+    }
+
+    /// Where a click on a delivered notification lands.
+    ///
+    /// An agent banner goes to the agent's own terminal, not to ATM: the whole
+    /// point of 等待授权 is that there is a prompt somewhere waiting for a
+    /// keystroke, and ATM cannot answer it. `openAgentSession` already falls back
+    /// to the Agents pane for a session with no host metadata.
+    private func handleNotificationRoute(_ route: ATMNotificationRoute) {
+        switch route {
+        case .agentSession(let sessionID):
+            guard let session = store.snapshot.liveStatus.sessions
+                .first(where: { $0.id == sessionID })
+            else {
+                // The session is gone from the snapshot — its terminal is the one
+                // thing we can no longer find. Show the pane instead of nothing.
+                openAgents(session: nil)
+                return
+            }
+            openAgentSession(session)
+        case .todo(let todoID):
+            // `ATMNowSnapshot` keeps todos in per-status buckets with no combined
+            // list, and a notification can name a todo in any of them.
+            let work = store.snapshot.work
+            let buckets = [work.open, work.working, work.waiting, work.review, work.blocked, work.due]
+            guard let todo = buckets.lazy.flatMap({ $0 }).first(where: { $0.id == todoID }) else {
+                openDesktop()
+                return
+            }
+            openDesktop(todo: todo)
+        case .app:
+            openDesktop()
         }
     }
 

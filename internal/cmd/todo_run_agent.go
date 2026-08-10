@@ -155,10 +155,22 @@ func buildGrokTaskRunCommand(run store.TaskRun) (*exec.Cmd, error) {
 	if run.Policy == "trusted" {
 		args = append(args, "--permission-mode", "bypassPermissions")
 	} else {
-		// Grok's workspace profile reads globally but restricts writes to the
+		// acceptEdits only auto-approves file edits: every run_terminal_command
+		// still raises an approval request, and headless there is nobody to
+		// answer it, so the first shell call is cancelled and the whole turn ends
+		// before any work happens. `auto` approves what its safety check allows
+		// and reports what it blocks back to the model instead of killing the
+		// turn. The sandbox, not the prompt policy, stays the enforced boundary:
+		// the workspace profile reads globally but restricts writes to the
 		// repository, temporary files, and ~/.grok. ATM binds the known session
 		// before launch, so the Agent itself does not need to write ~/.atm.
-		args = append(args, "--permission-mode", "acceptEdits", "--sandbox", "workspace")
+		// Both allow-rule dialects are passed because Grok matches `atm:*` as a
+		// command prefix and `atm *` as a glob over the whole command string.
+		args = append(args,
+			"--permission-mode", "auto",
+			"--sandbox", "workspace",
+			"--allow", "Bash(atm:*)",
+			"--allow", "Bash(atm *)")
 	}
 	if resumeID := taskRunResumeID(run); resumeID != "" {
 		args = append(args, "--resume", resumeID)

@@ -255,12 +255,17 @@ func executeTaskRun(runID string) error {
 		return finishTaskRunAfterControllerError(run, 1, err.Error())
 	}
 	var codexOutput *codexThreadStartedWriter
-	if run.Agent == "codex" {
+	var grokOutput *grokTurnOutcomeWriter
+	switch run.Agent {
+	case "codex":
 		codexOutput = newCodexThreadStartedWriter(logFile, func(sessionID string) error {
 			return attachTaskRunSession(*run, sessionID)
 		})
 		agentCommand.Stdout = codexOutput
-	} else {
+	case "grokbuild":
+		grokOutput = newGrokTurnOutcomeWriter(logFile)
+		agentCommand.Stdout = grokOutput
+	default:
 		agentCommand.Stdout = logFile
 	}
 	agentCommand.Stderr = logFile
@@ -284,6 +289,16 @@ func executeTaskRun(runID string) error {
 		codexOutput.retryLink()
 		if codexOutput.linkErr != nil {
 			fmt.Fprintf(logFile, "\nwarning: could not attach Codex thread to task run: %v\n", codexOutput.linkErr)
+		}
+	}
+
+	if grokOutput != nil && exitCode == 0 {
+		// Grok reports a cancelled or truncated turn only in its event stream and
+		// still exits 0, so the process status alone would submit an untouched
+		// Todo to review as if the work had been done.
+		if failure := grokOutput.incompleteTurn(); failure != "" {
+			exitCode = 1
+			message = failure
 		}
 	}
 
@@ -381,6 +396,76 @@ func (writer *codexThreadStartedWriter) retryLink() {
 		}
 	}
 	writer.linked = true
+}
+
+// grokCompletedStopReason is the only terminal reason that means the Agent
+// finished its turn. Grok's other reasons (cancelled, max_tokens,
+// max_turn_requests, refusal) all describe a turn that stopped early.
+const grokCompletedStopReason = "end_turn"
+
+// grokTurnOutcomeWriter tees Grok's NDJSON stream into the durable run log and
+// remembers the terminal `end` event. Grok exits 0 even when a headless
+// approval request resolves as a cancellation, so the process status alone
+// reports a run that never executed a single command as a success.
+type grokTurnOutcomeWriter struct {
+	destination io.Writer
+	pending     []byte
+	stopReason  string
+	ended       bool
+}
+
+func newGrokTurnOutcomeWriter(destination io.Writer) *grokTurnOutcomeWriter {
+	return &grokTurnOutcomeWriter{destination: destination}
+}
+
+func (writer *grokTurnOutcomeWriter) Write(data []byte) (int, error) {
+	written, err := writer.destination.Write(data)
+	if err != nil {
+		return written, err
+	}
+	if written != len(data) {
+		return written, io.ErrShortWrite
+	}
+	writer.pending = append(writer.pending, data...)
+	for {
+		newline := bytes.IndexByte(writer.pending, '\n')
+		if newline < 0 {
+			break
+		}
+		writer.observe(writer.pending[:newline])
+		writer.pending = writer.pending[newline+1:]
+	}
+	return written, nil
+}
+
+// incompleteTurn reports why an exit-0 run did not actually finish its turn, or
+// "" when it did. The still-buffered tail is inspected first so a final event
+// that reaches os/exec without a trailing newline still counts.
+func (writer *grokTurnOutcomeWriter) incompleteTurn() string {
+	writer.observe(writer.pending)
+	writer.pending = nil
+	switch {
+	case !writer.ended:
+		return "agent exited without reporting a completed turn"
+	case writer.stopReason != grokCompletedStopReason:
+		return fmt.Sprintf("agent stopped before finishing the turn (stopReason=%s)", writer.stopReason)
+	}
+	return ""
+}
+
+func (writer *grokTurnOutcomeWriter) observe(line []byte) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return
+	}
+	var event struct {
+		Type       string `json:"type"`
+		StopReason string `json:"stopReason"`
+	}
+	if err := json.Unmarshal(line, &event); err != nil || event.Type != "end" {
+		return
+	}
+	writer.ended = true
+	writer.stopReason = event.StopReason
 }
 
 // attachTaskRunSession records both execution evidence (run -> session) and

@@ -584,6 +584,18 @@ func TestTaskRunHelperProcess(t *testing.T) {
 		fmt.Println(`{"type":"thread.started","thread_id":"019feaa4-f7fd-77e3-b160-18fc1c86e69e"}`)
 		os.Exit(0)
 	}
+	if mode == "grok-cancelled" {
+		// A headless approval request nobody can answer: Grok cancels the turn
+		// after the first shell call and still exits 0.
+		fmt.Println(`{"type":"tool_call_update","status":"failed","content":[{"type":"content",` +
+			`"content":{"type":"text","text":"User cancelled the execution for tool ` + "`run_terminal_command`" + `"}}]}`)
+		fmt.Println(`{"type":"end","stopReason":"cancelled","sessionId":"019fea8d-a0c4-7130-a984-2c8128705934"}`)
+		os.Exit(0)
+	}
+	if mode == "grok-end-turn" {
+		fmt.Println(`{"type":"end","stopReason":"end_turn","sessionId":"019fea8d-a0c4-7130-a984-2c8128705934"}`)
+		os.Exit(0)
+	}
 	fmt.Println("helper " + mode)
 	if mode == "failure" {
 		os.Exit(7)
@@ -721,6 +733,185 @@ func TestBuildClaudeTaskRunCommandBindsItsSessionAndKeepsPoliciesDistinct(t *tes
 	resumedArgs := strings.Join(resumed.Args, " ")
 	if !strings.Contains(resumedArgs, "--resume "+sessionID) || strings.Contains(resumedArgs, "--session-id") {
 		t.Fatalf("resumed args = %q", resumedArgs)
+	}
+}
+
+func TestBuildGrokTaskRunCommandKeepsCommandsRunnableUnderGuarded(t *testing.T) {
+	oldResolve := resolveTaskRunAgentBinary
+	t.Cleanup(func() { resolveTaskRunAgentBinary = oldResolve })
+	resolveTaskRunAgentBinary = func(string) (string, error) { return "/fake/grok", nil }
+
+	sessionID := "019fea8d-a0c4-7130-a984-2c8128705934"
+	run := store.TaskRun{
+		ID: "r1", TodoID: "t1", WorkDir: "/tmp/work", Prompt: "work", Policy: "guarded",
+		SessionID: &sessionID,
+	}
+	guarded, err := buildGrokTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardedArgs := strings.Join(guarded.Args, " ")
+	// acceptEdits leaves run_terminal_command behind an approval request that a
+	// headless run answers as a cancellation, which ends the turn before the
+	// Agent has done anything.
+	if strings.Contains(guardedArgs, "acceptEdits") {
+		t.Fatalf("guarded run cannot execute commands: %q", guardedArgs)
+	}
+	if !strings.Contains(guardedArgs, "--permission-mode auto") ||
+		!strings.Contains(guardedArgs, "--sandbox workspace") ||
+		!strings.Contains(guardedArgs, "Bash(atm:*)") ||
+		strings.Contains(guardedArgs, "bypassPermissions") {
+		t.Fatalf("guarded args = %q", guardedArgs)
+	}
+	if !strings.Contains(guardedArgs, "--output-format streaming-json") {
+		// The terminal `end` event is the only place a cancelled turn is reported.
+		t.Fatalf("headless output flags missing: %q", guardedArgs)
+	}
+	if !strings.Contains(guardedArgs, "--session-id "+sessionID) || strings.Contains(guardedArgs, "--resume") {
+		t.Fatalf("fresh run did not pre-bind its session: %q", guardedArgs)
+	}
+
+	run.Policy = "trusted"
+	trusted, err := buildGrokTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedArgs := strings.Join(trusted.Args, " ")
+	if !strings.Contains(trustedArgs, "--permission-mode bypassPermissions") ||
+		strings.Contains(trustedArgs, "--sandbox") {
+		t.Fatalf("trusted args = %q", trustedArgs)
+	}
+
+	run.Policy = "guarded"
+	run.ResumeSessionID = &sessionID
+	resumed, err := buildGrokTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedArgs := strings.Join(resumed.Args, " ")
+	if !strings.Contains(resumedArgs, "--resume "+sessionID) || strings.Contains(resumedArgs, "--session-id") {
+		t.Fatalf("resumed args = %q", resumedArgs)
+	}
+}
+
+func TestExecuteGrokTaskRunTreatsCancelledTurnAsFailure(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		helperMode string
+		wantStatus string
+		wantExit   int
+		wantTodo   string
+	}{
+		{
+			name: "cancelled", helperMode: "grok-cancelled", wantStatus: store.TaskRunFailed,
+			wantExit: 1, wantTodo: store.TodoStatusInProgress,
+		},
+		{
+			name: "completed", helperMode: "grok-end-turn", wantStatus: store.TaskRunCompleted,
+			wantExit: 0, wantTodo: store.TodoStatusReview,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			withTempAtmDir(t)
+			t.Setenv("ATM_SKIP_LOCAL_NOTIFICATION", "1")
+			workDir := t.TempDir()
+			if err := seedTodos(store.Todo{
+				ID: "t1", Title: "Execute me", Priority: "P1", Status: store.TodoStatusInProgress,
+				Project: "atm", Created: store.Today(),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			logPath := filepath.Join(config.AtmDir, "exec", "run-grok.log")
+			if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+				t.Fatal(err)
+			}
+			sessionID := "019fea8d-a0c4-7130-a984-2c8128705934"
+			db, err := store.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.CreateTaskRun(db, store.TaskRun{
+				ID: "run-grok", TodoID: "t1", Agent: "grokbuild", Project: "atm", WorkDir: workDir,
+				Prompt: "test", Policy: "guarded", LogPath: logPath,
+				Status: store.TaskRunStarting, StartTS: 1, SessionID: &sessionID,
+			}); err != nil {
+				db.Close()
+				t.Fatal(err)
+			}
+			db.Close()
+
+			oldBuild := buildTaskRunAgentCommand
+			t.Cleanup(func() { buildTaskRunAgentCommand = oldBuild })
+			buildTaskRunAgentCommand = func(store.TaskRun) (*exec.Cmd, error) {
+				command := exec.Command(os.Args[0], "-test.run=TestTaskRunHelperProcess", "--")
+				command.Env = append(os.Environ(), "ATM_TASK_RUN_TEST_MODE="+test.helperMode)
+				return command, nil
+			}
+			if err := executeTaskRun("run-grok"); err != nil {
+				t.Fatal(err)
+			}
+
+			readDB, err := store.OpenReadOnly()
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := store.GetTaskRun(readDB, "run-grok")
+			readDB.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run == nil || run.Status != test.wantStatus || run.ExitCode == nil || *run.ExitCode != test.wantExit {
+				t.Fatalf("run = %#v", run)
+			}
+			todos, err := store.LoadTodosReadOnly()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A cancelled turn did no work, so the Todo must stay where it was
+			// instead of being handed to review.
+			if todo := store.FindTodo(todos, "t1"); todo == nil || todo.Status != test.wantTodo {
+				t.Fatalf("todo = %#v, want status %s", todo, test.wantTodo)
+			}
+			// The raw event stream still reaches the durable log either way.
+			logBody, err := os.ReadFile(logPath)
+			if err != nil || !strings.Contains(string(logBody), `"type":"end"`) {
+				t.Fatalf("log=%q err=%v", logBody, err)
+			}
+		})
+	}
+}
+
+func TestGrokTurnOutcomeWriterReadsChunkedAndUnterminatedEndEvent(t *testing.T) {
+	var destination bytes.Buffer
+	writer := newGrokTurnOutcomeWriter(&destination)
+	chunks := []string{
+		`{"type":"thought","data":"hm"}` + "\n" + `{"type":"end","stopRea`,
+		`son":"cancelled","sessionId":"019fea8d-a0c4-7130-a984-2c8128705934"}`,
+	}
+	for _, chunk := range chunks {
+		if _, err := writer.Write([]byte(chunk)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := writer.incompleteTurn(); !strings.Contains(got, "stopReason=cancelled") {
+		t.Fatalf("incompleteTurn = %q", got)
+	}
+	if destination.String() != strings.Join(chunks, "") {
+		t.Fatalf("destination = %q", destination.String())
+	}
+
+	completed := newGrokTurnOutcomeWriter(&bytes.Buffer{})
+	if _, err := completed.Write([]byte(`{"type":"end","stopReason":"end_turn"}` + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got := completed.incompleteTurn(); got != "" {
+		t.Fatalf("finished turn reported as incomplete: %q", got)
+	}
+
+	// A stream that stops before its terminal event is not evidence of success.
+	silent := newGrokTurnOutcomeWriter(&bytes.Buffer{})
+	if got := silent.incompleteTurn(); got == "" {
+		t.Fatal("missing end event was accepted as a completed turn")
 	}
 }
 

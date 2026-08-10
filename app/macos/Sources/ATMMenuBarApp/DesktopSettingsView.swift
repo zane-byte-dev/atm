@@ -10,7 +10,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
     case general
     case shortcuts
     case voice
-    case notch
+    case notify
     case todo
     case connectors
 
@@ -21,7 +21,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .general: return "通用"
         case .shortcuts: return "快捷键"
         case .voice: return "语音"
-        case .notch: return "刘海"
+        case .notify: return "通知"
         case .todo: return "Todo"
         case .connectors: return "连接器"
         }
@@ -32,7 +32,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .general: return "slider.horizontal.3"
         case .shortcuts: return "keyboard"
         case .voice: return "waveform"
-        case .notch: return "rectangle.topthird.inset.filled"
+        case .notify: return "bell"
         case .todo: return "checklist"
         case .connectors: return "link"
         }
@@ -43,7 +43,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .general: return "主题、字号与应用信息"
         case .shortcuts: return "查看全部快捷键并改绑"
         case .voice: return "识别、文本与权限"
-        case .notch: return "状态提醒与声音反馈"
+        case .notify: return "通知、Hook 与声音反馈"
         case .todo: return "任务列表与默认行为"
         case .connectors: return "自动收集与外部来源"
         }
@@ -84,17 +84,8 @@ struct DesktopSettingsView: View {
     /// notification, and the trip to System Settings and back always passes through
     /// this view becoming visible again.
     @State private var voicePermissions = ATMVoicePermissionSnapshot.current()
-    @AppStorage(ATMAgentNotchPreferences.enabledKey)
-    private var agentNotchEnabled = ATMAgentNotchPreferences.defaultEnabled
-    @AppStorage(ATMAgentNotchPreferences.retentionKey)
-    private var agentNotchRetention = ATMAgentNotchRetention.default.rawValue
-    @AppStorage(ATMAgentNotchPreferences.notificationDwellKey)
-    private var agentNotchNotificationDwell = ATMAgentNotchNotificationDwell.default.rawValue
-    @AppStorage(ATMAgentNotchPreferences.screenSelectionKey)
-    private var agentNotchScreenSelection = ATMAgentNotchScreenSelection.default.rawValue
-    @AppStorage(ATMAgentNotchPreferences.stripAlignmentKey)
-    private var agentNotchStripAlignment = ATMAgentNotchStripAlignment.default.rawValue
-    @State private var availableScreens: [ATMNotchScreenOption] = ATMNotchScreenOption.current()
+    @AppStorage(ATMAgentAttentionNotifyPreferences.enabledKey)
+    private var agentAttentionNotifyEnabled = ATMAgentAttentionNotifyPreferences.defaultEnabled
     @AppStorage(ATMAgentSoundPreferences.enabledKey)
     private var agentSoundsEnabled = ATMAgentSoundPreferences.defaultEnabled
     @AppStorage(ATMAgentSoundPreferences.volumeKey)
@@ -246,8 +237,8 @@ struct DesktopSettingsView: View {
                     shortcutSettings
                 case .voice:
                     voiceSettings
-                case .notch:
-                    notchSettings
+                case .notify:
+                    notifySettings
                 case .todo:
                     todoSettings
                 case .connectors:
@@ -849,13 +840,14 @@ struct DesktopSettingsView: View {
         )
     }
 
-    /// The 刘海 tab: everything about the menu-bar notch experience — the strip
-    /// itself and its placement, the event-push hooks that feed it, and the
-    /// state-change sounds it plays.
-    private var notchSettings: some View {
+    /// The 通知 tab: how ATM interrupts you at all — the banner it raises when an
+    /// agent is blocked, the event-push hooks that are the only signal trusted to
+    /// raise it, and the state-change sounds that cover everything not worth a
+    /// banner.
+    private var notifySettings: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                card { agentNotchSection }
+                card { agentAttentionNotifySection }
 
                 card { agentHookSection }
 
@@ -1147,139 +1139,51 @@ struct DesktopSettingsView: View {
         }
     }
 
-    /// The notch's own preferences: on/off plus the four Ping-Island-style
-    /// customizations — which screen it lives on, how it sits on a notchless
-    /// screen, how long finished sessions linger, and how long a card stays up.
+    /// The one interruption ATM allows itself.
+    ///
+    /// A single switch on purpose. There is no per-reason granularity and no
+    /// quiet-hours of ATM's own: Notification Center already runs 专注模式 and
+    /// Do Not Disturb, and a second set of rules here could only disagree with
+    /// the first.
     @ViewBuilder
-    private var agentNotchSection: some View {
+    private var agentAttentionNotifySection: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 16) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("刘海 Agent")
+                    Text("Agent 需要你时通知")
                         .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                    Text("在屏幕顶部显示活跃与最近的 Agent。绿色表示活跃、灰色表示最近；悬停直接展开完整会话列表，点击可固定并直接回到来源。")
+                    Text("Agent 卡在等待授权、等待输入或等待选择时发一条系统通知，点击直接跳到它所在的终端；Agent 继续往下走之后通知自动撤回。遵循系统的专注模式与「勿扰」。")
                         .font(ATMFont.footnote)
                         .foregroundStyle(ATMTheme.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 12)
-                Toggle("显示", isOn: $agentNotchEnabled)
+                Toggle("通知", isOn: $agentAttentionNotifyEnabled)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .controlSize(.small)
             }
 
-            if agentNotchEnabled {
-                Divider()
+            Divider()
 
-                agentNotchScreenPicker
+            Text("只在下面的 hook 报出确切原因时触发。没有 hook 的 agent 靠关键词猜「是不是在等你」，那种推测会误报，所以它只计入菜单栏的「需要你」计数和 Agent 页，不发通知。")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-                agentNotchSettingRow(
-                    title: "无刘海屏位置",
-                    detail: "没有物理刘海的屏幕降级为顶部悬浮条时的停靠位置；物理刘海屏始终居中对齐相机区域。"
-                ) {
-                    Picker("无刘海屏位置", selection: $agentNotchStripAlignment) {
-                        ForEach(ATMAgentNotchStripAlignment.allCases) { alignment in
-                            Text(alignment.label).tag(alignment.rawValue)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 240)
-                }
-
-                agentNotchSettingRow(
-                    title: "最近会话保留",
-                    detail: "会话结束后在刘海里保留多久，超时自动隐藏。“需要你”的会话不受此限制，会一直显示到你处理。"
-                ) {
-                    Picker("最近会话保留", selection: $agentNotchRetention) {
-                        ForEach(ATMAgentNotchRetention.allCases) { retention in
-                            Text(retention.label).tag(retention.rawValue)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 300)
-                }
-
-                agentNotchSettingRow(
-                    title: "通知停留",
-                    detail: "“已完成 / 需要你”的卡片弹出后自动收起前停留多久。选“手动收起”则一直显示，直到点击别处或来了新事件。"
-                ) {
-                    Picker("通知停留", selection: $agentNotchNotificationDwell) {
-                        ForEach(ATMAgentNotchNotificationDwell.allCases) { dwell in
-                            Text(dwell.label).tag(dwell.rawValue)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .frame(width: 300)
-                }
-
-                Text("没有活跃或最近会话时自动隐藏。")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .onAppear { availableScreens = ATMNotchScreenOption.current() }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: NSApplication.didChangeScreenParametersNotification
-            )
-        ) { _ in
-            availableScreens = ATMNotchScreenOption.current()
+            Text("跑完一轮不发通知——那不是被挡住，用提示音就够。")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private var agentNotchScreenPicker: some View {
-        agentNotchSettingRow(
-            title: "显示屏",
-            detail: "选择刘海挂在哪块屏幕上。“自动”优先带物理刘海的屏，其次主屏；指定的外接屏拔掉后自动回退到“自动”。"
-        ) {
-            Picker("显示屏", selection: $agentNotchScreenSelection) {
-                Text("自动").tag(ATMAgentNotchScreenSelection.automatic.rawValue)
-                Text("主屏").tag(ATMAgentNotchScreenSelection.main.rawValue)
-                if !availableScreens.isEmpty {
-                    Divider()
-                    ForEach(availableScreens) { screen in
-                        Text(screen.label)
-                            .tag(ATMAgentNotchScreenSelection.display(screen.displayID).rawValue)
-                    }
-                }
-            }
-            .labelsHidden()
-            .frame(width: 240)
-        }
-    }
-
-    /// One labeled control row inside the notch card: title + explanatory copy on
-    /// the left, the control trailing. Keeps the four pickers visually uniform.
-    private func agentNotchSettingRow(
-        title: String,
-        detail: String,
-        @ViewBuilder control: () -> some View
-    ) -> some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(ATMFont.font(.body, weight: .medium))
-                Text(detail)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 12)
-            control()
-        }
-    }
-
-    /// Hook wiring for the notch.
+    /// Hook wiring: the event source behind every notification above.
     ///
-    /// Without hooks the notch has to infer "this session needs you" by
-    /// keyword-matching the agent's last message, which cannot see a tool call
-    /// blocked on a permission prompt at all. This section is how that inference
-    /// gets replaced by the agent telling us directly.
+    /// Without hooks ATM has to infer "this session needs you" by keyword-matching
+    /// the agent's last message, which cannot see a tool call blocked on a
+    /// permission prompt at all. This section is how that inference gets replaced
+    /// by the agent telling us directly.
     @ViewBuilder
     private var agentHookSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1287,7 +1191,7 @@ struct DesktopSettingsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Agent 事件推送")
                         .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                    Text("装上 hook 后，Agent 卡在授权或等你输入的那一刻会直接推给刘海，不再靠每 3 秒扫一遍会话记录去猜。装的都是只上报的 hook，不会拦住工具调用，也不会改 Agent 的行为。")
+                    Text("装上 hook 后，Agent 卡在授权或等你输入的那一刻会立刻上报，不再靠每 3 秒扫一遍会话记录去猜——上面的通知也只信这个通道。装的都是只上报的 hook，不会拦住工具调用，也不会改 Agent 的行为。")
                         .font(ATMFont.footnote)
                         .foregroundStyle(ATMTheme.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1345,7 +1249,10 @@ struct DesktopSettingsView: View {
 
     private var socketStatusText: String {
         guard store.agentEvents.isListening else {
-            return "事件通道未启动（刘海或 Agent 工作台打开后自动监听）"
+            // Since the attention notifier owns the poll for the whole lifetime of
+            // the app, the listener is up from launch. Seeing this now means it
+            // failed to bind, not that some window is closed.
+            return "事件通道未启动——socket 绑定失败，通知将退回每 3 秒扫描会话记录"
         }
         let path = store.agentEvents.socketPath ?? store.agentHookReport?.socketPath ?? ""
         if let lastEvent = store.agentEvents.lastEventAt {
@@ -1386,7 +1293,7 @@ struct DesktopSettingsView: View {
                 }
                 ForEach(source.conflicts, id: \.self) { conflict in
                     // Worth surfacing: another tool already answers this event,
-                    // so in-notch approval would mean two prompts racing.
+                    // so both would prompt for the same moment.
                     Text("另一个工具已占用 \(conflict)")
                         .font(ATMFont.footnote)
                         .foregroundStyle(ATMTheme.secondary)
@@ -1417,29 +1324,6 @@ struct DesktopSettingsView: View {
         if elapsed < 3_600 { return "\(elapsed / 60) 分钟前" }
         if elapsed < 86_400 { return "\(elapsed / 3_600) 小时前" }
         return "\(elapsed / 86_400) 天前"
-    }
-}
-
-/// A pluggable screen the notch can be pinned to, resolved from the live
-/// `NSScreen` list. Identified by CoreGraphics display id so the tag survives a
-/// reshuffle when a monitor is plugged or unplugged.
-struct ATMNotchScreenOption: Identifiable {
-    let displayID: CGDirectDisplayID
-    let label: String
-
-    var id: CGDirectDisplayID { displayID }
-
-    static func current() -> [ATMNotchScreenOption] {
-        let screens = NSScreen.screens
-        return screens.enumerated().compactMap { index, screen in
-            guard let displayID = screen.atmDisplayID else { return nil }
-            let notch = screen.safeAreaInsets.top > 0 ? " · 刘海屏" : ""
-            let main = screen == NSScreen.main ? " · 主屏" : ""
-            let base = screen.localizedName.isEmpty
-                ? "显示器 \(index + 1)"
-                : screen.localizedName
-            return ATMNotchScreenOption(displayID: displayID, label: "\(base)\(notch)\(main)")
-        }
     }
 }
 

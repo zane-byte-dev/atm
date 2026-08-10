@@ -1568,40 +1568,23 @@ struct DesktopTodoDetail: View {
     }
 
     private var detailTabs: some View {
-        HStack(spacing: 0) {
-            detailTabButton(.detail, title: "任务描述", icon: "doc.text")
-            if !isTrashed {
-                detailTabButton(.activity, title: "动态", icon: "clock.arrow.circlepath")
-                detailTabButton(.taskRun, title: "Agent 执行", icon: "cpu")
-                detailTabButton(.sessions, title: sessionTabTitle, icon: "terminal")
-            }
+        HStack {
+            ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
             Spacer(minLength: 0)
         }
-        // 视觉间距放进各按钮自身，避免 Tab 之间出现看得见却点不到的空白带。
-        .padding(.horizontal, 12)
-        .frame(height: 46)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
         .background(ATMTheme.canvas)
     }
 
-    private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
-        let selected = selectedTab == tab
-        return Button {
-            selectedTab = tab
-        } label: {
-            Label(title, systemImage: icon)
-                .font(ATMFont.font(.body, weight: .semibold))
-                .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
-                .padding(.horizontal, 12)
-                .frame(height: 46)
-                .overlay(alignment: .bottom) {
-                    Capsule()
-                        .fill(selected ? ATMTheme.accent : Color.clear)
-                        .frame(height: 2)
-                }
-                .contentShape(Rectangle())
+    private var detailTabItems: [(value: DetailTab, title: String)] {
+        var items: [(value: DetailTab, title: String)] = [(.detail, "任务描述")]
+        if !isTrashed {
+            items.append((.activity, "动态"))
+            items.append((.taskRun, "Agent 执行"))
+            items.append((.sessions, sessionTabTitle))
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        return items
     }
 
     private var sessionTabTitle: String {

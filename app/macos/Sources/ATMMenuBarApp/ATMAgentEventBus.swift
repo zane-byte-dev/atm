@@ -168,7 +168,7 @@ enum ATMAgentHookAuthority {
     ///   - seenSessionKeys: session identifiers a hook event has already arrived
     ///     for (`ATMAgentEventBus.hookSessionKeys`).
     ///   - report: what `atm agent hook status` found in the agents' config files.
-    ///   - isListening: whether the notch socket is actually accepting events. If
+    ///   - isListening: whether the hook socket is actually accepting events. If
     ///     it is not, no hook can reach us and handing the state over would leave
     ///     the session with no source at all.
     static func isAuthoritative(

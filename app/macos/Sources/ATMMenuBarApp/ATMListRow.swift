@@ -76,6 +76,7 @@ struct ATMDrawerDisclosureLabel: View {
 
 /// 中栏标题区的双态 / 多态切换。视觉跟 macOS 的紧凑 segmented control 一致：
 /// 一块安静的底板承载所有选项，当前项用轻微抬升的实心表面表示，不再用网页式下划线。
+/// 固定等宽，只适合「文章 / 知识库」这类短标签；详情页长标签用 `ATMCapsuleTabs`。
 struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selection: Selection
@@ -126,6 +127,53 @@ struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
         .padding(2)
         .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: selectedIndex)
+    }
+}
+
+/// 详情页分页：iOS 式可变宽度胶囊分段。
+///
+/// 浅灰整条胶囊作底板，选中项是浮在上面的白胶囊（软阴影、无描边），未选中只剩灰色文案。
+/// 标签随文案伸缩，适合「执行动态」「Agent Sessions 3」这类长度不一的标题；
+/// 中栏短标签仍用固定等宽的 `ATMCompactSegmentedTabs`。
+struct ATMCapsuleTabs<Selection: Hashable>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var selection: Selection
+    let items: [(value: Selection, title: String)]
+
+    private let segmentHeight: CGFloat = 28
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                let isSelected = selection == item.value
+                Button {
+                    withAnimation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion)) {
+                        selection = item.value
+                    }
+                } label: {
+                    Text(item.title)
+                        // 选中前后保持相同字重，避免胶囊宽度跟着字重跳。
+                        .font(ATMFont.font(.footnote, weight: .medium))
+                        .foregroundStyle(isSelected ? ATMTheme.primary : ATMTheme.secondary)
+                        .padding(.horizontal, 14)
+                        .frame(height: segmentHeight)
+                        .background {
+                            if isSelected {
+                                Capsule()
+                                    .fill(ATMTheme.elevated)
+                                    .shadow(color: .black.opacity(0.10), radius: 3, y: 1)
+                                    .shadow(color: .black.opacity(0.04), radius: 0.5, y: 0)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .background(ATMTheme.controlFill, in: Capsule())
+        .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: selection)
     }
 }
 

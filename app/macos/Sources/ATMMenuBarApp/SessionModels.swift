@@ -79,9 +79,9 @@ struct ATMLiveSession: Decodable, Identifiable, Equatable {
 
     /// Live hook signal joined in by `ATMAgentEventBus` after decoding.
     ///
-    /// Deliberately outside `CodingKeys`: hook events arrive on the notch socket,
-    /// not in the `atm session status` payload, and they are what let the notch
-    /// know about a blocked permission prompt — a moment the transcript this
+    /// Deliberately outside `CodingKeys`: hook events arrive on the hook socket,
+    /// not in the `atm session status` payload, and they are the only thing that
+    /// knows about a blocked permission prompt — a moment the transcript this
     /// struct is otherwise built from never records.
     var attentionSignal: ATMAgentAttentionSignal?
 
@@ -281,9 +281,9 @@ extension ATMLiveSession {
     /// the title and at 220 below it. `latestReplyText` guards the answer side
     /// of exactly this; this is the mirror for the question side.
     ///
-    /// Deliberately not folded into `latestUserInputText`: the notch and sound
-    /// turn trackers diff that value to tell one turn from the next, and they
-    /// have to keep seeing the input even on the cards that decline to draw it.
+    /// Deliberately not folded into `latestUserInputText`: the sound turn tracker
+    /// diffs that value to tell one turn from the next, and it has to keep seeing
+    /// the input even on the cards that decline to draw it.
     var latestUserInputBelowTitle: String? {
         guard let input = latestUserInputText else { return nil }
         guard let question = lastQuestion?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -525,6 +525,27 @@ extension ATMLiveSession {
         preferredTitleText(summary, lastQuestion, firstQuestion, lastAnswer)
             .map { ATMMarkdown.plainSummary($0, limit: 72) }
             ?? "\(ATMAgentDisplay.name(tool)) 会话"
+    }
+
+    /// Whether a hook said outright that this session is blocked on you — the
+    /// only condition allowed to raise a system notification.
+    ///
+    /// Deliberately narrower than `presenceState == .attention`, which also
+    /// fires on `matchesAttentionKeywords` (an agent merely *writing* 「请确认」)
+    /// and on a `bindingState` inconsistency (a data-hygiene problem, not an
+    /// agent waiting). Those read fine as a row in a list; as a banner that
+    /// interrupts someone they would be wrong.
+    var needsHookAttention: Bool {
+        activityState != "unobserved" && attentionSignal != nil
+    }
+
+    /// Whether this session counts toward the menu bar's 需要你 tally.
+    ///
+    /// The looser condition on purpose: a glanceable count carries no cost when
+    /// it is occasionally generous, so it keeps the keyword heuristic that
+    /// covers agents ATM cannot install hooks into (copilot, qoderwork).
+    var needsAnyAttention: Bool {
+        activityState != "unobserved" && presenceState == .attention
     }
 }
 

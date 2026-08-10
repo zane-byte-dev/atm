@@ -558,8 +558,8 @@ enum ATMSyncPolicy {
 
 enum ATMLiveStatusRefreshPolicy {
     /// Presence is intentionally much faster than the one-minute dashboard,
-    /// but only runs while a live-presence surface (Agent workspace or notch)
-    /// is visible.
+    /// but the attention notifier holds it open for the whole lifetime of the
+    /// app, since a blocked agent has to be noticed with no window open.
     static let interval: TimeInterval = 3
 
     /// Interval used while agent hooks are actively reporting. Each poll shells
@@ -1157,7 +1157,7 @@ final class ATMDataStore: ObservableObject {
         liveStatusTimer = timer
     }
 
-    /// Starts the notch socket and refreshes as soon as an event lands.
+    /// Starts the hook socket and refreshes as soon as an event lands.
     ///
     /// This is the whole point of the hook channel: `atm session status` is a
     /// scrape of transcript files plus `ps`, so it cannot see a blocked

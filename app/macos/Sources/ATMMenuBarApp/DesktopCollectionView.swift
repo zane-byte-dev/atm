@@ -1001,7 +1001,7 @@ private struct CollectionItemRow: View {
 
 /// 一条处理记录要说清四件事：消息从哪儿来、ATM 为什么这样处理、结论是什么、关联到
 /// 哪个 Todo。这四件都在「处理详情」里；消息原文按条数可以长到几十行，单独一个 tab，
-/// 免得它把四件事顶出屏幕。分页样式沿用任务详情（见 DesktopTodoDetail.detailTabs）。
+/// 免得它把四件事顶出屏幕。分页用 `ATMCapsuleTabs`，与任务 / Agent 详情一致。
 private struct CollectionItemDetail: View {
     private enum DetailTab: String, CaseIterable {
         case decision
@@ -1101,38 +1101,19 @@ private struct CollectionItemDetail: View {
     }
 
     private var detailTabs: some View {
-        HStack(spacing: 22) {
-            detailTabButton(.decision, title: "处理详情", icon: "doc.text")
-            detailTabButton(
-                .transcript,
-                title: transcriptTabTitle,
-                icon: "bubble.left.and.bubble.right"
+        HStack {
+            ATMCapsuleTabs(
+                selection: $selectedTab,
+                items: [
+                    (.decision, "处理详情"),
+                    (.transcript, transcriptTabTitle),
+                ]
             )
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 24)
-        .frame(height: 46)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
         .background(ATMTheme.canvas)
-    }
-
-    private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
-        let selected = selectedTab == tab
-        return Button {
-            selectedTab = tab
-        } label: {
-            Label(title, systemImage: icon)
-                .font(ATMFont.font(.body, weight: .semibold))
-                .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
-                .padding(.horizontal, 2)
-                .frame(height: 46)
-                .overlay(alignment: .bottom) {
-                    Capsule()
-                        .fill(selected ? ATMTheme.accent : Color.clear)
-                        .frame(height: 2)
-                }
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private var transcriptTabTitle: String {

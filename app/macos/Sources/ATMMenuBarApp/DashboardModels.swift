@@ -1075,9 +1075,24 @@ struct ATMDashboardSnapshot {
         )
     }
 
+    /// How many agents are waiting on a human right now.
+    ///
+    /// Looser than the condition that raises a notification
+    /// (`needsHookAttention`): a count that is occasionally generous costs the
+    /// reader nothing, so this keeps the keyword heuristic and therefore covers
+    /// agents ATM cannot install hooks into.
+    var attentionSessionCount: Int {
+        liveStatus.sessions.filter(\.needsAnyAttention).count
+    }
+
     var menuBarTitle: String {
         guard refreshedAt != .distantPast, let todayStats else { return "" }
-        return "\(work.working.count) · \(NumberFormat.compact(todayStats.totalTokens))"
+        let base = "\(work.working.count) · \(NumberFormat.compact(todayStats.totalTokens))"
+        // Leading, not trailing: this is the one thing here worth acting on, and
+        // the quota suffix the status bar appends would otherwise push it off the
+        // end of a crowded menu bar.
+        guard attentionSessionCount > 0 else { return base }
+        return "需要你 \(attentionSessionCount) · \(base)"
     }
 
     var menuBarTooltip: String {

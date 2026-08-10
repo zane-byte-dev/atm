@@ -180,8 +180,8 @@ struct ATMAgentHookReport: Decodable, Equatable {
 /// A live "this session is waiting for you" signal produced by a hook.
 struct ATMAgentAttentionSignal: Equatable {
     /// Why the agent stopped, in its own vocabulary (`permission_prompt`,
-    /// `idle_prompt`, …). Rendered verbatim so the notch never claims to know
-    /// more than the agent told us.
+    /// `idle_prompt`, …). Rendered verbatim so ATM never claims to know more
+    /// than the agent told us.
     let reason: String
     let tool: String?
     let text: String?
@@ -192,15 +192,15 @@ struct ATMAgentAttentionSignal: Equatable {
     ///
     /// Purely a safety valve: the agent normally clears the signal by starting
     /// or finishing work. But hooks are best-effort — a crashed CLI, a killed
-    /// terminal, or an uninstalled hook can drop the clearing event, and a notch
-    /// stuck orange forever is worse than one that forgets.
+    /// terminal, or an uninstalled hook can drop the clearing event, and a banner
+    /// that never retires is worse than one that forgets.
     static let timeToLive: TimeInterval = 10 * 60
 
     func isLive(at now: Date) -> Bool {
         now.timeIntervalSince(receivedAt) < Self.timeToLive
     }
 
-    /// Short human label for the notch row.
+    /// Short human label — the subtitle of the notification this raises.
     var displayReason: String {
         switch reason {
         case "permission_prompt", "permission_request": return "等待授权"

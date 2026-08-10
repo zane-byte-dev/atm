@@ -3,13 +3,12 @@ import SwiftUI
 
 /// The strip that appears while someone is dictating.
 ///
-/// A panel of its own rather than a state on the notch: the notch carries what agents
-/// push at you, and this carries what you are doing right now with a key held down.
-/// Putting both in the same place would mean one covering the other at exactly the
-/// moment both matter.
+/// The app's only on-screen panel now that agent state has moved to Notification
+/// Center. It earns that by being strictly modal to an action in progress: it
+/// exists while a key is held down and goes away when it is released.
 ///
 /// Bottom-centre of whichever screen has the pointer — near where someone is looking
-/// while they talk, and far from the notch.
+/// while they talk, and clear of the menu bar.
 @MainActor
 final class ATMVoiceOverlayController {
     static let shared = ATMVoiceOverlayController()
