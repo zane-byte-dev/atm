@@ -230,6 +230,7 @@ var todoRunCmd = &cobra.Command{
 controller that runs the selected Agent. A successful Agent exit submits the
 Todo to review; it never marks the Todo done.`,
 	Example: `  atm todo run t240
+	  atm todo run t240 --agent claude
 	  atm todo run t240 --agent grokbuild
 	  atm todo run t240 --agent pi --policy trusted
   atm todo run t240 --cwd /path/to/repo

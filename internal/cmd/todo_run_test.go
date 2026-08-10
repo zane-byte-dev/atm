@@ -662,6 +662,68 @@ func TestBuildCodexTaskRunCommandKeepsGuardedAndTrustedDistinct(t *testing.T) {
 	}
 }
 
+func TestBuildClaudeTaskRunCommandBindsItsSessionAndKeepsPoliciesDistinct(t *testing.T) {
+	oldResolve := resolveTaskRunAgentBinary
+	t.Cleanup(func() { resolveTaskRunAgentBinary = oldResolve })
+	resolveTaskRunAgentBinary = func(string) (string, error) { return "/fake/claude", nil }
+
+	sessionID := "019fea8d-a0c4-7130-a984-2c8128705934"
+	run := store.TaskRun{
+		ID: "r1", TodoID: "t1", WorkDir: "/tmp/work", Prompt: "多行\n任务说明", Policy: "guarded",
+		SessionID: &sessionID,
+	}
+	guarded, err := buildClaudeTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardedArgs := strings.Join(guarded.Args, " ")
+	if !strings.Contains(guardedArgs, "--permission-mode acceptEdits") ||
+		!strings.Contains(guardedArgs, "--add-dir "+config.AtmDir) ||
+		!strings.Contains(guardedArgs, "Bash(atm:*)") ||
+		strings.Contains(guardedArgs, "dangerously") {
+		t.Fatalf("guarded args = %q", guardedArgs)
+	}
+	// stream-json output is only accepted alongside --verbose in print mode.
+	if !strings.Contains(guardedArgs, "--print") ||
+		!strings.Contains(guardedArgs, "--output-format stream-json") ||
+		!strings.Contains(guardedArgs, "--verbose") {
+		t.Fatalf("headless output flags missing: %q", guardedArgs)
+	}
+	// A fresh run must claim the id ATM already bound to the Todo, never resume.
+	if !strings.Contains(guardedArgs, "--session-id "+sessionID) || strings.Contains(guardedArgs, "--resume") {
+		t.Fatalf("fresh run did not pre-bind its session: %q", guardedArgs)
+	}
+	// The prompt is stdin, not an argument: it is multi-line user text.
+	if strings.Contains(guardedArgs, "任务说明") {
+		t.Fatalf("prompt leaked into argv: %q", guardedArgs)
+	}
+	if guarded.Stdin == nil {
+		t.Fatal("prompt was not piped to claude")
+	}
+
+	run.Policy = "trusted"
+	trusted, err := buildClaudeTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trustedArgs := strings.Join(trusted.Args, " ")
+	if !strings.Contains(trustedArgs, "--dangerously-skip-permissions") ||
+		strings.Contains(trustedArgs, "acceptEdits") {
+		t.Fatalf("trusted args = %q", trustedArgs)
+	}
+
+	run.Policy = "guarded"
+	run.ResumeSessionID = &sessionID
+	resumed, err := buildClaudeTaskRunCommand(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumedArgs := strings.Join(resumed.Args, " ")
+	if !strings.Contains(resumedArgs, "--resume "+sessionID) || strings.Contains(resumedArgs, "--session-id") {
+		t.Fatalf("resumed args = %q", resumedArgs)
+	}
+}
+
 func TestCopyTaskRunLogTailBoundsOutputAndPreservesUTF8(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "run.log")
 	body := strings.Repeat("old event\n", 40) + "最新事件：任务仍在执行\n"

@@ -30,8 +30,8 @@ var (
 )
 
 // taskRunResumeID reports the agent thread this run was dispatched to continue,
-// or "" for a fresh dispatch. Grok and Pi own their session ids, so unlike Codex
-// their value is used verbatim.
+// or "" for a fresh dispatch. Claude, Grok and Pi accept the session id ATM
+// generated, so unlike Codex their value is used verbatim.
 func taskRunResumeID(run store.TaskRun) string {
 	if run.ResumeSessionID == nil {
 		return ""
@@ -112,7 +112,7 @@ func runTodoRun(cmd *cobra.Command, args []string) error {
 			// previous id into session_id would present intent as evidence and hide
 			// the row from transcript sync's unlinked-run pass.
 		} else {
-			// Grok and Pi are pre-bound to an ATM-generated id, which is both the
+			// Claude, Grok and Pi are pre-bound to an ATM-generated id, which is both the
 			// thread to resume and this run's own session identity.
 			sessionID = resumedRun.SessionID
 		}
