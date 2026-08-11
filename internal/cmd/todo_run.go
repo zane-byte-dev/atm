@@ -541,10 +541,20 @@ The user wants these follow-up changes:
 
 %s
 Inspect the existing work before editing, implement the follow-up completely, and verify the result.
-Record only meaningful milestones with ATM. Do not mark the Todo done; successful
-process completion is submitted to review by the run controller.`,
-		todo.Title, todo.ID, agentName, strings.TrimSpace(followUp), bindingInstruction)
+%s`,
+		todo.Title, todo.ID, agentName, strings.TrimSpace(followUp), bindingInstruction, taskRunOutcomeInstruction)
 }
+
+// taskRunOutcomeInstruction closes the prompt for both a fresh dispatch and a
+// continuation. It asks for no ATM writes: this run's session is indexed with
+// every reply in full, and the Todo reads the Agent's own closing message from
+// that index, so a progress entry would be a second copy of text ATM already
+// owns — one the Agent has to spend turns producing, and cannot write at all
+// under a sandbox that keeps ~/.atm read-only.
+const taskRunOutcomeInstruction = `End with what you did, the evidence you verified it with, and anything left open:
+that closing message is what the person reviewing this Todo reads.
+Do not record progress with ATM and do not mark the Todo done;
+successful process completion is submitted to review by the run controller.`
 
 func buildTaskRunPrompt(todo *store.Todo) string {
 	return buildTaskRunPromptForAgent(todo, "Codex", false)
@@ -560,10 +570,9 @@ func buildTaskRunPromptForAgent(todo *store.Todo, agentName string, prebound boo
 This is an unattended %s task run managed by ATM.
 
 %s
-Implement the task completely in the current repository, verify the result, and
-record only meaningful milestones with ATM. Do not mark the Todo done; successful
-process completion is submitted to review by the run controller.`,
-		todo.Title, todo.ID, agentName, bindingInstruction)
+Implement the task completely in the current repository and verify the result.
+%s`,
+		todo.Title, todo.ID, agentName, bindingInstruction, taskRunOutcomeInstruction)
 }
 
 func resolveTaskRunCWD(todo *store.Todo, override string) (string, string, error) {

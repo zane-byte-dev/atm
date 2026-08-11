@@ -69,12 +69,16 @@ func runShow(cmd *cobra.Command, args []string) error {
 		if showThinking && s.FilePath != "" {
 			if _, statErr := os.Stat(s.FilePath); statErr != nil {
 				thinkingSourceMissing = true
-			} else if s.Agent == "pi" {
-				thinkingBlocks = parser.PiExtractThinking(s.FilePath)
 			} else {
-				thinkingBlocks = parser.ClaudeExtractThinking(s.FilePath)
+				thinkingBlocks = extractSessionThinking(s.AgentKey, s.FilePath)
 			}
 		}
+
+		// Claude Code stores its thinking blocks with the text stripped, keeping
+		// only the signature, so "no thinking" is a property of the transcript
+		// rather than of the request. Saying so beats rendering an empty section
+		// that reads like a failed read.
+		thinkingAbsent := showThinking && !thinkingSourceMissing && len(thinkingBlocks) == 0
 
 		allQAs := buildSessionQAs(s, thinkingBlocks)
 		totalTurns := len(s.Inputs)
@@ -97,6 +101,9 @@ func runShow(cmd *cobra.Command, args []string) error {
 			if thinkingSourceMissing {
 				payload["thinking_source_missing"] = true
 			}
+			if thinkingAbsent {
+				payload["thinking_absent"] = true
+			}
 			output.JSON(payload)
 			return nil
 		}
@@ -105,6 +112,9 @@ func runShow(cmd *cobra.Command, args []string) error {
 		fmt.Println(strings.Repeat("=", 60))
 		if thinkingSourceMissing {
 			fmt.Printf("\n(thinking unavailable: %s is no longer on disk; the Q/A below comes from the ATM index)\n", s.FilePath)
+		}
+		if thinkingAbsent {
+			fmt.Printf("\n(no thinking text in this transcript: %s records none)\n", s.Agent)
 		}
 		if truncated {
 			if len(qas) == 0 {
@@ -151,6 +161,21 @@ type sessionQA struct {
 	Thinking string `json:"thinking,omitempty"`
 }
 
+// extractSessionThinking picks the extractor that matches how the agent records
+// its reasoning. Codex and Grok write OpenAI-style reasoning items, Pi and
+// Claude write a `thinking` content block; reading every transcript as Claude's
+// shape made two of the four agents look like they never thought.
+func extractSessionThinking(agent, filePath string) []parser.ThinkingBlock {
+	switch agent {
+	case "pi":
+		return parser.PiExtractThinking(filePath)
+	case "codex", "grokbuild":
+		return parser.ReasoningExtractThinking(filePath)
+	default:
+		return parser.ClaudeExtractThinking(filePath)
+	}
+}
+
 func buildSessionQAs(s *store.ShowResult, thinkingBlocks []parser.ThinkingBlock) []sessionQA {
 	qas := make([]sessionQA, 0, len(s.Inputs))
 	thinkIdx := 0
@@ -158,9 +183,8 @@ func buildSessionQAs(s *store.ShowResult, thinkingBlocks []parser.ThinkingBlock)
 		qa := sessionQA{Turn: i + 1, Q: cleanMsg(inp)}
 		if i < len(s.Outputs) {
 			qa.A = cleanMsg(s.Outputs[i])
-			if showThinking && thinkIdx < len(thinkingBlocks) {
-				qa.Thinking = thinkingBlocks[thinkIdx].Thinking
-				thinkIdx++
+			if showThinking {
+				qa.Thinking, thinkIdx = collectTurnThinking(thinkingBlocks, thinkIdx, qa.A)
 			}
 		}
 		if qa.Q == "" && qa.A == "" && qa.Thinking == "" {
@@ -169,6 +193,39 @@ func buildSessionQAs(s *store.ShowResult, thinkingBlocks []parser.ThinkingBlock)
 		qas = append(qas, qa)
 	}
 	return qas
+}
+
+// collectTurnThinking returns every thinking block belonging to one turn, and
+// where the next turn should resume. Reasoning models emit a block per model
+// response while a turn usually spans several of them — tool calls think without
+// answering — so taking one block per turn attributed the tail of a session's
+// reasoning to turns that never produced it. The turn's own answer marks its
+// end; when no block claims that answer the single-block behaviour is kept so an
+// unrecognised transcript still shows something rather than dumping the whole
+// chain onto the first turn.
+func collectTurnThinking(blocks []parser.ThinkingBlock, from int, answer string) (string, int) {
+	if from >= len(blocks) {
+		return "", from
+	}
+	end := -1
+	if answer != "" {
+		for index := from; index < len(blocks); index++ {
+			if cleanMsg(blocks[index].Response) == answer {
+				end = index
+				break
+			}
+		}
+	}
+	if end < 0 {
+		return blocks[from].Thinking, from + 1
+	}
+	parts := make([]string, 0, end-from+1)
+	for _, block := range blocks[from : end+1] {
+		if text := strings.TrimSpace(block.Thinking); text != "" {
+			parts = append(parts, text)
+		}
+	}
+	return strings.Join(parts, "\n\n"), end + 1
 }
 
 func parseTurnRange(value string) (int, int, error) {

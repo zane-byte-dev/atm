@@ -56,7 +56,11 @@ type SearchMatches struct {
 }
 
 type ShowResult struct {
+	// Agent is the display name ("Grok Build"). AgentKey is the stored key
+	// ("grokbuild"), which is what callers must switch on: routing on the display
+	// name silently matched nothing and made every transcript read as Claude's.
 	Agent    string
+	AgentKey string
 	Project  string
 	FullID   string
 	FilePath string
@@ -281,6 +285,7 @@ func GetSession(db *sql.DB, idOrPrefix string) (*ShowResult, error) {
 	agentDisplay := AgentDisplayName(agent)
 	return &ShowResult{
 		Agent:    agentDisplay,
+		AgentKey: agent,
 		Project:  project,
 		FullID:   fullID,
 		FilePath: filePath,
@@ -1352,9 +1357,14 @@ type TodoBoundSession struct {
 	ShortID      string  `json:"short_id"`
 	Agent        string  `json:"agent"`
 	Project      string  `json:"project"`
-	Summary      string  `json:"summary,omitempty"`
-	Indexed      bool    `json:"indexed"`
-	CWD          string  `json:"cwd,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	// LatestResult is the session's last assistant message, so a Todo can show
+	// what the Agent concluded without depending on the session still being
+	// inside the live-status window. Capped because a bound-session list is a
+	// list, not a transcript.
+	LatestResult string `json:"latest_result,omitempty"`
+	Indexed      bool   `json:"indexed"`
+	CWD          string `json:"cwd,omitempty"`
 	StartedAt    int64   `json:"started_at,omitempty"`
 	LastAt       int64   `json:"last_at,omitempty"`
 	BindingCount int     `json:"binding_count"`
@@ -1382,6 +1392,9 @@ func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) 
 		COALESCE(NULLIF(b.agent, ''), s.agent, '') AS agent,
 		COALESCE(NULLIF(b.project, ''), s.project, '') AS project,
 		COALESCE(s.summary, '') AS summary,
+		COALESCE((SELECT SUBSTR(m.content, 1, 2000) FROM messages m
+			WHERE m.session_id = s.id AND m.role = 'assistant'
+			ORDER BY m.seq DESC LIMIT 1), '') AS latest_result,
 		CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS indexed,
 		b.cwd,
 		COALESCE(s.created_ts, 0) AS started_at,
@@ -1418,6 +1431,7 @@ func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) 
 	for rows.Next() {
 		var r TodoBoundSession
 		if err := rows.Scan(&r.SessionID, &r.IndexedID, &r.ShortID, &r.Agent, &r.Project, &r.Summary,
+			&r.LatestResult,
 			&r.Indexed, &r.CWD, &r.StartedAt, &r.LastAt, &r.BindingCount, &r.FirstBoundAt, &r.BoundAt,
 			&r.UnboundAt, &r.Reason,
 			&r.Queries, &r.ToolCalls, &r.InputTokens, &r.OutputTokens, &r.CostUSD); err != nil {

@@ -193,6 +193,11 @@ struct ATMBoundSession: Decodable, Equatable, Identifiable {
     let agent: String
     let project: String
     let summary: String?
+    /// The session's last assistant message, straight from the index. This is the
+    /// durable copy of what live status calls `latest_result`: a Todo whose
+    /// session has aged out of the live window would otherwise lose the outcome
+    /// text entirely.
+    let latestResult: String?
     let indexed: Bool
     let cwd: String?
     let bindingCount: Int
@@ -223,6 +228,7 @@ struct ATMBoundSession: Decodable, Equatable, Identifiable {
         case indexedID = "indexed_id"
         case shortID = "short_id"
         case agent, project, summary, indexed, cwd, reason, queries
+        case latestResult = "latest_result"
         case bindingCount = "binding_count"
         case firstBoundAt = "first_bound_at"
         case boundAt = "bound_at"
@@ -244,6 +250,7 @@ struct ATMBoundSession: Decodable, Equatable, Identifiable {
         agent = try values.decodeIfPresent(String.self, forKey: .agent) ?? ""
         project = try values.decodeIfPresent(String.self, forKey: .project) ?? ""
         summary = try values.decodeIfPresent(String.self, forKey: .summary)
+        latestResult = try values.decodeIfPresent(String.self, forKey: .latestResult)
         indexed = try values.decodeIfPresent(Bool.self, forKey: .indexed) ?? true
         cwd = try values.decodeIfPresent(String.self, forKey: .cwd)
         bindingCount = try values.decodeIfPresent(Int.self, forKey: .bindingCount) ?? 1
@@ -1014,6 +1021,17 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var agentHookReport: ATMAgentHookReport?
     @Published private(set) var isUpdatingAgentHooks = false
     @Published var agentHookErrorMessage: String?
+    /// The durable session index, newest first, paged in. Live status only ever
+    /// shows the sessions inside its activity window, so this is what makes an
+    /// older session reachable at all.
+    @Published private(set) var indexedSessions: [ATMIndexedSession] = []
+    @Published private(set) var isLoadingIndexedSessions = false
+    @Published private(set) var indexedSessionsReachedEnd = false
+    @Published var indexedSessionsError: String?
+    @Published private(set) var sessionTranscripts: [String: ATMSessionTranscript] = [:]
+    @Published private(set) var sessionTimelines: [String: [ATMSessionTimelineEntry]] = [:]
+    @Published private(set) var sessionReadErrors: [String: String] = [:]
+    @Published private(set) var loadingSessionReads: Set<String> = []
 
     private var timer: Timer?
     private var liveStatusTimer: Timer?
@@ -2568,5 +2586,101 @@ final class ATMDataStore: ObservableObject {
         let runner = try ATMCommandRunner()
         let data = try await runner.run(["session", "show", sessionID])
         return String(decoding: data, as: UTF8.self)
+    }
+
+    // MARK: - Session index
+
+    /// One page of sessions. Matches the cap the other browse surfaces use: the
+    /// point is that every session is reachable, not that a thousand rows render
+    /// at once.
+    static let indexedSessionPageSize = 200
+
+    /// Loads the durable session index. `reset` starts over at the newest page,
+    /// which is also what a filter change needs; otherwise the next page is
+    /// appended.
+    func loadIndexedSessions(reset: Bool = false, agent: String? = nil, project: String? = nil) {
+        guard !isLoadingIndexedSessions else { return }
+        if !reset && indexedSessionsReachedEnd { return }
+        let offset = reset ? 0 : indexedSessions.count
+        isLoadingIndexedSessions = true
+        Task {
+            defer { isLoadingIndexedSessions = false }
+            do {
+                let runner = try ATMCommandRunner()
+                var arguments = [
+                    "session", "list", "--all", "--order", "desc",
+                    "--limit", String(Self.indexedSessionPageSize),
+                    "--offset", String(offset),
+                    "--json",
+                ]
+                if let agent, !agent.isEmpty { arguments += ["--agent", agent] }
+                if let project, !project.isEmpty { arguments += ["--project", project] }
+                let data = try await runner.run(arguments)
+                let page = try JSONDecoder().decode([ATMIndexedSession].self, from: data)
+                indexedSessionsError = nil
+                // A short page is the end of the index. Tracking it explicitly
+                // keeps the list from asking for a page that will always be empty
+                // every time the view scrolls.
+                indexedSessionsReachedEnd = page.count < Self.indexedSessionPageSize
+                if reset {
+                    indexedSessions = page
+                } else {
+                    let known = Set(indexedSessions.map(\.id))
+                    indexedSessions += page.filter { !known.contains($0.id) }
+                }
+            } catch {
+                indexedSessionsError = ATMErrorText.compact(error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: - Session reads
+
+    private func sessionReadKey(_ sessionID: String, _ mode: ATMSessionReadMode) -> String {
+        "\(mode.rawValue)|\(sessionID)"
+    }
+
+    func sessionTranscript(_ sessionID: String, mode: ATMSessionReadMode) -> ATMSessionTranscript? {
+        sessionTranscripts[sessionReadKey(sessionID, mode)]
+    }
+
+    func sessionTimeline(_ sessionID: String) -> [ATMSessionTimelineEntry]? {
+        sessionTimelines[sessionID]
+    }
+
+    func sessionReadError(_ sessionID: String, mode: ATMSessionReadMode) -> String? {
+        sessionReadErrors[sessionReadKey(sessionID, mode)]
+    }
+
+    func isLoadingSessionRead(_ sessionID: String, mode: ATMSessionReadMode) -> Bool {
+        loadingSessionReads.contains(sessionReadKey(sessionID, mode))
+    }
+
+    /// Reads one session at one depth. Results are cached per (session, mode):
+    /// a transcript is immutable history for every mode except the tail of a live
+    /// session, and `reload` is what refreshes that case explicitly.
+    func loadSessionRead(_ sessionID: String, mode: ATMSessionReadMode, reload: Bool = false) {
+        let key = sessionReadKey(sessionID, mode)
+        guard !loadingSessionReads.contains(key) else { return }
+        if !reload {
+            if mode == .timeline, sessionTimelines[sessionID] != nil { return }
+            if mode != .timeline, sessionTranscripts[key] != nil { return }
+        }
+        loadingSessionReads.insert(key)
+        Task {
+            defer { loadingSessionReads.remove(key) }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(mode.arguments(sessionID: sessionID))
+                if mode == .timeline {
+                    sessionTimelines[sessionID] = try JSONDecoder().decode([ATMSessionTimelineEntry].self, from: data)
+                } else {
+                    sessionTranscripts[key] = try JSONDecoder().decode(ATMSessionTranscript.self, from: data)
+                }
+                sessionReadErrors[key] = nil
+            } catch {
+                sessionReadErrors[key] = ATMErrorText.compact(error.localizedDescription)
+            }
+        }
     }
 }

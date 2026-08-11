@@ -137,6 +137,15 @@ func TestFindSessionsForTodoUsesBindingsAndKeepsUnindexedSessions(t *testing.T) 
 		indexed.StartedAt != 90 || indexed.LastAt != 400 {
 		t.Fatalf("indexed session identity = %#v", indexed)
 	}
+	// The last assistant message travels with the binding: it is what a Todo
+	// shows as the run's outcome once the session leaves the live-status window,
+	// and live status is the only other place that text exists.
+	if indexed.LatestResult != "answer" {
+		t.Fatalf("indexed latest result = %q", indexed.LatestResult)
+	}
+	if missing := sessions[1]; missing.LatestResult != "" {
+		t.Fatalf("an unindexed session cannot have a result: %q", missing.LatestResult)
+	}
 	missing := sessions[1]
 	if missing.SessionID != "missing-session-123" || missing.Indexed || missing.ShortID != "missing-" ||
 		missing.Agent != "pi" || missing.UnboundAt == nil || missing.Reason != "done" {

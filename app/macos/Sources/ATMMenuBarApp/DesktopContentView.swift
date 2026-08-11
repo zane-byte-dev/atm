@@ -1822,6 +1822,16 @@ struct DesktopTodoDetail: View {
         return ATMAgentSessionLaunchRoute.resolve(for: run, live: taskRunSession)
     }
 
+    /// The run's session as the index knows it, used once it has aged out of live
+    /// status. Without this the outcome text disappears from the Todo the moment
+    /// the session goes quiet, even though ATM has it indexed.
+    private var taskRunArchivedSession: ATMBoundSession? {
+        guard let run = latestTaskRun, let sessionID = run.sessionID else { return nil }
+        return store.boundSessions(for: todo.id).first {
+            $0.sessionID == sessionID || $0.indexedID == sessionID
+        }
+    }
+
     private var taskRunRefreshKey: String {
         [
             todo.id,
@@ -1924,6 +1934,8 @@ struct DesktopTodoDetail: View {
 
                     if let session = taskRunSession {
                         taskRunAgentPreview(session)
+                    } else if let archived = taskRunArchivedSession {
+                        taskRunArchivedPreview(archived)
                     } else {
                         VStack(alignment: .leading, spacing: 7) {
                             Label(
@@ -2010,6 +2022,44 @@ struct DesktopTodoDetail: View {
             } else if let update = session.visibleUpdates.last {
                 Divider()
                 ATMMarkdownContentView(source: update)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .atmWorkspaceCard()
+    }
+
+    /// 会话已经不在实时窗口里时的执行结果，取自持久索引。
+    ///
+    /// 刻意和实时卡片长得一样但不假装实时：没有状态点、没有「查看详情」跳转（那条路
+    /// 指向的是实时列表，这个会话不在里面），只保留 Agent 自己最后说的那段话——
+    /// 而它正是验收时唯一要读的东西。
+    private func taskRunArchivedPreview(_ session: ATMBoundSession) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                ATMAgentMark(agent: session.agent, size: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Agent 执行结果")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("\(ATMAgentDisplay.name(session.agent)) · \(session.shortID)")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                Spacer(minLength: 8)
+            }
+
+            if let summary = session.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !summary.isEmpty {
+                Text(summary)
+                    .font(ATMFont.font(.bodyLarge, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let result = session.latestResult?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !result.isEmpty {
+                Divider()
+                ATMMarkdownContentView(source: result)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }

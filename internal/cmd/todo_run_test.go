@@ -962,3 +962,38 @@ func TestCopyTaskRunLogTailKeepsSmallLogWhole(t *testing.T) {
 		t.Fatalf("tail = %q", got)
 	}
 }
+
+// The dispatch prompt must not ask for ATM writes: the run's session is indexed
+// with every reply in full and the Todo reads the Agent's closing message from
+// that index, so a progress entry duplicates text ATM already owns — and under
+// Grok's workspace sandbox the write cannot succeed at all.
+func TestTaskRunPromptAsksForAnOutcomeInsteadOfATMWrites(t *testing.T) {
+	todo := &store.Todo{ID: "t1", Title: "Do the thing"}
+	for _, test := range []struct {
+		name   string
+		prompt string
+	}{
+		{name: "fresh", prompt: buildTaskRunPromptForAgent(todo, "Grok Build", true)},
+		{name: "continuation", prompt: buildTaskRunContinuationPromptForAgent(todo, "also fix the header", "Grok Build", true)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, forbidden := range []string{"record only meaningful milestones", "milestones with ATM"} {
+				if strings.Contains(test.prompt, forbidden) {
+					t.Fatalf("prompt still asks the Agent to log progress: %q", test.prompt)
+				}
+			}
+			// The closing message is what the reviewer reads, so the prompt has to
+			// ask for one; and the run controller still owns the review transition.
+			for _, want := range []string{
+				"that closing message is what the person reviewing this Todo reads",
+				"Do not record progress with ATM",
+				"submitted to review by the run controller",
+				"atm todo doc t1",
+			} {
+				if !strings.Contains(test.prompt, want) {
+					t.Fatalf("prompt missing %q:\n%s", want, test.prompt)
+				}
+			}
+		})
+	}
+}

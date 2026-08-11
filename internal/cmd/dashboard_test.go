@@ -182,7 +182,9 @@ func TestStatsSessionUsageReturnsEventTimeRowsOnDemand(t *testing.T) {
 	withCommandFlags(t)
 	seedCommandSession(t)
 	jsonOutput = true
-	statsDaysFlag = 1
+	// Two days, not one: the seed is an hour old, which lands on yesterday for the
+	// first hour after midnight and made this assert on the clock.
+	statsDaysFlag = 2
 	statsByFlag = "session-usage"
 
 	var runErr error

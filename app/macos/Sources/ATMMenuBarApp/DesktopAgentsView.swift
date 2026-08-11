@@ -2,11 +2,28 @@ import AppKit
 import SwiftUI
 
 struct DesktopAgentsView: View {
+    /// 侧栏的两种范围：活跃只看实时窗口内的会话，全部走持久索引。
+    ///
+    /// 只有活跃列表时，一个会话滑出实时窗口就再也点不到了——搜索要求你先知道搜什么。
+    private enum ListScope: String, CaseIterable {
+        case live
+        case all
+
+        var title: String {
+            switch self {
+            case .live: return "活跃"
+            case .all: return "全部"
+            }
+        }
+    }
+
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
 
     @State private var launchError: String?
+    @State private var scope: ListScope = .live
+    @State private var selectedIndexedSessionID: String?
     @AppStorage("ATMCollapsedAgentGroups") private var collapsedGroupsRaw = ""
 
     private var collapsedGroups: Set<String> {
@@ -56,22 +73,37 @@ struct DesktopAgentsView: View {
             agentList
         } detail: {
             Group {
-                if let session = selectedSession {
-                    DesktopAgentPresenceDetail(
-                        session: session,
-                        relatedTodo: relatedTodo(for: session),
-                        runTodoID: navigation.selectedAgentRunTodoID ?? session.bindingTodoID,
-                        store: store,
-                        navigation: navigation,
-                        onOpenSession: { openSession(session) }
-                    )
-                    .id(session.id)
-                } else {
-                    emptyDetail
+                switch scope {
+                case .live:
+                    if let session = selectedSession {
+                        DesktopAgentPresenceDetail(
+                            session: session,
+                            relatedTodo: relatedTodo(for: session),
+                            runTodoID: navigation.selectedAgentRunTodoID ?? session.bindingTodoID,
+                            store: store,
+                            navigation: navigation,
+                            onOpenSession: { openSession(session) }
+                        )
+                        .id(session.id)
+                    } else {
+                        emptyDetail
+                    }
+                case .all:
+                    if let indexed = selectedIndexedSession {
+                        DesktopIndexedSessionDetail(
+                            session: indexed,
+                            relatedTodo: relatedTodo(forSessionID: indexed.id),
+                            store: store,
+                            navigation: navigation
+                        )
+                        .id(indexed.id)
+                    } else {
+                        emptyDetail
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .atmAnimatedSwap(selectedSession?.id ?? "empty", style: .detail)
+            .atmAnimatedSwap(detailIdentity, style: .detail)
         }
         .onAppear {
             selectFirstIfNeeded()
@@ -80,6 +112,18 @@ struct DesktopAgentsView: View {
         }
         .onDisappear { store.stopLiveStatusPolling() }
         .onChange(of: sessions.map(\.id)) { _ in selectFirstIfNeeded() }
+        .onChange(of: scope) { newScope in
+            if newScope == .all {
+                // 第一次切到全部才拉索引：活跃列表本来就够用的人不该为一千行付代价。
+                if store.indexedSessions.isEmpty { store.loadIndexedSessions(reset: true) }
+                if selectedIndexedSessionID == nil { selectedIndexedSessionID = store.indexedSessions.first?.id }
+            }
+        }
+        .onChange(of: store.indexedSessions.map(\.id)) { ids in
+            guard scope == .all else { return }
+            if let selected = selectedIndexedSessionID, ids.contains(selected) { return }
+            selectedIndexedSessionID = ids.first
+        }
         .onChange(of: navigation.selectedAgentID) { _ in revealSelectedGroup() }
         .alert(
             "无法打开来源会话",
@@ -98,7 +142,7 @@ struct DesktopAgentsView: View {
         VStack(spacing: 0) {
             ATMDrawerHeader(
                 title: "Agent",
-                count: sessions.count
+                count: scope == .live ? sessions.count : store.indexedSessions.count
             ) {
                 Circle()
                     .fill(sessions.contains(where: { $0.presenceState == .attention }) ? ATMTheme.warning : ATMTheme.success)
@@ -106,6 +150,27 @@ struct DesktopAgentsView: View {
                     .help(activeAgentSummary)
             }
 
+            HStack {
+                ATMCapsuleTabs(
+                    selection: $scope,
+                    items: ListScope.allCases.map { (value: $0, title: $0.title) }
+                )
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.bottom, 8)
+
+            if scope == .all {
+                indexedList
+            } else {
+                liveList
+            }
+        }
+        .background(ATMTheme.listPane)
+    }
+
+    private var liveList: some View {
+        VStack(spacing: 0) {
             if sessions.isEmpty {
                 VStack(spacing: 9) {
                     Image(systemName: "cpu")
@@ -180,7 +245,86 @@ struct DesktopAgentsView: View {
                     .help("这些会话有显式绑定但当前没有实时活动，因此不计入活跃 Agent。")
             }
         }
-        .background(ATMTheme.listPane)
+    }
+
+    /// 持久索引列表：按开始时间倒序，一页 200 条，滚到底再要下一页。
+    private var indexedList: some View {
+        VStack(spacing: 0) {
+            if let error = store.indexedSessionsError {
+                let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "会话列表加载失败")
+                ATMInlineNotice(
+                    severity: .warning,
+                    title: presentation.title,
+                    message: presentation.message,
+                    details: error,
+                    actionTitle: "重试",
+                    onAction: { store.loadIndexedSessions(reset: true) },
+                    onDismiss: { store.indexedSessionsError = nil }
+                )
+                .padding(8)
+            }
+            if store.indexedSessions.isEmpty {
+                VStack(spacing: 9) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(ATMFont.font(.display, weight: .light))
+                    Text(store.isLoadingIndexedSessions ? "读取会话索引…" : "索引里还没有会话")
+                        .font(ATMFont.font(.bodyLarge, weight: .medium))
+                    Text("同步过的 Agent 会话都会出现在这里，包括早已结束的。")
+                        .font(ATMFont.footnote)
+                        .multilineTextAlignment(.center)
+                }
+                .foregroundStyle(ATMTheme.secondary)
+                .padding(28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List {
+                    ForEach(store.indexedSessions) { session in
+                        Button {
+                            selectedIndexedSessionID = session.id
+                        } label: {
+                            DesktopIndexedSessionRow(
+                                session: session,
+                                isSelected: selectedIndexedSessionID == session.id
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .atmContentListRow()
+                    }
+                    if !store.indexedSessionsReachedEnd {
+                        Button {
+                            store.loadIndexedSessions()
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Text(store.isLoadingIndexedSessions ? "读取中…" : "更多会话")
+                                    .font(ATMFont.footnote)
+                                    .foregroundStyle(ATMTheme.secondary)
+                                Spacer()
+                            }
+                            .frame(minHeight: 34)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.isLoadingIndexedSessions)
+                        .atmContentListRow()
+                    }
+                }
+                .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
+    private var selectedIndexedSession: ATMIndexedSession? {
+        guard let id = selectedIndexedSessionID else { return nil }
+        return store.indexedSessions.first { $0.id == id }
+    }
+
+    private var detailIdentity: String {
+        switch scope {
+        case .live: return selectedSession?.id ?? "empty"
+        case .all: return selectedIndexedSessionID ?? "empty"
+        }
     }
 
     private func revealSelectedGroup() {
@@ -253,6 +397,16 @@ struct DesktopAgentsView: View {
     private func relatedTodo(for session: ATMLiveSession) -> ATMTodo? {
         guard let todoID = session.bindingTodoID else { return nil }
         return store.allTodos.first { $0.id.caseInsensitiveCompare(todoID) == .orderedSame }
+    }
+
+    /// 归档会话没有 live 载荷里的绑定字段，所以从实时快照的绑定账本里反查。
+    /// 找不到只表示这个会话没绑过 Todo，不是错误。
+    private func relatedTodo(forSessionID sessionID: String) -> ATMTodo? {
+        // Codex 绑定存的是线程 uuid，索引存的是 rollout 文件名，后者以前者结尾。
+        guard let context = store.snapshot.liveStatus.bindings.first(where: {
+            $0.binding.sessionID == sessionID || sessionID.hasSuffix("-\($0.binding.sessionID)")
+        }) else { return nil }
+        return store.allTodos.first { $0.id.caseInsensitiveCompare(context.binding.todoID) == .orderedSame }
     }
 
     private func openSession(_ session: ATMLiveSession) {
@@ -359,6 +513,7 @@ private struct DesktopAgentPresenceDetail: View {
     private enum DetailTab: String, CaseIterable {
         case overview
         case updates
+        case transcript
         case logs
     }
 
@@ -375,10 +530,6 @@ private struct DesktopAgentPresenceDetail: View {
 
     @State private var selectedTab: DetailTab = .overview
     @State private var copied = false
-    @State private var showingTranscript = false
-    @State private var transcript = ""
-    @State private var transcriptError: String?
-    @State private var isLoadingTranscript = false
     @State private var showingInterruptConfirmation = false
 
     var body: some View {
@@ -391,6 +542,12 @@ private struct DesktopAgentPresenceDetail: View {
                     overviewContent
                 case .updates:
                     updatesContent
+                case .transcript:
+                    DesktopSessionTranscriptView(
+                        sessionID: session.sessionID,
+                        agentLabel: ATMAgentDisplay.name(session.tool),
+                        store: store
+                    )
                 case .logs:
                     fullLogsContent
                 }
@@ -398,15 +555,6 @@ private struct DesktopAgentPresenceDetail: View {
             .atmAnimatedSwap(selectedTab.rawValue, style: .detail)
         }
         .background(ATMTheme.canvas)
-        .sheet(isPresented: $showingTranscript) {
-            DesktopAgentTranscriptSheet(
-                session: session,
-                transcript: transcript,
-                errorMessage: transcriptError,
-                isLoading: isLoadingTranscript,
-                onRetry: loadTranscript
-            )
-        }
         .confirmationDialog(
             "中断当前 Agent 执行？",
             isPresented: $showingInterruptConfirmation,
@@ -503,11 +651,6 @@ private struct DesktopAgentPresenceDetail: View {
             }
             Menu {
                 Button {
-                    showTranscript()
-                } label: {
-                    Label("查看完整动态", systemImage: "rectangle.on.rectangle")
-                }
-                Button {
                     copySessionID()
                 } label: {
                     Label(copied ? "已复制会话 ID" : "复制会话 ID", systemImage: copied ? "checkmark" : "doc.on.doc")
@@ -547,6 +690,7 @@ private struct DesktopAgentPresenceDetail: View {
         var items: [(value: DetailTab, title: String)] = [
             (.overview, "概览"),
             (.updates, "执行动态"),
+            (.transcript, "对话"),
         ]
         // Only a session that is itself a dispatched run has a raw log.
         if taskRun != nil {
@@ -928,24 +1072,6 @@ private struct DesktopAgentPresenceDetail: View {
         copied = true
     }
 
-    private func showTranscript() {
-        showingTranscript = true
-        loadTranscript()
-    }
-
-    private func loadTranscript() {
-        isLoadingTranscript = true
-        transcript = ""
-        transcriptError = nil
-        Task {
-            do {
-                transcript = try await store.sessionTranscript(session.sessionID)
-            } catch {
-                transcriptError = error.localizedDescription
-            }
-            isLoadingTranscript = false
-        }
-    }
 }
 
 enum ATMAgentActivitySheetTab: String, CaseIterable, Identifiable {
@@ -1009,124 +1135,120 @@ private struct DesktopAgentLiveUpdateMark: View {
     }
 }
 
-private struct DesktopAgentTranscriptSheet: View {
-    @Environment(\.dismiss) private var dismiss
 
-    let session: ATMLiveSession
-    let transcript: String
-    let errorMessage: String?
-    let isLoading: Bool
-    let onRetry: () -> Void
+/// 索引里的一行会话：身份、项目、开始时间和问答轮数。
+///
+/// 不画实时状态：这一栏本来就是「不在实时窗口里」的会话，画个灰点只会让人以为它还活着。
+private struct DesktopIndexedSessionRow: View {
+    let session: ATMIndexedSession
+    let isSelected: Bool
 
-    @State private var selectedTab: ATMAgentActivitySheetTab = .updates
+    var body: some View {
+        VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
+            HStack(spacing: ATMContentRowLayout.leadingSpacing) {
+                ATMAgentMark(agent: session.agent, size: 16)
+                    .frame(
+                        width: ATMContentRowLayout.leadingVisualSize,
+                        height: ATMContentRowLayout.leadingVisualSize
+                    )
+                Text(session.title)
+                    .font(ATMFont.font(.body, weight: .medium))
+                    .foregroundStyle(ATMTheme.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                Text("Q\(session.qCount)")
+                    .font(ATMFont.mono(.caption, .medium))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .fixedSize()
+            }
+            HStack(spacing: 6) {
+                Label(session.project.isEmpty ? "未归属项目" : session.project, systemImage: "folder")
+                    .lineLimit(1)
+                Text("·")
+                Text(session.startedAt.map(ATMSessionTimeFormat.clock) ?? session.createdAt)
+                    .font(ATMFont.mono(.caption, .medium))
+                Spacer(minLength: 0)
+            }
+            .font(ATMFont.footnote)
+            .foregroundStyle(ATMTheme.secondary)
+        }
+        .atmRowSurface(isSelected: isSelected)
+    }
+}
+
+/// 归档会话的详情：头部给身份与归属，正文交给三段式阅读器。
+///
+/// 与实时详情分开而不是共用一个视图：实时详情的中断、跳回会话、执行动态都建立在实时载荷
+/// 之上，对一个已经结束的会话既拿不到也没意义；这里能提供的就是可信的历史内容本身。
+private struct DesktopIndexedSessionDetail: View {
+    let session: ATMIndexedSession
+    let relatedTodo: ATMTodo?
+    @ObservedObject var store: ATMDataStore
+    @ObservedObject var navigation: ATMDesktopNavigation
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                ATMAgentMark(agent: session.tool, size: 22)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("\(ATMAgentDisplay.name(session.tool)) · \(session.project)")
-                        .font(ATMFont.font(.title3, weight: .semibold))
-                    Text(session.sessionID)
-                        .font(ATMFont.mono(.footnote))
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer()
-                Button("关闭") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-            }
-            .padding(16)
-            .background(ATMTheme.surface)
-
-            activityTabs
-
-            Group {
-                switch selectedTab {
-                case .updates:
-                    fullActivityContent
-                case .transcript:
-                    transcriptContent
-                }
-            }
-            .atmAnimatedSwap(selectedTab.rawValue, style: .detail)
-            .background(ATMTheme.canvas)
-        }
-        .frame(minWidth: 760, minHeight: 620)
-    }
-
-    private var activityTabs: some View {
-        HStack {
-            ATMCapsuleTabs(
-                selection: $selectedTab,
-                items: ATMAgentActivitySheetTab.allCases.map { ($0, $0.title) }
+            header
+            DesktopSessionTranscriptView(
+                sessionID: session.id,
+                agentLabel: ATMAgentDisplay.name(session.agent),
+                store: store
             )
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
         .background(ATMTheme.canvas)
     }
 
-    private var fullActivityContent: some View {
-        let updates = Array(session.visibleUpdates.reversed())
-        return Group {
-            if updates.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(ATMFont.font(.display, weight: .light))
-                    Text("暂无执行动态")
-                        .font(ATMFont.font(.title3, weight: .semibold))
-                    Text("Agent 输出阶段性进展时，会按时间出现在这里。")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 20) {
-                        ForEach(Array(updates.enumerated()), id: \.offset) { _, update in
-                            ATMMarkdownContentView(source: update)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 7) {
+                ATMAgentMark(agent: session.agent, size: 18)
+                Text(ATMAgentDisplay.name(session.agent))
+                Text("·")
+                Label(session.project.isEmpty ? "未归属项目" : session.project, systemImage: "folder")
+                Text("·")
+                Text(session.shortID)
+                    .font(ATMFont.mono(.footnote, .medium))
+                Spacer(minLength: 0)
+            }
+            .font(ATMFont.font(.footnote, weight: .medium))
+            .foregroundStyle(ATMTheme.secondary)
+            .lineLimit(1)
+
+            Text(session.title)
+                .font(ATMFont.font(.title2, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 10) {
+                Text(timeRange)
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                if let todo = relatedTodo {
+                    Button {
+                        navigation.section = .tasks
+                        navigation.selectedTodoID = todo.id
+                    } label: {
+                        Label("\(todo.id.uppercased()) \(todo.title)", systemImage: "checklist")
+                            .lineLimit(1)
                     }
-                    .padding(20)
-                    .frame(maxWidth: 900, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("跳到这个会话绑定的任务")
                 }
+                Spacer(minLength: 0)
             }
         }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.surface)
     }
 
-    @ViewBuilder
-    private var transcriptContent: some View {
-        if isLoading {
-            VStack(spacing: 10) {
-                ProgressView()
-                Text("正在读取完整会话")
-                    .font(ATMFont.body)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let errorMessage {
-            VStack(spacing: 10) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(ATMFont.font(.display, weight: .light))
-                Text("无法读取会话")
-                    .font(ATMFont.font(.title3, weight: .semibold))
-                Text(errorMessage)
-                    .font(ATMFont.body)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .multilineTextAlignment(.center)
-                Button("重试", action: onRetry)
-                    .buttonStyle(.borderedProminent)
-            }
-            .padding(28)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            ATMTranscriptTextView(
-                text: transcript.isEmpty ? "该会话暂无可展示内容。" : transcript,
-                accessibilityLabel: "Agent 完整对话"
-            )
+    /// 开始与最后活动分开显示，两者相同时只说一次：会话跨天时这是唯一能看出来的地方。
+    private var timeRange: String {
+        let start = session.startedAt.map(ATMSessionTimeFormat.clock) ?? session.createdAt
+        guard let end = session.endedAt.map(ATMSessionTimeFormat.clock), end != start else {
+            return start
         }
+        return "\(start) → \(end)"
     }
 }

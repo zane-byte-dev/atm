@@ -100,6 +100,9 @@ func seedCommandSession(t *testing.T) int64 {
 	}
 	defer db.Close()
 
+	// An hour ago, and callers must query a window wide enough to contain it:
+	// seeded requests sit at createdTS+90s, so the seed cannot be pulled closer
+	// to now to fit a one-day window that just rolled over at midnight.
 	created := time.Now().In(config.Loc).Add(-time.Hour)
 	createdTS := created.Unix()
 	stmts := []struct {
@@ -158,7 +161,13 @@ func withCommandFlags(t *testing.T) {
 	oldExportDays, oldExportFormat := exportDaysFlag, exportFormatFlag
 	oldThinking, oldShowTurns := showThinking, showTurnsFlag
 	oldShowLast, oldShowMaxChars := showLastFlag, showMaxCharsFlag
+	oldListAll, oldListOrder := sessionListAllFlag, sessionListOrder
+	oldListLimit, oldListOffset := sessionListLimit, sessionListOffset
 	t.Cleanup(func() {
+		sessionListAllFlag = oldListAll
+		sessionListOrder = oldListOrder
+		sessionListLimit = oldListLimit
+		sessionListOffset = oldListOffset
 		agentFlag = oldAgent
 		jsonOutput = oldJSON
 		syncBeforeRead = oldSync

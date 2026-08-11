@@ -15,10 +15,14 @@ import (
 )
 
 var (
-	daysFlag          int
-	projectFlag       string
-	sessionSinceFlag  string
-	sessionReviewFlag string
+	daysFlag           int
+	projectFlag        string
+	sessionSinceFlag   string
+	sessionReviewFlag  string
+	sessionListAllFlag bool
+	sessionListLimit   int
+	sessionListOffset  int
+	sessionListOrder   string
 )
 
 func init() {
@@ -26,6 +30,10 @@ func init() {
 	listCmd.Flags().StringVar(&projectFlag, "project", "", "filter by project name (substring match)")
 	listCmd.Flags().StringVar(&sessionSinceFlag, "since", "", "look back from RFC3339 timestamp or YYYY-MM-DD (overrides --days)")
 	listCmd.Flags().StringVar(&sessionReviewFlag, "review", "all", "memory review state: all, pending, or reviewed")
+	listCmd.Flags().BoolVar(&sessionListAllFlag, "all", false, "list every indexed session, ignoring the time window")
+	listCmd.Flags().StringVar(&sessionListOrder, "order", "asc", "sort by start time: asc (oldest first) or desc (newest first)")
+	listCmd.Flags().IntVar(&sessionListLimit, "limit", 0, "maximum number of sessions (0 means all)")
+	listCmd.Flags().IntVar(&sessionListOffset, "offset", 0, "number of sessions to skip")
 	sessionCmd.AddCommand(listCmd)
 }
 
@@ -54,6 +62,12 @@ func runList(cmd *cobra.Command, args []string) error {
 				return err
 			}
 		}
+		if sessionListAllFlag {
+			// The whole index, for browsing rather than triage: a recent-activity
+			// window cannot reach a session once it scrolls out of it, and search
+			// only helps when you already know what to search for.
+			start = time.Unix(0, 0).In(config.Loc)
+		}
 		if sessionReviewFlag != "all" && sessionReviewFlag != "pending" && sessionReviewFlag != "reviewed" {
 			return fmt.Errorf("invalid --review %q: use all, pending, or reviewed", sessionReviewFlag)
 		}
@@ -78,7 +92,22 @@ func runList(cmd *cobra.Command, args []string) error {
 			}
 			filtered = append(filtered, result)
 		}
-		results = filtered
+		switch sessionListOrder {
+		case "asc":
+		case "desc":
+			// Paging a browsing list only makes sense against a stable order, and
+			// the first page a reader wants is the most recent work.
+			for left, right := 0, len(filtered)-1; left < right; left, right = left+1, right-1 {
+				filtered[left], filtered[right] = filtered[right], filtered[left]
+			}
+		default:
+			return fmt.Errorf("invalid --order %q: use asc or desc", sessionListOrder)
+		}
+		matched := len(filtered)
+		results, err = paginate(filtered, sessionListOffset, sessionListLimit)
+		if err != nil {
+			return err
+		}
 
 		if jsonOutput {
 			type jsonSession struct {
@@ -126,15 +155,23 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 
 		label := "today"
-		if days > 1 {
+		switch {
+		case sessionListAllFlag:
+			label = "all"
+		case days > 1:
 			label = fmt.Sprintf("last %d days", days)
 		}
-		fmt.Printf("Sessions (%s, %d total)\n", label, len(results))
+		// The count is what the window matched, not what this page shows, so a
+		// limited page never reads as "that is all there is".
+		fmt.Printf("Sessions (%s, %d total)\n", label, matched)
 		fmt.Println(strings.Repeat("=", 60))
 
 		if len(results) == 0 {
 			fmt.Println("\nNo sessions found.")
 			return nil
+		}
+		if len(results) < matched {
+			fmt.Printf("Showing %d-%d\n", sessionListOffset+1, sessionListOffset+len(results))
 		}
 
 		for _, r := range results {

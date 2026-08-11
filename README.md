@@ -32,7 +32,11 @@ make install    # 构建并安装到 /usr/local/bin
 
 ### macOS 菜单栏
 
-独立菜单栏 App 常驻显示今日 Token；主窗口提供任务、收集、Agent、知识和用量工作区。收集工作区
+独立菜单栏 App 常驻显示今日 Token；主窗口提供任务、收集、Agent、知识和用量工作区。Agent 工作区侧栏分
+「活跃 / 全部」：活跃是实时窗口内的会话，全部走持久索引并按开始时间倒序分页，会话滑出实时窗口后仍然点得到。
+会话详情的「对话」提供三段式阅读——摘要（最近几轮）、时序（消息与模型请求交错，含每次请求的用量）、
+完整（全部轮次，并尽可能带上思考过程）；思考读不到时会区分「文件已被 Agent 轮转掉」和「这个 Agent 不存
+思考正文」，而不是都渲染成空白。收集工作区
 把钉钉等外部来源的消息自动分类为新 Todo、知识沉淀或忽略记录，并提供失败重试、纠错与撤销；与历史 Todo 有关时在新 Todo 中记录关联，不合并事项。
 处理记录跟随它写出去的 Todo：那个 Todo 被完成或废弃后（在哪儿关的都算），这条记录一并
 了结，折叠进「沉淀与已了结」，主列表只留还欠一个动作的跟进。
@@ -54,8 +58,10 @@ open app/macos/dist/ATM.app
 # 会话 (别名: atm s)
 atm session status  [--agent X]                          # AI 工具实时状态
 atm session list    [--agent X] [--days N] [--project P] # 最近会话列表
+atm session list    --all --order desc --limit 200 [--offset N]  # 整个索引，按开始时间倒序分页
 atm session search  <keyword>  [--agent X]               # 全文搜索会话历史
 atm session show    <session-id> [--thinking]            # 查看完整 Q/A（可含模型思考过程）
+                                                         # Codex/Grok/Pi 有思考正文；Claude Code 只存签名，会明说
 atm session timeline <session-id>                        # 消息与模型请求时间线
 atm session clip    <keyword>  [--agent X]               # 复制 AI 回复到剪贴板
 atm session export  [--format json|csv] [--days N]       # 导出原始数据
@@ -186,11 +192,13 @@ atm artifact save <title> --file report.md
 `todo run` 是显式的本地执行入口，默认派发 Codex，`--agent` 可选 `claude`、`grokbuild`、`pi`
 （`todo agents` 列出本机是否已安装、费用与安全说明）。它先创建唯一的 `task_runs` claim，再启动一个脱离
 调用终端的 ATM controller，由 controller 以受限权限运行所选 Agent。受限的形式取决于 Agent 自己提供的
-能力：Codex 是 `workspace-write` sandbox 并额外开放 ATM 数据目录，因此 Agent 可以读取任务、绑定 Session
-和记录进展；Grok 是 workspace sandbox，权限模式用 `auto` 并额外放行 `atm` 命令——它的 `acceptEdits`
-只自动放行文件编辑，其余工具仍会发起审批请求，无人应答的无头执行会把整轮取消，`auto` 则只把被拦截的调用
-回报给模型；Grok 没有等价的 `--add-dir`，因此 workspace sandbox 下 `~/.atm` 只读，写入类 `atm` 命令会
-失败，会话绑定由 controller 在派发前完成。Claude Code 没有可由 ATM 强制的文件系统 sandbox，guarded 用
+能力：Codex 是 `workspace-write` sandbox 并额外开放 ATM 数据目录；Grok 是 workspace sandbox，权限模式
+用 `auto` 并额外放行 `atm` 命令——它的 `acceptEdits` 只自动放行文件编辑，其余工具仍会发起审批请求，
+无人应答的无头执行会把整轮取消，`auto` 则只把被拦截的调用回报给模型。派发 prompt 不要求 Agent 用 ATM
+记录进展，只要求它把结果、证据和遗留问题写在最后一段回复里：这次执行的会话本来就被索引成全文，Todo 详情
+直接读取会话最后一条回复，再写一遍等于把 ATM 已经拥有的文字抄进第二张表，还要 Agent 额外花轮次；Grok
+没有 `--add-dir` 等价开关，workspace sandbox 下 `~/.atm` 只读，这类写入本来也不会成功。会话绑定由
+controller 在派发前完成。Claude Code 没有可由 ATM 强制的文件系统 sandbox，guarded 用
 它自己的权限规则——工作目录内的编辑自动放行、其余工具在非交互下按未授权拒绝，只额外放行 `atm` 命令；
 Pi 两者都没有，因此只能以 trusted 运行。`--policy trusted` 会绕过所选 Agent 的审批与 sandbox，必须
 显式传入并会输出警告。同一 Todo 同时最多一个 starting/running Run；进程异常消失后，下次派发会把旧 claim

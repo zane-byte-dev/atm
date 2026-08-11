@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/parser"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -27,7 +30,8 @@ func TestSessionSearchJSONAppliesFiltersAndSnippetBudget(t *testing.T) {
 	jsonOutput = true
 	searchProjectFlag = "atm"
 	searchRoleFlag = "assistant"
-	searchDaysFlag = 1
+	// See seedCommandSession: an hour-old seed needs a window that survives midnight.
+	searchDaysFlag = 2
 	searchLimitFlag = 1
 	searchSnippetFlag = 18
 
@@ -257,5 +261,125 @@ func TestParseTurnRange(t *testing.T) {
 		if _, _, err := parseTurnRange(invalid); err == nil {
 			t.Errorf("parseTurnRange(%q) unexpectedly succeeded", invalid)
 		}
+	}
+}
+
+// The index is browsed, not just triaged: paging over the whole thing in
+// newest-first order is what makes a session reachable after it leaves the
+// activity window, and the printed total must describe the window rather than
+// the page so a capped page never reads as "that is all there is".
+func TestSessionListPagesTheWholeIndexNewestFirst(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	seedCommandSession(t)
+
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Far outside any --days window, which is exactly what --all has to reach.
+	old := time.Now().In(config.Loc).AddDate(0, -6, 0)
+	if _, err := db.Exec(`INSERT INTO sessions (id, short_id, agent, project, file_path, created_at, created_ts, summary, last_ts)
+		VALUES ('cmd-session-old', 'cmdold', 'codex', 'atm', '', ?, ?, 'Ancient session', ?)`,
+		old.Format("01-02 15:04"), old.Unix(), old.Unix()+60); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+
+	sessionListAllFlag = true
+	sessionListOrder = "desc"
+	sessionListLimit = 1
+
+	jsonOutput = true
+	page := captureStdout(t, func() {
+		if err := runList(listCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var rows []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(page), &rows); err != nil {
+		t.Fatalf("decode page: %v\n%s", err, page)
+	}
+	if len(rows) != 1 || rows[0].ID != "cmd-session-full" {
+		t.Fatalf("newest page = %#v", rows)
+	}
+
+	sessionListOffset = 1
+	second := captureStdout(t, func() {
+		if err := runList(listCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	rows = nil
+	if err := json.Unmarshal([]byte(second), &rows); err != nil {
+		t.Fatalf("decode second page: %v\n%s", err, second)
+	}
+	if len(rows) != 1 || rows[0].ID != "cmd-session-old" {
+		t.Fatalf("second page = %#v", rows)
+	}
+
+	jsonOutput = false
+	sessionListOffset = 0
+	text := captureStdout(t, func() {
+		if err := runList(listCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(text, "Sessions (all, 2 total)") || !strings.Contains(text, "Showing 1-1") {
+		t.Fatalf("text output = %q", text)
+	}
+
+	sessionListOrder = "sideways"
+	if err := runList(listCmd, nil); err == nil {
+		t.Fatal("an unknown --order was accepted")
+	}
+}
+
+// `--thinking` routed on the display name ("Grok Build") while the switch compared
+// stored keys ("grokbuild"), so every transcript fell through to Claude's
+// extractor and no agent ever showed a thinking chain.
+func TestExtractSessionThinkingRoutesOnTheStoredAgentKey(t *testing.T) {
+	dir := t.TempDir()
+	reasoning := filepath.Join(dir, "grok.jsonl")
+	if err := os.WriteFile(reasoning, []byte(
+		`{"type":"reasoning","summary":[{"type":"summary_text","text":"想清楚再动手"}]}`+"\n"+
+			`{"type":"assistant","content":"做完了"}`+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []string{"grokbuild", "codex"} {
+		blocks := extractSessionThinking(agent, reasoning)
+		if len(blocks) != 1 || blocks[0].Thinking != "想清楚再动手" {
+			t.Fatalf("%s blocks = %#v", agent, blocks)
+		}
+	}
+	// The display name must not resolve: it would silently pick Claude's shape.
+	if blocks := extractSessionThinking("Grok Build", reasoning); len(blocks) != 0 {
+		t.Fatalf("display name matched a reasoning extractor: %#v", blocks)
+	}
+}
+
+// Reasoning models emit a block per model response and a turn spans several of
+// them, so one-block-per-turn attributed later turns' thinking to earlier ones.
+func TestCollectTurnThinkingGroupsEveryBlockOfATurn(t *testing.T) {
+	blocks := []parser.ThinkingBlock{
+		{Thinking: "看一下文件", Response: "先读代码"},
+		{Thinking: "改这里", Response: "改完了"},
+		{Thinking: "下一轮", Response: "第二轮答案"},
+	}
+	thinking, next := collectTurnThinking(blocks, 0, "改完了")
+	if !strings.Contains(thinking, "看一下文件") || !strings.Contains(thinking, "改这里") ||
+		strings.Contains(thinking, "下一轮") || next != 2 {
+		t.Fatalf("thinking = %q next = %d", thinking, next)
+	}
+	// An answer no block claims must not swallow the rest of the chain.
+	thinking, next = collectTurnThinking(blocks, 2, "无人认领")
+	if thinking != "下一轮" || next != 3 {
+		t.Fatalf("fallback thinking = %q next = %d", thinking, next)
+	}
+	if thinking, next := collectTurnThinking(blocks, 3, "改完了"); thinking != "" || next != 3 {
+		t.Fatalf("exhausted blocks = %q %d", thinking, next)
 	}
 }
