@@ -1,8 +1,9 @@
 # Collection model runners
 
 Automatic collection classifies chat with an agent CLI running headless under a
-JSON output schema. ATM drives `codex` and `grok` out of the box; any other CLI
-can be taught to ATM from `~/.atm/config.json`, without a code change.
+JSON output schema. The same runner polishes a newly filed Todo (`atm todo refine`)
+and writes daily collection digests. ATM drives `codex` and `grok` out of the box;
+any other CLI can be taught to ATM from `~/.atm/config.json`, without a code change.
 
 ## Choosing the model
 

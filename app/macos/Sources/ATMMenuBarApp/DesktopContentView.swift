@@ -1469,6 +1469,7 @@ struct DesktopTodoDetail: View {
                 editContent
             } else {
                 detailHeader
+                refineNotice
                 detailTabs
                 if selectedTab == .detail {
                     readContent
@@ -1564,6 +1565,30 @@ struct DesktopTodoDetail: View {
             Button("好") { taskRunLaunchError = nil }
         } message: {
             Text(taskRunLaunchError ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var refineNotice: some View {
+        if store.refiningTodoIDs.contains(todo.id) {
+            ATMInlineNotice(
+                severity: .info,
+                title: "正在整理任务",
+                message: "模型在润色标题和需求；复杂工作会拆成子任务并写一份计划。"
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+        } else if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty {
+            ATMInlineNotice(
+                severity: .warning,
+                title: "任务整理失败",
+                message: error,
+                actionTitle: "重试",
+                onAction: { store.refineTodo(id: todo.id) },
+                onDismiss: { store.dismissRefineError(for: todo.id) }
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
         }
     }
 
@@ -2604,6 +2629,14 @@ struct DesktopTodoDetail: View {
         todo: ATMTodo
     ) -> some View {
         Menu {
+            if !ATMTodoStatusActions.isClosed(todo) {
+                Button {
+                    store.refineTodo(id: todo.id)
+                } label: {
+                    Label("优化任务", systemImage: "wand.and.stars")
+                }
+                .disabled(store.refiningTodoIDs.contains(todo.id))
+            }
             Button {
                 beginEditing()
             } label: {

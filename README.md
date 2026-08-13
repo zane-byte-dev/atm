@@ -70,7 +70,7 @@ atm session forget  <session-id> [-y]                    # 永久移除源文件
 # 待办与工作状态
 atm now                                     # 工作中、等待中、待验收、阻塞和到期复查
 atm dashboard --json                       # 一次返回带 schema_version 的桌面聚合快照
-atm todo    [list|add|start|run|runs|tail|submit|done|drop|trash|restore|show|context|edit|move|log|doc|prompt]
+atm todo    [list|add|refine|start|run|runs|tail|submit|done|drop|trash|restore|show|context|edit|move|log|doc|prompt]
 atm todo start <id>                         # 进入工作中；done/dropped 会重新开始
 atm todo context [id] --json                # 临时、只读汇总 Todo、Session 与 Git 上下文
 atm todo submit [id] --reason "实现及证据"   # 显式提交待确认，不直接标记 done
@@ -105,6 +105,8 @@ atm todo lint <id>                      # 检查冗长动态、无效 tID 和文
 atm todo add "<title>" --desc-file <path>  # - 表示从 stdin 读取多行描述
 atm todo add --batch                       # 从 YAML/JSON stdin 批量创建；示例见 --help
 id=$(atm todo add "<title>")               # 非 JSON 模式 stdout 仅输出新 ID
+atm todo add "<title>" --refine            # 创建后立刻润色；复杂任务会拆分子任务并写计划
+atm todo refine <id>                       # 润色已有任务；--dry-run 只看提案，--no-split 不拆分
 atm todo trash <id>                        # 移到回收站，不确认、可恢复
 atm todo list --status trashed             # 查看回收站（archived 仍是兼容别名）
 atm todo restore <id>                      # 从回收站恢复原状态
@@ -184,6 +186,10 @@ atm memory supersede <memory-id> --file note.md [--scope project:mox]
 atm memory forget <memory-id> [--scope project:mox]
 atm artifact save <title> --file report.md
 ```
+
+`todo refine` 用和收集相同的模型链把一条任务整理成可执行卡片：润色标题和需求，复杂工作写计划，
+能独立关闭的部分拆成子任务并由父任务等待。这是一次带 JSON schema 的模型调用，不是 Agent 循环，
+也不会派发执行。命令行 `todo add` 默认不整理；桌面添加在 `todo_refine_on_add`（默认开）时会自动跑一次。
 
 `todo prompt` 输出一行交给人粘贴进新 Agent 会话的指针，不搬运需求本身：Agent 按指针自己去读
 `todo doc`，拿到的永远是当前版本。想在会话之外补充需求就用 `todo log --section 补充`，它写进同一份

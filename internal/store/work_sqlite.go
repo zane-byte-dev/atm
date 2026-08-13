@@ -184,6 +184,11 @@ func writeTodos(store sqlWorkStore, file *TodoFile) error {
 		}
 	}
 
+	// Insert and update the todo rows first. Dependencies are a foreign key
+	// onto todos.id, so a parent that gains children in the same transaction
+	// (todo refine splitting a card) would fail if we wrote its edges before
+	// the new rows existed. Collections are a second pass against that
+	// already-complete set of ids.
 	for position := range file.Items {
 		todo := &file.Items[position]
 		base, existed := file.baseline[todo.ID]
@@ -197,6 +202,10 @@ func writeTodos(store sqlWorkStore, file *TodoFile) error {
 				return err
 			}
 		}
+	}
+	for position := range file.Items {
+		todo := &file.Items[position]
+		base, existed := file.baseline[todo.ID]
 		if !existed || !reflect.DeepEqual(base.todo.Tags, todo.Tags) {
 			if err := writeTodoTags(store, todo); err != nil {
 				return err

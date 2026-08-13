@@ -1131,12 +1131,38 @@ struct DesktopSettingsView: View {
                     }
                 }
 
+                card {
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("添加后自动整理")
+                                .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                            Text("用和收集相同的模型把刚写下的任务润色成可执行卡片；复杂工作会拆分子任务并写计划。")
+                                .font(ATMFont.footnote)
+                                .foregroundStyle(ATMTheme.secondary)
+                        }
+
+                        Toggle("添加任务后自动整理", isOn: Binding(
+                            get: { store.todoRefineOnAdd },
+                            set: { store.setTodoRefineOnAdd($0) }
+                        ))
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .font(ATMFont.font(.body, weight: .medium))
+
+                        Text("关闭后仍可在任务菜单里选「优化任务」。命令行添加默认不整理，需要时加 --refine。")
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+
                 Spacer(minLength: 0)
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .onAppear { store.loadTodoRefineOnAddSetting() }
     }
 
     /// The one interruption ATM allows itself.

@@ -81,6 +81,7 @@ final class ATMTodoMenuTests: XCTestCase {
         for item in ATMTodoStatusActions.items(for: todo) {
             XCTAssertTrue(titles.contains(item.title), "缺少生命周期操作「\(item.title)」")
         }
+        XCTAssertTrue(titles.contains("优化任务"))
         XCTAssertTrue(titles.contains("编辑任务…"))
         XCTAssertTrue(titles.contains("复制 ID"))
         XCTAssertTrue(titles.contains("用 VS Code 打开项目"))
@@ -105,6 +106,7 @@ final class ATMTodoMenuTests: XCTestCase {
         for status in ["done", "dropped"] {
             let titles = menu(for: try makeTodo(status: status)).items.map(\.title)
             XCTAssertFalse(titles.contains("复制启动提示"))
+            XCTAssertFalse(titles.contains("优化任务"))
         }
     }
 

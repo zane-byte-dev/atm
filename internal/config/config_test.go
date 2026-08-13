@@ -28,6 +28,7 @@ func withTempConfigHome(t *testing.T) string {
 	oldCollectionModelRunners := CollectionModelRunners
 	oldCollectionConnectors := CollectionConnectors
 	oldQuotaProviders := QuotaProviders
+	oldTodoRefineOnAdd := TodoRefineOnAdd
 
 	home := t.TempDir()
 	Home = home
@@ -53,6 +54,7 @@ func withTempConfigHome(t *testing.T) string {
 	CollectionModelRunners = nil
 	CollectionConnectors = nil
 	QuotaProviders = nil
+	TodoRefineOnAdd = true
 
 	t.Cleanup(func() {
 		Home = oldHome
@@ -73,6 +75,7 @@ func withTempConfigHome(t *testing.T) string {
 		CollectionModelRunners = oldCollectionModelRunners
 		CollectionConnectors = oldCollectionConnectors
 		QuotaProviders = oldQuotaProviders
+		TodoRefineOnAdd = oldTodoRefineOnAdd
 	})
 	return home
 }
@@ -260,6 +263,28 @@ func TestGrokLiveQuotaEnvOverridesConfig(t *testing.T) {
 	LoadConfig()
 	if GrokLiveQuota {
 		t.Fatal("unrecognized env value must fall back to config (false)")
+	}
+}
+
+func TestTodoRefineOnAddDefaultsOnAndCanBeDisabled(t *testing.T) {
+	withTempConfigHome(t)
+	if !TodoRefineOnAdd {
+		t.Fatal("todo refine after add is on unless configured off")
+	}
+	if err := os.MkdirAll(AtmDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ConfigPath, []byte(`{"todo_refine_on_add":false}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	LoadConfig()
+	if TodoRefineOnAdd {
+		t.Fatal("explicit false must turn desktop auto-refine off")
+	}
+	t.Setenv("ATM_TODO_REFINE_ON_ADD", "1")
+	LoadConfig()
+	if !TodoRefineOnAdd {
+		t.Fatal("env must force auto-refine on")
 	}
 }
 

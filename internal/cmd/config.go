@@ -54,7 +54,13 @@ Settable keys:
                                 times out or is not installed. codex and grok
                                 have built-in profiles; any other CLI needs a
                                 collection_model_runners entry in config.json
-                                (see docs/collection-model-runner.md)`,
+                                (see docs/collection-model-runner.md)
+  todo_refine_on_add true|false After a human files a todo in the App, run one
+                                model pass to polish the card and split complex
+                                work (default true). CLI todo add is never
+                                implicit; use todo add --refine or
+                                todo refine <id>. Same model chain as
+                                collection_model_command`,
 	// Only `init` is a valid positional arg; anything else errors instead of
 	// silently falling through to "show config".
 	ValidArgs: []string{"init"},
@@ -74,6 +80,7 @@ var settableConfigKeys = map[string]func(string) (any, error){
 	// 0 is a real setting here: keep synced chat forever.
 	"collection_message_retention_days": parseNonNegativeIntValue,
 	"collection_model_command":          parseNonEmptyStringValue,
+	"todo_refine_on_add":                parseBoolValue,
 }
 
 func parseBoolValue(s string) (any, error) {
@@ -155,6 +162,8 @@ var configGetCmd = &cobra.Command{
 			value = config.CollectionMessageRetentionDays
 		case "collection_model_command":
 			value = config.CollectionModelCommand
+		case "todo_refine_on_add":
+			value = config.TodoRefineOnAdd
 		default:
 			return fmt.Errorf("unknown key: %s (readable: %s)", args[0], strings.Join(settableKeyNames(), ", "))
 		}

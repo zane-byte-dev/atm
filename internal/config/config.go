@@ -98,6 +98,14 @@ var (
 	// a code change. Keys are the names used in CollectionModelCommand; a key
 	// that matches a built-in profile overrides it.
 	CollectionModelRunners map[string]ModelRunnerConfig
+	// TodoRefineOnAdd is the desktop default after a human files a todo: run
+	// one schema-constrained model pass to polish the card and, when the work
+	// is independently trackable, split it. CLI `todo add` never does this
+	// unless `--refine` is passed — agents already write structured cards and
+	// a 90s model call would break `id=$(atm todo add ...)`. Default on
+	// because that is the whole point of the feature; turn it off to keep
+	// messy capture text as typed.
+	TodoRefineOnAdd = true
 )
 
 // CollectionModelWorkdirPrefix names the scratch directory every model run gets.
@@ -181,11 +189,13 @@ type FileConfig struct {
 	CollectionModelCommand         string                               `json:"collection_model_command,omitempty"`
 	CollectionModelRunners         map[string]ModelRunnerConfig         `json:"collection_model_runners,omitempty"`
 	CollectionConnectors           map[string]CollectionConnectorConfig `json:"collection_connectors,omitempty"`
-	QuotaProviders                 map[string]QuotaProviderConfig       `json:"quota_providers,omitempty"`
-	DataDir                        string                               `json:"data_dir,omitempty"`
-	Pricing                        map[string][4]float64                `json:"pricing,omitempty"`
-	Subscriptions                  map[string]float64                   `json:"subscriptions,omitempty"`
-	ProjectAliases                 map[string]string                    `json:"project_aliases,omitempty"`
+	// Pointer so "absent" (keep the on-by-default) is distinct from false.
+	TodoRefineOnAdd *bool                          `json:"todo_refine_on_add,omitempty"`
+	QuotaProviders  map[string]QuotaProviderConfig `json:"quota_providers,omitempty"`
+	DataDir         string                         `json:"data_dir,omitempty"`
+	Pricing         map[string][4]float64          `json:"pricing,omitempty"`
+	Subscriptions   map[string]float64             `json:"subscriptions,omitempty"`
+	ProjectAliases  map[string]string              `json:"project_aliases,omitempty"`
 }
 
 func LoadConfig() {
@@ -253,6 +263,9 @@ func loadConfigFile() {
 	if cfg.CollectionModelCommand != "" {
 		CollectionModelCommand = cfg.CollectionModelCommand
 	}
+	if cfg.TodoRefineOnAdd != nil {
+		TodoRefineOnAdd = *cfg.TodoRefineOnAdd
+	}
 	CollectionModelRunners = cfg.CollectionModelRunners
 	CollectionConnectors = cfg.CollectionConnectors
 	QuotaProviders = cfg.QuotaProviders
@@ -280,6 +293,12 @@ func applyEnvOverrides() {
 		CollectionEnabled = true
 	case "0", "false", "off", "no":
 		CollectionEnabled = false
+	}
+	switch strings.ToLower(os.Getenv("ATM_TODO_REFINE_ON_ADD")) {
+	case "1", "true", "on", "yes":
+		TodoRefineOnAdd = true
+	case "0", "false", "off", "no":
+		TodoRefineOnAdd = false
 	}
 }
 
@@ -332,6 +351,7 @@ func ShowConfig() string {
 		CollectionModelCommand:         CollectionModelCommand,
 		CollectionModelRunners:         CollectionModelRunners,
 		CollectionConnectors:           CollectionConnectors,
+		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		QuotaProviders:                 QuotaProviders,
 		DataDir:                        AtmDir,
 		Pricing:                        Pricing,
@@ -364,6 +384,7 @@ func InitConfig() error {
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
 		CollectionModelCommand:         CollectionModelCommand,
+		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		DataDir:                        "~/.atm",
 	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")

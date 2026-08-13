@@ -31,6 +31,8 @@ enum ATMCommandPolicy {
         // Connector discovery and history can require multiple network pages.
         if arguments.starts(with: ["collect", "source", "search"]) { return 45 }
         if arguments.starts(with: ["collect", "history"]) { return 45 }
+        // One schema-constrained model call, same isolation as collect.
+        if arguments.starts(with: ["todo", "refine"]) { return 180 }
         return 15
     }
 }
@@ -819,6 +821,10 @@ enum ATMCommandBuilder {
         return arguments
     }
 
+    static func refineTodo(id: String) -> [String] {
+        ["todo", "refine", id, "--json"]
+    }
+
     /// Parse the id returned by `atm todo add` (JSON object or plain first line).
     static func createdTodoID(from data: Data) -> String? {
         if let todo = try? JSONDecoder().decode(ATMTodo.self, from: data) {
@@ -993,6 +999,11 @@ final class ATMDataStore: ObservableObject {
     /// Mirrors `owner_name` in ~/.atm/config.json: how to name the human when a
     /// todo they filed themselves is displayed. Empty falls back to 我.
     @Published private(set) var ownerName = ""
+    /// Mirrors `todo_refine_on_add`. Default on: filing from the sheet should
+    /// come back as a card an Agent can start from, not the raw capture line.
+    @Published private(set) var todoRefineOnAdd = true
+    @Published private(set) var refiningTodoIDs: Set<String> = []
+    @Published private(set) var refineErrorByTodoID: [String: String] = [:]
     /// Internal refresh gate only. No view renders this flag, so publishing it
     /// needlessly rebuilt the desktop at both ends of every one-minute refresh.
     private(set) var isLoading = false
@@ -1138,6 +1149,7 @@ final class ATMDataStore: ObservableObject {
         guard timer == nil else { return }
         loadGrokLiveQuotaSetting()
         loadOwnerNameSetting()
+        loadTodoRefineOnAddSetting()
         primeWork()
         refresh()
         refresh(sync: true)
@@ -1367,6 +1379,61 @@ final class ATMDataStore: ObservableObject {
     /// a successful write it re-reads the effective value: an
     /// ATM_GROK_LIVE_QUOTA env override beats the config file, and the toggle
     /// must show what `atm quota` will actually do.
+    func loadTodoRefineOnAddSetting() {
+        Task {
+            guard let runner = try? ATMCommandRunner() else { return }
+            let outcome: ATMCommandOutcome<ATMConfigBoolValue> = await decodeCommand(
+                runner,
+                arguments: ["config", "get", "todo_refine_on_add", "--json"]
+            )
+            if let value = outcome.value {
+                todoRefineOnAdd = value.value
+            }
+        }
+    }
+
+    func setTodoRefineOnAdd(_ enabled: Bool) {
+        guard enabled != todoRefineOnAdd else { return }
+        todoRefineOnAdd = enabled
+        Task {
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(["config", "set", "todo_refine_on_add", enabled ? "true" : "false"])
+                loadTodoRefineOnAddSetting()
+            } catch {
+                todoRefineOnAdd = !enabled
+                errorMessage = "任务整理设置未保存：\(ATMErrorText.compact(error.localizedDescription, limit: 160))"
+            }
+        }
+    }
+
+    func refineTodo(id: String, automatic: Bool = false) {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !refiningTodoIDs.contains(trimmed) else { return }
+        refiningTodoIDs.insert(trimmed)
+        refineErrorByTodoID[trimmed] = nil
+        Task {
+            defer { refiningTodoIDs.remove(trimmed) }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(ATMCommandBuilder.refineTodo(id: trimmed))
+                // Children and a rewritten title only exist after refine returns.
+                refresh()
+                loadProgress(for: trimmed)
+            } catch {
+                let message = ATMErrorText.compact(error.localizedDescription, limit: 180)
+                refineErrorByTodoID[trimmed] = message
+                if !automatic {
+                    errorMessage = message
+                }
+            }
+        }
+    }
+
+    func dismissRefineError(for id: String) {
+        refineErrorByTodoID[id] = nil
+    }
+
     func setGrokLiveQuota(_ enabled: Bool) {
         guard enabled != grokLiveQuotaEnabled else { return }
         grokLiveQuotaEnabled = enabled
@@ -2045,6 +2112,9 @@ final class ATMDataStore: ObservableObject {
                 }
                 if let createdID {
                     onCreated?(createdID)
+                    if todoRefineOnAdd {
+                        refineTodo(id: createdID, automatic: true)
+                    }
                 }
                 refresh()
             } catch {

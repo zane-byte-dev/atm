@@ -17,6 +17,20 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **Adding a task can now polish itself.** A messy capture line is not a
+  requirement. `atm todo refine [id]` runs one schema-constrained model call
+  (the same isolated `collection_model_command` chain collect already uses) and
+  rewrites the title plus the 需求 section. Complex work also gets a plan in
+  分析; independently trackable pieces become child todos the parent waits on.
+  This is not an Agent loop and it never dispatches work. `in_progress` cards
+  are polished but not split, so an active session is not unbound. Re-running
+  refine will not mint a second set of children. CLI `todo add` stays instant
+  unless you pass `--refine` — agents already write structured cards, and a
+  90s model call would break `id=$(atm todo add ...)`. The App runs refine
+  automatically after a human files a todo; turn that off with
+  `atm config set todo_refine_on_add false` or 设置 → Todo. The row menu and
+  the detail overflow still offer 优化任务.
+
 - **Todo deletion is now recoverable.** The App's 删除 action moves a task
   straight to 回收站 without interrupting with a confirmation dialog. The task
   keeps its lifecycle state, Markdown, progress, dependencies, and history, and

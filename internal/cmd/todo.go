@@ -149,6 +149,7 @@ var todoAddCmd = &cobra.Command{
 	Use:   "add <title>",
 	Short: "Add a new todo",
 	Example: `  atm todo add "Fix release checks" --project atm --desc-file notes.md
+  atm todo add "把发布检查修一下" --project atm --refine
   printf 'Multiline description\nwith details\n' | atm todo add "Fix release checks" --desc-file -
   cat <<'YAML' | atm todo add --batch
   project: atm

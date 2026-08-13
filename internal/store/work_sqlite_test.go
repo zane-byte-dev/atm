@@ -533,6 +533,26 @@ func TestDependencyMayPointAtArchivedTodoButNotAtNothing(t *testing.T) {
 	}
 }
 
+func TestNewTodoAndParentDependencyCanBeWrittenTogether(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "Parent"))
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		state.Todos.Items = append(state.Todos.Items, openTodo("t2", "Child"))
+		FindTodo(state.Todos, "t1").DependsOn = []string{"t2"}
+		return nil
+	}); err != nil {
+		t.Fatalf("parent + new child in one write: %v", err)
+	}
+	loaded, err := LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := FindTodo(loaded, "t1")
+	if parent == nil || len(parent.DependsOn) != 1 || parent.DependsOn[0] != "t2" {
+		t.Fatalf("parent = %+v", parent)
+	}
+}
+
 func TestArchivedDependencyStaysSatisfied(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t,

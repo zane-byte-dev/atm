@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/zane-byte-dev/atm/internal/output"
+	"github.com/zane-byte-dev/atm/internal/refine"
 	"github.com/zane-byte-dev/atm/internal/store"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 
@@ -257,6 +258,22 @@ func runTodoAdd(cmd *cobra.Command, args []string) error {
 	notifyTodoEvent(&t, notifyEventCreated)
 	if t.Status == store.TodoStatusReview {
 		notifyTodoEvent(&t, notifyEventReview)
+	}
+
+	if todoAddRefineFlag {
+		if !jsonOutput {
+			fmt.Println(t.ID)
+			fmt.Fprintf(cmd.ErrOrStderr(), "Created %s: %s\n", t.ID, t.Title)
+		}
+		if err := refineTodoByID(cmd, t.ID, refine.Options{AllowSplit: true}, false); err != nil {
+			if jsonOutput {
+				output.JSON(map[string]any{"todo": t, "refine_error": err.Error()})
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Refine failed: %v\n", err)
+			}
+			return err
+		}
+		return nil
 	}
 
 	if jsonOutput {

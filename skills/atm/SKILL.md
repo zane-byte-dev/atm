@@ -126,6 +126,9 @@ atm session bind <id>
 用户要把任务交给另一个 Agent 时，用 `atm todo prompt <id> --copy` 复制一行指针交给用户粘贴；
 ATM 不代为启动任何会话。收到这样一行指针时，按它列出的命令读 `atm todo doc <id>` 再 `atm session bind <id>`。
 
+人刚写下的乱任务用 `atm todo refine [id]` 整理：润色标题和需求，复杂工作写入分析并拆出子任务。
+这是一次 schema 调用，不是派发。不要在 Agent 自己 `todo add` 时加 `--refine`。
+
 任务依赖另一个 ATM todo 时，使用 `atm todo depend add <id> <dependency-id>` 保存结构化关系，
 不要只把 `tNN` 写进自由文本 wake condition。依赖全部完成后 ATM 会自动将 waiting 任务恢复为 open；
 依赖就绪只表示工作可以开始，不表示实现已提交 review。完成实现后用 `atm todo submit` 显式提交确认；

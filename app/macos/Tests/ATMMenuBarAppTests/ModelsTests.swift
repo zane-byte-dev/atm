@@ -118,6 +118,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.items[2].shouldCollapseInCollection, false)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "run"]), 300)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "item", "reprocess", "ci1"]), 180)
+        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["todo", "refine", "t1", "--json"]), 180)
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)
         XCTAssertEqual(notification?.subtitle, "自动收集完成")
         XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 沉淀 0 · 失败 0")
@@ -2709,6 +2710,10 @@ final class ModelsTests: XCTestCase {
                 ATMTodoDraft(text: "New task\n\nWhy it matters", project: "", priority: "P1")
             ),
             ["todo", "add", "New task", "--priority", "P1", "--desc", "Why it matters", "--json"]
+        )
+        XCTAssertEqual(
+            ATMCommandBuilder.refineTodo(id: "t142"),
+            ["todo", "refine", "t142", "--json"]
         )
 
         // Desktop selects the new todo after create; accept JSON or plain id stdout.
