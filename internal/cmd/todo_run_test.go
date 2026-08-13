@@ -102,6 +102,35 @@ func TestTodoRunClaimsRunAndStartsTodo(t *testing.T) {
 	}
 }
 
+// `--agent` is a persistent root flag, so it reaches `todo run` whether or not
+// dispatch has anything to do with it. It selects which agent's data to *read*;
+// honouring it as an executor switch would launch a CLI whose sandbox ATM cannot
+// enforce, so anything but Codex has to fail loudly instead.
+func TestTodoRunRefusesToTreatTheReadFilterAsADispatchTarget(t *testing.T) {
+	old := agentFlag
+	t.Cleanup(func() { agentFlag = old })
+
+	for _, value := range []string{"grokbuild", "claude", "pi", "copilot"} {
+		agentFlag = value
+		agent, err := resolveTaskRunDispatchAgent()
+		if err == nil {
+			t.Fatalf("--agent %s was accepted as a dispatch target: %#v", value, agent)
+		}
+		if !strings.Contains(err.Error(), "read filter") {
+			t.Fatalf("--agent %s error does not say why: %v", value, err)
+		}
+	}
+
+	// Naming Codex, or naming nothing, both dispatch Codex.
+	for _, value := range []string{"", "codex", "Codex", "  codex  "} {
+		agentFlag = value
+		agent, err := resolveTaskRunDispatchAgent()
+		if err != nil || agent.ID != taskRunDispatchAgentID {
+			t.Fatalf("--agent %q => %#v, %v", value, agent, err)
+		}
+	}
+}
+
 func TestTaskRunPromptsLeadWithTheUserFacingTodoTitle(t *testing.T) {
 	todo := &store.Todo{ID: "t252", Title: "增加前进后退导航"}
 

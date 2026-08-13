@@ -1438,8 +1438,7 @@ struct DesktopTodoDetail: View {
     @State private var selectedTab: DetailTab = .detail
     @State private var copiedPrompt = false
     @State private var deleteCandidate: ATMTodo?
-    @State private var showingAgentPicker = false
-    @State private var selectedDispatchAgentID = "codex"
+    @State private var showingDispatchSheet = false
     @State private var showingCodexContinuation = false
     @State private var showingTaskRunInterruptConfirmation = false
     @State private var taskRunLaunchError: String?
@@ -1552,8 +1551,8 @@ struct DesktopTodoDetail: View {
         .sheet(isPresented: $showingCodexContinuation) {
             codexContinuationSheet
         }
-        .sheet(isPresented: $showingAgentPicker) {
-            taskRunAgentPicker
+        .sheet(isPresented: $showingDispatchSheet) {
+            taskRunDispatchSheet
         }
         .alert(
             "无法打开 Agent 会话",
@@ -1712,7 +1711,7 @@ struct DesktopTodoDetail: View {
                 }
                 if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
                     Button {
-                        presentAgentPicker()
+                        presentDispatchSheet()
                     } label: {
                         Label(taskRunActionTitle, systemImage: taskRunActionIcon)
                             .font(ATMFont.font(.footnote, weight: .semibold))
@@ -1927,7 +1926,7 @@ struct DesktopTodoDetail: View {
                                 .disabled(store.isActing)
                         }
                         if run.status == "failed" || run.status == "interrupted" {
-                            Button("重新委派") { presentAgentPicker(preferred: run.agent) }
+                            Button("重新委派") { presentDispatchSheet() }
                                 .controlSize(.small)
                                 .disabled(store.isActing)
                         }
@@ -1992,7 +1991,7 @@ struct DesktopTodoDetail: View {
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
                 if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                    Button("选择 Agent") { presentAgentPicker() }
+                    Button("委派任务") { presentDispatchSheet() }
                         .buttonStyle(.borderedProminent)
                         .disabled(store.isActing)
                 }
@@ -2122,102 +2121,89 @@ struct DesktopTodoDetail: View {
         }
     }
 
-    private var selectedTaskRunAgent: ATMTaskRunAgent? {
-        store.taskRunAgents.first { $0.id == selectedDispatchAgentID }
-    }
+    private var dispatchAgent: ATMTaskRunAgent? { store.taskRunAgents.first }
 
-    private var taskRunAgentPicker: some View {
+    /// Confirms one dispatch. Not a picker any more: Codex is the only target, and
+    /// a radio list of one presents a choice that does not exist. What the sheet
+    /// still owes the user is what will run, that it is installed, and that it
+    /// costs model usage.
+    private var taskRunDispatchSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("选择执行 Agent")
+                Text("委派这个任务")
                     .font(ATMFont.font(.title2, weight: .semibold))
-                Text("每次委派只启动一个 Agent，不会并行调用全部选项。重新执行或继续修改会产生新的模型用量。")
+                Text("在 guarded 沙箱里执行，成功后自动提交待验收。重新执行或继续修改会产生新的模型用量。")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
             }
 
-            if store.taskRunAgents.isEmpty {
+            if let agent = dispatchAgent {
+                HStack(alignment: .top, spacing: 12) {
+                    ATMAgentMark(agent: agent.id, size: 22)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 7) {
+                            Text(agent.name)
+                                .font(ATMFont.font(.body, weight: .semibold))
+                            Text(agent.available ? "已安装" : "未安装")
+                                .font(ATMFont.caption)
+                                .foregroundStyle(agent.available ? ATMTheme.success : ATMTheme.secondary)
+                        }
+                        Text(agent.costNote)
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !agent.available {
+                            Label("PATH 里找不到 \(agent.binary)，先安装 Codex CLI 再委派。",
+                                  systemImage: "exclamationmark.shield")
+                                .font(ATMFont.caption)
+                                .foregroundStyle(ATMTheme.warning)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                }
+                .padding(13)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
+                .overlay { RoundedRectangle(cornerRadius: 10).stroke(ATMTheme.border) }
+                .opacity(agent.available ? 1 : 0.58)
+            } else {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("正在检查本机 Agent…")
+                    Text("正在检查 Codex 是否已安装…")
                         .font(ATMFont.footnote)
                         .foregroundStyle(ATMTheme.secondary)
                 }
-                .frame(maxWidth: .infinity, minHeight: 120)
-            } else {
-                VStack(spacing: 9) {
-                    ForEach(store.taskRunAgents) { agent in
-                        Button {
-                            selectedDispatchAgentID = agent.id
-                        } label: {
-                            HStack(alignment: .top, spacing: 12) {
-                                ATMAgentMark(agent: agent.id, size: 22)
-                                VStack(alignment: .leading, spacing: 5) {
-                                    HStack(spacing: 7) {
-                                        Text(agent.name)
-                                            .font(ATMFont.font(.body, weight: .semibold))
-                                        Text(agent.available ? "已安装" : "未安装")
-                                            .font(ATMFont.caption)
-                                            .foregroundStyle(agent.available ? ATMTheme.success : ATMTheme.secondary)
-                                    }
-                                    Text(agent.costNote)
-                                        .font(ATMFont.footnote)
-                                        .foregroundStyle(ATMTheme.secondary)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    if let safety = agent.safetyNote, !safety.isEmpty {
-                                        Label(safety, systemImage: "exclamationmark.shield")
-                                            .font(ATMFont.caption)
-                                            .foregroundStyle(ATMTheme.warning)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
-                                Spacer(minLength: 8)
-                                Image(systemName: selectedDispatchAgentID == agent.id ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(selectedDispatchAgentID == agent.id ? ATMTheme.accent : ATMTheme.border)
-                            }
-                            .padding(13)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 10)
-                                    .stroke(selectedDispatchAgentID == agent.id ? ATMTheme.accent : ATMTheme.border)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(!agent.available)
-                        .opacity(agent.available ? 1 : 0.58)
-                    }
-                }
+                .frame(maxWidth: .infinity, minHeight: 96)
             }
 
             HStack {
                 Spacer()
-                Button("取消") { showingAgentPicker = false }
+                Button("取消") { showingDispatchSheet = false }
                     .keyboardShortcut(.cancelAction)
-                Button(dispatchButtonTitle) { dispatchSelectedAgent() }
+                Button(dispatchButtonTitle) { dispatchToAgent() }
                     .buttonStyle(.borderedProminent)
-                    .disabled(selectedTaskRunAgent?.available != true || store.isActing)
+                    .disabled(dispatchAgent?.available != true || store.isActing)
             }
         }
         .padding(22)
-        .frame(width: 560)
+        .frame(width: 520)
         .background(ATMTheme.canvas)
     }
 
     private var dispatchButtonTitle: String {
-        guard let agent = selectedTaskRunAgent else { return "开始委派" }
-        return agent.guardedSupported ? "交给 \(agent.name)" : "以 trusted 交给 \(agent.name)"
+        guard let agent = dispatchAgent else { return "开始委派" }
+        return "交给 \(agent.name)"
     }
 
-    private func presentAgentPicker(preferred: String = "codex") {
-        selectedDispatchAgentID = store.taskRunAgents.contains { $0.id == preferred } ? preferred : "codex"
-        showingAgentPicker = true
+    private func presentDispatchSheet() {
+        showingDispatchSheet = true
         store.loadTaskRunAgents()
     }
 
-    private func dispatchSelectedAgent() {
-        guard let agent = selectedTaskRunAgent, agent.available else { return }
-        showingAgentPicker = false
+    private func dispatchToAgent() {
+        guard let agent = dispatchAgent, agent.available else { return }
+        showingDispatchSheet = false
         store.dispatchTodo(todo, agent: agent)
     }
 

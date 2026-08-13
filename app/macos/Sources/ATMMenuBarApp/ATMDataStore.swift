@@ -304,25 +304,28 @@ struct ATMTaskRun: Decodable, Identifiable, Equatable {
     var isActive: Bool { status == "starting" || status == "running" }
 }
 
+/// The dispatch target as `atm todo agents --json` reports it.
+///
+/// One row: dispatch is Codex only. What is still worth asking the CLI is
+/// whether the binary is on PATH and what a run costs — both change without the
+/// App being rebuilt.
 struct ATMTaskRunAgent: Decodable, Identifiable, Equatable {
     let id: String
     let name: String
     let binary: String
     let available: Bool
-    let guardedSupported: Bool
-    let resumeSupported: Bool
     let costNote: String
-    let safetyNote: String?
 
     enum CodingKeys: String, CodingKey {
         case id, name, binary, available
-        case guardedSupported = "guarded_supported"
-        case resumeSupported = "resume_supported"
         case costNote = "cost_note"
-        case safetyNote = "safety_note"
     }
 
-    var dispatchPolicy: String { guardedSupported ? "guarded" : "trusted" }
+    /// Codex runs guarded: `--sandbox workspace-write` is a boundary ATM can
+    /// actually enforce, which is why it is the only dispatch target left.
+    /// Trusted stays a deliberate CLI choice (`atm todo run --policy trusted`)
+    /// rather than something a sheet can produce by accident.
+    var dispatchPolicy: String { "guarded" }
 }
 
 enum ATMTaskRunSessionRouting {

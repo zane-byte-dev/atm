@@ -137,6 +137,50 @@ func TestLatestResumableTaskRunKeepsTheCodexThread(t *testing.T) {
 	}
 }
 
+// Dispatch is Codex only, but `task_runs` still holds the Grok, Claude and Pi
+// rows from before that collapse. Their session ids are ATM-generated UUIDs, and
+// Codex reads an id it does not recognise as a thread *name* and quietly starts a
+// fresh session — so a continuation must not reach for them, no matter how recent
+// they are.
+func TestLatestResumableTaskRunIgnoresPreCodexOnlyRunsOfOtherAgents(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "Continue a run"))
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	grokSession := "660b684f-d952-4555-bee9-578d291ff713"
+	grokRun := TaskRun{
+		ID: "run-grok", TodoID: "t1", Agent: "grokbuild", WorkDir: t.TempDir(),
+		Prompt: "legacy", Policy: "guarded", LogPath: "/tmp/run-grok.log",
+		Status: TaskRunStarting, StartTS: 100, SessionID: &grokSession,
+	}
+	if err := CreateTaskRun(db, grokRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := FinishTaskRun(db, grokRun.ID, 0, 110, "finished"); err != nil {
+		t.Fatal(err)
+	}
+
+	resumable, err := LatestResumableTaskRun(db, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumable != nil {
+		t.Fatalf("a %s run was offered as a Codex continuation: %#v", grokRun.Agent, resumable)
+	}
+	// The row itself stays: it is execution history, and `todo runs` shows it.
+	runs, err := ListTaskRuns(db, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].Agent != "grokbuild" {
+		t.Fatalf("runs = %#v", runs)
+	}
+}
+
 func TestMigrateV35ToV36AddsTaskRuns(t *testing.T) {
 	db := openTempDB(t)
 	if _, err := db.Exec(`DROP TABLE task_runs`); err != nil {

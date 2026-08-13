@@ -194,31 +194,30 @@ atm artifact save <title> --file report.md
 `todo doc`，拿到的永远是当前版本。想在会话之外补充需求就用 `todo log --section 补充`，它写进同一份
 文档，接手的 Agent 一并读到。
 
-`todo run` 是显式的本地执行入口，默认派发 Codex，`--agent` 可选 `claude`、`grokbuild`、`pi`
-（`todo agents` 列出本机是否已安装、费用与安全说明）。它先创建唯一的 `task_runs` claim，再启动一个脱离
-调用终端的 ATM controller，由 controller 以受限权限运行所选 Agent。受限的形式取决于 Agent 自己提供的
-能力：Codex 是 `workspace-write` sandbox 并额外开放 ATM 数据目录；Grok 是 workspace sandbox，权限模式
-用 `auto` 并额外放行 `atm` 命令——它的 `acceptEdits` 只自动放行文件编辑，其余工具仍会发起审批请求，
-无人应答的无头执行会把整轮取消，`auto` 则只把被拦截的调用回报给模型。派发 prompt 不要求 Agent 用 ATM
-记录进展，只要求它把结果、证据和遗留问题写在最后一段回复里：这次执行的会话本来就被索引成全文，Todo 详情
-直接读取会话最后一条回复，再写一遍等于把 ATM 已经拥有的文字抄进第二张表，还要 Agent 额外花轮次；Grok
-没有 `--add-dir` 等价开关，workspace sandbox 下 `~/.atm` 只读，这类写入本来也不会成功。会话绑定由
-controller 在派发前完成。Claude Code 没有可由 ATM 强制的文件系统 sandbox，guarded 用
-它自己的权限规则——工作目录内的编辑自动放行、其余工具在非交互下按未授权拒绝，只额外放行 `atm` 命令；
-Pi 两者都没有，因此只能以 trusted 运行。`--policy trusted` 会绕过所选 Agent 的审批与 sandbox，必须
-显式传入并会输出警告。同一 Todo 同时最多一个 starting/running Run；进程异常消失后，下次派发会把旧 claim
-记为失败再重试。Agent 退出 0 只会把仍在进行中的 Todo 提交到 `review`，永远不会自动 `done`；非零退出只记录
-Run 失败，不改变 Todo 生命周期。退出码不是唯一证据：Grok 在整轮被取消时同样退出 0，ATM 解析它的终局
-`end` 事件，只有 `stopReason=end_turn` 才算完成，否则记为失败且不提交 review。`todo interrupt` 会停止 controller 及其 Agent 子进程树，将 Run 单独记为
-`interrupted`，并让 Todo 保持 `in_progress`，之后仍可重新派发或继续已有会话。每次派发的工作目录、策略、
+`todo run` 是显式的本地执行入口，**只派发 Codex**（`todo agents` 显示本机是否已安装与费用说明）。
+Codex 是唯一沙箱能被 ATM 强制、线程 id 能被 ATM 找回的 CLI，所以委派收敛到它一个：guarded 用
+`codex exec --sandbox workspace-write` 并额外开放 ATM 数据目录，边界由 sandbox 而不是 prompt 保证。
+全局 `--agent` 只是读过滤器（看哪个 Agent 的会话、任务与用量），传给 `todo run` 会被拒绝而不是
+静默启动另一个 CLI。`--policy trusted` 绕过审批与 sandbox，必须显式传入并会输出警告。
+
+派发 prompt 不要求 Agent 用 ATM 记录进展，只要求它把结果、证据和遗留问题写在最后一段回复里：这次执行的
+会话本来就被索引成全文，Todo 详情直接读取会话最后一条回复，再写一遍等于把 ATM 已经拥有的文字抄进第二张表。
+
+它先创建唯一的 `task_runs` claim，再启动一个脱离调用终端的 ATM controller 来运行 Codex。同一 Todo 同时
+最多一个 starting/running Run；进程异常消失后，下次派发会把旧 claim 记为失败再重试。Agent 退出 0 只会把
+仍在进行中的 Todo 提交到 `review`，永远不会自动 `done`；非零退出只记录 Run 失败，不改变 Todo 生命周期。
+`todo interrupt` 会停止 controller 及其 Agent 子进程树，将 Run 单独记为 `interrupted`，并让 Todo 保持
+`in_progress`。子进程退出或被 interrupt 之后，controller 会向 App 发一条 `session_end`——它是唯一确知
+子进程已经没了的一方，否则 App 会拿着一条「等待授权」信号直到安全 TTL 过期。每次派发的工作目录、策略、
 controller PID、时间、退出码和日志路径均独立保存。
+
 已有执行关联到 Codex 线程后，可用 `--continue` 发送新的修改要求：ATM 创建新的 Run 审计记录（续跑的意图记在
 `resume_session_id`，与记录「这次执行实际是哪个会话」的 `session_id` 分开），并通过 `codex exec resume`
 恢复原线程上下文。传给 Codex 的必须是线程 UUID：Codex 会把认不出的 id 当成线程名，找不到时不报错而是静默新开
 一个会话，所以 ATM 先把 `rollout-<时间>-<uuid>` 归一成 UUID，归一不出来就直接拒绝而不是假装续上。
-Claude Code、Grok 和 Pi 接受 ATM 生成的 session id，派发前就把会话绑定到 Todo，续跑直接沿用同一个 id，
-不需要事后认领。`--continue` 只续跑同一个 Agent 最近一次留下会话的执行。
-macOS 任务详情提供“交给 Agent”、实时状态、失败重试与“继续修改”输入框；来源开启自动派发时也复用完全相同的入口。
+`task_runs` 里 Claude、Grok、Pi 时代的行作为执行履历保留，但 `--continue` 只认 Codex 的会话：它们的
+session id 是 ATM 自己生成的，Codex 会把它当线程名静默新开一轮。
+macOS 任务详情提供“委派任务”、实时状态、失败重试与“继续修改”输入框；来源开启自动派发时也复用完全相同的入口。
 
 `collect` 是连接器采集面，不是 Agent 调度器。来源通过注册表按 `connector` 路由；连接器使用
 [版本化 stdin/stdout JSON 协议](docs/connector-protocol.md)，无需链接进 ATM。公开核心不内置服务专属适配器。

@@ -128,6 +128,16 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Removed
 
+- **委派只剩 Codex。** `todo run` 不再支持 `--agent claude|grokbuild|pi`，三个 builder 连同
+  各自的策略特例一起删掉（约 420 行）。理由是能力不对称：Codex 的 `workspace-write` sandbox 是
+  ATM 能强制的边界，线程 id 也能从它自己的事件流里找回；Claude Code 没有可强制的文件系统
+  sandbox，Pi 两者都没有（只能 trusted），Grok 的 guarded 在无头下会被第一条审批请求取消整轮，
+  还要 ATM 解析终局事件才能识破「退出 0 但什么都没干」。一个执行器可以把这些特例全部换成一条
+  沙箱保证。全局 `--agent` 回到它本来的职责——读过滤器；传给 `todo run` 会报错，而不是静默换掉
+  执行器。`task_runs` 里旧 Agent 的行作为履历保留，但 `--continue` 只认 Codex 会话：它们的
+  session id 是 ATM 生成的，Codex 会把认不出的 id 当成线程名，静默新开一轮而不是报错。
+  App 的委派面板相应从「选择执行 Agent」的单选列表收成一次确认。
+
 - **刘海整块删掉，换成一套通知机制。** 屏幕顶部那条常驻带（Ping Island 式的 compact strip +
   hover 展开 + 通知卡片）连同它的 5 个偏好项（显示屏、无刘海屏位置、最近会话保留、通知停留、
   对齐）一起消失，共 1935 行。它常驻的唯一理由是要把 agent 的「正在跑」画出来，而那恰好是最不
@@ -205,6 +215,15 @@ a database from a much older version. `atm backup` exists for exactly that case.
   destroys every record that has nowhere to rebuild from.
 
 ### Fixed
+
+- **「等待授权」不再刷屏。** 三个缺陷叠在一起：一个 Agent 的授权请求会点亮同目录**所有**会话
+  （信号同时按 session id 和 cwd 记录，而 join 允许任意会话用自己的 cwd 命中，于是 Grok 的
+  permission_prompt 弹出三条「Claude Code 等待授权」，连进程已经结束的会话也弹）；同一条信号还
+  会每分钟重弹一次（一分钟一次的 `atm dashboard` 全量刷新把自己那份没有 hook overlay 的
+  `live_status` 原样落进快照，通知被撤回，几秒后 fast poll 又 merge 回来，于是发出一条新横幅）；
+  而进程被杀掉的会话会一直挂着信号到 10 分钟安全 TTL。现在带 session id 的事件不再建目录别名，
+  cwd 兜底只对同一个 Agent 生效，清理事件同样不会跨 Agent 误清；overlay 成为快照的固有属性而不是
+  某条写路径的责任；run controller 与 `todo interrupt` 在子进程真的没了之后各发一条 `session_end`。
 
 - **快速面板「需处理」不再把项目名印两遍。** 每行的说明文字渲染成「待验收 · atm · atm」：
   `attentionCaption` 返回的是「状态 · 项目」，而行本身又在后面追加了一次项目。说明文字现在

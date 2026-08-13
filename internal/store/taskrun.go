@@ -194,6 +194,13 @@ func LatestResumableTaskRun(db *sql.DB, todoID string) (*TaskRun, error) {
 
 // LatestResumableTaskRunForAgent keeps continuation inside the selected Agent's
 // own session history when a Todo has runs from more than one provider.
+//
+// The `agent` filter outlived multi-agent dispatch and has to stay. Dispatch is
+// Codex only now, but `task_runs` still holds the Claude, Grok and Pi rows from
+// before — they are execution history and are not rewritten. Their session ids
+// are ATM-generated UUIDs that Codex would read as a *thread name* and silently
+// start a fresh session under, so dropping the filter would turn `--continue`
+// into "quietly begin again" on any Todo whose last run predates the collapse.
 func LatestResumableTaskRunForAgent(db *sql.DB, todoID, agent string) (*TaskRun, error) {
 	var run TaskRun
 	err := scanTaskRun(db.QueryRow(`SELECT `+taskRunColumns+` FROM task_runs
