@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/agentevent"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -29,27 +30,14 @@ var (
 	interruptTaskRunProcess   = terminateTaskRunProcess
 )
 
-// taskRunResumeID reports the agent thread this run was dispatched to continue,
-// or "" for a fresh dispatch. Claude, Grok and Pi accept the session id ATM
-// generated, so unlike Codex their value is used verbatim.
-func taskRunResumeID(run store.TaskRun) string {
-	if run.ResumeSessionID == nil {
-		return ""
-	}
-	return strings.TrimSpace(*run.ResumeSessionID)
-}
-
 func runTodoRun(cmd *cobra.Command, args []string) error {
-	agent, err := resolveTaskRunAgent(agentFlag)
+	agent, err := resolveTaskRunDispatchAgent()
 	if err != nil {
 		return err
 	}
 	policy := strings.TrimSpace(todoRunPolicyFlag)
 	if policy != "guarded" && policy != "trusted" {
 		return fmt.Errorf("invalid run policy %q (use guarded or trusted)", policy)
-	}
-	if policy == "guarded" && !agent.GuardedSupported {
-		return fmt.Errorf("%s does not support guarded task runs; explicitly pass --policy trusted to use it", agent.Name)
 	}
 	if _, err := resolveTaskRunAgentBinary(agent.Binary); err != nil {
 		return fmt.Errorf("%s not found in PATH", agent.Binary)
@@ -72,7 +60,7 @@ func runTodoRun(cmd *cobra.Command, args []string) error {
 		if resumedRun == nil {
 			return fmt.Errorf("todo %s has no finished %s run with a session to continue", todo.ID, agent.Name)
 		}
-		if agent.ID == "codex" && store.ResumableThreadID(resumedRun.SessionID) == "" {
+		if store.ResumableThreadID(resumedRun.SessionID) == "" {
 			// Refusing beats guessing: Codex would read an unrecognizable id as a
 			// thread name and quietly begin a fresh session instead of failing.
 			// LatestResumableTaskRunForAgent already guarantees a non-blank id.
@@ -98,36 +86,23 @@ func runTodoRun(cmd *cobra.Command, args []string) error {
 	now := time.Now().In(config.Loc)
 	runID := fmt.Sprintf("%s-%d", todo.ID, now.UnixNano())
 	logPath := filepath.Join(config.AtmDir, "exec", runID+".log")
-	prompt := buildTaskRunPromptForAgent(todo, agent.Name, agent.ID != "codex")
-	var sessionID, resumeSessionID *string
+	prompt := buildTaskRunPrompt(todo)
+	var resumeSessionID *string
 	if resumedRun != nil {
-		prompt = buildTaskRunContinuationPromptForAgent(todo, followUp, agent.Name, agent.ID != "codex")
-		value := strings.TrimSpace(*resumedRun.SessionID)
-		if agent.ID == "codex" {
-			// Validated above, so this cannot be empty. Codex only accepts the bare
-			// thread UUID; the stored id may be the rollout form.
-			value = store.ResumableThreadID(resumedRun.SessionID)
-			// Let this run discover its own session identity from Codex's
-			// `thread.started` event (with `session bind` as a fallback): copying the
-			// previous id into session_id would present intent as evidence and hide
-			// the row from transcript sync's unlinked-run pass.
-		} else {
-			// Claude, Grok and Pi are pre-bound to an ATM-generated id, which is both the
-			// thread to resume and this run's own session identity.
-			sessionID = resumedRun.SessionID
-		}
+		prompt = buildTaskRunContinuationPrompt(todo, followUp)
+		// Validated above, so this cannot be empty. Codex only accepts the bare
+		// thread UUID; the stored id may be the rollout form.
+		value := store.ResumableThreadID(resumedRun.SessionID)
+		// Let this run discover its own session identity from Codex's
+		// `thread.started` event (with `session bind` as a fallback): copying the
+		// previous id into session_id would present intent as evidence and hide
+		// the row from transcript sync's unlinked-run pass.
 		resumeSessionID = &value
-	} else if agent.ID != "codex" {
-		value, err := newTaskRunSessionID()
-		if err != nil {
-			return fmt.Errorf("create %s session id: %w", agent.Name, err)
-		}
-		sessionID = &value
 	}
 	run := store.TaskRun{
 		ID: runID, TodoID: todo.ID, Agent: agent.ID, Project: todo.Project, WorkDir: workDir,
 		Prompt: prompt, Policy: policy, LogPath: logPath,
-		Status: store.TaskRunStarting, StartTS: now.Unix(), SessionID: sessionID,
+		Status: store.TaskRunStarting, StartTS: now.Unix(),
 		ResumeSessionID: resumeSessionID,
 	}
 	if err := withDB(false, func(db *sql.DB) error {
@@ -231,14 +206,8 @@ func executeTaskRun(runID string) error {
 	}); err != nil {
 		return err
 	}
-	if run.SessionID != nil && run.Agent != "codex" {
-		if _, err := store.BindTodoSession(store.TodoSessionBinding{
-			SessionID: strings.TrimSpace(*run.SessionID), TodoID: run.TodoID,
-			Agent: run.Agent, Project: run.Project, CWD: run.WorkDir,
-			BoundAt: time.Now().In(config.Loc).Unix(),
-		}); err != nil {
-			return finishTaskRunAfterControllerError(run, 1, "bind agent session: "+err.Error())
-		}
+	if run.Agent != "" && run.Agent != taskRunDispatchAgentID {
+		return finishTaskRunAfterControllerError(run, 1, fmt.Sprintf("todo run only dispatches Codex (got %q)", run.Agent))
 	}
 
 	logFile, err := os.OpenFile(run.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -254,20 +223,10 @@ func executeTaskRun(runID string) error {
 		fmt.Fprintln(logFile, err)
 		return finishTaskRunAfterControllerError(run, 1, err.Error())
 	}
-	var codexOutput *codexThreadStartedWriter
-	var grokOutput *grokTurnOutcomeWriter
-	switch run.Agent {
-	case "codex":
-		codexOutput = newCodexThreadStartedWriter(logFile, func(sessionID string) error {
-			return attachTaskRunSession(*run, sessionID)
-		})
-		agentCommand.Stdout = codexOutput
-	case "grokbuild":
-		grokOutput = newGrokTurnOutcomeWriter(logFile)
-		agentCommand.Stdout = grokOutput
-	default:
-		agentCommand.Stdout = logFile
-	}
+	codexOutput := newCodexThreadStartedWriter(logFile, func(sessionID string) error {
+		return attachTaskRunSession(*run, sessionID)
+	})
+	agentCommand.Stdout = codexOutput
 	agentCommand.Stderr = logFile
 	agentCommand.Dir = run.WorkDir
 	started := time.Now().In(config.Loc)
@@ -282,7 +241,7 @@ func executeTaskRun(runID string) error {
 		}
 		message = fmt.Sprintf("agent exited with code %d", exitCode)
 	}
-	if codexOutput != nil && codexOutput.linkErr != nil {
+	if codexOutput.linkErr != nil {
 		// A short SQLite lock while the Agent starts should not permanently lose
 		// the authoritative id. Retry once after the child exits, still before a
 		// successful run moves the Todo to review and closes its binding.
@@ -291,16 +250,7 @@ func executeTaskRun(runID string) error {
 			fmt.Fprintf(logFile, "\nwarning: could not attach Codex thread to task run: %v\n", codexOutput.linkErr)
 		}
 	}
-
-	if grokOutput != nil && exitCode == 0 {
-		// Grok reports a cancelled or truncated turn only in its event stream and
-		// still exits 0, so the process status alone would submit an untouched
-		// Todo to review as if the work had been done.
-		if failure := grokOutput.incompleteTurn(); failure != "" {
-			exitCode = 1
-			message = failure
-		}
-	}
+	reportTaskRunSessionEnd(*run, codexOutput.sessionID)
 
 	if exitCode == 0 {
 		_, _, _, submitErr := submitTodo(run.TodoID, fmt.Sprintf("agent run %s completed", run.ID))
@@ -312,6 +262,32 @@ func executeTaskRun(runID string) error {
 	fmt.Fprintf(logFile, "\nATM run finished in %s: %s\n", finished.Sub(started).Round(time.Second), message)
 	return withDB(false, func(db *sql.DB) error {
 		return store.FinishTaskRun(db, run.ID, exitCode, finished.Unix(), message)
+	})
+}
+
+// reportTaskRunSessionEnd tells the App that this thread is gone.
+//
+// The controller is the only thing that knows this for certain: it owns the
+// child process. Hooks are best-effort and a killed or crashed Agent never
+// sends its own `SessionEnd`, which left the App's attention overlay holding a
+// 等待授权 signal until the safety TTL expired — a banner for a process that no
+// longer exists. Best-effort by design: if the App is not running there is
+// nobody to tell, and that must never affect the run's outcome.
+func reportTaskRunSessionEnd(run store.TaskRun, sessionID string) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		// Nothing to retire: without a thread id from `thread.started` the App
+		// never joined a signal to this run in the first place.
+		return
+	}
+	_ = agentevent.Deliver(agentevent.Envelope{
+		Version:   agentevent.Version,
+		Source:    agentevent.SourceCodex,
+		Event:     agentevent.KindSessionEnd,
+		SessionID: sessionID,
+		CWD:       run.WorkDir,
+		Reason:    "task_run_finished",
+		At:        time.Now().In(config.Loc).Format(time.RFC3339),
 	})
 }
 
@@ -398,76 +374,6 @@ func (writer *codexThreadStartedWriter) retryLink() {
 	writer.linked = true
 }
 
-// grokCompletedStopReason is the only terminal reason that means the Agent
-// finished its turn. Grok's other reasons (cancelled, max_tokens,
-// max_turn_requests, refusal) all describe a turn that stopped early.
-const grokCompletedStopReason = "end_turn"
-
-// grokTurnOutcomeWriter tees Grok's NDJSON stream into the durable run log and
-// remembers the terminal `end` event. Grok exits 0 even when a headless
-// approval request resolves as a cancellation, so the process status alone
-// reports a run that never executed a single command as a success.
-type grokTurnOutcomeWriter struct {
-	destination io.Writer
-	pending     []byte
-	stopReason  string
-	ended       bool
-}
-
-func newGrokTurnOutcomeWriter(destination io.Writer) *grokTurnOutcomeWriter {
-	return &grokTurnOutcomeWriter{destination: destination}
-}
-
-func (writer *grokTurnOutcomeWriter) Write(data []byte) (int, error) {
-	written, err := writer.destination.Write(data)
-	if err != nil {
-		return written, err
-	}
-	if written != len(data) {
-		return written, io.ErrShortWrite
-	}
-	writer.pending = append(writer.pending, data...)
-	for {
-		newline := bytes.IndexByte(writer.pending, '\n')
-		if newline < 0 {
-			break
-		}
-		writer.observe(writer.pending[:newline])
-		writer.pending = writer.pending[newline+1:]
-	}
-	return written, nil
-}
-
-// incompleteTurn reports why an exit-0 run did not actually finish its turn, or
-// "" when it did. The still-buffered tail is inspected first so a final event
-// that reaches os/exec without a trailing newline still counts.
-func (writer *grokTurnOutcomeWriter) incompleteTurn() string {
-	writer.observe(writer.pending)
-	writer.pending = nil
-	switch {
-	case !writer.ended:
-		return "agent exited without reporting a completed turn"
-	case writer.stopReason != grokCompletedStopReason:
-		return fmt.Sprintf("agent stopped before finishing the turn (stopReason=%s)", writer.stopReason)
-	}
-	return ""
-}
-
-func (writer *grokTurnOutcomeWriter) observe(line []byte) {
-	if len(bytes.TrimSpace(line)) == 0 {
-		return
-	}
-	var event struct {
-		Type       string `json:"type"`
-		StopReason string `json:"stopReason"`
-	}
-	if err := json.Unmarshal(line, &event); err != nil || event.Type != "end" {
-		return
-	}
-	writer.ended = true
-	writer.stopReason = event.StopReason
-}
-
 // attachTaskRunSession records both execution evidence (run -> session) and
 // work ownership (session -> Todo). The run link is written first so the Todo
 // detail page remains accurate even if the binding ledger is temporarily
@@ -523,26 +429,19 @@ func buildCodexTaskRunCommand(run store.TaskRun) (*exec.Cmd, error) {
 }
 
 func buildTaskRunContinuationPrompt(todo *store.Todo, followUp string) string {
-	return buildTaskRunContinuationPromptForAgent(todo, followUp, "Codex", false)
-}
-
-func buildTaskRunContinuationPromptForAgent(todo *store.Todo, followUp, agentName string, prebound bool) string {
-	bindingInstruction := fmt.Sprintf("First run `atm todo doc %s` to load the latest requirements, then run\n`atm session bind %s` so this resumed turn is explicitly associated with the Todo.", todo.ID, todo.ID)
-	if prebound {
-		bindingInstruction = fmt.Sprintf("ATM already bound this %s session to the Todo. First run `atm todo doc %s` to load the latest requirements; do not bind it again.", agentName, todo.ID)
-	}
 	return fmt.Sprintf(`%s (ATM Todo %s)
 
-Continue the existing %s work for this task.
+Continue the existing Codex work for this task.
 
 The user wants these follow-up changes:
 
 %s
 
-%s
+First run `+"`atm todo doc %s`"+` to load the latest requirements, then run
+`+"`atm session bind %s`"+` so this resumed turn is explicitly associated with the Todo.
 Inspect the existing work before editing, implement the follow-up completely, and verify the result.
 %s`,
-		todo.Title, todo.ID, agentName, strings.TrimSpace(followUp), bindingInstruction, taskRunOutcomeInstruction)
+		todo.Title, todo.ID, strings.TrimSpace(followUp), todo.ID, todo.ID, taskRunOutcomeInstruction)
 }
 
 // taskRunOutcomeInstruction closes the prompt for both a fresh dispatch and a
@@ -557,22 +456,15 @@ Do not record progress with ATM and do not mark the Todo done;
 successful process completion is submitted to review by the run controller.`
 
 func buildTaskRunPrompt(todo *store.Todo) string {
-	return buildTaskRunPromptForAgent(todo, "Codex", false)
-}
-
-func buildTaskRunPromptForAgent(todo *store.Todo, agentName string, prebound bool) string {
-	bindingInstruction := fmt.Sprintf("First run `atm todo doc %s` to load the current requirements, then run\n`atm session bind %s` so the session is explicitly associated with the Todo.", todo.ID, todo.ID)
-	if prebound {
-		bindingInstruction = fmt.Sprintf("ATM already bound this %s session to the Todo. First run `atm todo doc %s` to load the current requirements; do not bind it again.", agentName, todo.ID)
-	}
 	return fmt.Sprintf(`%s (ATM Todo %s)
 
-This is an unattended %s task run managed by ATM.
+This is an unattended Codex task run managed by ATM.
 
-%s
+First run `+"`atm todo doc %s`"+` to load the current requirements, then run
+`+"`atm session bind %s`"+` so the session is explicitly associated with the Todo.
 Implement the task completely in the current repository and verify the result.
 %s`,
-		todo.Title, todo.ID, agentName, bindingInstruction, taskRunOutcomeInstruction)
+		todo.Title, todo.ID, todo.ID, todo.ID, taskRunOutcomeInstruction)
 }
 
 func resolveTaskRunCWD(todo *store.Todo, override string) (string, string, error) {
@@ -717,6 +609,10 @@ func runTodoRunInterrupt(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(logFile, "\nATM run interrupted by user at %s\n", finished.Format(time.RFC3339))
 		_ = logFile.Close()
 	}
+	// A killed Agent cannot report its own end, and interrupting one that was
+	// blocked on approval is exactly when a stale 等待授权 banner would outlive
+	// the process.
+	reportTaskRunSessionEnd(*run, store.ResumableThreadID(run.SessionID))
 	if err := withDB(true, func(db *sql.DB) error {
 		var err error
 		run, err = store.GetTaskRun(db, run.ID)

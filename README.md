@@ -86,10 +86,9 @@ atm todo wake <id> --reason "流水线完成"     # 外部事件/人工条件显
 atm todo reconcile                          # 补偿唤醒并审计缺失、放弃、循环依赖
 atm todo bulk done <id>... --reason "完成"  # 批量完成（也支持 drop/move/edit）
 atm todo prompt <id> --copy                 # 复制一行启动提示，粘贴进新的 Agent 会话
-atm todo run <id> [--cwd /path/to/repo]      # 后台派发；默认 Codex、默认 guarded
-atm todo run <id> --agent claude             # 派发给 Claude Code（也支持 grokbuild / pi）
-atm todo agents                              # 查看可派发的 Agent、是否已安装与费用说明
-atm todo run <id> --continue "修改要求"       # 恢复该 Agent 最近一次会话并继续修改
+atm todo run <id> [--cwd /path/to/repo]      # 后台派发给 Codex；默认 guarded
+atm todo agents                              # 查看 Codex 是否已安装与费用说明
+atm todo run <id> --continue "修改要求"       # 恢复该 Todo 最近一次 Codex 会话并继续修改
 atm todo runs <id>                           # 查看每次派发的状态、PID 与退出结果
 atm todo interrupt <id>                      # 中断当前 Agent 进程树，Todo 保持工作中
 atm todo tail <id> [-f] [--bytes N]          # 查看/持续跟随最近一次派发日志，可限制最近 N 字节

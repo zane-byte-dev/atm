@@ -226,14 +226,14 @@ than a copied snapshot.`,
 
 var todoRunCmd = &cobra.Command{
 	Use:   "run <id>",
-	Short: "Dispatch a Todo to an Agent CLI",
+	Short: "Dispatch a Todo to Codex",
 	Long: `Start the Todo, claim one durable task run, then launch a background
-controller that runs the selected Agent. A successful Agent exit submits the
-Todo to review; it never marks the Todo done.`,
+controller that runs Codex. A successful Agent exit submits the Todo to review;
+it never marks the Todo done. Codex is the only dispatch target: it is the one
+CLI whose sandbox ATM can enforce and whose thread id it can recover, so the
+global --agent flag stays a read filter and cannot pick a different executor.`,
 	Example: `  atm todo run t240
-	  atm todo run t240 --agent claude
-	  atm todo run t240 --agent grokbuild
-	  atm todo run t240 --agent pi --policy trusted
+  atm todo run t240 --policy trusted
   atm todo run t240 --cwd /path/to/repo
   atm todo run t240 --continue "按验收意见调整交互"
   atm todo runs t240

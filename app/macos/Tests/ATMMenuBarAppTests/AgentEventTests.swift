@@ -110,14 +110,39 @@ final class AgentEventTests: XCTestCase {
         XCTAssertEqual(matched?.source, "codex")
     }
 
-    func testCwdIsTheLastResort() {
-        let signals = ["/Users/tester/mox/atm": signal(reason: "idle_prompt")]
+    func testCwdIsTheLastResortForTheAgentThatRaisedIt() {
+        let signals = ["/Users/tester/mox/atm": signal(reason: "idle_prompt", source: "claude")]
         let matched = ATMAgentAttentionJoin.signal(
             for: session(sessionID: "unrelated", cwd: "/Users/tester/mox/atm"),
             in: signals,
             now: now
         )
         XCTAssertEqual(matched?.reason, "idle_prompt")
+    }
+
+    func testCwdSignalDoesNotLeakOntoAnotherAgentInTheSameRepository() {
+        // One repository routinely holds a Codex session, a Claude Code session
+        // and an unattended run at once. A Grok permission prompt used to raise
+        // 「Claude Code 等待授权」 on every one of them.
+        let signals = ["/Users/tester/mox/atm": signal(reason: "permission_prompt", source: "grokbuild")]
+        XCTAssertNil(ATMAgentAttentionJoin.signal(
+            for: session(tool: "Claude Code", sessionID: "claude-1", cwd: "/Users/tester/mox/atm"),
+            in: signals,
+            now: now
+        ))
+        XCTAssertNil(ATMAgentAttentionJoin.signal(
+            for: session(tool: "Codex", sessionID: "codex-1", cwd: "/Users/tester/mox/atm"),
+            in: signals,
+            now: now
+        ))
+        XCTAssertEqual(
+            ATMAgentAttentionJoin.signal(
+                for: session(tool: "Grok Build", sessionID: "grok-1", cwd: "/Users/tester/mox/atm"),
+                in: signals,
+                now: now
+            )?.reason,
+            "permission_prompt"
+        )
     }
 
     func testSessionIDWinsOverCwdWhenBothMatch() {
@@ -241,15 +266,50 @@ final class AgentEventTests: XCTestCase {
         )
         XCTAssertTrue(bus.apply(attention, now: now))
         XCTAssertNotNil(bus.signals["abc"])
-        // Recorded under cwd too, so an agent whose hook session id does not
-        // match the parser's can still be joined.
-        XCTAssertNotNil(bus.signals["/w"])
+        // No `cwd` alias: the sender named its session, and a directory key would
+        // be claimed by every other agent working in the same repository.
+        XCTAssertNil(bus.signals["/w"])
 
         let started = ATMAgentEvent(
             version: 1, source: "claude", event: .started, sessionID: "abc",
             cwd: "/w", tool: nil, reason: nil, text: nil, at: nil
         )
         XCTAssertTrue(bus.apply(started, now: now))
+        XCTAssertTrue(bus.signals.isEmpty)
+    }
+
+    @MainActor
+    func testSessionlessAttentionStillFallsBackToTheDirectory() {
+        // `Envelope.Validate` accepts an event with only a cwd, and it is the one
+        // case where a directory key is the sender's whole identity.
+        let bus = ATMAgentEventBus()
+        XCTAssertTrue(bus.apply(ATMAgentEvent(
+            version: 1, source: "qoder", event: .attention, sessionID: nil,
+            cwd: "/w", tool: nil, reason: "permission_prompt", text: nil, at: nil
+        ), now: now))
+        XCTAssertEqual(bus.signals["/w"]?.source, "qoder")
+    }
+
+    @MainActor
+    func testClearingDoesNotRetireAnotherAgentsDirectorySignal() {
+        let bus = ATMAgentEventBus()
+        bus.apply(ATMAgentEvent(
+            version: 1, source: "qoder", event: .attention, sessionID: nil,
+            cwd: "/w", tool: nil, reason: "permission_prompt", text: nil, at: nil
+        ), now: now)
+        // A different agent in the same repository finishing its turn says nothing
+        // about whether Qoder is still waiting on you.
+        bus.apply(ATMAgentEvent(
+            version: 1, source: "claude", event: .completed, sessionID: "abc",
+            cwd: "/w", tool: nil, reason: nil, text: nil, at: nil
+        ), now: now)
+        XCTAssertNotNil(bus.signals["/w"])
+
+        // Its own turn ending does retire it.
+        bus.apply(ATMAgentEvent(
+            version: 1, source: "qoder", event: .completed, sessionID: nil,
+            cwd: "/w", tool: nil, reason: nil, text: nil, at: nil
+        ), now: now)
         XCTAssertTrue(bus.signals.isEmpty)
     }
 

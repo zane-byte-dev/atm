@@ -91,6 +91,16 @@ struct ATMAgentEvent: Decodable, Equatable {
         let trimmed = sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
     }
+
+    /// The directory this event came from, when it named one.
+    ///
+    /// Only ever the fallback identity for a hook that reported no session id:
+    /// several agents run in one repository, so a `cwd` names the work, not the
+    /// session that is waiting on you.
+    var cwdKey: String? {
+        let trimmed = cwd?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 /// Hook registration state for one agent, as reported by

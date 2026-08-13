@@ -3315,6 +3315,62 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(replaced.refreshedAt, .distantPast)
     }
 
+    func testDashboardRefreshKeepsTheAttentionOverlayWhicheverStatusWins() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func status(_ time: String) -> ATMLiveStatus {
+            ATMLiveStatus(
+                sessions: [ATMLiveSession(
+                    tool: "Codex",
+                    sessionID: "waiting",
+                    project: "atm",
+                    ageSeconds: 1
+                )],
+                time: time
+            )
+        }
+        let signals = ["waiting": ATMAgentAttentionSignal(
+            reason: "permission_prompt",
+            tool: "shell",
+            text: nil,
+            source: "codex",
+            receivedAt: now
+        )]
+
+        // The dashboard's own live_status has never seen a hook event. Landing it
+        // raw is what retired a banner and then raised it again a poll later.
+        let fromDashboard = ATMLiveStatusRefreshPolicy.mergedLiveStatus(
+            dashboard: status("12:00:00"),
+            fast: status("12:00:03"),
+            preserveFast: false,
+            signals: signals,
+            now: now
+        )
+        XCTAssertEqual(fromDashboard.time, "12:00:00")
+        XCTAssertEqual(fromDashboard.sessions.first?.attentionSignal?.reason, "permission_prompt")
+        XCTAssertTrue(fromDashboard.sessions.allSatisfy(\.needsHookAttention))
+
+        let fromFastPoll = ATMLiveStatusRefreshPolicy.mergedLiveStatus(
+            dashboard: status("12:00:00"),
+            fast: status("12:00:03"),
+            preserveFast: true,
+            signals: signals,
+            now: now
+        )
+        XCTAssertEqual(fromFastPoll.time, "12:00:03")
+        XCTAssertEqual(fromFastPoll.sessions.first?.attentionSignal?.reason, "permission_prompt")
+
+        // An expired signal is dropped by the same join, so nothing has to wait
+        // for the next poll to stop claiming an agent is blocked.
+        let expired = ATMLiveStatusRefreshPolicy.mergedLiveStatus(
+            dashboard: status("12:00:00"),
+            fast: status("12:00:03"),
+            preserveFast: false,
+            signals: signals,
+            now: now.addingTimeInterval(ATMAgentAttentionSignal.timeToLive + 1)
+        )
+        XCTAssertNil(expired.sessions.first?.attentionSignal)
+    }
+
     func testAgentSoundTransitionTrackerPrimesSilentlyAndDeduplicatesSnapshots() {
         func session(
             input: String,

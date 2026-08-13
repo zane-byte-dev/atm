@@ -602,6 +602,24 @@ enum ATMLiveStatusRefreshPolicy {
         guard let lastAppliedAt else { return false }
         return lastAppliedAt > dashboardRequestStartedAt
     }
+
+    /// The live status a dashboard refresh should land: the fresher of the two
+    /// candidates, always carrying the hook overlay.
+    ///
+    /// Named and tested rather than inlined because forgetting the overlay on
+    /// one write path is exactly the bug this replaces. `atm dashboard` ships its
+    /// own `live_status` that has never seen a hook event, so landing it raw
+    /// retired every attention banner and then re-raised each one at the next
+    /// poll — a blocked agent re-notifying about once a minute.
+    static func mergedLiveStatus(
+        dashboard: ATMLiveStatus,
+        fast: ATMLiveStatus,
+        preserveFast: Bool,
+        signals: [String: ATMAgentAttentionSignal],
+        now: Date = Date()
+    ) -> ATMLiveStatus {
+        (preserveFast ? fast : dashboard).applyingAttentionSignals(signals, now: now)
+    }
 }
 
 enum ATMTodoAction: Equatable {
@@ -1923,12 +1941,17 @@ final class ATMDataStore: ObservableObject {
                     nextState.allTodos = incoming
                     var snapshot = value.makeSnapshot()
                         .removingTodos(withIDs: deletedIDs)
-                    if ATMLiveStatusRefreshPolicy.shouldPreserveFastStatus(
-                        lastAppliedAt: lastLiveStatusAppliedAt,
-                        dashboardRequestStartedAt: dashboardRequestStartedAt
-                    ) {
-                        snapshot = snapshot.replacingLiveStatus(dashboardState.snapshot.liveStatus)
-                    }
+                    snapshot = snapshot.replacingLiveStatus(
+                        ATMLiveStatusRefreshPolicy.mergedLiveStatus(
+                            dashboard: snapshot.liveStatus,
+                            fast: dashboardState.snapshot.liveStatus,
+                            preserveFast: ATMLiveStatusRefreshPolicy.shouldPreserveFastStatus(
+                                lastAppliedAt: lastLiveStatusAppliedAt,
+                                dashboardRequestStartedAt: dashboardRequestStartedAt
+                            ),
+                            signals: agentEvents.signals
+                        )
+                    )
                     for updated in updatedTodos.values
                     where !observedTransitionIDs.contains(updated.id) {
                         snapshot = snapshot.replacingTodo(updated)
