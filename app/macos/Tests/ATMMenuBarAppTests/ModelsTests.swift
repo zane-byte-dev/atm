@@ -1148,14 +1148,20 @@ final class ModelsTests: XCTestCase {
               !executable.isEmpty else {
             throw XCTSkip("ATM_CONTRACT_EXECUTABLE is set by the release contract check")
         }
-        let home = FileManager.default.temporaryDirectory
+        // The fixture's Todo belongs to project atm and `session bind` now
+        // refuses a working directory that resolves to a different project, so
+        // the run directory has to be named after the project rather than after
+        // the temp fixture. The unique parent keeps concurrent runs apart.
+        let fixtureRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("atm-cli-contract-\(UUID().uuidString)", isDirectory: true)
+        let home = fixtureRoot.appendingPathComponent("atm", isDirectory: true)
         let atmDirectory = home.appendingPathComponent(".atm", isDirectory: true)
         try FileManager.default.createDirectory(at: atmDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: home) }
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
 
         // The database is the only source of work state, so the fixture is built
-        // by the same commands a user runs.
+        // by the same commands a user runs — including a bind that needs no
+        // `--force`, which is what a user in the right directory gets.
         for arguments in [
             ["todo", "add", "Contract task", "--project", "atm"],
             ["todo", "start", "t1"],
