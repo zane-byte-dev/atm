@@ -1474,7 +1474,7 @@ struct DesktopTodoDetail: View {
                     readContent
                 } else if selectedTab == .activity {
                     activityContent
-                } else if selectedTab == .taskRun {
+                } else if selectedTab == .taskRun, hasTaskRuns {
                     taskRunContent
                 } else {
                     sessionContent
@@ -1500,6 +1500,10 @@ struct DesktopTodoDetail: View {
                 store.loadTaskRuns(for: todo.id)
             }
         }
+        // Both of these can remove the page that is currently selected: trashing
+        // hides three of them, and 「Agent 执行」 only exists while a run does.
+        .onChange(of: isTrashed) { _ in normalizeSelectedTab() }
+        .onChange(of: hasTaskRuns) { _ in normalizeSelectedTab() }
         .task(id: taskRunRefreshKey) {
             guard !isTrashed else { return }
             store.loadTaskRuns(for: todo.id)
@@ -1601,14 +1605,36 @@ struct DesktopTodoDetail: View {
         .background(ATMTheme.canvas)
     }
 
+    /// 「Agent 执行」只在真的有执行记录时出现。
+    ///
+    /// 默认的交接路径（`todo handoff` / 「在 Codex 里打开」）不产生 `task_runs`
+    /// ——会话由 Codex 自己拥有，ATM 通过 `session bind` 认识它——所以这个页在
+    /// 默认路径上永远是空的，而它的空态还在指路一个已经不存在的「选择 Agent」
+    /// 动作。有执行记录才显示，跟 Agent 页的「全部日志」是同一条规矩。
+    private var hasTaskRuns: Bool { !store.taskRuns(for: todo.id).isEmpty }
+
     private var detailTabItems: [(value: DetailTab, title: String)] {
         var items: [(value: DetailTab, title: String)] = [(.detail, "任务描述")]
         if !isTrashed {
             items.append((.activity, "动态"))
-            items.append((.taskRun, "Agent 执行"))
+            if hasTaskRuns {
+                items.append((.taskRun, "Agent 执行"))
+            }
             items.append((.sessions, sessionTabTitle))
         }
         return items
+    }
+
+    /// 选中的页消失时把选择拉回来。
+    ///
+    /// `selectedTab` 是 `@State`，在任务之间切换时不会重置：从一个有执行记录的
+    /// 任务切到没有的，选择会停在一个已经不在胶囊里的值上，于是内容区落到
+    /// 兜底分支、而胶囊一个都不高亮。回收站视图早就有这个问题（它藏掉三个页），
+    /// 只是没人注意。
+    private func normalizeSelectedTab() {
+        if !detailTabItems.contains(where: { $0.value == selectedTab }) {
+            selectedTab = .detail
+        }
     }
 
     private var sessionTabTitle: String {
@@ -1981,22 +2007,15 @@ struct DesktopTodoDetail: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         } else {
-            VStack(spacing: 12) {
-                Image(systemName: "terminal")
-                    .font(ATMFont.font(.display, weight: .light))
-                    .foregroundStyle(ATMTheme.secondary)
-                Text("暂无 Agent 执行记录")
-                    .font(ATMFont.font(.title3, weight: .semibold))
-                Text("选择一个 Agent 后，这里会显示执行状态，并可跳转到对应 Agent 详情。")
+            // 这一页已经只在有执行记录时出现，所以这里只可能是加载中的一瞬，或者
+            // 记录刚被清掉。不再摆一个空状态插画和一个「委派任务」按钮：委派入口
+            // 在头部，而一个装着引导的空页会让人以为自己找错了地方。
+            VStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("正在读取执行记录…")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
-                if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
-                    Button("委派任务") { presentDispatchSheet() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(store.isActing)
-                }
             }
-            .padding(28)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
