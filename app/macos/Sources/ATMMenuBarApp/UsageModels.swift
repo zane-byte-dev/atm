@@ -703,6 +703,14 @@ enum ATMUsageDateAxis {
         return dayParser.date(from: value)
     }
 
+    /// Whether these buckets are hours rather than days, read off the keys instead
+    /// of the window: a single-day window whose hours the snapshot does not carry
+    /// falls back to one day bucket, and labelling that tick "00:00" would claim an
+    /// hourly reading the chart is not showing.
+    static func isHourly(_ source: [String]) -> Bool {
+        source.contains { $0.contains(" ") }
+    }
+
     static func values(_ source: [String], maximumLabels: Int = 7) -> [Date] {
         var seen = Set<Date>()
         let dates = source
@@ -721,7 +729,7 @@ enum ATMUsageDateAxis {
 
     static func paddedDomain(_ source: [String]) -> ClosedRange<Date> {
         let dates = source.compactMap(date).sorted()
-        let unit: TimeInterval = source.first?.contains(" ") == true ? 60 * 60 : 24 * 60 * 60
+        let unit: TimeInterval = isHourly(source) ? 60 * 60 : 24 * 60 * 60
         let first = dates.first ?? Date()
         let last = dates.last ?? first
 

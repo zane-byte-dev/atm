@@ -1589,6 +1589,98 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(selectedLine.last?.totalTokens, 22)
     }
 
+    /// Yesterday is a single day and is labelled "昨日分时用量", so it has to be drawn
+    /// in the same hour buckets today is. The hours are selected by the window's own
+    /// dates: taking them wholesale would draw today's shape under yesterday's label.
+    func testYesterdayTrendUsesItsOwnHourBuckets() {
+        let dashboard = ATMDashboardSnapshot(
+            work: .empty,
+            dayStats: [
+                ATMDayStats(date: "2026-07-07", sessions: 2, queries: 4, inputTokens: 400, outputTokens: 40, costUSD: 4),
+                ATMDayStats(date: "2026-07-08", sessions: 1, queries: 2, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            hourStats: [
+                ATMDayStats(date: "2026-07-07 09:00", sessions: 1, queries: 2, inputTokens: 100, outputTokens: 10, costUSD: 1),
+                ATMDayStats(date: "2026-07-07 10:00", sessions: 1, queries: 1, inputTokens: 300, outputTokens: 30, costUSD: 3),
+                ATMDayStats(date: "2026-07-08 11:00", sessions: 1, queries: 2, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            modelDayStats: [
+                ATMModelDayStats(date: "2026-07-07", model: "large", sessions: 2, inputTokens: 400, outputTokens: 40, cacheReadTokens: 0, costUSD: 4),
+            ],
+            modelHourStats: [
+                ATMModelDayStats(date: "2026-07-07 09:00", model: "large", sessions: 1, inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, costUSD: 1),
+                ATMModelDayStats(date: "2026-07-07 10:00", model: "large", sessions: 1, inputTokens: 300, outputTokens: 30, cacheReadTokens: 0, costUSD: 3),
+                ATMModelDayStats(date: "2026-07-08 11:00", model: "small", sessions: 1, inputTokens: 200, outputTokens: 20, cacheReadTokens: 0, costUSD: 2),
+            ],
+            projectDayStats: [
+                ATMProjectDayStats(date: "2026-07-07", project: "atm", sessions: 2, inputTokens: 400, outputTokens: 40, costUSD: 4),
+            ],
+            projectHourStats: [
+                ATMProjectDayStats(date: "2026-07-07 09:00", project: "atm", sessions: 1, inputTokens: 100, outputTokens: 10, costUSD: 1),
+                ATMProjectDayStats(date: "2026-07-08 11:00", project: "wanda", sessions: 1, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            rangeData: [
+                .today: ATMRangeData(startDate: "2026-07-08", endDate: "2026-07-08", modelStats: [], sessions: []),
+                .yesterday: ATMRangeData(startDate: "2026-07-07", endDate: "2026-07-07", modelStats: [], sessions: []),
+                .thisWeek: ATMRangeData(startDate: "2026-07-06", endDate: "2026-07-08", modelStats: [], sessions: []),
+            ],
+            liveStatus: .empty,
+            currentSession: nil,
+            refreshedAt: Date()
+        )
+
+        XCTAssertEqual(dashboard.trendStats(for: .yesterday).map(\.date), ["2026-07-07 09:00", "2026-07-07 10:00"])
+        XCTAssertEqual(dashboard.trendStats(for: .today).map(\.date), ["2026-07-08 11:00"])
+        // A period keeps day buckets even though hours are in the snapshot.
+        XCTAssertEqual(dashboard.trendStats(for: .thisWeek).map(\.date), ["2026-07-07", "2026-07-08"])
+        // The chart's own totals: yesterday's day bucket held 440 tokens, and its two
+        // hour buckets have to add up to the same number rather than to today's.
+        let modelLine = dashboard.lineTrendStats(for: .yesterday, dimension: .model)
+        XCTAssertEqual(modelLine.map(\.date), ["2026-07-07 09:00", "2026-07-07 10:00"])
+        XCTAssertEqual(modelLine.reduce(0) { $0 + $1.totalTokens }, 440)
+        XCTAssertEqual(dashboard.seriesNames(for: .yesterday, dimension: .model), ["large"])
+        // Projects read their own hour rows, so yesterday's project line cannot pick
+        // up today's project.
+        XCTAssertEqual(dashboard.seriesNames(for: .yesterday, dimension: .project), ["atm"])
+    }
+
+    /// A single day the snapshot has no hours for -- the app is reading a window the
+    /// CLI stopped sending hourly rows that far back -- falls back to its one day
+    /// bucket instead of borrowing the hours of a day it can see.
+    func testSingleDayWithoutHourBucketsFallsBackToDayBucket() {
+        let dashboard = ATMDashboardSnapshot(
+            work: .empty,
+            dayStats: [
+                ATMDayStats(date: "2026-07-07", sessions: 2, queries: 4, inputTokens: 400, outputTokens: 40, costUSD: 4),
+                ATMDayStats(date: "2026-07-08", sessions: 1, queries: 2, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            hourStats: [
+                ATMDayStats(date: "2026-07-08 11:00", sessions: 1, queries: 2, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            modelDayStats: [
+                ATMModelDayStats(date: "2026-07-07", model: "large", sessions: 2, inputTokens: 400, outputTokens: 40, cacheReadTokens: 0, costUSD: 4),
+            ],
+            modelHourStats: [
+                ATMModelDayStats(date: "2026-07-08 11:00", model: "small", sessions: 1, inputTokens: 200, outputTokens: 20, cacheReadTokens: 0, costUSD: 2),
+            ],
+            rangeData: [
+                .today: ATMRangeData(startDate: "2026-07-08", endDate: "2026-07-08", modelStats: [], sessions: []),
+                .yesterday: ATMRangeData(startDate: "2026-07-07", endDate: "2026-07-07", modelStats: [], sessions: []),
+            ],
+            liveStatus: .empty,
+            currentSession: nil,
+            refreshedAt: Date()
+        )
+
+        XCTAssertEqual(dashboard.trendStats(for: .yesterday).map(\.date), ["2026-07-07"])
+        let modelLine = dashboard.lineTrendStats(for: .yesterday, dimension: .model)
+        XCTAssertEqual(modelLine.map(\.date), ["2026-07-07"])
+        XCTAssertEqual(modelLine.reduce(0) { $0 + $1.totalTokens }, 440)
+        // And the axis reads the buckets, so that one tick is dated rather than 00:00.
+        XCTAssertFalse(ATMUsageDateAxis.isHourly(modelLine.map(\.date)))
+        XCTAssertTrue(ATMUsageDateAxis.isHourly(dashboard.trendStats(for: .today).map(\.date)))
+    }
+
     func testUsageSeriesSwitchesBetweenModelClientAndProject() {
         let dayStats = (1...2).map { day in
             ATMDayStats(

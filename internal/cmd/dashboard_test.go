@@ -3,7 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/contract"
@@ -78,6 +80,15 @@ func TestDashboardReturnsVersionedAggregateSnapshot(t *testing.T) {
 		snapshot.ProjectDayStats == nil || snapshot.ProjectHourStats == nil {
 		t.Fatal("dashboard arrays must encode as [] rather than null")
 	}
+	// Hour buckets reach back through yesterday, not only today. Both single-day
+	// windows are drawn as an hourly shape, and yesterday used to collapse into one
+	// bar because its hours were never queried. The buckets are zero-filled, so the
+	// first one is the window's own start whether or not yesterday saw traffic.
+	yesterday := time.Now().In(config.Loc).AddDate(0, 0, -1).Format("2006-01-02")
+	if len(snapshot.HourStats) == 0 ||
+		!strings.HasPrefix(snapshot.HourStats[0].Date, yesterday) {
+		t.Errorf("hour buckets start at %#v, want one dated %s", firstOf(snapshot.HourStats), yesterday)
+	}
 	var rawFields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &rawFields); err != nil {
 		t.Fatal(err)
@@ -85,6 +96,13 @@ func TestDashboardReturnsVersionedAggregateSnapshot(t *testing.T) {
 	if _, exists := rawFields["today_sessions"]; exists {
 		t.Fatal("dashboard must not eagerly include today_sessions")
 	}
+}
+
+func firstOf[T any](values []T) any {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
 }
 
 // The task list must not wait on the statistics. `--sections work` is what the

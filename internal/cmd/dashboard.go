@@ -131,6 +131,16 @@ func parseDashboardSections(names []string) (dashboardSectionSet, error) {
 // where wall time bottoms out; past it the duplicated cache work wins.
 const dashboardQueryWorkers = 3
 
+// dashboardHourlyDays is how far back the hour buckets reach: today and
+// yesterday, not today alone.
+//
+// Both of the day panel's windows are single days, and both are drawn as an
+// hourly shape — "昨日分时用量" is the chart's own title. With one day of hours,
+// yesterday had none and fell back to its single day bucket, which draws as one
+// bar. Two days is also when the hourly view matters most: every morning today
+// is nearly empty, and the day before is the one worth reading.
+const dashboardHourlyDays = 2
+
 // queryGroup runs independent read-only queries against one handle in parallel.
 // Every range and every series is a separate scan that shares nothing with its
 // neighbours, so running them one after another only reflected the order they
@@ -265,7 +275,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 				return
 			})
 			group.Go(func() (err error) {
-				hourStats, err = dashboardDayStats(db, now, 1, agent, true)
+				hourStats, err = dashboardDayStats(db, now, dashboardHourlyDays, agent, true)
 				return
 			})
 			group.Go(func() (err error) {
@@ -273,7 +283,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 				return
 			})
 			group.Go(func() (err error) {
-				modelHourStats, err = dashboardModelStatsByTime(db, now, 1, agent, true)
+				modelHourStats, err = dashboardModelStatsByTime(db, now, dashboardHourlyDays, agent, true)
 				return
 			})
 			group.Go(func() (err error) {
@@ -281,7 +291,7 @@ func runDashboard(cmd *cobra.Command, args []string) error {
 				return
 			})
 			group.Go(func() (err error) {
-				projectHourStats, err = dashboardProjectStatsByTime(db, now, 1, agent, true)
+				projectHourStats, err = dashboardProjectStatsByTime(db, now, dashboardHourlyDays, agent, true)
 				return
 			})
 			for index, name := range config.MetricsRanges {

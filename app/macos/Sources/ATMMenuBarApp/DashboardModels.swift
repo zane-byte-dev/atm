@@ -31,11 +31,18 @@ struct ATMRangeData {
         self.speed = speed
     }
 
-    /// Whether a day bucket falls inside this window. Both bounds are inclusive
-    /// yyyy-MM-dd strings, which compare correctly as text.
+    /// Whether the CLI sent this window's bounds. Without them `contains` matches
+    /// every bucket, which is a harmless superset for day buckets but would let
+    /// today's hours be drawn under yesterday's label.
+    var isDated: Bool { !startDate.isEmpty && !endDate.isEmpty }
+
+    /// Whether a bucket falls inside this window. Day buckets are `yyyy-MM-dd` and
+    /// hour buckets `yyyy-MM-dd HH:mm`; only the leading day decides, so both kinds
+    /// compare against the same inclusive yyyy-MM-dd bounds as text.
     func contains(date: String) -> Bool {
-        guard !startDate.isEmpty, !endDate.isEmpty else { return true }
-        return date >= startDate && date <= endDate
+        guard isDated else { return true }
+        let day = String(date.prefix(10))
+        return day >= startDate && day <= endDate
     }
 
     static let empty = ATMRangeData(modelStats: [], sessions: [])
@@ -363,12 +370,23 @@ struct ATMDashboardSnapshot {
     }
 
     func trendStats(for range: ATMMetricsRange) -> [ATMDayStats] {
-        // Hour buckets exist for today only; any other single day falls back to its
-        // one day bucket rather than showing today's hours under yesterday's label.
-        if range == .today {
-            return hourStats.isEmpty ? stats(for: .today) : hourStats
-        }
-        return stats(for: range)
+        guard let window = hourWindow(for: range) else { return stats(for: range) }
+        return hourStats.filter { window.contains(date: $0.date) }
+    }
+
+    /// The window's own bounds when it is to be drawn in hour buckets, nil when it
+    /// is to be drawn in day buckets.
+    ///
+    /// A single day reads better by hour, and both windows in the day group are
+    /// labelled as such ("今日/昨日分时用量"), but the snapshot only carries hours
+    /// for the last couple of days. A single day outside that span therefore falls
+    /// back to its one day bucket rather than borrowing another day's hours — which
+    /// is also why the hours are selected by the window's dates instead of taken
+    /// wholesale.
+    private func hourWindow(for range: ATMMetricsRange) -> ATMRangeData? {
+        guard range.isSingleDay, let window = rangeData[range], window.isDated else { return nil }
+        guard hourStats.contains(where: { window.contains(date: $0.date) }) else { return nil }
+        return window
     }
 
     /// Series names for a dimension, biggest spender first. Doubles as the filter
@@ -487,9 +505,8 @@ struct ATMDashboardSnapshot {
                 }
             )
         case .project:
-            let source = range == .today && !projectHourStats.isEmpty ? projectHourStats : projectDayStats
             return Self.merged(
-                source.map {
+                projectSeriesSource(for: range).map {
                     ATMUsageSeriesPoint(
                         date: $0.date,
                         series: $0.displayName,
@@ -506,8 +523,17 @@ struct ATMDashboardSnapshot {
         }
     }
 
+    /// Model rows in the same buckets `trendStats` uses, so a chart drawn over hour
+    /// buckets never looks its series up in day rows and finds nothing.
     private func modelSeriesSource(for range: ATMMetricsRange) -> [ATMModelDayStats] {
-        range == .today && !modelHourStats.isEmpty ? modelHourStats : modelDayStats
+        guard let window = hourWindow(for: range) else { return modelDayStats }
+        return modelHourStats.filter { window.contains(date: $0.date) }
+    }
+
+    /// See modelSeriesSource: the project rows, bucketed the same way.
+    private func projectSeriesSource(for range: ATMMetricsRange) -> [ATMProjectDayStats] {
+        guard let window = hourWindow(for: range) else { return projectDayStats }
+        return projectHourStats.filter { window.contains(date: $0.date) }
     }
 
     /// Session counts are summed rather than deduplicated: one session that spans
@@ -1021,9 +1047,8 @@ struct ATMDashboardSnapshot {
         filters: ATMUsageFilters
     ) -> [ATMUsageSeriesPoint] {
         if !filters.project.isEmpty {
-            let source = range == .today && !projectHourStats.isEmpty ? projectHourStats : projectDayStats
             return Self.merged(
-                source.compactMap { row -> ATMUsageSeriesPoint? in
+                projectSeriesSource(for: range).compactMap { row -> ATMUsageSeriesPoint? in
                     if row.displayName != filters.project { return nil }
                     if !filters.client.isEmpty && ATMAgentDisplay.name(row.client) != filters.client {
                         return nil

@@ -3396,6 +3396,11 @@ private struct DesktopUsageContent: View, Equatable {
         let points = trendMetric == .speed
             ? speedStats.map { ATMTrendPoint(from: $0, value: $0.tokensPerSecond ?? 0) }
             : seriesStats.map { ATMTrendPoint(from: $0, value: Double($0.totalTokens)) }
+        let bucketDates = points.map(\.date)
+        // Hour or day comes from the buckets themselves, not from the window: every
+        // single-day window is drawn in hours when the snapshot carries them, and in
+        // one day bucket when it does not.
+        let hourlyAxis = ATMUsageDateAxis.isHourly(bucketDates)
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text(range.tokenTrendTitle)
@@ -3477,7 +3482,7 @@ private struct DesktopUsageContent: View, Equatable {
                 }
                 .chartXAxis {
                     AxisMarks(values: ATMUsageDateAxis.values(
-                        points.map(\.date),
+                        bucketDates,
                         // A month of daily ticks overlaps at this width; a week fits.
                         maximumLabels: range == .last30Days || range == .thisMonth ? 6 : 7
                     )) { value in
@@ -3485,7 +3490,7 @@ private struct DesktopUsageContent: View, Equatable {
                             .foregroundStyle(ATMTheme.chartGrid)
                         AxisValueLabel {
                             if let date = value.as(Date.self) {
-                                if range == .today {
+                                if hourlyAxis {
                                     Text(date, format: .dateTime.hour().minute())
                                 } else {
                                     Text(date, format: .dateTime.month(.defaultDigits).day())
@@ -3496,7 +3501,7 @@ private struct DesktopUsageContent: View, Equatable {
                     }
                 }
                 .chartXScale(
-                    domain: ATMUsageDateAxis.paddedDomain(points.map(\.date)),
+                    domain: ATMUsageDateAxis.paddedDomain(bucketDates),
                     range: .plotDimension(padding: 18)
                 )
                 .chartPlotStyle { plotArea in
