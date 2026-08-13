@@ -188,9 +188,15 @@ atm memory forget <memory-id> [--scope project:mox]
 atm artifact save <title> --file report.md
 ```
 
-`todo refine` 用和收集相同的模型链把一条任务整理成可执行卡片：润色标题和需求，复杂工作写计划，
-能独立关闭的部分拆成子任务并由父任务等待。这是一次带 JSON schema 的模型调用，不是 Agent 循环，
-也不会派发执行。命令行 `todo add` 默认不整理；桌面添加在 `todo_refine_on_add`（默认开）时会自动跑一次。
+`todo refine` 用 ATM 内置的 DeepSeek 文本服务把一条任务整理成可执行卡片：润色标题和需求，复杂工作写计划，
+能独立关闭的部分拆成子任务并由父任务等待。它直接调用 DeepSeek Chat Completions，默认模型是适合轻量文本
+职能的 `deepseek-v4-flash`，关闭思考模式并要求 JSON 输出；它既不启动 Agent，也不复用或回退到
+`collection_model_command`。ATM App 用户在“设置 → 模型”填写 API Key，它只保存在 macOS 钥匙串；CLI 用户
+可设置 `DEEPSEEK_API_KEY`。模型和 endpoint 也可在模型设置页修改，或通过 `text_model_name`、
+`text_model_base_url` 配置项覆盖；设置页的“测试连接”会使用当前草稿值发送一个最小 JSON 请求，不保存设置、
+也不读取或修改 Todo。CLI 可用 `atm config test-text-model` 做同样检查；`ATM_TEXT_MODEL_MODEL`、
+`ATM_TEXT_MODEL_BASE_URL` 适合临时调试。密钥不写入
+ATM 配置、命令参数或日志。`todo add` 默认不整理；桌面添加在 `todo_refine_on_add`（默认开）时会自动跑一次。
 
 `todo prompt` 输出一行交给人粘贴进新 Agent 会话的指针，不搬运需求本身：Agent 按指针自己去读
 `todo doc`，拿到的永远是当前版本。想在会话之外补充需求就用 `todo log --section 补充`，它写进同一份
@@ -232,7 +238,7 @@ checkpoint，并重叠回读 20 分钟，消息 ID 与来源标记共同保证�
 模型只输出固定决策 JSON，TodoWriter 才能写 ATM；权限、模型或写入失败会显示为等待重试且不会推进 checkpoint。
 采集默认关闭，启用前需在 `collection_connectors` 中配置并验证连接器。
 
-分类模型由 `collection_model_command` 决定，可以写成按序尝试的候选链
+收集分类模型仍由 `collection_model_command` 决定，可以写成按序尝试的候选链
 （`atm config set collection_model_command "grok,codex"`）：前一个被限额、超时或没装时自动换下一个，
 一个 CLI 挂掉不再整条采集停摆。内置 `codex` 与 `grok` 两套无头调用方式（都在一次性工作目录里跑、只读沙箱、
 禁联网搜索/记忆/子 Agent；grok 没有 `--ignore-user-config` 等价开关，差异见文档）；其他 CLI 通过

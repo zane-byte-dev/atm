@@ -30,10 +30,18 @@ a database from a much older version. `atm backup` exists for exactly that case.
   `git worktree` 照样能绑：`ProjectFromPath` 解析到 git root 的 origin，worktree 和主仓库共享它。
 
 - **Adding a task can now polish itself.** A messy capture line is not a
-  requirement. `atm todo refine [id]` runs one schema-constrained model call
-  (the same isolated `collection_model_command` chain collect already uses) and
-  rewrites the title plus the 需求 section. Complex work also gets a plan in
-  分析; independently trackable pieces become child todos the parent waits on.
+  requirement. `atm todo refine [id]` runs one schema-constrained call through
+  ATM's built-in DeepSeek client, without launching an Agent or falling back to
+  `collection_model_command`, and rewrites the title plus the 需求 section.
+  The default is `deepseek-v4-flash` in non-thinking JSON mode; it reads
+  `DEEPSEEK_API_KEY` from the environment. ATM.app also has a dedicated 模型
+  settings tab that stores the key in macOS Keychain and injects it only into
+  child CLI commands; credentials stay out of ATM config, argv, and logs.
+  Model and endpoint overrides live behind Advanced Settings. Its 测试连接
+  action uses the current drafts in a minimal schema request without saving or
+  touching a Todo; CLI users can run `atm config test-text-model`. Complex work gets
+  a plan in 分析; independently trackable pieces become child todos the parent
+  waits on.
   This is not an Agent loop and it never dispatches work. `in_progress` cards
   are polished but not split, so an active session is not unbound. Re-running
   refine will not mint a second set of children. CLI `todo add` stays instant

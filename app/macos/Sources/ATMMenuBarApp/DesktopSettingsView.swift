@@ -12,6 +12,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
     case voice
     case notify
     case todo
+    case model
     case connectors
 
     var id: String { rawValue }
@@ -23,6 +24,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .voice: return "语音"
         case .notify: return "通知"
         case .todo: return "Todo"
+        case .model: return "模型"
         case .connectors: return "连接器"
         }
     }
@@ -34,6 +36,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .voice: return "waveform"
         case .notify: return "bell"
         case .todo: return "checklist"
+        case .model: return "sparkles"
         case .connectors: return "link"
         }
     }
@@ -45,6 +48,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .voice: return "识别、文本与权限"
         case .notify: return "通知、Hook 与声音反馈"
         case .todo: return "任务列表与默认行为"
+        case .model: return "DeepSeek 文本服务"
         case .connectors: return "自动收集与外部来源"
         }
     }
@@ -102,6 +106,11 @@ struct DesktopSettingsView: View {
     private var taskCompletedSoundEnabled = ATMAgentSoundEvent.taskCompleted.defaultEnabled
     @AppStorage(ATMAgentSoundPreferences.soundKey(for: .taskCompleted))
     private var taskCompletedSound = ATMAgentSoundEvent.taskCompleted.defaultSound.rawValue
+    @State private var textModelAPIKeyDraft = ""
+    @State private var textModelBaseURLDraft = "https://api.deepseek.com"
+    @State private var textModelNameDraft = "deepseek-v4-flash"
+    @State private var textModelFieldsDirty = false
+    @State private var showsAdvancedTextModelSettings = false
 
     private static let previewSample = """
         ## 迁移方案
@@ -241,6 +250,8 @@ struct DesktopSettingsView: View {
                     notifySettings
                 case .todo:
                     todoSettings
+                case .model:
+                    textModelSettings
                 case .connectors:
                     connectorSettings
                 }
@@ -1136,7 +1147,7 @@ struct DesktopSettingsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("添加后自动整理")
                                 .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                            Text("用和收集相同的模型把刚写下的任务润色成可执行卡片；复杂工作会拆分子任务并写计划。")
+                            Text("用 ATM 内置的 DeepSeek 文本服务把刚写下的任务润色成可执行卡片；复杂工作会拆分子任务并写计划。")
                                 .font(ATMFont.footnote)
                                 .foregroundStyle(ATMTheme.secondary)
                         }
@@ -1163,6 +1174,174 @@ struct DesktopSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { store.loadTodoRefineOnAddSetting() }
+    }
+
+    private var textModelSettings: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                card {
+                    VStack(alignment: .leading, spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("DeepSeek API")
+                                .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                            Text("用于任务优化等轻量文本处理。API Key 保存在 macOS 钥匙串，不会写入 ATM 配置、命令参数或日志。")
+                                .font(ATMFont.footnote)
+                                .foregroundStyle(ATMTheme.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        HStack(spacing: 8) {
+                            Image(systemName: store.textModelAPIKeyConfigured ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                .foregroundStyle(store.textModelAPIKeyConfigured ? ATMTheme.success : ATMTheme.warning)
+                            Text(store.textModelAPIKeyConfigured ? "API Key 已配置" : "尚未配置 API Key")
+                                .font(ATMFont.font(.body, weight: .medium))
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(store.textModelAPIKeyConfigured ? "替换 API Key" : "API Key")
+                                .font(ATMFont.font(.footnote, weight: .semibold))
+                                .foregroundStyle(ATMTheme.secondary)
+                            SecureField(store.textModelAPIKeyConfigured ? "留空则保留现有 Key" : "粘贴 DeepSeek API Key", text: $textModelAPIKeyDraft)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(maxWidth: 560)
+                                .onChange(of: textModelAPIKeyDraft) { _ in
+                                    store.clearTextModelTestResult()
+                                }
+                        }
+
+                        DisclosureGroup("高级设置", isExpanded: $showsAdvancedTextModelSettings) {
+                            VStack(alignment: .leading, spacing: 14) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("模型")
+                                        .font(ATMFont.font(.footnote, weight: .semibold))
+                                        .foregroundStyle(ATMTheme.secondary)
+                                    TextField("deepseek-v4-flash", text: textModelNameBinding)
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(maxWidth: 560)
+                                }
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Endpoint")
+                                        .font(ATMFont.font(.footnote, weight: .semibold))
+                                        .foregroundStyle(ATMTheme.secondary)
+                                    TextField("https://api.deepseek.com", text: textModelBaseURLBinding)
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(maxWidth: 560)
+                                    Text("可填写内部 OpenAI 兼容网关；ATM 会请求 /chat/completions。")
+                                        .font(ATMFont.caption)
+                                        .foregroundStyle(ATMTheme.secondary)
+                                }
+                            }
+                            .padding(.top, 12)
+                        }
+
+                        HStack(spacing: 10) {
+                            Button("保存设置") {
+                                store.saveTextModelSettings(
+                                    apiKey: textModelAPIKeyDraft,
+                                    baseURL: textModelBaseURLDraft,
+                                    model: textModelNameDraft
+                                )
+                                textModelAPIKeyDraft = ""
+                                textModelFieldsDirty = false
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!canSaveTextModelSettings || store.isSavingTextModelSettings || store.isTestingTextModelSettings)
+
+                            Button("测试连接") {
+                                store.testTextModelSettings(
+                                    apiKey: textModelAPIKeyDraft,
+                                    baseURL: textModelBaseURLDraft,
+                                    model: textModelNameDraft
+                                )
+                            }
+                            .disabled(!canTestTextModelSettings || store.isSavingTextModelSettings || store.isTestingTextModelSettings)
+
+                            if store.textModelAPIKeyConfigured {
+                                Button("删除 API Key", role: .destructive) {
+                                    store.clearTextModelAPIKey()
+                                    textModelAPIKeyDraft = ""
+                                }
+                                .disabled(store.isSavingTextModelSettings || store.isTestingTextModelSettings)
+                            }
+
+                            if store.isSavingTextModelSettings || store.isTestingTextModelSettings {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+
+                if let success = store.textModelTestSuccessMessage, !success.isEmpty {
+                    card {
+                        Label(success, systemImage: "checkmark.circle.fill")
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.success)
+                            .textSelection(.enabled)
+                    }
+                }
+
+                if let error = store.textModelSettingsErrorMessage, !error.isEmpty {
+                    card {
+                        Label(error, systemImage: "exclamationmark.triangle.fill")
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.warning)
+                            .textSelection(.enabled)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(24)
+            .frame(maxWidth: 980, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .onAppear {
+            textModelBaseURLDraft = store.textModelBaseURL
+            textModelNameDraft = store.textModelName
+            textModelFieldsDirty = false
+            store.loadTextModelSettings()
+        }
+        .onChange(of: store.textModelBaseURL) { value in
+            if !textModelFieldsDirty { textModelBaseURLDraft = value }
+        }
+        .onChange(of: store.textModelName) { value in
+            if !textModelFieldsDirty { textModelNameDraft = value }
+        }
+    }
+
+    private var textModelBaseURLBinding: Binding<String> {
+        Binding(
+            get: { textModelBaseURLDraft },
+            set: {
+                textModelBaseURLDraft = $0
+                textModelFieldsDirty = true
+                store.clearTextModelTestResult()
+            }
+        )
+    }
+
+    private var textModelNameBinding: Binding<String> {
+        Binding(
+            get: { textModelNameDraft },
+            set: {
+                textModelNameDraft = $0
+                textModelFieldsDirty = true
+                store.clearTextModelTestResult()
+            }
+        )
+    }
+
+    private var canSaveTextModelSettings: Bool {
+        !textModelBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !textModelNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            (textModelFieldsDirty || !textModelAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+
+    private var canTestTextModelSettings: Bool {
+        !textModelBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !textModelNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            (store.textModelAPIKeyConfigured || !textModelAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     /// The one interruption ATM allows itself.

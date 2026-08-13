@@ -5,14 +5,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
+	"github.com/zane-byte-dev/atm/internal/refine"
 
 	"github.com/spf13/cobra"
 )
@@ -21,6 +24,7 @@ func init() {
 	configCmd.AddCommand(updatePricingCmd)
 	configCmd.AddCommand(configSetCmd)
 	configCmd.AddCommand(configGetCmd)
+	configCmd.AddCommand(configTestTextModelCmd)
 	rootCmd.AddCommand(configCmd)
 }
 
@@ -33,6 +37,7 @@ var configCmd = &cobra.Command{
   atm config init             Create ~/.atm/config.json with defaults
   atm config get <key>        Read one setting (effective value)
   atm config set <key> <val>  Write one setting to ~/.atm/config.json
+  atm config test-text-model  Test the built-in text service without changing a Todo
   atm config update-pricing   Fetch latest model pricing from OpenRouter
 
 Settable keys:
@@ -55,12 +60,16 @@ Settable keys:
                                 have built-in profiles; any other CLI needs a
                                 collection_model_runners entry in config.json
                                 (see docs/collection-model-runner.md)
+  text_model_base_url URL         DeepSeek/OpenAI-compatible endpoint used by
+                                  ATM's built-in text service
+  text_model_name MODEL           Model used by the built-in text service
+                                  (default deepseek-v4-flash)
   todo_refine_on_add true|false After a human files a todo in the App, run one
                                 model pass to polish the card and split complex
                                 work (default true). CLI todo add is never
                                 implicit; use todo add --refine or
-                                todo refine <id>. Same model chain as
-                                collection_model_command`,
+                                todo refine <id>. ATM.app reads its Keychain;
+                                CLI users set DEEPSEEK_API_KEY`,
 	// Only `init` is a valid positional arg; anything else errors instead of
 	// silently falling through to "show config".
 	ValidArgs: []string{"init"},
@@ -80,7 +89,18 @@ var settableConfigKeys = map[string]func(string) (any, error){
 	// 0 is a real setting here: keep synced chat forever.
 	"collection_message_retention_days": parseNonNegativeIntValue,
 	"collection_model_command":          parseNonEmptyStringValue,
+	"text_model_base_url":               parseHTTPURLValue,
+	"text_model_name":                   parseNonEmptyStringValue,
 	"todo_refine_on_add":                parseBoolValue,
+}
+
+func parseHTTPURLValue(s string) (any, error) {
+	value := strings.TrimRight(strings.TrimSpace(s), "/")
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return nil, fmt.Errorf("expected an http or https URL, got %q", s)
+	}
+	return value, nil
 }
 
 func parseBoolValue(s string) (any, error) {
@@ -162,6 +182,10 @@ var configGetCmd = &cobra.Command{
 			value = config.CollectionMessageRetentionDays
 		case "collection_model_command":
 			value = config.CollectionModelCommand
+		case "text_model_base_url":
+			value = config.TextModelBaseURL
+		case "text_model_name":
+			value = config.TextModelName
 		case "todo_refine_on_add":
 			value = config.TodoRefineOnAdd
 		default:
@@ -172,6 +196,24 @@ var configGetCmd = &cobra.Command{
 			return nil
 		}
 		fmt.Printf("%v\n", value)
+		return nil
+	},
+}
+
+var configTestTextModelCmd = &cobra.Command{
+	Use:   "test-text-model",
+	Short: "Test the built-in text service without changing a Todo",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		result, err := refine.CheckBuiltinTextModel(cmd.Context(), 45*time.Second)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			output.JSON(result)
+			return nil
+		}
+		fmt.Printf("DeepSeek text model is ready (%d ms)\n", result.LatencyMS)
 		return nil
 	},
 }

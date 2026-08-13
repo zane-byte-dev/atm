@@ -25,6 +25,7 @@ func withTempConfigHome(t *testing.T) string {
 	oldCollectionInterval := CollectionIntervalMinutes
 	oldCollectionLookback := CollectionLookbackMinutes
 	oldCollectionModel := CollectionModelCommand
+	oldTextModelBaseURL, oldTextModelName := TextModelBaseURL, TextModelName
 	oldCollectionModelRunners := CollectionModelRunners
 	oldCollectionConnectors := CollectionConnectors
 	oldQuotaProviders := QuotaProviders
@@ -51,6 +52,8 @@ func withTempConfigHome(t *testing.T) string {
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
 	CollectionModelCommand = "codex"
+	TextModelBaseURL = "https://api.deepseek.com"
+	TextModelName = "deepseek-v4-flash"
 	CollectionModelRunners = nil
 	CollectionConnectors = nil
 	QuotaProviders = nil
@@ -72,6 +75,7 @@ func withTempConfigHome(t *testing.T) string {
 		CollectionIntervalMinutes = oldCollectionInterval
 		CollectionLookbackMinutes = oldCollectionLookback
 		CollectionModelCommand = oldCollectionModel
+		TextModelBaseURL, TextModelName = oldTextModelBaseURL, oldTextModelName
 		CollectionModelRunners = oldCollectionModelRunners
 		CollectionConnectors = oldCollectionConnectors
 		QuotaProviders = oldQuotaProviders
@@ -105,6 +109,8 @@ func TestInitAndLoadConfig(t *testing.T) {
   "collection_interval_minutes": 7,
   "collection_lookback_minutes": 90,
   "collection_model_command": "rule",
+  "text_model_base_url": "https://deepseek.example.test/v1/",
+  "text_model_name": "deepseek-test",
   "collection_model_runners": {"house": {"command": "~/bin/house-cli", "args": ["--schema", "{{schema_path}}"], "output_field": "result", "timeout_seconds": 60}},
   "collection_connectors": {"slack": {"command": "~/bin/atm-connector-slack", "args": ["--workspace", "example"], "timeout_seconds": 30}},
   "quota_providers": {"example": {"command": "~/bin/atm-quota-example", "args": ["--profile", "work"], "timeout_seconds": 8, "visible_metrics": ["amount"]}},
@@ -143,6 +149,9 @@ func TestInitAndLoadConfig(t *testing.T) {
 		t.Fatalf("collection config = enabled:%v interval:%d lookback:%d model:%s",
 			CollectionEnabled, CollectionIntervalMinutes, CollectionLookbackMinutes,
 			CollectionModelCommand)
+	}
+	if TextModelBaseURL != "https://deepseek.example.test/v1" || TextModelName != "deepseek-test" {
+		t.Fatalf("text model config = base:%s model:%s", TextModelBaseURL, TextModelName)
 	}
 	if runner := CollectionModelRunners["house"]; runner.Command != "~/bin/house-cli" ||
 		len(runner.Args) != 2 || runner.OutputField != "result" || runner.TimeoutSeconds != 60 {

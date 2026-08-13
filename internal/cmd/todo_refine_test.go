@@ -3,14 +3,15 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/refine"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
@@ -158,7 +159,8 @@ func TestRunTodoAddRefineKeepsCreatedTodoWhenModelFails(t *testing.T) {
 	todoAddPriorityFlag = "P1"
 	todoAddProjectFlag = "atm"
 	todoDescFlag = ""
-	config.CollectionModelCommand = filepath.Join(t.TempDir(), "missing-model")
+	t.Setenv("ATM_TEXT_MODEL_API_KEY", "")
+	t.Setenv("DEEPSEEK_API_KEY", "")
 
 	var stderr bytes.Buffer
 	todoAddCmd.SetErr(&stderr)
@@ -222,19 +224,33 @@ func TestApplyTodoRefineDoesNotNotifyByCreatingDuplicateChildren(t *testing.T) {
 
 func refineSwapRunModel(t *testing.T, proposal refine.Proposal) func() {
 	t.Helper()
-	// Analyze is in the refine package; tests that need a model go through
-	// the exported seam by installing a tiny executable on the collection chain.
-	script := filepath.Join(t.TempDir(), "fake-refine-model")
+	// Analyze is in the refine package; command tests exercise its production
+	// HTTP boundary with a tiny stand-in for the DeepSeek endpoint.
 	body, err := json.Marshal(proposal)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat <<'EOF'\n"+string(body)+"\nEOF\n"), 0o755); err != nil {
-		t.Fatal(err)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		encoded, _ := json.Marshal(string(body))
+		fmt.Fprintf(w, `{"choices":[{"message":{"content":%s},"finish_reason":"stop"}]}`, encoded)
+	}))
+	oldKey, keyPresent := os.LookupEnv("ATM_TEXT_MODEL_API_KEY")
+	oldURL, urlPresent := os.LookupEnv("ATM_TEXT_MODEL_BASE_URL")
+	os.Setenv("ATM_TEXT_MODEL_API_KEY", "test-key")
+	os.Setenv("ATM_TEXT_MODEL_BASE_URL", server.URL)
+	return func() {
+		server.Close()
+		if keyPresent {
+			os.Setenv("ATM_TEXT_MODEL_API_KEY", oldKey)
+		} else {
+			os.Unsetenv("ATM_TEXT_MODEL_API_KEY")
+		}
+		if urlPresent {
+			os.Setenv("ATM_TEXT_MODEL_BASE_URL", oldURL)
+		} else {
+			os.Unsetenv("ATM_TEXT_MODEL_BASE_URL")
+		}
 	}
-	old := config.CollectionModelCommand
-	config.CollectionModelCommand = script
-	return func() { config.CollectionModelCommand = old }
 }
 
 func TestRefineTimeoutConstantMatchesPolicy(t *testing.T) {

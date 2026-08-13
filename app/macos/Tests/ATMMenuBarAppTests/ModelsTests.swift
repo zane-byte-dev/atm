@@ -119,6 +119,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "run"]), 300)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "item", "reprocess", "ci1"]), 180)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["todo", "refine", "t1", "--json"]), 180)
+        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["config", "test-text-model", "--json"]), 45)
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)
         XCTAssertEqual(notification?.subtitle, "自动收集完成")
         XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 沉淀 0 · 失败 0")

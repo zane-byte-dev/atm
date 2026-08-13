@@ -20,7 +20,7 @@ var (
 )
 
 func init() {
-	todoAddCmd.Flags().BoolVar(&todoAddRefineFlag, "refine", false, "after creating the todo, polish it with the collection model and split it if it is complex")
+	todoAddCmd.Flags().BoolVar(&todoAddRefineFlag, "refine", false, "after creating the todo, polish it with ATM's built-in DeepSeek text model and split it if it is complex")
 	todoRefineCmd.Flags().BoolVar(&todoRefineDryRunFlag, "dry-run", false, "print the proposal without writing")
 	todoRefineCmd.Flags().BoolVar(&todoRefineNoSplitFlag, "no-split", false, "polish title and description only; never create child todos")
 	todoRefineCmd.Flags().IntVar(&todoRefineMaxChildren, "max-children", refine.DefaultMaxChildren, "maximum child todos to create when splitting")
@@ -30,13 +30,16 @@ func init() {
 var todoRefineCmd = &cobra.Command{
 	Use:   "refine [id]",
 	Short: "Polish a todo and split it when the work is complex",
-	Long: `Ask the collection model to rewrite a todo so it is ready to start.
+	Long: `Ask ATM's built-in DeepSeek text-model service to rewrite a todo so it is ready to start.
 
-The same isolated, schema-constrained CLI chain as collect (collection_model_command)
-rewrites the title and the 需求 section. Complex work also gets a plan in 分析.
+The dedicated schema-constrained model rewrites the title and the 需求 section.
+Complex work also gets a plan in 分析.
 Independently trackable pieces become child todos the parent waits on.
 
-This is one model call, not an Agent loop, and it never dispatches work.
+This is one API call, not an Agent loop, and it never dispatches work or falls
+back to collection_model_command. In ATM.app, configure Settings > Model; CLI
+users can set DEEPSEEK_API_KEY. The default model is deepseek-v4-flash with
+thinking disabled. Config or ATM_TEXT_MODEL_* can override model and endpoint.
 in_progress todos are polished but not split, so an active session is not
 unbound. Re-running refine will not mint a second set of children.
 

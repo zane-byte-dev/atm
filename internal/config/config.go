@@ -98,11 +98,16 @@ var (
 	// a code change. Keys are the names used in CollectionModelCommand; a key
 	// that matches a built-in profile overrides it.
 	CollectionModelRunners map[string]ModelRunnerConfig
+	// TextModelBaseURL and TextModelName configure ATM's narrow built-in text
+	// service. Credentials deliberately stay out of config.json: the CLI reads
+	// DEEPSEEK_API_KEY and the App supplies its Keychain value to child commands.
+	TextModelBaseURL = "https://api.deepseek.com"
+	TextModelName    = "deepseek-v4-flash"
 	// TodoRefineOnAdd is the desktop default after a human files a todo: run
 	// one schema-constrained model pass to polish the card and, when the work
 	// is independently trackable, split it. CLI `todo add` never does this
 	// unless `--refine` is passed — agents already write structured cards and
-	// a 90s model call would break `id=$(atm todo add ...)`. Default on
+	// a network model call would break `id=$(atm todo add ...)`. Default on
 	// because that is the whole point of the feature; turn it off to keep
 	// messy capture text as typed.
 	TodoRefineOnAdd = true
@@ -188,6 +193,8 @@ type FileConfig struct {
 	CollectionMessageRetentionDays *int                                 `json:"collection_message_retention_days,omitempty"`
 	CollectionModelCommand         string                               `json:"collection_model_command,omitempty"`
 	CollectionModelRunners         map[string]ModelRunnerConfig         `json:"collection_model_runners,omitempty"`
+	TextModelBaseURL               string                               `json:"text_model_base_url,omitempty"`
+	TextModelName                  string                               `json:"text_model_name,omitempty"`
 	CollectionConnectors           map[string]CollectionConnectorConfig `json:"collection_connectors,omitempty"`
 	// Pointer so "absent" (keep the on-by-default) is distinct from false.
 	TodoRefineOnAdd *bool                          `json:"todo_refine_on_add,omitempty"`
@@ -262,6 +269,12 @@ func loadConfigFile() {
 	}
 	if cfg.CollectionModelCommand != "" {
 		CollectionModelCommand = cfg.CollectionModelCommand
+	}
+	if strings.TrimSpace(cfg.TextModelBaseURL) != "" {
+		TextModelBaseURL = strings.TrimRight(strings.TrimSpace(cfg.TextModelBaseURL), "/")
+	}
+	if strings.TrimSpace(cfg.TextModelName) != "" {
+		TextModelName = strings.TrimSpace(cfg.TextModelName)
 	}
 	if cfg.TodoRefineOnAdd != nil {
 		TodoRefineOnAdd = *cfg.TodoRefineOnAdd
@@ -350,6 +363,8 @@ func ShowConfig() string {
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
 		CollectionModelCommand:         CollectionModelCommand,
 		CollectionModelRunners:         CollectionModelRunners,
+		TextModelBaseURL:               TextModelBaseURL,
+		TextModelName:                  TextModelName,
 		CollectionConnectors:           CollectionConnectors,
 		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		QuotaProviders:                 QuotaProviders,
@@ -384,6 +399,8 @@ func InitConfig() error {
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
 		CollectionModelCommand:         CollectionModelCommand,
+		TextModelBaseURL:               TextModelBaseURL,
+		TextModelName:                  TextModelName,
 		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		DataDir:                        "~/.atm",
 	}

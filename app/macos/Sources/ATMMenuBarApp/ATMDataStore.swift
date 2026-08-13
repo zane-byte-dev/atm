@@ -33,6 +33,7 @@ enum ATMCommandPolicy {
         if arguments.starts(with: ["collect", "history"]) { return 45 }
         // One schema-constrained model call, same isolation as collect.
         if arguments.starts(with: ["todo", "refine"]) { return 180 }
+        if arguments.starts(with: ["config", "test-text-model"]) { return 45 }
         return 15
     }
 }
@@ -60,6 +61,16 @@ private struct ATMConfigBoolValue: Decodable {
 /// Shape of `atm config get <key> --json` for string settings.
 private struct ATMConfigStringValue: Decodable {
     let value: String
+}
+
+private struct ATMTextModelTestResult: Decodable {
+    let ok: Bool
+    let latencyMS: Int
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case latencyMS = "latency_ms"
+    }
 }
 
 private func decodeCommand<Value: Decodable>(
@@ -477,7 +488,8 @@ struct ATMCommandRunner: Sendable {
     func run(
         _ arguments: [String],
         standardInput: Data? = nil,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        environmentOverrides: [String: String] = [:]
     ) async throws -> Data {
         let executableURL = executableURL
         let processHandle = ATMRunningProcess()
@@ -496,6 +508,16 @@ struct ATMCommandRunner: Sendable {
             let commonPath = "/usr/local/bin:/opt/homebrew/bin:\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin"
             environment["PATH"] = commonPath + ":" + (environment["PATH"] ?? "")
             environment["ATM_SKIP_LOCAL_NOTIFICATION"] = "1"
+            if arguments.starts(with: ["todo", "refine"]),
+               let apiKey = (try? ATMTextModelKeychain.readAPIKey()) ?? nil,
+               !apiKey.isEmpty {
+                environment["ATM_TEXT_MODEL_API_KEY"] = apiKey
+            }
+            // Credentials and unsaved advanced settings for the connection
+            // check travel only in the child environment, never argv or logs.
+            for (key, value) in environmentOverrides {
+                environment[key] = value
+            }
             process.environment = environment
 
             try Task.checkCancellation()
@@ -1027,6 +1049,13 @@ final class ATMDataStore: ObservableObject {
     /// Mirrors `todo_refine_on_add`. Default on: filing from the sheet should
     /// come back as a card an Agent can start from, not the raw capture line.
     @Published private(set) var todoRefineOnAdd = true
+    @Published private(set) var textModelBaseURL = "https://api.deepseek.com"
+    @Published private(set) var textModelName = "deepseek-v4-flash"
+    @Published private(set) var textModelAPIKeyConfigured = false
+    @Published private(set) var isSavingTextModelSettings = false
+    @Published private(set) var isTestingTextModelSettings = false
+    @Published private(set) var textModelTestSuccessMessage: String?
+    @Published var textModelSettingsErrorMessage: String?
     @Published private(set) var refiningTodoIDs: Set<String> = []
     @Published private(set) var refineErrorByTodoID: [String: String] = [:]
     /// Internal refresh gate only. No view renders this flag, so publishing it
@@ -1175,6 +1204,7 @@ final class ATMDataStore: ObservableObject {
         loadGrokLiveQuotaSetting()
         loadOwnerNameSetting()
         loadTodoRefineOnAddSetting()
+        loadTextModelSettings()
         primeWork()
         refresh()
         refresh(sync: true)
@@ -1430,6 +1460,135 @@ final class ATMDataStore: ObservableObject {
                 errorMessage = "任务整理设置未保存：\(ATMErrorText.compact(error.localizedDescription, limit: 160))"
             }
         }
+    }
+
+    func loadTextModelSettings() {
+        Task {
+            var keychainError: String?
+            do {
+                textModelAPIKeyConfigured = try ATMTextModelKeychain.readAPIKey() != nil
+            } catch {
+                textModelAPIKeyConfigured = false
+                keychainError = "API Key 状态读取失败：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            }
+            guard let runner = try? ATMCommandRunner() else { return }
+            async let baseOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
+                runner,
+                arguments: ["config", "get", "text_model_base_url", "--json"]
+            )
+            async let modelOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
+                runner,
+                arguments: ["config", "get", "text_model_name", "--json"]
+            )
+            let (base, model) = await (baseOutcome, modelOutcome)
+            if let value = base.value { textModelBaseURL = value.value }
+            if let value = model.value { textModelName = value.value }
+            textModelSettingsErrorMessage = keychainError ?? base.error ?? model.error
+        }
+    }
+
+    func saveTextModelSettings(apiKey: String, baseURL: String, model: String) {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty, !trimmedModel.isEmpty, !isSavingTextModelSettings else { return }
+        guard let endpoint = URL(string: trimmedBaseURL),
+              endpoint.host != nil,
+              endpoint.scheme == "http" || endpoint.scheme == "https" else {
+            textModelSettingsErrorMessage = "Endpoint 必须是有效的 http 或 https URL"
+            return
+        }
+        isSavingTextModelSettings = true
+        textModelTestSuccessMessage = nil
+        textModelSettingsErrorMessage = nil
+        Task {
+            defer { isSavingTextModelSettings = false }
+            do {
+                if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try ATMTextModelKeychain.saveAPIKey(apiKey)
+                    textModelAPIKeyConfigured = true
+                }
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(["config", "set", "text_model_base_url", trimmedBaseURL])
+                _ = try await runner.run(["config", "set", "text_model_name", trimmedModel])
+                loadTextModelSettings()
+            } catch {
+                textModelSettingsErrorMessage = "模型设置未保存：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            }
+        }
+    }
+
+    func clearTextModelAPIKey() {
+        guard !isSavingTextModelSettings, !isTestingTextModelSettings else { return }
+        do {
+            try ATMTextModelKeychain.deleteAPIKey()
+            textModelAPIKeyConfigured = false
+            textModelTestSuccessMessage = nil
+            textModelSettingsErrorMessage = nil
+        } catch {
+            textModelSettingsErrorMessage = "API Key 未删除：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+        }
+    }
+
+    func testTextModelSettings(apiKey: String, baseURL: String, model: String) {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty, !trimmedModel.isEmpty,
+              !isSavingTextModelSettings, !isTestingTextModelSettings else { return }
+        guard let endpoint = URL(string: trimmedBaseURL),
+              endpoint.host != nil,
+              endpoint.scheme == "http" || endpoint.scheme == "https" else {
+            textModelTestSuccessMessage = nil
+            textModelSettingsErrorMessage = "Endpoint 必须是有效的 http 或 https URL"
+            return
+        }
+
+        let draftKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveKey: String
+        do {
+            effectiveKey = draftKey.isEmpty ? (try ATMTextModelKeychain.readAPIKey() ?? "") : draftKey
+        } catch {
+            textModelTestSuccessMessage = nil
+            textModelSettingsErrorMessage = "API Key 读取失败：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            return
+        }
+        guard !effectiveKey.isEmpty else {
+            textModelTestSuccessMessage = nil
+            textModelSettingsErrorMessage = "请先填写 DeepSeek API Key"
+            return
+        }
+
+        isTestingTextModelSettings = true
+        textModelTestSuccessMessage = nil
+        textModelSettingsErrorMessage = nil
+        Task {
+            defer { isTestingTextModelSettings = false }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(
+                    ["config", "test-text-model", "--json"],
+                    environmentOverrides: [
+                        "ATM_TEXT_MODEL_API_KEY": effectiveKey,
+                        "ATM_TEXT_MODEL_BASE_URL": trimmedBaseURL,
+                        "ATM_TEXT_MODEL_MODEL": trimmedModel,
+                    ]
+                )
+                let result = try JSONDecoder().decode(ATMTextModelTestResult.self, from: data)
+                guard result.ok else {
+                    throw ATMCommandError.failed(
+                        arguments: ["config", "test-text-model"],
+                        status: 1,
+                        message: "服务返回 ok=false"
+                    )
+                }
+                textModelTestSuccessMessage = "连接成功 · \(trimmedModel) · \(result.latencyMS) ms"
+            } catch {
+                textModelSettingsErrorMessage = "连接失败：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            }
+        }
+    }
+
+    func clearTextModelTestResult() {
+        textModelTestSuccessMessage = nil
     }
 
     func refineTodo(id: String, automatic: Bool = false) {

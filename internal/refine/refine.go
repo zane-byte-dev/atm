@@ -2,8 +2,9 @@
 // from: a clearer title, a structured requirement, and — only when the work is
 // independently trackable — a plan plus child todos.
 //
-// It is one schema-constrained model call, the same isolation as collection
-// classification. It is not an Agent loop and it never dispatches work.
+// It is one schema-constrained call to ATM's built-in DeepSeek text-model
+// service. It is not an Agent loop, never dispatches work, and never falls back
+// to collection's Agent CLI chain.
 package refine
 
 import (
@@ -14,7 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -164,9 +164,9 @@ func Analyze(ctx context.Context, todo store.Todo, card string, existingChildren
 	return prepared, proposal, err
 }
 
-// runModel is the one seam tests replace. Production talks to the same
-// schema-constrained CLI chain collection uses.
-var runModel = collector.RunSchemaModel
+// runModel is the one seam tests replace. Production talks to ATM's dedicated
+// DeepSeek client; it never falls back to an Agent CLI.
+var runModel = runBuiltinTextModel
 
 func ParseProposal(data []byte) (Proposal, error) {
 	var proposal Proposal
