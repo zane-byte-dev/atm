@@ -846,6 +846,10 @@ enum ATMCommandBuilder {
         ["todo", "refine", id, "--json"]
     }
 
+    static func handoffTodo(id: String) -> [String] {
+        ["todo", "handoff", id, "--json"]
+    }
+
     /// Parse the id returned by `atm todo add` (JSON object or plain first line).
     static func createdTodoID(from data: Data) -> String? {
         if let todo = try? JSONDecoder().decode(ATMTodo.self, from: data) {
@@ -2338,6 +2342,27 @@ final class ATMDataStore: ObservableObject {
                 taskRunAgents = try JSONDecoder().decode([ATMTaskRunAgent].self, from: data)
             } catch {
                 errorMessage = ATMErrorText.compact(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Opens the Todo in Codex Desktop and stops there.
+    ///
+    /// Deliberately changes nothing locally: `todo handoff` claims no run and
+    /// does not start the Todo, because the human has not pressed Enter yet.
+    /// Work is recorded when the Agent runs `atm session bind`, which the next
+    /// refresh picks up like any other externally-started session.
+    func handoffTodo(_ todo: ATMTodo) {
+        guard !isActing else { return }
+        isActing = true
+        errorMessage = nil
+        Task {
+            defer { isActing = false }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(ATMCommandBuilder.handoffTodo(id: todo.id))
+            } catch {
+                errorMessage = "在 Codex 里打开失败：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
             }
         }
     }

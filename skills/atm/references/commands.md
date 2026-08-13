@@ -59,6 +59,8 @@ atm todo context [id] --json                  # live, read-only Todo/session/Git
 atm todo context <id> --cwd <worktree>        # explicitly inspect another worktree
 atm todo review-context [id] --json           # deprecated compatibility alias for todo context
 atm todo prompt <id>              # the pointer line a human pastes into a fresh agent session
+atm todo handoff <id>             # open Codex Desktop in the Todo's directory with that pointer prefilled; ATM starts nothing
+atm todo handoff <id> --print     # print the codex:// deep link instead of opening it
 atm todo doc <id>
 atm todo lint <id>                # audit progress verbosity, references, and markdown consistency
 ```

@@ -86,6 +86,8 @@ atm todo wake <id> --reason "流水线完成"     # 外部事件/人工条件显
 atm todo reconcile                          # 补偿唤醒并审计缺失、放弃、循环依赖
 atm todo bulk done <id>... --reason "完成"  # 批量完成（也支持 drop/move/edit）
 atm todo prompt <id> --copy                 # 复制一行启动提示，粘贴进新的 Agent 会话
+atm todo handoff <id>                       # 在任务的工作目录里打开 Codex 并填好这行提示（不自动执行）
+atm todo handoff <id> --print               # 只输出深链，不打开
 atm todo run <id> [--cwd /path/to/repo]      # 后台派发给 Codex；默认 guarded
 atm todo agents                              # 查看 Codex 是否已安装与费用说明
 atm todo run <id> --continue "修改要求"       # 恢复该 Todo 最近一次 Codex 会话并继续修改

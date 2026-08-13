@@ -48,6 +48,8 @@ var (
 	todoOnDoneFlag         string
 	todoCaptureProjectFlag string
 	todoPromptCopyFlag     bool
+	todoHandoffCWDFlag     string
+	todoHandoffPrintFlag   bool
 	todoWaitWakeFlag       string
 	todoWaitReviewAtFlag   string
 	todoMaintainLimitFlag  int
@@ -112,6 +114,8 @@ func init() {
 	todoCaptureCmd.Flags().StringVar(&todoCaptureProjectFlag, "project", "", "project name (default: cwd basename)")
 
 	todoPromptCmd.Flags().BoolVar(&todoPromptCopyFlag, "copy", false, "copy the prompt to the clipboard")
+	todoHandoffCmd.Flags().StringVar(&todoHandoffCWDFlag, "cwd", "", "working directory to open in Codex (defaults from Todo bindings or project)")
+	todoHandoffCmd.Flags().BoolVar(&todoHandoffPrintFlag, "print", false, "print the deep link instead of opening Codex")
 	todoRunCmd.Flags().StringVar(&todoRunPolicyFlag, "policy", "guarded", "permission policy: guarded or trusted")
 	todoRunCmd.Flags().StringVar(&todoRunCWDFlag, "cwd", "", "working directory (defaults from Todo bindings or current directory)")
 	todoRunCmd.Flags().StringVar(&todoRunContinueFlag, "continue", "", "resume the latest Codex session with these follow-up instructions")
@@ -125,7 +129,7 @@ func init() {
 		contextCmd.Flags().StringVar(&todoContextCWD, "cwd", "", "Git worktree to inspect (required when active todo bindings use multiple worktrees)")
 	}
 
-	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoRunCmd, todoRunsCmd, todoRunInterruptCmd, todoRunTailCmd, todoRunControllerCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
+	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoHandoffCmd, todoRunCmd, todoRunsCmd, todoRunInterruptCmd, todoRunTailCmd, todoRunControllerCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
 	rootCmd.AddCommand(todoCmd)
 }
 

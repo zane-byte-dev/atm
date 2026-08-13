@@ -2715,6 +2715,12 @@ final class ModelsTests: XCTestCase {
             ATMCommandBuilder.refineTodo(id: "t142"),
             ["todo", "refine", "t142", "--json"]
         )
+        // Handoff carries no policy and no agent: it opens Codex and stops, so
+        // there is nothing for the App to choose on the user's behalf.
+        XCTAssertEqual(
+            ATMCommandBuilder.handoffTodo(id: "t142"),
+            ["todo", "handoff", "t142", "--json"]
+        )
 
         // Desktop selects the new todo after create; accept JSON or plain id stdout.
         XCTAssertEqual(

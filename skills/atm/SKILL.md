@@ -125,6 +125,11 @@ atm session bind <id>
 
 用户要把任务交给另一个 Agent 时，用 `atm todo prompt <id> --copy` 复制一行指针交给用户粘贴；
 ATM 不代为启动任何会话。收到这样一行指针时，按它列出的命令读 `atm todo doc <id>` 再 `atm session bind <id>`。
+交给 Codex 桌面端可以用 `atm todo handoff <id>`：它在任务的工作目录里打开一个新会话并填好这行指针，
+但**不会替人按回车**，所以它仍然不是派发。无人在场才用 `atm todo run`。
+
+`session bind` 会拒绝把任务绑到属于另一个项目的工作目录（`--force` 可越过）。收到这个错误不要改用
+`--force`，也不要在当前目录继续干：先切到正确的仓库，或者向用户确认这个 Todo 的项目是否写错了。
 
 人刚写下的乱任务用 `atm todo refine [id]` 整理：润色标题和需求，复杂工作写入分析并拆出子任务。
 这是一次 schema 调用，不是派发。不要在 Agent 自己 `todo add` 时加 `--refine`。

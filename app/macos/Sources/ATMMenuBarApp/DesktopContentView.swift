@@ -1868,8 +1868,8 @@ struct DesktopTodoDetail: View {
     private var taskRunActionHelp: String {
         switch latestTaskRun?.status {
         case "starting", "running": return "Agent 正在处理"
-        case "failed", "interrupted": return "重新选择 Agent"
-        default: return "选择 Agent 委派"
+        case "failed", "interrupted": return "重新委派"
+        default: return "委派给 Codex"
         }
     }
 
@@ -2132,7 +2132,7 @@ struct DesktopTodoDetail: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("委派这个任务")
                     .font(ATMFont.font(.title2, weight: .semibold))
-                Text("在 guarded 沙箱里执行，成功后自动提交待验收。重新执行或继续修改会产生新的模型用量。")
+                Text("两种方式：在 Codex 里打开由你盯着做，或者没人在场时让它在后台跑完。都会产生模型用量。")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
             }
@@ -2177,11 +2177,20 @@ struct DesktopTodoDetail: View {
                 .frame(maxWidth: .infinity, minHeight: 96)
             }
 
+            // 「在 Codex 里打开」是主动作，不是因为它更常用，而是因为它是可逆的：
+            // 输入框填好但不提交，人还能改、能撤、能换目录。后台跑完是不可逆的那一个。
+            Text("在 Codex 里打开：填好这条任务的指针，等你按回车。后台跑完：无人应答的授权请求会让它失败。")
+                .font(ATMFont.caption)
+                .foregroundStyle(ATMTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
             HStack {
                 Spacer()
                 Button("取消") { showingDispatchSheet = false }
                     .keyboardShortcut(.cancelAction)
-                Button(dispatchButtonTitle) { dispatchToAgent() }
+                Button("后台跑完") { dispatchToAgent() }
+                    .disabled(dispatchAgent?.available != true || store.isActing)
+                Button("在 Codex 里打开") { handoffToCodex() }
                     .buttonStyle(.borderedProminent)
                     .disabled(dispatchAgent?.available != true || store.isActing)
             }
@@ -2189,11 +2198,6 @@ struct DesktopTodoDetail: View {
         .padding(22)
         .frame(width: 520)
         .background(ATMTheme.canvas)
-    }
-
-    private var dispatchButtonTitle: String {
-        guard let agent = dispatchAgent else { return "开始委派" }
-        return "交给 \(agent.name)"
     }
 
     private func presentDispatchSheet() {
@@ -2205,6 +2209,12 @@ struct DesktopTodoDetail: View {
         guard let agent = dispatchAgent, agent.available else { return }
         showingDispatchSheet = false
         store.dispatchTodo(todo, agent: agent)
+    }
+
+    private func handoffToCodex() {
+        guard dispatchAgent?.available == true else { return }
+        showingDispatchSheet = false
+        store.handoffTodo(todo)
     }
 
     private var codexContinuationSheet: some View {

@@ -17,6 +17,18 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **`atm todo handoff <id>` 把任务交给 Codex 桌面端，而不是替你跑。** 它在任务的工作目录里打开
+  一个新会话、把 `todo prompt` 那行指针填进输入框，然后停下——**不按回车**。ATM 不启动 Agent、
+  不占 `task_runs`、不改 Todo 状态；对话、审批和那一下回车都归 Codex，这也正是 ATM 一直写着的
+  「不代为启动会话」。无人在场时才用 `todo run`。
+  用的深链是 `codex://new?path=…&prompt=…`，两个参数名都是试出来的：`codex://threads/new?cwd=…`
+  会被**接受然后忽略**，会话开在 app 上次用的工作区里——实测把一个 atm 的任务在 `~/work/wanda`
+  里跑了一整轮；`q=` 同样被忽略，输入框是空的。两种失败都不报错，所以它们被写进了测试。
+
+- **`atm session bind` 会拒绝把任务绑到别的项目的工作目录**（`--force` 越过）。上面那次跑错仓库
+  没有任何后续证据能解释，而绑定是所有交接路径的唯一汇合点。比较按项目而不是按路径，所以
+  `git worktree` 照样能绑：`ProjectFromPath` 解析到 git root 的 origin，worktree 和主仓库共享它。
+
 - **Adding a task can now polish itself.** A messy capture line is not a
   requirement. `atm todo refine [id]` runs one schema-constrained model call
   (the same isolated `collection_model_command` chain collect already uses) and
