@@ -158,6 +158,13 @@ func TestDecodeOutputUnwrapsEnvelopes(t *testing.T) {
 	}
 }
 
+func TestRunSchemaModelIgnoresRuleOnlyChain(t *testing.T) {
+	_, err := RunSchemaModel(context.Background(), "rule", 5*time.Second, "todo-refine", `{"type":"object"}`, "prompt")
+	if err == nil || !strings.Contains(err.Error(), "no model CLI configured") {
+		t.Fatalf("rule-only chain = %v", err)
+	}
+}
+
 func TestRunCollectionModelFallsThroughToTheNextCandidate(t *testing.T) {
 	withModelRunners(t, nil)
 	rateLimited := writeFakeModel(t, "rate-limited", "echo 'You have hit your usage limit.' >&2\nexit 1\n")

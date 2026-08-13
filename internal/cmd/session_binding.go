@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,7 @@ var (
 	sessionBindAgentFlag   string
 	sessionBindProjectFlag string
 	sessionBindCWDFlag     string
+	sessionBindForceFlag   bool
 	sessionUnbindReason    string
 	todoMatchProjectFlag   string
 	todoMatchLimitFlag     int
@@ -67,6 +69,8 @@ func init() {
 	sessionBindCmd.Flags().StringVar(&sessionBindAgentFlag, "binding-agent", "", "agent owning the binding (defaults from environment)")
 	sessionBindCmd.Flags().StringVar(&sessionBindProjectFlag, "project", "", "binding project (defaults from cwd)")
 	sessionBindCmd.Flags().StringVar(&sessionBindCWDFlag, "cwd", "", "binding working directory (defaults to cwd)")
+	sessionBindCmd.Flags().BoolVar(&sessionBindForceFlag, "force", false,
+		"bind even when the working directory belongs to a different project than the Todo")
 	sessionUnbindCmd.Flags().StringVar(&sessionUnbindReason, "reason", "manual", "unbind reason")
 	todoMatchCmd.Flags().StringVar(&todoMatchProjectFlag, "project", "", "project to prioritize (defaults from cwd)")
 	todoMatchCmd.Flags().IntVar(&todoMatchLimitFlag, "limit", 3, "maximum compact candidates")
@@ -76,6 +80,41 @@ func init() {
 	todoMatchCmd.MarkFlagsMutuallyExclusive("prompt", "dedup")
 	sessionCmd.AddCommand(sessionBindCmd, sessionCurrentCmd, sessionUnbindCmd)
 	todoCmd.AddCommand(todoMatchCmd)
+}
+
+// checkBindingWorkspace refuses to bind a Todo to a session working somewhere
+// else's repository.
+//
+// Nothing upstream can be trusted to get this right. A handoff carries the task
+// text but the human still picks the workspace in the Agent's own UI, and Codex
+// Desktop's deep link silently ignored `cwd` until we found the parameter that
+// works — the observed failure was an `atm` task running a full turn inside
+// `~/work/wanda`, which no later evidence would have explained. The binding is
+// the one place every path converges on, so the check belongs here rather than
+// in whichever entry point happened to start the session.
+//
+// The comparison is by project rather than by path so a `git worktree` still
+// binds: `config.ProjectFromPath` resolves to the git root's origin, which a
+// worktree shares with its parent repository.
+func checkBindingWorkspace(todo *store.Todo, cwd string) error {
+	if sessionBindForceFlag {
+		return nil
+	}
+	expected := config.CanonicalProject(strings.TrimSpace(todo.Project))
+	if expected == "" || strings.TrimSpace(cwd) == "" {
+		// A Todo with no project makes no claim about where it belongs, and a
+		// session with no cwd (a desktop client that reports none) cannot be
+		// checked without guessing.
+		return nil
+	}
+	actual := config.ProjectFromPath(cwd)
+	if actual == "" || actual == expected {
+		return nil
+	}
+	return fmt.Errorf(
+		"todo %s belongs to project %s but this session is working in %s (project %s); "+
+			"open the right directory, or pass --force if this is deliberate",
+		todo.ID, expected, cwd, actual)
 }
 
 func runSessionBind(cmd *cobra.Command, args []string) error {
@@ -107,6 +146,9 @@ func runSessionBind(cmd *cobra.Command, args []string) error {
 		if !store.TodoIsActive(*current) {
 			return fmt.Errorf("cannot bind completed todo %s with status %s", current.ID, current.Status)
 		}
+		if err := checkBindingWorkspace(current, cwd); err != nil {
+			return err
+		}
 		current.Status = store.TodoStatusInProgress
 		current.WakeCondition = ""
 		current.ReviewAt = ""
@@ -122,6 +164,24 @@ func runSessionBind(cmd *cobra.Command, args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	// An unattended task run carries its durable run id in the environment. The
+	// explicit bind is the first point where the child knows its real session id,
+	// and is therefore more reliable than associating concurrent runs by start
+	// time during transcript sync.
+	//
+	// The link is execution evidence, not part of the binding contract, and the
+	// binding above has already been committed. Failing here would report the
+	// whole command as failed after it succeeded — and this command is exactly
+	// what the dispatched Agent is told to run, so it would see a hard error for
+	// a run row that is merely missing or already reconciled. Warn instead.
+	if runID := strings.TrimSpace(os.Getenv("ATM_RUN_ID")); runID != "" &&
+		strings.TrimSpace(os.Getenv("ATM_TODO_ID")) == todo.ID {
+		if err := withDB(false, func(db *sql.DB) error {
+			return store.LinkTaskRunSession(db, runID, todo.ID, sessionID)
+		}); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not link session to task run %s: %v\n", runID, err)
+		}
 	}
 	tf, err := store.LoadTodosReadOnly()
 	if err != nil {

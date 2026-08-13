@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import ATMMenuBarApp
 
@@ -84,5 +85,43 @@ final class ATMTypographyTests: XCTestCase {
     func testThemeModesKeepPreviewCardOrderAndLabels() {
         XCTAssertEqual(ATMThemeMode.allCases, [.system, .light, .dark])
         XCTAssertEqual(ATMThemeMode.allCases.map(\.label), ["跟随系统", "浅色", "深色"])
+    }
+
+    func testDesktopRailUsesDistinctLightAndDarkPalettes() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let lightRail = try resolvedRGB(ATMTheme.railNSColor, appearance: light)
+        let darkRail = try resolvedRGB(ATMTheme.railNSColor, appearance: dark)
+
+        XCTAssertEqual(lightRail.redComponent, 244.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(lightRail.greenComponent, 247.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(lightRail.blueComponent, 251.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(darkRail.redComponent, 18.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(darkRail.greenComponent, 25.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(darkRail.blueComponent, 42.0 / 255, accuracy: 0.001)
+    }
+
+    func testListPaneUsesOpaqueCoolNeutralPalette() throws {
+        let light = try XCTUnwrap(NSAppearance(named: .aqua))
+        let dark = try XCTUnwrap(NSAppearance(named: .darkAqua))
+        let lightPane = try resolvedRGB(ATMTheme.listPaneNSColor, appearance: light)
+        let darkPane = try resolvedRGB(ATMTheme.listPaneNSColor, appearance: dark)
+
+        XCTAssertEqual(lightPane.redComponent, 247.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(lightPane.greenComponent, 249.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(lightPane.blueComponent, 252.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(lightPane.alphaComponent, 1, accuracy: 0.001)
+        XCTAssertEqual(darkPane.redComponent, 27.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(darkPane.greenComponent, 29.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(darkPane.blueComponent, 34.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(darkPane.alphaComponent, 1, accuracy: 0.001)
+    }
+
+    private func resolvedRGB(_ color: NSColor, appearance: NSAppearance) throws -> NSColor {
+        var resolved: NSColor?
+        appearance.performAsCurrentDrawingAppearance {
+            resolved = color.usingColorSpace(.deviceRGB)
+        }
+        return try XCTUnwrap(resolved)
     }
 }

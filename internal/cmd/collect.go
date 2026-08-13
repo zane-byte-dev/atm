@@ -28,6 +28,7 @@ var (
 	collectSourceUnit       string
 	collectSourceInterval   int
 	collectSourcePriority   string
+	collectSourceAutoRun    bool
 	collectSourceDisabled   bool
 	collectSourceID         string
 	collectSearchKind       string
@@ -106,6 +107,8 @@ func init() {
 	collectSourceAddCmd.Flags().IntVar(&collectSourceInterval, "interval", 0,
 		"source collection interval in minutes (default: tasks 5, observe 60)")
 	collectSourceAddCmd.Flags().StringVar(&collectSourcePriority, "priority", "P2", "default priority: P0, P1, P2, P3")
+	collectSourceAddCmd.Flags().BoolVar(&collectSourceAutoRun, "auto-dispatch", false,
+		"dispatch newly created Todos to Codex (tasks strategy only)")
 	collectSourceAddCmd.Flags().BoolVar(&collectSourceDisabled, "disabled", false, "add the source disabled")
 	collectRunCmd.Flags().StringVar(&collectSourceID, "source", "", "run one source id instead of every enabled source")
 	collectRunCmd.Flags().BoolVar(&collectRunDue, "due", false, "run only sources whose own interval is due")
@@ -442,6 +445,9 @@ var collectSourceListCmd = &cobra.Command{
 					source.Strategy, source.IntervalMinutes, emptyAs(source.Project, "-"),
 					emptyAs(source.KnowledgeCollection, config.CollectionDigestCollection),
 					source.Enabled, source.Name)
+				if source.AutoDispatch {
+					fmt.Printf("%-20s 新 Todo 自动交给 Codex\n", "")
+				}
 				// Printed only when it deviates: a column reading "window" on
 				// every row would just widen an already wide line.
 				if source.DecisionUnit == store.CollectionDecisionUnitMessage {
@@ -532,7 +538,8 @@ var collectSourceAddCmd = &cobra.Command{
 				Instruction: collectSourceFocus, KnowledgeCollection: collectSourceKnowledge,
 				Strategy: collectSourceStrategy, DecisionUnit: collectSourceUnit,
 				IntervalMinutes: collectSourceInterval, Priority: collectSourcePriority,
-				Enabled: !collectSourceDisabled,
+				AutoDispatch: collectSourceAutoRun,
+				Enabled:      !collectSourceDisabled,
 			})
 			if err != nil {
 				return err

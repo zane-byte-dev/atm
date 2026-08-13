@@ -14,7 +14,7 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 2. **干得怎么样** — AI 执行任务的效率、思考路径、是否走弯路
 3. **花了多少钱** — token 用量和费用统计，按项目/agent/时间维度
 4. **知识与记忆** — 所有 Agent 查询和贡献同一个中央 Knowledge，共享可追溯的 Memory
-5. **协作与通信** — 交接任务、交接产物和通知结果
+5. **协作与通信** — 交接或显式派发任务、交接产物和通知结果
 6. **外部事项收集** — 本地连接器把白名单来源转成可追溯、可纠错的 Todo
 
 ## 设计原则
@@ -24,8 +24,8 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 - **ATM 数据自有**：ATM 产生和管理的数据全部位于 `~/.atm`，不会静默写入项目目录或探测其他产品的私有目录。
 - **显式导入**：外部知识和历史数据通过 add/import 进入 ATM，不在日常查询路径中做兼容扫描。
 - **旁路而非主路**：普通 coding/chat 由客户端直接连接 Agent；ATM 停止不能阻断普通会话。
-- **不实现 agent loop 或 Agent scheduler**：ATM 不替 Agent 执行工作。常驻 App 可定时运行连接器采集，采集面只允许创建 Todo，不启动 Agent；与历史任务有关时只记录关联上下文，不合并事项。
-- **不代管 Agent 执行**：把任务交给 Agent 是输出一行指针供人粘贴进自己看得见的会话，ATM 不启动、不跟踪、不判定完成。
+- **不实现 agent loop 或 Agent scheduler**：常驻 App 可定时运行连接器采集；任务来源可显式 opt-in，在新建 Todo 后派发一次 Codex，但失败不会无限重跑，Agent 也不能自行生成下一轮调度。与历史任务有关时只记录关联上下文，不合并事项。
+- **执行必须授权且可追踪**：`todo prompt` 把指针交给可见会话；`todo run` 或来源上的 `auto_dispatch` 才能启动本地 Agent。每次 Run 先持久化 claim 再起进程，默认受限权限，同一 Todo 不并发执行；进程退出只形成执行证据，成功最多提交 `review`，不能替人验收为 `done`。
 - **事实分域**：Todo 保存工作目标与生命周期，Git 保存实现状态，测试/CI 提供验证证据，Session 保存过程追溯；ATM 提供关联视图，不复制或覆盖其他事实源。
 - **状态正交**：live activity 是观测信号，Session binding 是显式关系，Todo status 是工作生命周期；三者独立展示，禁止按项目名或 `in_progress` 猜测绑定。
 - **单用户单库**：只有一个活的数据库，因此不背向后兼容成本；schema 变更的流程写在
@@ -39,6 +39,15 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
   缓存要解决失效，索引只需要在写入时更新。
 - **ATM 不在进程内运行模型做记忆抽取**：它只提供未整理 session 查询、带来源的 memory 写入和
   append-only review 游标；语义抽取、去重、路由与授权检查由 curator skill 约束 Agent 完成。
+- **Todo refine 是内置文本模型调用，不是 Agent 循环**（2026-08-13）：人刚写下的任务常常是一句
+  话。`todo refine` 通过 ATM 自己的窄 DeepSeek 客户端调用 `deepseek-v4-flash`，关闭思考模式并保留
+  结构化 proposal 契约；它不再启动默认 Agent，也不回退到收集模型链。复杂时写计划并拆出子任务；
+  它不派发执行、不改优先级、不发明项目。命令行 `todo add` 保持即时，只有 `--refine` 才跟着整理；
+  桌面添加默认自动跑，因为那是人随手记下的入口。App 的模型设置页通过 CLI 把 API Key 存进
+  `~/.atm/credentials.json`（仅当前用户可读），Go 客户端直接读取；凭据不进入普通配置、备份、诊断包、
+  argv 或日志，避免开发构建重签名反复触发钥匙串授权。模型和 endpoint 属于非敏感配置。“测试连接”复用同一客户端，以当前
+  草稿配置发送最小 schema 请求但不接触 Todo。`in_progress` 只润色不拆分，
+  避免把正在工作的会话解绑。
 - **Parser 提取结构，不做业务判断**：应提取一切可用的结构化信息（summary、时间戳、工具调用），
   但不提取 git commit、不生成摘要。
 - **`review` 状态保留，但不是闸门**：它表示「Agent 声称完成、人尚未验收」。`todo done` 不设前置检查 ——
@@ -59,7 +68,7 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 
 ## 不做
 
-- Agent Schedule/Run、Webhook、独立 daemon 或后台 Agent 执行；由 Enchanted 等运行客户端负责
+- Agent Schedule、Webhook、独立 daemon 或无人约束的循环执行；定时发生器仍由 Enchanted 等运行客户端负责，收集自动派发只允许来源显式开启后的单次 Todo → Run
 - ATM HTTP API、MCP server 或独立 Web UI
 - 远程同步、团队共享与多机合并（见上一节的决定；跨机搬移用 `atm backup` / `atm restore`）
 - 模型循环或 prompt/event stream 代理

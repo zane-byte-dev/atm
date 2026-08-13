@@ -533,6 +533,26 @@ func TestDependencyMayPointAtArchivedTodoButNotAtNothing(t *testing.T) {
 	}
 }
 
+func TestNewTodoAndParentDependencyCanBeWrittenTogether(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "Parent"))
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		state.Todos.Items = append(state.Todos.Items, openTodo("t2", "Child"))
+		FindTodo(state.Todos, "t1").DependsOn = []string{"t2"}
+		return nil
+	}); err != nil {
+		t.Fatalf("parent + new child in one write: %v", err)
+	}
+	loaded, err := LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := FindTodo(loaded, "t1")
+	if parent == nil || len(parent.DependsOn) != 1 || parent.DependsOn[0] != "t2" {
+		t.Fatalf("parent = %+v", parent)
+	}
+}
+
 func TestArchivedDependencyStaysSatisfied(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t,
@@ -842,5 +862,74 @@ func TestMigrateV34ToV35DropsLaneAndFeaturePath(t *testing.T) {
 	}
 	if todo := FindTodo(todos, "t1"); todo == nil || todo.Status != TodoStatusOpen {
 		t.Fatalf("migrated todo = %+v", todo)
+	}
+}
+
+func TestMigrateV36ToV37AddsAutomaticDispatchAudit(t *testing.T) {
+	db := openTempDB(t)
+	for _, statement := range []string{
+		`ALTER TABLE collection_sources DROP COLUMN auto_dispatch`,
+		`ALTER TABLE collection_items DROP COLUMN dispatch_status`,
+		`ALTER TABLE collection_items DROP COLUMN dispatch_error`,
+		`UPDATE schema_version SET version = 36`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate v36→v37: %v", err)
+	}
+	var version, itemColumns int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_items')
+		WHERE name IN ('dispatch_status','dispatch_error')`).Scan(&itemColumns); err != nil {
+		t.Fatal(err)
+	}
+	var sourceColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_sources')
+		WHERE name='auto_dispatch'`).Scan(&sourceColumns); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || itemColumns != 2 || sourceColumns != 1 {
+		t.Fatalf("version=%d item columns=%d source columns=%d", version, itemColumns, sourceColumns)
+	}
+}
+
+func TestMigrateV37ToV38AllowsInterruptedTaskRuns(t *testing.T) {
+	db := openTempDB(t)
+	if _, err := db.Exec(`INSERT INTO todos (id,position,title,priority,status,created)
+		VALUES ('t1',0,'Interrupt migration','P1','in_progress','2026-08-10')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO task_runs
+		(id,todo_id,agent,work_dir,policy,log_path,status,start_ts)
+		VALUES ('run-1','t1','codex','/tmp','guarded','/tmp/run.log','running',1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE schema_version SET version = 37`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate v37→v38: %v", err)
+	}
+	if err := InterruptTaskRun(db, "run-1", 2, "interrupted by user"); err != nil {
+		t.Fatalf("record interrupted outcome: %v", err)
+	}
+	var version int
+	var status, title string
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT status FROM task_runs WHERE id='run-1'`).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT title FROM todos WHERE id='t1'`).Scan(&title); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || status != TaskRunInterrupted || title != "Interrupt migration" {
+		t.Fatalf("version=%d status=%q title=%q", version, status, title)
 	}
 }

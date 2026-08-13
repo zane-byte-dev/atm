@@ -69,14 +69,13 @@ func Search(dataDir, query string, options SearchOptions) ([]SearchHit, error) {
 	qualityIndex := knowledgeQualityIndex(dataDir, documents)
 	var hits []SearchHit
 	for _, candidate := range chunks {
-		// Gate on matching at least one query token rather than all of them. The
-		// previous all-tokens requirement destroyed recall: a single missing token
-		// dropped the chunk entirely, which is especially harsh with the per-char
-		// Chinese tokenizer (any absent character zeroed the result). BM25 already
-		// rewards matching more and rarer tokens, and the coverage factor below
-		// keeps complete matches ranked above partial ones.
+		// A query may contain alternative terms ("Skill 统计" should find a
+		// Skill-only document and a 统计-only document), but a term itself is
+		// indivisible. Requiring all tokens from at least one whitespace-delimited
+		// term prevents a search for "搜索" from matching every occurrence of
+		// "探索" merely because both contain 索.
 		matched := matchedTokenCount(candidate.tokens, queryTokens)
-		if matched == 0 {
+		if matched == 0 || !matchesAnyQueryTerm(candidate.index, query) {
 			continue
 		}
 		score := bm25(candidate.tokens, queryTokens, documentFrequency, len(chunks), averageLength)
@@ -380,6 +379,22 @@ func matchedTokenCount(tokens, query []string) int {
 		}
 	}
 	return matched
+}
+
+// matchesAnyQueryTerm implements OR between user-entered terms while keeping
+// each term contiguous. Joining its normalized tokens removes punctuation but
+// preserves the user's word/character order, so "搜索" cannot match a chunk
+// where 搜 and 索 occur far apart (or only as part of unrelated words).
+func matchesAnyQueryTerm(text, query string) bool {
+	text = strings.ToLower(text)
+	for _, term := range strings.Fields(query) {
+		termTokens := tokenize(term)
+		normalizedTerm := strings.Join(termTokens, "")
+		if normalizedTerm != "" && strings.Contains(text, normalizedTerm) {
+			return true
+		}
+	}
+	return false
 }
 
 func containsAllTokens(tokens, query []string) bool {

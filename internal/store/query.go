@@ -56,7 +56,11 @@ type SearchMatches struct {
 }
 
 type ShowResult struct {
+	// Agent is the display name ("Grok Build"). AgentKey is the stored key
+	// ("grokbuild"), which is what callers must switch on: routing on the display
+	// name silently matched nothing and made every transcript read as Claude's.
 	Agent    string
+	AgentKey string
 	Project  string
 	FullID   string
 	FilePath string
@@ -142,30 +146,42 @@ func SearchMessagesWithOptions(db *sql.DB, keyword string, options SearchOptions
 	}
 	query += " ORDER BY CASE WHEN m.ts > 0 THEN m.ts ELSE s.created_ts END DESC, s.created_ts DESC, m.seq DESC"
 
-	// The limit is applied while scanning rather than as SQL LIMIT: Total has to
-	// count every match Keep accepts, and Keep runs in Go. The scan stays cheap
-	// because only the retained page holds onto its content.
-	matches, err := scanSearchHits(db, options, query, args...)
+	// The limit is applied only after evaluating every accepted row rather than
+	// as SQL LIMIT: relevance cannot be decided from recency alone. The scanner
+	// retains only the best bounded page, so a broad query does not retain every
+	// matching transcript in memory.
+	matches, err := scanSearchHits(db, keyword, options, query, args...)
 	if err != nil {
 		return SearchMatches{}, err
-	}
-	// The database takes the newest matches first so the limit keeps the useful
-	// tail, then callers receive those matches in conversational order.
-	hits := matches.Hits
-	for left, right := 0, len(hits)-1; left < right; left, right = left+1, right-1 {
-		hits[left], hits[right] = hits[right], hits[left]
 	}
 	return matches, nil
 }
 
-func scanSearchHits(db *sql.DB, options SearchOptions, query string, args ...any) (SearchMatches, error) {
+func scanSearchHits(db *sql.DB, keyword string, options SearchOptions, query string, args ...any) (SearchMatches, error) {
 	rows, err := db.Query(query, args...)
 	if err != nil {
 		return SearchMatches{}, err
 	}
 	defer rows.Close()
 
+	type rankedSearchHit struct {
+		hit   SearchHit
+		score float64
+		order int
+	}
+	better := func(left, right rankedSearchHit) bool {
+		if left.score != right.score {
+			return left.score > right.score
+		}
+		if left.hit.CreatedTS != right.hit.CreatedTS {
+			return left.hit.CreatedTS > right.hit.CreatedTS
+		}
+		return left.order < right.order
+	}
+
 	var matches SearchMatches
+	var ranked []rankedSearchHit
+	order := 0
 	for rows.Next() {
 		var r SearchHit
 		if err := rows.Scan(&r.FullID, &r.Agent, &r.Project, &r.ShortID, &r.CreatedAt, &r.CreatedTS, &r.Role, &r.Content); err != nil {
@@ -175,17 +191,66 @@ func scanSearchHits(db *sql.DB, options SearchOptions, query string, args ...any
 			continue
 		}
 		matches.Total++
-		if options.Limit > 0 && len(matches.Hits) >= options.Limit {
+		r.Project = config.CanonicalProject(r.Project)
+		candidate := rankedSearchHit{hit: r, score: searchMessageScore(r, keyword), order: order}
+		order++
+		if options.Limit <= 0 || len(ranked) < options.Limit {
+			ranked = append(ranked, candidate)
 			continue
 		}
-		r.Project = config.CanonicalProject(r.Project)
-		matches.Hits = append(matches.Hits, r)
+		worst := 0
+		for index := 1; index < len(ranked); index++ {
+			if better(ranked[worst], ranked[index]) {
+				worst = index
+			}
+		}
+		if better(candidate, ranked[worst]) {
+			ranked[worst] = candidate
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return SearchMatches{}, err
 	}
+	sort.Slice(ranked, func(i, j int) bool {
+		return better(ranked[i], ranked[j])
+	})
+	matches.Hits = make([]SearchHit, len(ranked))
+	for index := range ranked {
+		matches.Hits[index] = ranked[index].hit
+	}
 	matches.Truncated = matches.Total > len(matches.Hits)
 	return matches, nil
+}
+
+// searchMessageScore rewards a focused occurrence of the whole phrase. Session
+// search already requires that literal occurrence, so token overlap would add
+// no signal; density, position and the author's intent are what distinguish a
+// direct query from a large transcript or generated report that mentions it in
+// passing. Recency is deliberately only a tie-breaker in scanSearchHits.
+func searchMessageScore(hit SearchHit, keyword string) float64 {
+	content := strings.ToLower(strings.TrimSpace(hit.Content))
+	needle := strings.ToLower(strings.TrimSpace(keyword))
+	if content == "" || needle == "" {
+		return 0
+	}
+	contentRunes := len([]rune(content))
+	needleRunes := len([]rune(needle))
+	occurrences := strings.Count(content, needle)
+	position := strings.Index(content, needle)
+	positionRunes := contentRunes
+	if position >= 0 {
+		positionRunes = len([]rune(content[:position]))
+	}
+
+	score := 1000 * float64(occurrences*needleRunes) / float64(max(contentRunes, 1))
+	score += 100 / (1 + float64(positionRunes)/20)
+	if hit.Role == "user" {
+		score += 100
+	}
+	if content == needle {
+		score += 500
+	}
+	return score
 }
 
 // sessionLookupArgs binds the id-or-short-id-prefix pair every session lookup
@@ -220,6 +285,7 @@ func GetSession(db *sql.DB, idOrPrefix string) (*ShowResult, error) {
 	agentDisplay := AgentDisplayName(agent)
 	return &ShowResult{
 		Agent:    agentDisplay,
+		AgentKey: agent,
 		Project:  project,
 		FullID:   fullID,
 		FilePath: filePath,
@@ -1291,9 +1357,14 @@ type TodoBoundSession struct {
 	ShortID      string  `json:"short_id"`
 	Agent        string  `json:"agent"`
 	Project      string  `json:"project"`
-	Summary      string  `json:"summary,omitempty"`
-	Indexed      bool    `json:"indexed"`
-	CWD          string  `json:"cwd,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	// LatestResult is the session's last assistant message, so a Todo can show
+	// what the Agent concluded without depending on the session still being
+	// inside the live-status window. Capped because a bound-session list is a
+	// list, not a transcript.
+	LatestResult string `json:"latest_result,omitempty"`
+	Indexed      bool   `json:"indexed"`
+	CWD          string `json:"cwd,omitempty"`
 	StartedAt    int64   `json:"started_at,omitempty"`
 	LastAt       int64   `json:"last_at,omitempty"`
 	BindingCount int     `json:"binding_count"`
@@ -1321,6 +1392,9 @@ func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) 
 		COALESCE(NULLIF(b.agent, ''), s.agent, '') AS agent,
 		COALESCE(NULLIF(b.project, ''), s.project, '') AS project,
 		COALESCE(s.summary, '') AS summary,
+		COALESCE((SELECT SUBSTR(m.content, 1, 2000) FROM messages m
+			WHERE m.session_id = s.id AND m.role = 'assistant'
+			ORDER BY m.seq DESC LIMIT 1), '') AS latest_result,
 		CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS indexed,
 		b.cwd,
 		COALESCE(s.created_ts, 0) AS started_at,
@@ -1357,6 +1431,7 @@ func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) 
 	for rows.Next() {
 		var r TodoBoundSession
 		if err := rows.Scan(&r.SessionID, &r.IndexedID, &r.ShortID, &r.Agent, &r.Project, &r.Summary,
+			&r.LatestResult,
 			&r.Indexed, &r.CWD, &r.StartedAt, &r.LastAt, &r.BindingCount, &r.FirstBoundAt, &r.BoundAt,
 			&r.UnboundAt, &r.Reason,
 			&r.Queries, &r.ToolCalls, &r.InputTokens, &r.OutputTokens, &r.CostUSD); err != nil {

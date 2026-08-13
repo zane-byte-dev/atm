@@ -56,10 +56,11 @@ var backupPaths = []string{
 	"todos",
 }
 
-// transientEntries never belong in a backup and are not worth reporting as
-// omissions either: sockets, caches, hook spool files and the -wal/-shm siblings
-// of a snapshot that already contains their committed contents.
-var transientEntries = []string{
+// excludedBackupEntries never belong in a backup and are not worth reporting
+// as omissions either. Most are transient; credentials.json is intentionally
+// local-only so copying a routine ATM backup cannot copy a live API secret.
+var excludedBackupEntries = []string{
+	config.CredentialsFileName,
 	"atm.db",
 	"atm.db-shm",
 	"atm.db-wal",
@@ -93,7 +94,8 @@ var backupCmd = &cobra.Command{
 Todos, memory, knowledge, the collection ledger and the review cursor are this
 database's own records — nothing else holds a copy. The session mirror is left
 out because ` + "`atm sync`" + ` rebuilds it from each agent's transcripts, which keeps
-the archive small enough to take often.
+the archive small enough to take often. The machine-local credentials.json is
+also excluded so a routine backup never becomes a copy of a live API secret.
 
 Works on a database too old for this build to open normally, so it is also the
 escape hatch when a schema is rejected as unupgradable.`,
@@ -344,11 +346,11 @@ func unbackedEntries() ([]string, error) {
 		}
 		return nil, err
 	}
-	carried := make(map[string]bool, len(backupPaths)+len(transientEntries))
+	carried := make(map[string]bool, len(backupPaths)+len(excludedBackupEntries))
 	for _, name := range backupPaths {
 		carried[name] = true
 	}
-	for _, name := range transientEntries {
+	for _, name := range excludedBackupEntries {
 		carried[name] = true
 	}
 	var out []string

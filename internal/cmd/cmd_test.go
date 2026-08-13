@@ -100,6 +100,9 @@ func seedCommandSession(t *testing.T) int64 {
 	}
 	defer db.Close()
 
+	// An hour ago, and callers must query a window wide enough to contain it:
+	// seeded requests sit at createdTS+90s, so the seed cannot be pulled closer
+	// to now to fit a one-day window that just rolled over at midnight.
 	created := time.Now().In(config.Loc).Add(-time.Hour)
 	createdTS := created.Unix()
 	stmts := []struct {
@@ -158,7 +161,13 @@ func withCommandFlags(t *testing.T) {
 	oldExportDays, oldExportFormat := exportDaysFlag, exportFormatFlag
 	oldThinking, oldShowTurns := showThinking, showTurnsFlag
 	oldShowLast, oldShowMaxChars := showLastFlag, showMaxCharsFlag
+	oldListAll, oldListOrder := sessionListAllFlag, sessionListOrder
+	oldListLimit, oldListOffset := sessionListLimit, sessionListOffset
 	t.Cleanup(func() {
+		sessionListAllFlag = oldListAll
+		sessionListOrder = oldListOrder
+		sessionListLimit = oldListLimit
+		sessionListOffset = oldListOffset
 		agentFlag = oldAgent
 		jsonOutput = oldJSON
 		syncBeforeRead = oldSync
@@ -1538,6 +1547,16 @@ func TestTodoQueryIncludesDocumentAndRequiresAllTerms(t *testing.T) {
 	}
 	if todoMatchesQuery(todo, "Skill 不存在") {
 		t.Fatal("todo query matched only one term")
+	}
+}
+
+func TestTodoQueryRelevancePrefersTitleOverIncidentalDescription(t *testing.T) {
+	titleMatch := store.Todo{ID: "t900", Title: "搜索相关性优化", Description: "调整排序"}
+	incidental := store.Todo{ID: "t901", Title: "整理界面", Description: "最后检查搜索相关性优化是否受影响"}
+	if todoQueryRelevance(titleMatch, "搜索相关性") <= todoQueryRelevance(incidental, "搜索相关性") {
+		t.Fatalf("title score %d should beat description score %d",
+			todoQueryRelevance(titleMatch, "搜索相关性"),
+			todoQueryRelevance(incidental, "搜索相关性"))
 	}
 }
 

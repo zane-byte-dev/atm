@@ -25,13 +25,25 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
     var icon: String {
         switch self {
         case .tasks: return "checklist"
-        case .collection: return "tray.full"
+        case .collection: return "tray.and.arrow.down"
         case .agents: return "cpu"
         case .knowledge: return "books.vertical"
         case .usage: return "chart.xyaxis.line"
         case .settings: return "gearshape"
         }
     }
+}
+
+/// One restorable place in the desktop app. Keeping the selected row with its
+/// section makes history useful for detail-to-detail links, not just for moving
+/// between the six sidebar tabs.
+enum ATMDesktopLocation: Equatable {
+    case tasks(todoID: String?)
+    case collection(sourceID: String?, itemID: String?)
+    case agents(sessionID: String?, runTodoID: String?)
+    case knowledge(libraryID: String?, documentID: String?)
+    case usage
+    case settings
 }
 
 /// Status color / icon / label used by the task list and detail header.
@@ -336,12 +348,37 @@ private struct ATMTaskGroup: Identifiable {
 
 @MainActor
 final class ATMDesktopNavigation: ObservableObject {
-    @Published var section: ATMDesktopSection = .tasks
-    @Published var selectedTodoID: String?
-    @Published var selectedCollectionSourceID: String?
-    @Published var selectedCollectionItemID: String?
-    @Published var selectedAgentID: String?
-    @Published var selectedKnowledgeLibraryID: String?
+    @Published var section: ATMDesktopSection = .tasks {
+        didSet { navigationDidChange() }
+    }
+    @Published var selectedTodoID: String? {
+        didSet { if section == .tasks { navigationDidChange() } }
+    }
+    @Published var selectedCollectionSourceID: String? {
+        didSet { if section == .collection { navigationDidChange() } }
+    }
+    @Published var selectedCollectionItemID: String? {
+        didSet { if section == .collection { navigationDidChange() } }
+    }
+    @Published var selectedAgentID: String? {
+        didSet { if section == .agents { navigationDidChange() } }
+    }
+    /// The Todo whose dispatched run requested the Agent selection. This keeps
+    /// the raw-log destination available after a successful run closes its live
+    /// binding while the recent Agent session is still visible.
+    @Published var selectedAgentRunTodoID: String? {
+        didSet {
+            // Run context refines the current Agent destination (not a separate
+            // visit). This preserves “all logs for this Todo” on forward replay
+            // without adding a second history entry for the same Agent row.
+            if section == .agents, !isRestoringLocation {
+                recordedLocation = currentLocation
+            }
+        }
+    }
+    @Published var selectedKnowledgeLibraryID: String? {
+        didSet { if section == .knowledge { navigationDidChange() } }
+    }
     /// A document id ("document:<id>") the knowledge library view should
     /// reveal and select, set when locating a result from global search.
     @Published var locateKnowledgeDocumentID: String?
@@ -354,6 +391,104 @@ final class ATMDesktopNavigation: ObservableObject {
     /// A todo id whose detail pane should open directly in its edit form, set by
     /// the task row's right-click 编辑任务 and cleared once the form is open.
     @Published var editTodoID: String?
+
+    @Published private(set) var canGoBack = false
+    @Published private(set) var canGoForward = false
+
+    private var backStack: [ATMDesktopLocation] = []
+    private var forwardStack: [ATMDesktopLocation] = []
+    private var recordedLocation: ATMDesktopLocation = .tasks(todoID: nil)
+    private var isRestoringLocation = false
+    private let maximumHistoryCount = 100
+
+    func goBack() {
+        guard let target = backStack.popLast() else { return }
+        forwardStack.append(recordedLocation)
+        restore(target)
+    }
+
+    func goForward() {
+        guard let target = forwardStack.popLast() else { return }
+        backStack.append(recordedLocation)
+        trimHistory(&backStack)
+        restore(target)
+    }
+
+    private var currentLocation: ATMDesktopLocation {
+        switch section {
+        case .tasks:
+            return .tasks(todoID: selectedTodoID)
+        case .collection:
+            return .collection(
+                sourceID: selectedCollectionSourceID,
+                itemID: selectedCollectionItemID
+            )
+        case .agents:
+            return .agents(
+                sessionID: selectedAgentID,
+                runTodoID: selectedAgentRunTodoID
+            )
+        case .knowledge:
+            return .knowledge(
+                libraryID: selectedKnowledgeLibraryID,
+                documentID: locateKnowledgeDocumentID
+            )
+        case .usage:
+            return .usage
+        case .settings:
+            return .settings
+        }
+    }
+
+    private func navigationDidChange() {
+        guard !isRestoringLocation else { return }
+        let next = currentLocation
+        guard next != recordedLocation else { return }
+        backStack.append(recordedLocation)
+        trimHistory(&backStack)
+        forwardStack.removeAll()
+        recordedLocation = next
+        updateHistoryAvailability()
+    }
+
+    private func restore(_ location: ATMDesktopLocation) {
+        isRestoringLocation = true
+        switch location {
+        case .tasks(let todoID):
+            selectedTodoID = todoID
+            section = .tasks
+        case .collection(let sourceID, let itemID):
+            selectedCollectionSourceID = sourceID
+            selectedCollectionItemID = itemID
+            section = .collection
+        case .agents(let sessionID, let runTodoID):
+            selectedAgentID = sessionID
+            selectedAgentRunTodoID = runTodoID
+            section = .agents
+        case .knowledge(let libraryID, let documentID):
+            selectedKnowledgeLibraryID = libraryID
+            locateKnowledgeDocumentID = documentID
+            section = .knowledge
+        case .usage:
+            section = .usage
+        case .settings:
+            section = .settings
+        }
+        isRestoringLocation = false
+        recordedLocation = location
+        updateHistoryAvailability()
+    }
+
+    private func trimHistory(_ history: inout [ATMDesktopLocation]) {
+        if history.count > maximumHistoryCount {
+            history.removeFirst(history.count - maximumHistoryCount)
+        }
+    }
+
+    private func updateHistoryAvailability() {
+        canGoBack = !backStack.isEmpty
+        canGoForward = !forwardStack.isEmpty
+    }
 }
 
 struct ATMCollectionRef: Identifiable, Equatable {
@@ -367,10 +502,10 @@ struct ATMTextAlert: Identifiable {
     let message: String
 }
 
-/// ATM's app-wide navigation rail is the one persistent piece of brand chrome.
-/// It has its own foreground tokens because system label colours are tuned for
-/// the light working canvas and disappear on the dark rail in light appearance.
+/// ATM's app-wide navigation rail follows the active app appearance while using
+/// dedicated tokens for its hover, selection and hierarchy states.
 private struct ATMDesktopRailSurfaceModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let isSelected: Bool
     var isNested = false
 
@@ -384,6 +519,8 @@ private struct ATMDesktopRailSurfaceModifier: ViewModifier {
             .background(fill, in: RoundedRectangle(cornerRadius: isNested ? 7 : 9, style: .continuous))
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
+            .animation(ATMMotion.resolved(ATMMotion.hover, reduceMotion: reduceMotion), value: isHovered)
+            .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: isSelected)
     }
 
     private var fill: Color {
@@ -399,12 +536,50 @@ private extension View {
     }
 }
 
+enum ATMDesktopLayout {
+    static let titleBarHeight: CGFloat = 38
+    static let expandedSidebarWidth: CGFloat = 160
+    static let collapsedSidebarWidth: CGFloat = 58
+    static let railDividerWidth: CGFloat = 1
+    static let railDragHandleWidth: CGFloat = 10
+    static let minimumExpandedSidebarWidth: CGFloat = 132
+    static let maximumExpandedSidebarWidth: CGFloat = 280
+    static let sidebarCollapseThreshold: CGFloat = 100
+    static let sidebarExpansionThreshold: CGFloat = 116
+
+    static let sidebarWidthDefaultsKey = "ATMDesktopSidebarWidth"
+
+    static func resolvedExpandedSidebarWidth(_ requested: CGFloat) -> CGFloat {
+        let requested = requested.isFinite ? requested : expandedSidebarWidth
+        return min(
+            max(requested.rounded(), minimumExpandedSidebarWidth),
+            maximumExpandedSidebarWidth
+        )
+    }
+
+    static func sidebarIsCollapsed(
+        at requestedWidth: CGFloat,
+        wasCollapsed: Bool
+    ) -> Bool {
+        if requestedWidth.isNaN { return true }
+        // A small dead zone stops the rail flickering between text and icon modes
+        // when the pointer pauses on the snap point.
+        if wasCollapsed { return requestedWidth < sidebarExpansionThreshold }
+        return requestedWidth <= sidebarCollapseThreshold
+    }
+}
+
 struct DesktopContentView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
-    // Sidebar disclosure is independent from the selected workspace. Switching
-    // to Usage (or another section) must not collapse an expanded library list.
-    @State private var knowledgeExpanded = false
+    @AppStorage("ATMDesktopSidebarCollapsed") private var sidebarCollapsed = false
+    @AppStorage(ATMDesktopLayout.sidebarWidthDefaultsKey)
+    private var storedSidebarWidth = Double(ATMDesktopLayout.expandedSidebarWidth)
+    @State private var draggedSidebarWidth: CGFloat?
+    @State private var sidebarDragOrigin: CGFloat?
+    @State private var isHoveringSidebarDivider = false
+    @State private var sidebarResizeCursorPushed = false
     @State private var showingCollectionCreate = false
     @State private var newCollectionID = ""
     @State private var newCollectionName = ""
@@ -412,42 +587,21 @@ struct DesktopContentView: View {
     @State private var renameCollectionName = ""
     @State private var deleteCollectionTarget: ATMCollectionRef?
     @State private var collectionError: String?
-    @State private var showingSearch = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            desktopSidebar
-                .frame(width: 212, alignment: .leading)
-                .clipped()
-                .background {
-                    // Paint behind the transparent title bar outside the
-                    // sidebar's content clip so the rail reaches the window edge.
-                    ATMTheme.rail
-                        .ignoresSafeArea(edges: .top)
-                }
-            Rectangle()
-                .fill(ATMTheme.railBorder)
-                .frame(width: 1)
-            Group {
-                switch navigation.section {
-                case .tasks:
-                    DesktopTasksView(store: store, navigation: navigation)
-                case .collection:
-                    DesktopCollectionView(store: store, navigation: navigation)
-                case .agents:
-                    DesktopAgentsView(store: store, navigation: navigation)
-                case .knowledge:
-                    DesktopKnowledgeView(store: store, navigation: navigation)
-                        .id("knowledge-library")
-                case .usage:
-                    DesktopUsageView(store: store)
-                case .settings:
-                    DesktopSettingsView(store: store)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        VStack(spacing: 0) {
+            desktopTitleBar
+                // The custom search dropdown extends below title-bar bounds.
+                // Keep it above the workspace instead of clipping it into the
+                // first content column like an ordinary sibling.
+                .zIndex(2)
+            desktopWorkspace
+                .zIndex(0)
         }
-        .background(ATMTheme.canvas)
+        // The app owns the full-size title bar. Laying the root into the top safe
+        // area makes this one surface sit behind the traffic lights while the
+        // three workspace columns begin only below it.
+        .ignoresSafeArea(.container, edges: .top)
         .frame(minWidth: 880, minHeight: 620)
         .atmHidesScrollBars()
         .onChange(of: store.knowledgeCollections.map(\.id)) { _ in
@@ -466,8 +620,8 @@ struct DesktopContentView: View {
                         onCancel: { navigation.showAddTodo = false }
                     ) { draft in
                         store.addTodo(draft) { createdID in
-                            navigation.section = .tasks
                             navigation.selectedTodoID = createdID
+                            navigation.section = .tasks
                         }
                         navigation.showAddTodo = false
                     }
@@ -481,12 +635,15 @@ struct DesktopContentView: View {
                 .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: navigation.showAddTodo)
+        .animation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion), value: navigation.showAddTodo)
+        .animation(
+            sidebarDragOrigin == nil
+                ? ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion)
+                : nil,
+            value: sidebarCollapsed
+        )
         .sheet(isPresented: $showingCollectionCreate) {
             collectionCreateSheet
-        }
-        .sheet(isPresented: $showingSearch) {
-            DesktopSearchPalette(store: store, navigation: navigation)
         }
         .alert(
             "重命名知识库",
@@ -539,6 +696,192 @@ struct DesktopContentView: View {
         }
     }
 
+    private var desktopWorkspace: some View {
+        HStack(spacing: 0) {
+            desktopSidebar
+                .frame(
+                    width: currentSidebarWidth,
+                    alignment: .leading
+                )
+                .clipped()
+            sidebarDivider
+                .zIndex(1)
+            Group {
+                switch navigation.section {
+                case .tasks:
+                    DesktopTasksView(store: store, navigation: navigation)
+                case .collection:
+                    DesktopCollectionView(store: store, navigation: navigation)
+                case .agents:
+                    DesktopAgentsView(store: store, navigation: navigation)
+                case .knowledge:
+                    DesktopKnowledgeView(
+                        store: store,
+                        navigation: navigation,
+                        onCreateCollection: {
+                            newCollectionID = ""
+                            newCollectionName = ""
+                            showingCollectionCreate = true
+                        },
+                        onRenameCollection: { collection in
+                            renameCollectionName = collection.name
+                            renameCollectionTarget = ATMCollectionRef(
+                                id: collection.id,
+                                name: collection.name,
+                                count: collection.documentCount
+                            )
+                        },
+                        onDeleteCollection: { collection in
+                            deleteCollectionTarget = ATMCollectionRef(
+                                id: collection.id,
+                                name: collection.name,
+                                count: collection.documentCount
+                            )
+                        }
+                    )
+                        .id("knowledge-library")
+                case .usage:
+                    DesktopUsageView(store: store)
+                case .settings:
+                    DesktopSettingsView(store: store)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .atmAnimatedSwap(navigation.section, style: .workspace)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ATMTheme.canvas)
+    }
+
+    private var currentSidebarWidth: CGFloat {
+        if sidebarCollapsed { return ATMDesktopLayout.collapsedSidebarWidth }
+        return draggedSidebarWidth
+            ?? ATMDesktopLayout.resolvedExpandedSidebarWidth(CGFloat(storedSidebarWidth))
+    }
+
+    private var sidebarDivider: some View {
+        Color.clear
+            .frame(width: ATMDesktopLayout.railDividerWidth)
+            .overlay {
+                Capsule()
+                    .fill(
+                        ATMTheme.accent.opacity(
+                            isHoveringSidebarDivider || sidebarDragOrigin != nil ? 0.62 : 0
+                        )
+                    )
+                    .frame(width: 2, height: 36)
+                    .animation(
+                        ATMMotion.hover,
+                        value: isHoveringSidebarDivider || sidebarDragOrigin != nil
+                    )
+            }
+            .overlay {
+                Color.clear
+                    .frame(width: ATMDesktopLayout.railDragHandleWidth)
+                    .contentShape(Rectangle())
+                    .help("拖拽调整侧栏宽度")
+                    .onHover { hovering in
+                        isHoveringSidebarDivider = hovering
+                        setSidebarResizeCursorPushed(hovering || sidebarDragOrigin != nil)
+                    }
+                    .onDisappear { setSidebarResizeCursorPushed(false) }
+                    .gesture(
+                        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                            .onChanged(handleSidebarDrag)
+                            .onEnded { _ in finishSidebarDrag() }
+                    )
+            }
+    }
+
+    private func handleSidebarDrag(_ value: DragGesture.Value) {
+        let origin = sidebarDragOrigin ?? currentSidebarWidth
+        sidebarDragOrigin = origin
+        let requested = origin + value.translation.width
+
+        if ATMDesktopLayout.sidebarIsCollapsed(
+            at: requested,
+            wasCollapsed: sidebarCollapsed
+        ) {
+            sidebarCollapsed = true
+            draggedSidebarWidth = nil
+        } else {
+            sidebarCollapsed = false
+            draggedSidebarWidth = ATMDesktopLayout.resolvedExpandedSidebarWidth(requested)
+        }
+        setSidebarResizeCursorPushed(true)
+    }
+
+    private func finishSidebarDrag() {
+        if !sidebarCollapsed, let draggedSidebarWidth {
+            storedSidebarWidth = Double(draggedSidebarWidth)
+        }
+        draggedSidebarWidth = nil
+        sidebarDragOrigin = nil
+        setSidebarResizeCursorPushed(isHoveringSidebarDivider)
+    }
+
+    private func setSidebarResizeCursorPushed(_ pushed: Bool) {
+        guard pushed != sidebarResizeCursorPushed else { return }
+        sidebarResizeCursorPushed = pushed
+        if pushed {
+            NSCursor.resizeLeftRight.push()
+        } else {
+            NSCursor.pop()
+        }
+    }
+
+    private var desktopTitleBar: some View {
+        ZStack {
+            DesktopSearchPalette(store: store, navigation: navigation)
+
+            HStack {
+                HStack(spacing: 2) {
+                    ATMIconButton(
+                        systemImage: "chevron.left",
+                        help: "后退 (⌘[)",
+                        chrome: .bare,
+                        isEnabled: navigation.canGoBack,
+                        side: 26,
+                        iconTier: .body
+                    ) {
+                        navigation.goBack()
+                    }
+                    ATMIconButton(
+                        systemImage: "chevron.right",
+                        help: "前进 (⌘])",
+                        chrome: .bare,
+                        isEnabled: navigation.canGoForward,
+                        side: 26,
+                        iconTier: .body
+                    ) {
+                        navigation.goForward()
+                    }
+                }
+                // Leave the native traffic-light cluster unobstructed.
+                .padding(.leading, 76)
+
+                Spacer(minLength: 12)
+                ATMIconButton(
+                    systemImage: "sidebar.left",
+                    help: sidebarCollapsed ? "展开侧栏" : "收起侧栏",
+                    chrome: .bare,
+                    side: 26,
+                    iconTier: .body
+                ) {
+                    sidebarCollapsed.toggle()
+                }
+            }
+            .padding(.trailing, 8)
+        }
+        // Native traffic lights sit slightly above the geometric centre of a
+        // full-size title bar. Nudge our chrome onto that same visual baseline.
+        .padding(.bottom, 4)
+        .frame(maxWidth: .infinity)
+        .frame(height: ATMDesktopLayout.titleBarHeight)
+        .background(.ultraThinMaterial)
+        .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
+    }
+
     private var collectionCreateSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("新建知识库")
@@ -576,8 +919,8 @@ struct DesktopContentView: View {
                     showingCollectionCreate = false
                     newCollectionID = ""
                     newCollectionName = ""
-                    navigation.section = .knowledge
                     navigation.selectedKnowledgeLibraryID = id
+                    navigation.section = .knowledge
                 }
             } catch {
                 await MainActor.run { collectionError = error.localizedDescription }
@@ -616,175 +959,45 @@ struct DesktopContentView: View {
 
     private var desktopSidebar: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 8) {
-                ATMBrandMark()
-                    .frame(width: 38, height: 38)
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("ATM")
-                        .font(ATMFont.font(.title3, weight: .bold))
-                        .foregroundStyle(ATMTheme.railPrimary)
-                    Text("工作台")
-                        .font(ATMFont.body)
-                        .foregroundStyle(ATMTheme.railSecondary)
-                }
-                .lineLimit(1)
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-
             VStack(spacing: 4) {
-                searchSidebarButton
-                ForEach(ATMDesktopSection.allCases) { section in
-                    if section == .knowledge {
-                        knowledgeSidebarGroup
-                    } else {
-                        sidebarButton(section)
-                    }
+                ForEach(ATMDesktopSection.allCases.filter { $0 != .settings }) { section in
+                    sidebarButton(section)
                 }
             }
-            .padding(.horizontal, 8)
+            .padding(.horizontal, sidebarCollapsed ? 7 : 8)
+            .padding(.top, 16)
 
             Spacer()
 
-            // Session index syncs on launch, every 5 minutes, and when the
-            // quick panel / desktop window opens. No permanent sidebar button.
-            Text(appVersionLabel)
-                .font(ATMFont.mono(.caption))
-                .foregroundStyle(ATMTheme.railMuted)
-                .frame(maxWidth: .infinity, alignment: .center)
+            sidebarButton(.settings)
+                .padding(.horizontal, sidebarCollapsed ? 7 : 8)
                 .padding(.bottom, 8)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(ATMTheme.rail)
     }
 
-    private var appVersionLabel: String {
-        let info = Bundle.main.infoDictionary
-        guard let version = info?["CFBundleShortVersionString"] as? String, !version.isEmpty else {
-            return "开发版"
-        }
-        let build = info?["CFBundleVersion"] as? String
-        return build.map { "v\(version) (\($0))" } ?? "v\(version)"
-    }
-
-    private var searchSidebarButton: some View {
-        Button {
-            showingSearch = true
-        } label: {
-            HStack(spacing: 9) {
-                Image(systemName: "magnifyingglass").frame(width: 18)
-                Text("搜索")
-                Spacer()
-                Text("⌘K")
-                    .font(ATMFont.mono(.footnote, .medium))
-                    .foregroundStyle(ATMTheme.railMuted)
-            }
-            .font(ATMFont.font(.body, weight: .medium))
-            .foregroundStyle(ATMTheme.railPrimary)
-            .padding(.horizontal, 10)
-            .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-            .background(ATMTheme.railRaised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .stroke(ATMTheme.railBorder)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .keyboardShortcut("k", modifiers: .command)
-    }
-
     private func sidebarButton(_ section: ATMDesktopSection) -> some View {
         let selected = navigation.section == section
         return Button {
             navigation.section = section
+            if section == .knowledge {
+                store.refreshKnowledgeCatalog()
+            }
         } label: {
             HStack(spacing: 9) {
                 Image(systemName: section.icon).frame(width: 18)
-                Text(section.title)
-                Spacer()
+                if !sidebarCollapsed {
+                    Text(section.title)
+                    Spacer()
+                }
             }
+            .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
             .font(ATMFont.font(.body, weight: .medium))
             .atmDesktopRailSurface(isSelected: selected)
         }
         .buttonStyle(.plain)
-    }
-
-    private var knowledgeSidebarGroup: some View {
-        VStack(spacing: 2) {
-            let selected = navigation.section == .knowledge
-            Button {
-                if selected {
-                    knowledgeExpanded.toggle()
-                } else {
-                    navigation.section = .knowledge
-                    knowledgeExpanded = true
-                    store.refreshKnowledgeCatalog()
-                    if navigation.selectedKnowledgeLibraryID == nil {
-                        navigation.selectedKnowledgeLibraryID =
-                            sortedKnowledgeCollections.first?.id ?? ATMKnowledgeLibrary.memoryID
-                    }
-                }
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: ATMDesktopSection.knowledge.icon).frame(width: 18)
-                    Text(ATMDesktopSection.knowledge.title)
-                    Spacer()
-                    Image(systemName: knowledgeExpanded ? "chevron.down" : "chevron.right")
-                        .font(ATMFont.font(.micro, weight: .semibold))
-                }
-                .font(ATMFont.font(.body, weight: .medium))
-                .atmDesktopRailSurface(isSelected: selected)
-            }
-            .buttonStyle(.plain)
-
-            if knowledgeExpanded {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 1) {
-                        knowledgeLibraryButton(
-                            id: ATMKnowledgeLibrary.memoryID,
-                            title: "共享记忆",
-                            count: nil,
-                            icon: "brain.head.profile"
-                        )
-
-                        Divider().padding(.leading, 28).padding(.vertical, 3)
-
-                        ForEach(sortedKnowledgeCollections) { collection in
-                            knowledgeLibraryButton(
-                                id: collection.id,
-                                title: collection.name,
-                                count: collection.documentCount,
-                                icon: collection.id == "inbox" ? "tray" : "folder"
-                            )
-                        }
-
-                        if store.isKnowledgeCatalogLoading {
-                            ProgressView()
-                                .controlSize(.small)
-                                .frame(maxWidth: .infinity)
-                            .padding(.vertical, 4)
-                        }
-                    }
-                    .padding(.trailing, 8)
-                }
-                .padding(.leading, 14)
-                .frame(maxHeight: 172)
-                .overlay(alignment: .bottom) {
-                    if sortedKnowledgeCollections.count > 5 {
-                        LinearGradient(
-                            colors: [ATMTheme.rail.opacity(0), ATMTheme.rail.opacity(0.96)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 16)
-                        .allowsHitTesting(false)
-                    }
-                }
-            }
-        }
+        .help(section.title)
     }
 
     private var sortedKnowledgeCollections: [ATMKnowledgeCollection] {
@@ -795,62 +1008,9 @@ struct DesktopContentView: View {
         }
     }
 
-    private func knowledgeLibraryButton(id: String, title: String, count: Int?, icon: String) -> some View {
-        let selected = navigation.section == .knowledge && navigation.selectedKnowledgeLibraryID == id
-        return Button {
-            navigation.section = .knowledge
-            navigation.selectedKnowledgeLibraryID = id
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: icon)
-                    .frame(width: 15)
-                Text(title)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                if let count {
-                    Text("\(count)")
-                        .font(ATMFont.mono(.caption, .medium))
-                        .foregroundStyle(ATMTheme.railMuted)
-                }
-            }
-            .font(ATMFont.font(.footnote, weight: selected ? .semibold : .regular))
-            .atmDesktopRailSurface(isSelected: selected, isNested: true)
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .atmRightClickMenu {
-            ATMMenuItem("新建知识库…") {
-                newCollectionID = ""
-                newCollectionName = ""
-                showingCollectionCreate = true
-            }
-            if id != ATMKnowledgeLibrary.memoryID {
-                ATMMenuItem("在此新建知识…") {
-                    navigation.section = .knowledge
-                    navigation.selectedKnowledgeLibraryID = id
-                    navigation.knowledgeCreateRequest += 1
-                }
-                ATMMenuSeparator()
-                ATMMenuItem("重命名…") {
-                    renameCollectionName = title
-                    renameCollectionTarget = ATMCollectionRef(id: id, name: title, count: count ?? 0)
-                }
-                ATMMenuItem("删除…", destructive: true) {
-                    deleteCollectionTarget = ATMCollectionRef(id: id, name: title, count: count ?? 0)
-                }
-            }
-            ATMMenuSeparator()
-            ATMMenuItem("刷新目录") { store.refreshKnowledgeCatalog() }
-            ATMMenuItem("复制知识库 ID") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(id, forType: .string)
-            }
-        }
-    }
-
     private func selectDefaultKnowledgeLibraryIfNeeded() {
         if let selected = navigation.selectedKnowledgeLibraryID,
-           selected == ATMKnowledgeLibrary.memoryID ||
+           selected == ATMKnowledgeLibrary.memoryID || selected == ATMKnowledgeLibrary.archiveID ||
            store.knowledgeCollections.contains(where: { $0.id == selected }) {
             return
         }
@@ -866,6 +1026,7 @@ struct DesktopContentView: View {
 }
 
 private struct DesktopTasksView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
 
@@ -896,7 +1057,9 @@ private struct DesktopTasksView: View {
     @ViewBuilder
     private func groupHeader(_ group: ATMTaskGroup, expanded: Binding<Bool>) -> some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) { expanded.wrappedValue.toggle() }
+            withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
+                expanded.wrappedValue.toggle()
+            }
         } label: {
             HStack {
                 ATMDrawerDisclosureLabel(
@@ -988,6 +1151,10 @@ private struct DesktopTasksView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(ATMTheme.canvas)
+            .atmAnimatedSwap(
+                "todo:\(selectedTodo?.id ?? "empty"):\(showingTrash)",
+                style: .detail
+            )
         }
         .onAppear {
             applyDefaultCollapsedGroupsIfNeeded()
@@ -1007,7 +1174,7 @@ private struct DesktopTasksView: View {
 
     private var taskList: some View {
         VStack(spacing: 0) {
-            ATMDrawerHeader(title: showingTrash ? "回收站" : "我的任务", count: visibleTodos.count) {
+            ATMDrawerHeader(title: showingTrash ? "回收站" : "任务", count: visibleTodos.count) {
                 if showingTrash {
                     Button {
                         showingTrash = false
@@ -1040,17 +1207,18 @@ private struct DesktopTasksView: View {
             }
 
             if let error = store.errorMessage {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.danger)
-                    // Wraps rather than truncates: the version-mismatch message
-                    // ends in the command to run, and a clipped instruction is no
-                    // instruction.
-                    .fixedSize(horizontal: false, vertical: true)
-                    .multilineTextAlignment(.leading)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, 8)
+                let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "任务加载失败")
+                ATMInlineNotice(
+                    severity: .error,
+                    title: presentation.title,
+                    message: presentation.message,
+                    details: error,
+                    actionTitle: "重试",
+                    onAction: { store.refresh() },
+                    onDismiss: { store.dismissDashboardError() }
+                )
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
 
             List {
@@ -1069,8 +1237,7 @@ private struct DesktopTasksView: View {
                                 }
                                     .buttonStyle(.plain)
                                     .focusable(false)
-                                    .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
-                                    .listRowBackground(Color.clear)
+                                    .atmContentListRow()
                                     .atmRightClickMenu { todoMenuEntries(for: todo) }
                             }
                         }
@@ -1176,7 +1343,7 @@ private struct DesktopTodoRow: View {
         // Dropping it gives the title back ~38pt of a 260–420pt column and takes a
         // line's worth of height off each row, which is the whole point of the list:
         // scan ids and titles, not re-read the section you are already inside.
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
             // The id leads the title rather than sitting in the meta line: it
             // is what you scan the list for and what you type back at the CLI,
             // and below the title it was the one thing you had to look away to
@@ -1257,6 +1424,8 @@ private struct DesktopTodoRow: View {
 struct DesktopTodoDetail: View {
     private enum DetailTab: String, CaseIterable {
         case detail
+        case activity
+        case taskRun
         case sessions
     }
 
@@ -1269,6 +1438,11 @@ struct DesktopTodoDetail: View {
     @State private var selectedTab: DetailTab = .detail
     @State private var copiedPrompt = false
     @State private var deleteCandidate: ATMTodo?
+    @State private var showingDispatchSheet = false
+    @State private var showingCodexContinuation = false
+    @State private var showingTaskRunInterruptConfirmation = false
+    @State private var taskRunLaunchError: String?
+    @State private var codexContinuationInstructions = ""
     @State private var isEditingSource = false
     @State private var title = ""
     @State private var description = ""
@@ -1294,9 +1468,14 @@ struct DesktopTodoDetail: View {
                 editContent
             } else {
                 detailHeader
+                refineNotice
                 detailTabs
                 if selectedTab == .detail {
                     readContent
+                } else if selectedTab == .activity {
+                    activityContent
+                } else if selectedTab == .taskRun, hasTaskRuns {
+                    taskRunContent
                 } else {
                     sessionContent
                 }
@@ -1304,7 +1483,11 @@ struct DesktopTodoDetail: View {
         }
         .background(ATMTheme.canvas)
         .onAppear {
-            if !isTrashed { store.loadBoundSessions(for: todo.id) }
+            if !isTrashed {
+                store.loadBoundSessions(for: todo.id)
+                store.loadTaskRuns(for: todo.id)
+                store.loadTaskRunAgents()
+            }
             // Selecting another row rebuilds this view (`.id(todo.id)`), so a
             // request aimed at a not-yet-selected todo arrives here rather than in
             // onChange.
@@ -1312,7 +1495,32 @@ struct DesktopTodoDetail: View {
         }
         .onChange(of: navigation.editTodoID) { _ in consumeEditRequest() }
         .onChange(of: store.snapshot.refreshedAt) { _ in
-            if !isTrashed { store.loadBoundSessions(for: todo.id) }
+            if !isTrashed {
+                store.loadBoundSessions(for: todo.id)
+                store.loadTaskRuns(for: todo.id)
+            }
+        }
+        // Both of these can remove the page that is currently selected: trashing
+        // hides three of them, and 「Agent 执行」 only exists while a run does.
+        .onChange(of: isTrashed) { _ in normalizeSelectedTab() }
+        .onChange(of: hasTaskRuns) { _ in normalizeSelectedTab() }
+        .task(id: taskRunRefreshKey) {
+            guard !isTrashed else { return }
+            store.loadTaskRuns(for: todo.id)
+            if selectedTab == .taskRun {
+                store.refreshLiveStatus()
+            }
+            while latestTaskRun?.isActive == true, !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 2_000_000_000)
+                } catch {
+                    break
+                }
+                store.loadTaskRuns(for: todo.id)
+                if selectedTab == .taskRun {
+                    store.refreshLiveStatus()
+                }
+            }
         }
         .confirmationDialog(
             "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
@@ -1332,40 +1540,101 @@ struct DesktopTodoDetail: View {
         } message: {
             Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
         }
+        .confirmationDialog(
+            "中断当前 Codex 执行？",
+            isPresented: $showingTaskRunInterruptConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("中断执行", role: .destructive) {
+                store.interruptTaskRun(todoID: todo.id)
+            }
+            Button("继续执行", role: .cancel) {}
+        } message: {
+            Text("Agent 进程会停止，Todo 保持工作中；之后可以重新执行或继续该会话。")
+        }
+        .sheet(isPresented: $showingCodexContinuation) {
+            codexContinuationSheet
+        }
+        .sheet(isPresented: $showingDispatchSheet) {
+            taskRunDispatchSheet
+        }
+        .alert(
+            "无法打开 Agent 会话",
+            isPresented: Binding(
+                get: { taskRunLaunchError != nil },
+                set: { if !$0 { taskRunLaunchError = nil } }
+            )
+        ) {
+            Button("好") { taskRunLaunchError = nil }
+        } message: {
+            Text(taskRunLaunchError ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var refineNotice: some View {
+        if store.refiningTodoIDs.contains(todo.id) {
+            ATMInlineNotice(
+                severity: .info,
+                title: "正在整理任务",
+                message: "模型在润色标题和需求；复杂工作会拆成子任务并写一份计划。"
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+        } else if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty {
+            ATMInlineNotice(
+                severity: .warning,
+                title: "任务整理失败",
+                message: error,
+                actionTitle: "重试",
+                onAction: { store.refineTodo(id: todo.id) },
+                onDismiss: { store.dismissRefineError(for: todo.id) }
+            )
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+        }
     }
 
     private var detailTabs: some View {
-        HStack(spacing: 22) {
-            detailTabButton(.detail, title: "任务描述", icon: "doc.text")
-            if !isTrashed {
-                detailTabButton(.sessions, title: sessionTabTitle, icon: "terminal")
-            }
+        HStack {
+            ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 24)
-        .frame(height: 46)
-        .background(ATMTheme.elevated)
-        .overlay(alignment: .bottom) { Rectangle().fill(ATMTheme.border).frame(height: 1) }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(ATMTheme.canvas)
     }
 
-    private func detailTabButton(_ tab: DetailTab, title: String, icon: String) -> some View {
-        let selected = selectedTab == tab
-        return Button {
-            selectedTab = tab
-        } label: {
-            Label(title, systemImage: icon)
-                .font(ATMFont.font(.body, weight: .semibold))
-                .foregroundStyle(selected ? ATMTheme.primary : ATMTheme.secondary)
-                .padding(.horizontal, 2)
-                .frame(height: 46)
-                .overlay(alignment: .bottom) {
-                    Capsule()
-                        .fill(selected ? ATMTheme.accent : Color.clear)
-                        .frame(height: 2)
-                }
+    /// 「Agent 执行」只在真的有执行记录时出现。
+    ///
+    /// 默认的交接路径（`todo handoff` / 「在 Codex 里打开」）不产生 `task_runs`
+    /// ——会话由 Codex 自己拥有，ATM 通过 `session bind` 认识它——所以这个页在
+    /// 默认路径上永远是空的，而它的空态还在指路一个已经不存在的「选择 Agent」
+    /// 动作。有执行记录才显示，跟 Agent 页的「全部日志」是同一条规矩。
+    private var hasTaskRuns: Bool { !store.taskRuns(for: todo.id).isEmpty }
+
+    private var detailTabItems: [(value: DetailTab, title: String)] {
+        var items: [(value: DetailTab, title: String)] = [(.detail, "任务描述")]
+        if !isTrashed {
+            items.append((.activity, "动态"))
+            if hasTaskRuns {
+                items.append((.taskRun, "Agent 执行"))
+            }
+            items.append((.sessions, sessionTabTitle))
         }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        return items
+    }
+
+    /// 选中的页消失时把选择拉回来。
+    ///
+    /// `selectedTab` 是 `@State`，在任务之间切换时不会重置：从一个有执行记录的
+    /// 任务切到没有的，选择会停在一个已经不在胶囊里的值上，于是内容区落到
+    /// 兜底分支、而胶囊一个都不高亮。回收站视图早就有这个问题（它藏掉三个页），
+    /// 只是没人注意。
+    private func normalizeSelectedTab() {
+        if !detailTabItems.contains(where: { $0.value == selectedTab }) {
+            selectedTab = .detail
+        }
     }
 
     private var sessionTabTitle: String {
@@ -1460,7 +1729,23 @@ struct DesktopTodoDetail: View {
                         store.perform(item.action, on: todo)
                     }
                 }
+                if canContinueTaskRun {
+                    actionButton("arrow.trianglehead.clockwise", help: "继续上次 Agent 任务") {
+                        presentCodexContinuation()
+                    }
+                    .disabled(store.isActing)
+                }
                 if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
+                    Button {
+                        presentDispatchSheet()
+                    } label: {
+                        Label(taskRunActionTitle, systemImage: taskRunActionIcon)
+                            .font(ATMFont.font(.footnote, weight: .semibold))
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help(taskRunActionHelp)
+                    .disabled(latestTaskRun?.isActive == true || store.isActing)
                     actionButton(
                         copiedPrompt ? "checkmark" : "doc.on.doc",
                         help: copiedPrompt ? "已复制启动提示" : "复制启动提示"
@@ -1526,20 +1811,9 @@ struct DesktopTodoDetail: View {
     private var readContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                if let nextAction = latestNextAction {
-                    nextActionBanner(nextAction)
-                }
-
                 if let description = nonEmpty(todo.description) {
-                    detailCard("任务描述", icon: "text.alignleft") {
-                        DesktopTodoDescription(source: description)
-                    }
-                }
-
-                if !isTrashed {
-                    detailCard("动态", icon: "clock.arrow.circlepath") {
-                        TodoProgressView(todo: todo, store: store)
-                    }
+                    ATMMarkdownContentView(source: description)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
                 if let links = todo.links, !links.isEmpty {
@@ -1558,6 +1832,12 @@ struct DesktopTodoDetail: View {
                     }
                 }
 
+                if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false {
+                    Text("暂无任务描述。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+
             }
             .padding(16)
             .frame(maxWidth: 860, alignment: .leading)
@@ -1565,16 +1845,496 @@ struct DesktopTodoDetail: View {
         }
     }
 
-    private var sessionContent: some View {
+    private var latestTaskRun: ATMTaskRun? {
+        store.taskRuns(for: todo.id).first
+    }
+
+    private var canContinueTaskRun: Bool {
+        guard !isTrashed,
+              let run = latestTaskRun,
+              !run.isActive,
+              run.status == "completed" || run.status == "failed" || run.status == "interrupted" else {
+            return false
+        }
+        // Same test as `atm todo run --continue`: an id Codex cannot resolve to a
+        // thread would quietly start a fresh session, so don't offer the action.
+        return ATMTaskRunSessionRouting.resumableThreadID(run.sessionID) != nil
+    }
+
+    private var taskRunSession: ATMLiveSession? {
+        guard let run = latestTaskRun else { return nil }
+        let visible = store.snapshot.liveStatus.sessions.filter { $0.activityState != "unobserved" }
+        return ATMTaskRunSessionRouting.session(for: run, todoID: todo.id, in: visible)
+    }
+
+    private var taskRunLaunchRoute: ATMAgentSessionLaunchRoute? {
+        guard let run = latestTaskRun else { return nil }
+        return ATMAgentSessionLaunchRoute.resolve(for: run, live: taskRunSession)
+    }
+
+    /// The run's session as the index knows it, used once it has aged out of live
+    /// status. Without this the outcome text disappears from the Todo the moment
+    /// the session goes quiet, even though ATM has it indexed.
+    private var taskRunArchivedSession: ATMBoundSession? {
+        guard let run = latestTaskRun, let sessionID = run.sessionID else { return nil }
+        return store.boundSessions(for: todo.id).first {
+            $0.sessionID == sessionID || $0.indexedID == sessionID
+        }
+    }
+
+    private var taskRunRefreshKey: String {
+        [
+            todo.id,
+            selectedTab.rawValue,
+            latestTaskRun?.id ?? "none",
+            latestTaskRun?.status ?? "none",
+        ].joined(separator: "|")
+    }
+
+    private var taskRunActionHelp: String {
+        switch latestTaskRun?.status {
+        case "starting", "running": return "Agent 正在处理"
+        case "failed", "interrupted": return "重新委派"
+        default: return "委派给 Codex"
+        }
+    }
+
+    private var taskRunActionTitle: String {
+        switch latestTaskRun?.status {
+        case "starting", "running": return "委派中"
+        case "failed": return "重新委派"
+        default: return "委派"
+        }
+    }
+
+    private var taskRunActionIcon: String {
+        switch latestTaskRun?.status {
+        case "starting", "running": return "gearshape.2"
+        case "failed": return "arrow.clockwise"
+        default: return "paperplane.fill"
+        }
+    }
+
+    @ViewBuilder
+    private var taskRunContent: some View {
+        if let run = latestTaskRun {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(taskRunColor(run.status))
+                            .frame(width: 8, height: 8)
+                        Text(taskRunStatusLabel(run.status))
+                            .font(ATMFont.font(.body, weight: .semibold))
+                        if run.isActive { ProgressView().controlSize(.small) }
+                        Spacer(minLength: 12)
+                        if let route = taskRunLaunchRoute, route.isAvailable {
+                            Button {
+                                openTaskRunSession(route)
+                            } label: {
+                                Label(route.actionTitle, systemImage: "arrow.up.forward.app")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                            .help("\(route.actionTitle)（\(route.destinationLabel)）；交互控制由原生 Agent 提供")
+                        }
+                        if run.isActive {
+                            Button("中断", role: .destructive) {
+                                showingTaskRunInterruptConfirmation = true
+                            }
+                            .controlSize(.small)
+                            .disabled(store.isActing)
+                        }
+                        if canContinueTaskRun {
+                            Button("继续修改") { presentCodexContinuation() }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .disabled(store.isActing)
+                        }
+                        if run.status == "failed" || run.status == "interrupted" {
+                            Button("重新委派") { presentDispatchSheet() }
+                                .controlSize(.small)
+                                .disabled(store.isActing)
+                        }
+                        Button("刷新") {
+                            store.loadTaskRuns(for: todo.id)
+                            store.refreshLiveStatus()
+                        }
+                        .controlSize(.small)
+                    }
+
+                    Text(run.message ?? "run \(run.id)")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .textSelection(.enabled)
+                    if let route = taskRunLaunchRoute, route.isAvailable {
+                        Label(
+                            "需要输入、处理授权或使用更多控制时，请在 \(route.destinationLabel) 中继续；ATM 仍会同步状态和日志。",
+                            systemImage: "arrow.up.forward.app"
+                        )
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Label(run.workDir, systemImage: "folder")
+                        .font(ATMFont.mono(.caption))
+                        .foregroundStyle(ATMTheme.secondary)
+                        .lineLimit(1)
+                        .textSelection(.enabled)
+
+                    if let session = taskRunSession {
+                        taskRunAgentPreview(session)
+                    } else if let archived = taskRunArchivedSession {
+                        taskRunArchivedPreview(archived)
+                    } else {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Label(
+                                run.isActive ? "正在建立 Agent 会话" : "未找到关联 Agent 会话",
+                                systemImage: run.isActive ? "arrow.triangle.2.circlepath" : "person.crop.circle.badge.questionmark"
+                            )
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            Text(taskRunMissingSessionMessage(run))
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .atmWorkspaceCard()
+                    }
+                }
+                .padding(18)
+                .frame(maxWidth: 860, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        } else {
+            // 这一页已经只在有执行记录时出现，所以这里只可能是加载中的一瞬，或者
+            // 记录刚被清掉。不再摆一个空状态插画和一个「委派任务」按钮：委派入口
+            // 在头部，而一个装着引导的空页会让人以为自己找错了地方。
+            VStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("正在读取执行记录…")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private func taskRunMissingSessionMessage(_ run: ATMTaskRun) -> String {
+        if taskRunLaunchRoute?.isAvailable == true {
+            return run.isActive
+                ? "原生会话已经可以打开；ATM 活动索引就绪后，这里还会显示执行动态。"
+                : "该执行已超出最近活动窗口，但仍可回到原生 Agent 会话。"
+        }
+        return run.isActive
+            ? "会话进入 Agent 列表后，可在详情中查看执行动态与全部日志。"
+            : "该执行可能已超出 Agent 列表的最近活动窗口。"
+    }
+
+    private func taskRunAgentPreview(_ session: ATMLiveSession) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                ATMAgentMark(agent: session.tool, size: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Agent 详情")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("\(ATMAgentDisplay.clientName(session)) · \(ATMAgentDisplay.projectName(session))")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                Spacer(minLength: 8)
+                Button {
+                    navigation.selectedAgentID = session.id
+                    navigation.selectedAgentRunTodoID = todo.id
+                    navigation.section = .agents
+                } label: {
+                    Label("查看详情", systemImage: "chevron.right")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+
+            Text(session.presenceTitle)
+                .font(ATMFont.font(.bodyLarge, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let result = session.latestResultText {
+                Divider()
+                ATMMarkdownContentView(source: result)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let update = session.visibleUpdates.last {
+                Divider()
+                ATMMarkdownContentView(source: update)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .atmWorkspaceCard()
+    }
+
+    /// 会话已经不在实时窗口里时的执行结果，取自持久索引。
+    ///
+    /// 刻意和实时卡片长得一样但不假装实时：没有状态点、没有「查看详情」跳转（那条路
+    /// 指向的是实时列表，这个会话不在里面），只保留 Agent 自己最后说的那段话——
+    /// 而它正是验收时唯一要读的东西。
+    private func taskRunArchivedPreview(_ session: ATMBoundSession) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                ATMAgentMark(agent: session.agent, size: 18)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Agent 执行结果")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("\(ATMAgentDisplay.name(session.agent)) · \(session.shortID)")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                Spacer(minLength: 8)
+            }
+
+            if let summary = session.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !summary.isEmpty {
+                Text(summary)
+                    .font(ATMFont.font(.bodyLarge, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let result = session.latestResult?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !result.isEmpty {
+                Divider()
+                ATMMarkdownContentView(source: result)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .atmWorkspaceCard()
+    }
+
+    private func openTaskRunSession(_ route: ATMAgentSessionLaunchRoute) {
+        do {
+            try ATMAgentSessionLauncher.open(route)
+        } catch {
+            taskRunLaunchError = error.localizedDescription
+        }
+    }
+
+    private func taskRunStatusLabel(_ status: String) -> String {
+        switch status {
+        case "starting": return "正在启动"
+        case "running": return "正在处理"
+        case "completed": return todo.status == "review" ? "已提交验收" : "Agent 已完成"
+        case "failed": return "执行失败"
+        case "interrupted": return "已中断"
+        default: return status
+        }
+    }
+
+    private func taskRunColor(_ status: String) -> Color {
+        switch status {
+        case "starting", "running": return ATMTheme.accent
+        case "completed": return ATMTheme.success
+        case "failed": return ATMTheme.danger
+        case "interrupted": return ATMTheme.warning
+        default: return ATMTheme.secondary
+        }
+    }
+
+    private var dispatchAgent: ATMTaskRunAgent? { store.taskRunAgents.first }
+
+    /// Confirms one dispatch. Not a picker any more: Codex is the only target, and
+    /// a radio list of one presents a choice that does not exist. What the sheet
+    /// still owes the user is what will run, that it is installed, and that it
+    /// costs model usage.
+    private var taskRunDispatchSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("委派这个任务")
+                    .font(ATMFont.font(.title2, weight: .semibold))
+                Text("两种方式：在 Codex 里打开由你盯着做，或者没人在场时让它在后台跑完。都会产生模型用量。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+
+            if let agent = dispatchAgent {
+                HStack(alignment: .top, spacing: 12) {
+                    ATMAgentMark(agent: agent.id, size: 22)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 7) {
+                            Text(agent.name)
+                                .font(ATMFont.font(.body, weight: .semibold))
+                            Text(agent.available ? "已安装" : "未安装")
+                                .font(ATMFont.caption)
+                                .foregroundStyle(agent.available ? ATMTheme.success : ATMTheme.secondary)
+                        }
+                        Text(agent.costNote)
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !agent.available {
+                            Label("PATH 里找不到 \(agent.binary)，先安装 Codex CLI 再委派。",
+                                  systemImage: "exclamationmark.shield")
+                                .font(ATMFont.caption)
+                                .foregroundStyle(ATMTheme.warning)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    Spacer(minLength: 8)
+                }
+                .padding(13)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
+                .overlay { RoundedRectangle(cornerRadius: 10).stroke(ATMTheme.border) }
+                .opacity(agent.available ? 1 : 0.58)
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在检查 Codex 是否已安装…")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 96)
+            }
+
+            // 「在 Codex 里打开」是主动作，不是因为它更常用，而是因为它是可逆的：
+            // 输入框填好但不提交，人还能改、能撤、能换目录。后台跑完是不可逆的那一个。
+            Text("在 Codex 里打开：填好这条任务的指针，等你按回车。后台跑完：无人应答的授权请求会让它失败。")
+                .font(ATMFont.caption)
+                .foregroundStyle(ATMTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("取消") { showingDispatchSheet = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("后台跑完") { dispatchToAgent() }
+                    .disabled(dispatchAgent?.available != true || store.isActing)
+                Button("在 Codex 里打开") { handoffToCodex() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(dispatchAgent?.available != true || store.isActing)
+            }
+        }
+        .padding(22)
+        .frame(width: 520)
+        .background(ATMTheme.canvas)
+    }
+
+    private func presentDispatchSheet() {
+        showingDispatchSheet = true
+        store.loadTaskRunAgents()
+    }
+
+    private func dispatchToAgent() {
+        guard let agent = dispatchAgent, agent.available else { return }
+        showingDispatchSheet = false
+        store.dispatchTodo(todo, agent: agent)
+    }
+
+    private func handoffToCodex() {
+        guard dispatchAgent?.available == true else { return }
+        showingDispatchSheet = false
+        store.handoffTodo(todo)
+    }
+
+    private var codexContinuationSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("继续上次 \(latestTaskRunAgentName) 任务")
+                    .font(ATMFont.font(.title2, weight: .semibold))
+                Text("\(latestTaskRunAgentName) 会保留上次执行的上下文，并把这次修改记录为新的执行轮次和模型用量。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $codexContinuationInstructions)
+                    .font(ATMFont.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(7)
+                    .frame(minHeight: 150)
+                    .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ATMTheme.border))
+                if codexContinuationInstructions.isEmpty {
+                    Text("描述要调整的内容，例如：按钮改成主操作，并补充失败态测试")
+                        .font(ATMFont.body)
+                        .foregroundStyle(ATMTheme.secondary.opacity(0.72))
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 15)
+                        .allowsHitTesting(false)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("取消") { showingCodexContinuation = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("继续修改") { submitCodexContinuation() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(
+                        codexContinuationInstructions
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                            .isEmpty || store.isActing
+                    )
+            }
+        }
+        .padding(22)
+        .frame(width: 520)
+        .background(ATMTheme.canvas)
+    }
+
+    private func presentCodexContinuation() {
+        codexContinuationInstructions = ""
+        showingCodexContinuation = true
+    }
+
+    private func submitCodexContinuation() {
+        let instructions = codexContinuationInstructions
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !instructions.isEmpty, let run = latestTaskRun else { return }
+        showingCodexContinuation = false
+        store.continueTodo(todo, run: run, instructions: instructions)
+    }
+
+    private var latestTaskRunAgentName: String {
+        guard let id = latestTaskRun?.agent else { return "Agent" }
+        if let name = store.taskRunAgents.first(where: { $0.id == id })?.name { return name }
+        switch id {
+        case "codex": return "Codex"
+        case "grokbuild": return "Grok Build"
+        case "pi": return "Pi"
+        default: return "Agent"
+        }
+    }
+
+    /// Dynamic entries have their own destination, so the timeline no longer sits
+    /// inside a second titled card. The latest next action stays with the timeline
+    /// because it is derived from the same progress log.
+    private var activityContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                detailCard("绑定历史", icon: "terminal") {
-                    TodoSessionHistoryView(todo: todo, store: store)
+                if let nextAction = latestNextAction {
+                    nextActionBanner(nextAction)
                 }
+                TodoProgressView(todo: todo, store: store)
             }
             .padding(16)
             .frame(maxWidth: 860, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+
+    /// No card, no section title: the tab holds nothing but the binding history and
+    /// already carries its own name, so a titled white box around the only thing on
+    /// the page was framing with nothing to frame against.
+    private var sessionContent: some View {
+        ScrollView {
+            TodoSessionHistoryView(todo: todo, store: store)
+                // 14 + the row surface's own 10 lines the rows up with the tab bar.
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+                .frame(maxWidth: 860, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
@@ -1622,12 +2382,18 @@ struct DesktopTodoDetail: View {
     private var editContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                editSection("标题") {
-                    fieldBox {
-                        TextField("任务标题", text: $title)
-                            .textFieldStyle(.plain)
-                            .font(ATMFont.font(.body, weight: .medium))
-                    }
+                // Titles here are usually a whole sentence — the task is typed as
+                // one line and the description stays empty — so the field wraps and
+                // grows instead of showing a 40-character window of it.
+                editSection("标题", hint: "单行；⏎ 保存") {
+                    ATMGrowingTextField(
+                        text: $title,
+                        placeholder: "任务标题",
+                        font: ATMFont.nsFont(.body, weight: .medium),
+                        maxLines: 6
+                    ) { saveEdit() }
+                        .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                 }
 
                 detailCard("属性", icon: "slider.horizontal.3") {
@@ -1647,8 +2413,8 @@ struct DesktopTodoDetail: View {
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                 }
             }
-            // Capped and left-aligned: stretched across a wide detail pane, a
-            // single-line title field ran on for hundreds of points.
+            // Capped and left-aligned: stretched across a wide detail pane, the
+            // text fields ran on for hundreds of points.
             .frame(maxWidth: 620, alignment: .leading)
             .padding(.horizontal, 18)
             .padding(.vertical, 16)
@@ -1878,6 +2644,14 @@ struct DesktopTodoDetail: View {
         todo: ATMTodo
     ) -> some View {
         Menu {
+            if !ATMTodoStatusActions.isClosed(todo) {
+                Button {
+                    store.refineTodo(id: todo.id)
+                } label: {
+                    Label("优化任务", systemImage: "wand.and.stars")
+                }
+                .disabled(store.refiningTodoIDs.contains(todo.id))
+            }
             Button {
                 beginEditing()
             } label: {
@@ -1971,14 +2745,6 @@ struct DesktopTodoDetail: View {
         }
     }
 
-    private func fieldBox<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
-    }
-
     private func gridLabel(_ text: String) -> some View {
         Text(text)
             .font(ATMFont.body)
@@ -2007,91 +2773,6 @@ struct DesktopTodoDetail: View {
     private func nonEmpty(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
         return trimmed
-    }
-}
-
-/// Task descriptions written by an Agent can run to hundreds of lines. Left
-/// unbounded they push 动态 / 关联链接 off the first screen, so a long one is
-/// clipped to a reading-size-scaled height with an 展开/收起 toggle. Short
-/// descriptions render exactly as before — no toggle, no clip.
-private struct DesktopTodoDescription: View {
-    let source: String
-
-    @ObservedObject private var appearance = ATMAppearance.shared
-    @State private var isExpanded = false
-    @State private var contentHeight: CGFloat = 0
-    @State private var toggleHovered = false
-
-    /// About 14 lines of body text, so the height tracks the 正文字号 setting
-    /// instead of shrinking to a handful of lines at 大 / 特大.
-    private var collapsedMaxHeight: CGFloat {
-        (appearance.contentTextSize.pointSize + 3) * 14
-    }
-
-    /// Slack below the cap, so a description that just grazes the limit gets shown
-    /// whole rather than clipped for the sake of two pixels.
-    private var isOverflowing: Bool {
-        contentHeight > collapsedMaxHeight + 24
-    }
-
-    private var isClipped: Bool { isOverflowing && !isExpanded }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ATMMarkdownContentView(source: source)
-                // Ideal height regardless of the cap below, so what we measure is the
-                // full description and the clip can't feed back into the measurement.
-                .fixedSize(horizontal: false, vertical: true)
-                .background(
-                    GeometryReader { proxy in
-                        Color.clear.preference(key: DescriptionHeightKey.self, value: proxy.size.height)
-                    }
-                )
-                .frame(maxHeight: isClipped ? collapsedMaxHeight : nil, alignment: .top)
-                .clipped()
-                .overlay(alignment: .bottom) {
-                    if isClipped {
-                        LinearGradient(
-                            colors: [ATMTheme.elevated.opacity(0), ATMTheme.elevated],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 36)
-                        .allowsHitTesting(false)
-                    }
-                }
-            if isOverflowing {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.16)) { isExpanded.toggle() }
-                } label: {
-                    Label(
-                        isExpanded ? "收起描述" : "展开完整描述",
-                        systemImage: isExpanded ? "chevron.up" : "chevron.down"
-                    )
-                    .font(ATMFont.font(.footnote, weight: .semibold))
-                    .foregroundStyle(ATMTheme.accent)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        ATMTheme.accent.opacity(toggleHovered ? 0.10 : 0.0),
-                        in: RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    )
-                }
-                .buttonStyle(.plain)
-                .help(isExpanded ? "收起长描述" : "展开完整任务描述")
-                .onHover { toggleHovered = $0 }
-            }
-        }
-        .onPreferenceChange(DescriptionHeightKey.self) { height in
-            contentHeight = height
-        }
-    }
-}
-
-private struct DescriptionHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
@@ -2147,8 +2828,9 @@ private struct DesktopAddTodoSheet: View {
             ATMComposerTextView(
                 text: $text,
                 placeholder: "要完成什么？",
-                autoFocus: true
-            ) { submit(draft) }
+                autoFocus: true,
+                onSubmit: { submit(draft) }
+            )
                 .frame(height: 150)
                 .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
@@ -2762,6 +3444,11 @@ private struct DesktopUsageContent: View, Equatable {
         let points = trendMetric == .speed
             ? speedStats.map { ATMTrendPoint(from: $0, value: $0.tokensPerSecond ?? 0) }
             : seriesStats.map { ATMTrendPoint(from: $0, value: Double($0.totalTokens)) }
+        let bucketDates = points.map(\.date)
+        // Hour or day comes from the buckets themselves, not from the window: every
+        // single-day window is drawn in hours when the snapshot carries them, and in
+        // one day bucket when it does not.
+        let hourlyAxis = ATMUsageDateAxis.isHourly(bucketDates)
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Text(range.tokenTrendTitle)
@@ -2843,7 +3530,7 @@ private struct DesktopUsageContent: View, Equatable {
                 }
                 .chartXAxis {
                     AxisMarks(values: ATMUsageDateAxis.values(
-                        points.map(\.date),
+                        bucketDates,
                         // A month of daily ticks overlaps at this width; a week fits.
                         maximumLabels: range == .last30Days || range == .thisMonth ? 6 : 7
                     )) { value in
@@ -2851,7 +3538,7 @@ private struct DesktopUsageContent: View, Equatable {
                             .foregroundStyle(ATMTheme.chartGrid)
                         AxisValueLabel {
                             if let date = value.as(Date.self) {
-                                if range == .today {
+                                if hourlyAxis {
                                     Text(date, format: .dateTime.hour().minute())
                                 } else {
                                     Text(date, format: .dateTime.month(.defaultDigits).day())
@@ -2862,7 +3549,7 @@ private struct DesktopUsageContent: View, Equatable {
                     }
                 }
                 .chartXScale(
-                    domain: ATMUsageDateAxis.paddedDomain(points.map(\.date)),
+                    domain: ATMUsageDateAxis.paddedDomain(bucketDates),
                     range: .plotDimension(padding: 18)
                 )
                 .chartPlotStyle { plotArea in

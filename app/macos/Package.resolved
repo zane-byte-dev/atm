@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "sherpa-onnx-spm",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/willwade/sherpa-onnx-spm.git",
+      "state" : {
+        "revision" : "45fc962cfd0a47f389434616de4d3d212c764c9f",
+        "version" : "1.13.16"
+      }
+    }
+  ],
+  "version" : 2
+}

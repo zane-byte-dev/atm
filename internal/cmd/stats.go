@@ -123,10 +123,8 @@ func runStats(cmd *cobra.Command, args []string) error {
 
 		fmt.Printf("\n  %-20s %-10s %8s %8s %8s %10s %10s %8s\n",
 			"Project", "Agent", "Sessions", "Queries", "Tools", "In", "Out", "Cost($)")
-		sep := strings.Repeat("-", 20)
-		fmt.Printf("  %-20s %-10s %8s %8s %8s %10s %10s %8s\n",
-			sep, strings.Repeat("-", 10), strings.Repeat("-", 8), strings.Repeat("-", 8),
-			strings.Repeat("-", 8), strings.Repeat("-", 10), strings.Repeat("-", 10), strings.Repeat("-", 8))
+		statsSep := output.Dashes(20, 10, 8, 8, 8, 10, 10, 8)
+		fmt.Printf("  %-20s %-10s %8s %8s %8s %10s %10s %8s\n", statsSep...)
 
 		var totalSessions, totalQueries, totalTools int
 		var totalIn, totalOut int64
@@ -142,9 +140,7 @@ func runStats(cmd *cobra.Command, args []string) error {
 			totalOut += r.OutputTokens
 			totalCost += r.CostUSD
 		}
-		fmt.Printf("  %-20s %-10s %8s %8s %8s %10s %10s %8s\n",
-			sep, strings.Repeat("-", 10), strings.Repeat("-", 8), strings.Repeat("-", 8),
-			strings.Repeat("-", 8), strings.Repeat("-", 10), strings.Repeat("-", 10), strings.Repeat("-", 8))
+		fmt.Printf("  %-20s %-10s %8s %8s %8s %10s %10s %8s\n", statsSep...)
 		fmt.Printf("  %-20s %-10s %8d %8d %8d %10s %10s %8.2f\n",
 			"Total", "", totalSessions, totalQueries, totalTools, fmtTokens(totalIn), fmtTokens(totalOut), totalCost)
 
@@ -231,9 +227,7 @@ func runSpeedStats(db *sql.DB, startTS, endTS int64, agent, label string) error 
 	fmt.Printf("  %-10s %-26s %7s %7s %7s %7s %8s %8s\n",
 		"Client", "Model", "Reqs", "Timed", "tok/s", "p90", "gen p50", "gen p90")
 	fmt.Printf("  %-10s %-26s %7s %7s %7s %7s %8s %8s\n",
-		strings.Repeat("-", 10), strings.Repeat("-", 26), strings.Repeat("-", 7),
-		strings.Repeat("-", 7), strings.Repeat("-", 7), strings.Repeat("-", 7),
-		strings.Repeat("-", 8), strings.Repeat("-", 8))
+		output.Dashes(10, 26, 7, 7, 7, 7, 8, 8)...)
 	for _, r := range report.Models {
 		model := r.Model
 		if len(model) > 26 {
@@ -255,8 +249,7 @@ func runSpeedStats(db *sql.DB, startTS, endTS int64, agent, label string) error 
 		fmt.Printf("  %-10s %7s %9s %9s %9s %10s\n",
 			"Client", "Turns", "p50", "p90", "longest", "reqs/turn")
 		fmt.Printf("  %-10s %7s %9s %9s %9s %10s\n",
-			strings.Repeat("-", 10), strings.Repeat("-", 7), strings.Repeat("-", 9),
-			strings.Repeat("-", 9), strings.Repeat("-", 9), strings.Repeat("-", 10))
+			output.Dashes(10, 7, 9, 9, 9, 10)...)
 		for _, t := range report.Turns {
 			fmt.Printf("  %-10s %7d %9s %9s %9s %10.1f\n",
 				t.Agent, t.Turns,
@@ -641,10 +634,8 @@ func runModelStats(db *sql.DB, startTS, endTS int64, agent, label string, days i
 
 	fmt.Printf("\n  %-12s %-30s %8s %10s %10s %8s\n",
 		"Client", "Model", "Sessions", "In", "Out", "Cost($)")
-	clientSep := strings.Repeat("-", 12)
-	modelSep := strings.Repeat("-", 30)
-	fmt.Printf("  %-12s %-30s %8s %10s %10s %8s\n",
-		clientSep, modelSep, strings.Repeat("-", 8), strings.Repeat("-", 10), strings.Repeat("-", 10), strings.Repeat("-", 8))
+	modelSep := output.Dashes(12, 30, 8, 10, 10, 8)
+	fmt.Printf("  %-12s %-30s %8s %10s %10s %8s\n", modelSep...)
 
 	var totalSessions int
 	var totalIn, totalOut int64
@@ -663,8 +654,7 @@ func runModelStats(db *sql.DB, startTS, endTS int64, agent, label string, days i
 			estimatedCost += r.CostUSD
 		}
 	}
-	fmt.Printf("  %-12s %-30s %8s %10s %10s %8s\n",
-		clientSep, modelSep, strings.Repeat("-", 8), strings.Repeat("-", 10), strings.Repeat("-", 10), strings.Repeat("-", 8))
+	fmt.Printf("  %-12s %-30s %8s %10s %10s %8s\n", modelSep...)
 	fmt.Printf("  %-12s %-30s %8d %10s %10s %8s\n",
 		"", "Total", totalSessions, fmtTokens(totalIn), fmtTokens(totalOut), fmtCost(totalCost, anyEstimated))
 	printEstimatedCostLegend(totalCost, estimatedCost, anyEstimated)

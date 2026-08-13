@@ -31,6 +31,9 @@ enum ATMCommandPolicy {
         // Connector discovery and history can require multiple network pages.
         if arguments.starts(with: ["collect", "source", "search"]) { return 45 }
         if arguments.starts(with: ["collect", "history"]) { return 45 }
+        // One schema-constrained model call, same isolation as collect.
+        if arguments.starts(with: ["todo", "refine"]) { return 180 }
+        if arguments.starts(with: ["config", "test-text-model"]) { return 45 }
         return 15
     }
 }
@@ -58,6 +61,20 @@ private struct ATMConfigBoolValue: Decodable {
 /// Shape of `atm config get <key> --json` for string settings.
 private struct ATMConfigStringValue: Decodable {
     let value: String
+}
+
+private struct ATMTextModelCredentialStatus: Decodable {
+    let configured: Bool
+}
+
+private struct ATMTextModelTestResult: Decodable {
+    let ok: Bool
+    let latencyMS: Int
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case latencyMS = "latency_ms"
+    }
 }
 
 private func decodeCommand<Value: Decodable>(
@@ -193,6 +210,11 @@ struct ATMBoundSession: Decodable, Equatable, Identifiable {
     let agent: String
     let project: String
     let summary: String?
+    /// The session's last assistant message, straight from the index. This is the
+    /// durable copy of what live status calls `latest_result`: a Todo whose
+    /// session has aged out of the live window would otherwise lose the outcome
+    /// text entirely.
+    let latestResult: String?
     let indexed: Bool
     let cwd: String?
     let bindingCount: Int
@@ -223,6 +245,7 @@ struct ATMBoundSession: Decodable, Equatable, Identifiable {
         case indexedID = "indexed_id"
         case shortID = "short_id"
         case agent, project, summary, indexed, cwd, reason, queries
+        case latestResult = "latest_result"
         case bindingCount = "binding_count"
         case firstBoundAt = "first_bound_at"
         case boundAt = "bound_at"
@@ -244,6 +267,7 @@ struct ATMBoundSession: Decodable, Equatable, Identifiable {
         agent = try values.decodeIfPresent(String.self, forKey: .agent) ?? ""
         project = try values.decodeIfPresent(String.self, forKey: .project) ?? ""
         summary = try values.decodeIfPresent(String.self, forKey: .summary)
+        latestResult = try values.decodeIfPresent(String.self, forKey: .latestResult)
         indexed = try values.decodeIfPresent(Bool.self, forKey: .indexed) ?? true
         cwd = try values.decodeIfPresent(String.self, forKey: .cwd)
         bindingCount = try values.decodeIfPresent(Int.self, forKey: .bindingCount) ?? 1
@@ -263,6 +287,150 @@ struct ATMBoundSession: Decodable, Equatable, Identifiable {
 
 struct ATMTodoPrompt: Decodable {
     let prompt: String
+}
+
+struct ATMTaskRun: Decodable, Identifiable, Equatable {
+    let id: String
+    let todoID: String
+    let agent: String
+    let project: String?
+    let workDir: String
+    let policy: String
+    let logPath: String
+    let status: String
+    let pid: Int?
+    let startTS: Int64
+    let endTS: Int64?
+    let exitCode: Int?
+    let message: String?
+    let sessionID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, agent, project, policy, status, pid, message
+        case todoID = "todo_id"
+        case workDir = "work_dir"
+        case logPath = "log_path"
+        case startTS = "start_ts"
+        case endTS = "end_ts"
+        case exitCode = "exit_code"
+        case sessionID = "session_id"
+    }
+
+    var isActive: Bool { status == "starting" || status == "running" }
+}
+
+/// The dispatch target as `atm todo agents --json` reports it.
+///
+/// One row: dispatch is Codex only. What is still worth asking the CLI is
+/// whether the binary is on PATH and what a run costs — both change without the
+/// App being rebuilt.
+struct ATMTaskRunAgent: Decodable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let binary: String
+    let available: Bool
+    let costNote: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, binary, available
+        case costNote = "cost_note"
+    }
+
+    /// Codex runs guarded: `--sandbox workspace-write` is a boundary ATM can
+    /// actually enforce, which is why it is the only dispatch target left.
+    /// Trusted stays a deliberate CLI choice (`atm todo run --policy trusted`)
+    /// rather than something a sheet can produce by accident.
+    var dispatchPolicy: String { "guarded" }
+}
+
+enum ATMTaskRunSessionRouting {
+    /// Resolve the Agent row for a dispatched run. A live Todo binding is the
+    /// strongest signal while the run is active; the durable run/session link
+    /// keeps navigation working after the Todo moves to review and the binding
+    /// closes. Stable-fragment matching bridges the index's rollout id, Codex's
+    /// resume UUID, and the eight-character id exposed by live status.
+    static func session(
+        for run: ATMTaskRun,
+        todoID: String,
+        in sessions: [ATMLiveSession]
+    ) -> ATMLiveSession? {
+        let bound = sessions.filter {
+            $0.bindingTodoID?.caseInsensitiveCompare(todoID) == .orderedSame
+        }
+        if let linked = bound.first(where: { identifiersMatch(run.sessionID, $0) }) {
+            return linked
+        }
+        if let active = bound.first(where: \.isCurrentlyActive) {
+            return active
+        }
+        if let recent = bound.first {
+            return recent
+        }
+        return sessions.first(where: { identifiersMatch(run.sessionID, $0) })
+    }
+
+    static func run(for session: ATMLiveSession, in runs: [ATMTaskRun]) -> ATMTaskRun? {
+        if let linked = runs.first(where: { identifiersMatch($0.sessionID, session) }) {
+            return linked
+        }
+        guard let todoID = session.bindingTodoID else { return nil }
+        return runs.first {
+            $0.todoID.caseInsensitiveCompare(todoID) == .orderedSame
+        }
+    }
+
+    static func identifiersMatch(_ runSessionID: String?, _ session: ATMLiveSession) -> Bool {
+        guard let runID = normalized(runSessionID) else { return false }
+        let candidates = [session.resumeID, session.sessionID].compactMap(normalized)
+        return candidates.contains { candidate in
+            runID == candidate || (
+                min(runID.count, candidate.count) >= 8 &&
+                (runID.contains(candidate) || candidate.contains(runID))
+            )
+        }
+    }
+
+    /// The thread id `codex exec resume` will accept, mirroring the CLI's own
+    /// rule. The stored id is either the bare UUID an Agent reports through
+    /// `atm session bind` or the `rollout-<timestamp>-<uuid>` form transcript
+    /// sync derives from the rollout filename — and Codex reads anything that is
+    /// not a UUID as a thread *name*, silently starting a new session instead of
+    /// failing. The App has to apply the same test as the CLI, otherwise it
+    /// offers “继续修改” for a run the CLI will refuse.
+    static func resumableThreadID(_ sessionID: String?) -> String? {
+        guard let value = normalized(sessionID) else { return nil }
+        // The rollout form carries its timestamp first, so the id is the last match.
+        guard let range = value.range(of: threadIDPattern, options: [.regularExpression, .backwards]) else {
+            return nil
+        }
+        return String(value[range])
+    }
+
+    private static let threadIDPattern =
+        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+
+    private static func normalized(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !value.isEmpty else { return nil }
+        return value
+    }
+}
+
+struct ATMTaskRunDispatch: Decodable {
+    let run: ATMTaskRun
+}
+
+enum ATMTaskRunLogPolicy {
+    /// The raw stream moved behind an explicit “全部日志” tab, so it can afford far
+    /// more than the old inline excerpt — but not everything: a long
+    /// `codex exec --json` run writes megabytes of events, and all of it would
+    /// land in one Swift String and one NSTextView. The CLI prefixes a
+    /// truncation notice when it seeks, so the tab stays honest about the bound.
+    static let maximumBytes = 1024 * 1024
+
+    static func arguments(todoID: String) -> [String] {
+        ["todo", "tail", todoID, "--bytes", String(maximumBytes)]
+    }
 }
 
 enum ATMProjectFolderResolver {
@@ -324,7 +492,8 @@ struct ATMCommandRunner: Sendable {
     func run(
         _ arguments: [String],
         standardInput: Data? = nil,
-        timeout: TimeInterval? = nil
+        timeout: TimeInterval? = nil,
+        environmentOverrides: [String: String] = [:]
     ) async throws -> Data {
         let executableURL = executableURL
         let processHandle = ATMRunningProcess()
@@ -343,6 +512,11 @@ struct ATMCommandRunner: Sendable {
             let commonPath = "/usr/local/bin:/opt/homebrew/bin:\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin"
             environment["PATH"] = commonPath + ":" + (environment["PATH"] ?? "")
             environment["ATM_SKIP_LOCAL_NOTIFICATION"] = "1"
+            // Credentials and unsaved advanced settings for the connection
+            // check travel only in the child environment, never argv or logs.
+            for (key, value) in environmentOverrides {
+                environment[key] = value
+            }
             process.environment = environment
 
             try Task.checkCancellation()
@@ -417,8 +591,8 @@ enum ATMSyncPolicy {
 
 enum ATMLiveStatusRefreshPolicy {
     /// Presence is intentionally much faster than the one-minute dashboard,
-    /// but only runs while a live-presence surface (Agent workspace or notch)
-    /// is visible.
+    /// but the attention notifier holds it open for the whole lifetime of the
+    /// app, since a blocked agent has to be noticed with no window open.
     static let interval: TimeInterval = 3
 
     /// Interval used while agent hooks are actively reporting. Each poll shells
@@ -451,6 +625,24 @@ enum ATMLiveStatusRefreshPolicy {
     ) -> Bool {
         guard let lastAppliedAt else { return false }
         return lastAppliedAt > dashboardRequestStartedAt
+    }
+
+    /// The live status a dashboard refresh should land: the fresher of the two
+    /// candidates, always carrying the hook overlay.
+    ///
+    /// Named and tested rather than inlined because forgetting the overlay on
+    /// one write path is exactly the bug this replaces. `atm dashboard` ships its
+    /// own `live_status` that has never seen a hook event, so landing it raw
+    /// retired every attention banner and then re-raised each one at the next
+    /// poll — a blocked agent re-notifying about once a minute.
+    static func mergedLiveStatus(
+        dashboard: ATMLiveStatus,
+        fast: ATMLiveStatus,
+        preserveFast: Bool,
+        signals: [String: ATMAgentAttentionSignal],
+        now: Date = Date()
+    ) -> ATMLiveStatus {
+        (preserveFast ? fast : dashboard).applyingAttentionSignals(signals, now: now)
     }
 }
 
@@ -570,9 +762,10 @@ enum ATMTodoStatusActions {
         items(for: todo).filter { $0.action != .start && $0.action != .complete }
     }
 
-    /// Launch prompt is for handing work to an agent; review is the human gate.
+    /// Launch actions are for active work; review and closed states are human
+    /// gates/history and must not silently restart implementation.
     static func showsLaunchPrompt(for todo: ATMTodo) -> Bool {
-        todo.status != "review"
+        ["open", "in_progress", "waiting", "blocked"].contains(todo.status)
     }
 
     private static func item(
@@ -604,6 +797,20 @@ struct ATMTodoEdit: Equatable {
 }
 
 enum ATMCommandBuilder {
+    /// Passing `sections: ["work"]` asks the CLI for the todos and the now-view
+    /// without the statistics, which is roughly a second of SQL aggregation that
+    /// no task row reads. See `primeWork()`.
+    static func dashboard(sections: [String] = [], sessionID: String? = nil) -> [String] {
+        var arguments = ["dashboard", "--json"]
+        if !sections.isEmpty {
+            arguments += ["--sections", sections.joined(separator: ",")]
+        }
+        if let sessionID, !sessionID.isEmpty {
+            arguments += ["--agent-session", sessionID]
+        }
+        return arguments
+    }
+
     static func todaySessionUsage(sessionID: String? = nil) -> [String] {
         var arguments = ["stats", "--by", "session-usage", "--days", "1", "--json"]
         if let sessionID, !sessionID.isEmpty {
@@ -656,6 +863,14 @@ enum ATMCommandBuilder {
         return arguments
     }
 
+    static func refineTodo(id: String) -> [String] {
+        ["todo", "refine", id, "--json"]
+    }
+
+    static func handoffTodo(id: String) -> [String] {
+        ["todo", "handoff", id, "--json"]
+    }
+
     /// Parse the id returned by `atm todo add` (JSON object or plain first line).
     static func createdTodoID(from data: Data) -> String? {
         if let todo = try? JSONDecoder().decode(ATMTodo.self, from: data) {
@@ -691,6 +906,18 @@ enum ATMCommandBuilder {
 
     static func todoPrompt(id: String) -> [String] {
         ["todo", "prompt", id, "--json"]
+    }
+
+    static func dispatchTaskRun(id: String, agent: String, policy: String) -> [String] {
+        ["todo", "run", id, "--agent", agent, "--policy", policy, "--json"]
+    }
+
+    static func continueTaskRun(id: String, agent: String, policy: String, instructions: String) -> [String] {
+        ["todo", "run", id, "--agent", agent, "--policy", policy, "--continue", instructions, "--json"]
+    }
+
+    static func interruptTaskRun(id: String) -> [String] {
+        ["todo", "interrupt", id, "--json"]
     }
 
     static func moveKnowledgeDocument(id: String, to collectionID: String) -> [String] {
@@ -818,6 +1045,18 @@ final class ATMDataStore: ObservableObject {
     /// Mirrors `owner_name` in ~/.atm/config.json: how to name the human when a
     /// todo they filed themselves is displayed. Empty falls back to 我.
     @Published private(set) var ownerName = ""
+    /// Mirrors `todo_refine_on_add`. Default on: filing from the sheet should
+    /// come back as a card an Agent can start from, not the raw capture line.
+    @Published private(set) var todoRefineOnAdd = true
+    @Published private(set) var textModelBaseURL = "https://api.deepseek.com"
+    @Published private(set) var textModelName = "deepseek-v4-flash"
+    @Published private(set) var textModelAPIKeyConfigured = false
+    @Published private(set) var isSavingTextModelSettings = false
+    @Published private(set) var isTestingTextModelSettings = false
+    @Published private(set) var textModelTestSuccessMessage: String?
+    @Published var textModelSettingsErrorMessage: String?
+    @Published private(set) var refiningTodoIDs: Set<String> = []
+    @Published private(set) var refineErrorByTodoID: [String: String] = [:]
     /// Internal refresh gate only. No view renders this flag, so publishing it
     /// needlessly rebuilt the desktop at both ends of every one-minute refresh.
     private(set) var isLoading = false
@@ -831,12 +1070,32 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var loadingProgressTodoIDs: Set<String> = []
     @Published private(set) var boundSessionsByTodoID: [String: [ATMBoundSession]] = [:]
     @Published private(set) var loadingBoundSessionTodoIDs: Set<String> = []
+    @Published private(set) var taskRunsByTodoID: [String: [ATMTaskRun]] = [:]
+    @Published private(set) var taskRunAgents: [ATMTaskRunAgent] = []
+    @Published private(set) var taskRunLogsByTodoID: [String: String] = [:]
+    @Published private(set) var taskRunLogErrorsByTodoID: [String: String] = [:]
+    @Published private(set) var loadingTaskRunTodoIDs: Set<String> = []
+    private var loadingTaskRunLogTodoIDs: Set<String> = []
+    private var isLoadingTaskRunAgents = false
     @Published private(set) var collectionOverview = ATMCollectionOverview.empty
     @Published private(set) var isCollecting = false
+    @Published private(set) var collectingSourceIDs: Set<String> = []
+    @Published private(set) var collectionSourceErrors: [String: String] = [:]
     @Published var collectionErrorMessage: String?
     @Published private(set) var agentHookReport: ATMAgentHookReport?
     @Published private(set) var isUpdatingAgentHooks = false
     @Published var agentHookErrorMessage: String?
+    /// The durable session index, newest first, paged in. Live status only ever
+    /// shows the sessions inside its activity window, so this is what makes an
+    /// older session reachable at all.
+    @Published private(set) var indexedSessions: [ATMIndexedSession] = []
+    @Published private(set) var isLoadingIndexedSessions = false
+    @Published private(set) var indexedSessionsReachedEnd = false
+    @Published var indexedSessionsError: String?
+    @Published private(set) var sessionTranscripts: [String: ATMSessionTranscript] = [:]
+    @Published private(set) var sessionTimelines: [String: [ATMSessionTimelineEntry]] = [:]
+    @Published private(set) var sessionReadErrors: [String: String] = [:]
+    @Published private(set) var loadingSessionReads: Set<String> = []
 
     private var timer: Timer?
     private var liveStatusTimer: Timer?
@@ -855,6 +1114,10 @@ final class ATMDataStore: ObservableObject {
     private var lastSyncAttemptAt: Date?
     private var lastLiveStatusAppliedAt: Date?
     private var lastLiveStatusPollAt: Date?
+    /// Whether a full dashboard has ever been applied. Gates `primeWork()`, whose
+    /// work-only snapshot carries no statistics and so must never land on top of
+    /// one that does.
+    private var hasLoadedFullDashboard = false
     private var activeRefreshIncludesSync = false
     private var pendingRefresh = false
     private var pendingSync = false
@@ -886,13 +1149,62 @@ final class ATMDataStore: ObservableObject {
     }
 
     func applyDashboardRefresh(_ state: ATMStoreDashboardState) {
+        hasLoadedFullDashboard = true
         dashboardState = state
+    }
+
+    /// Paints the task list from the cheap half of the dashboard.
+    ///
+    /// `atm dashboard` also computes the usage statistics, which on a real
+    /// database is about a second of SQL aggregation that no task row reads —
+    /// the todos themselves are ready in a few milliseconds. Asking for the work
+    /// section first fills the window at launch rather than after the charts.
+    ///
+    /// Cold start only, and deliberately so. With nothing on screen yet the user
+    /// has had nothing to act on, so none of the optimistic-edit bookkeeping that
+    /// `refresh()` reconciles against can hold entries. That is what lets this
+    /// path assign the todos straight through instead of duplicating a
+    /// reconciliation that would then have two places to drift apart. It also
+    /// leaves `notifiedTodoStatus` alone, so the full refresh still decides which
+    /// status changes are worth a notification.
+    private func primeWork() {
+        Task {
+            let outcome: ATMCommandOutcome<ATMDashboardEnvelope>
+            do {
+                let runner = try ATMCommandRunner()
+                outcome = await decodeCommand(
+                    runner,
+                    arguments: ATMCommandBuilder.dashboard(
+                        sections: ["work"],
+                        sessionID: ATMAgentSessionContext.sessionID()
+                    )
+                )
+            } catch {
+                // The full refresh is already in flight and reports its own
+                // failures. A broken fast path only costs the head start.
+                return
+            }
+            guard let value = outcome.value else { return }
+            // The full refresh runs concurrently and is authoritative. Once it has
+            // landed, this thinner snapshot would blank the statistics it carries.
+            guard !hasLoadedFullDashboard else { return }
+            guard optimisticallyDeletedTodoIDs.isEmpty,
+                  optimisticallyUpdatedTodos.isEmpty,
+                  optimisticallyPermanentlyDeletedTodoIDs.isEmpty else { return }
+            var next = dashboardState
+            next.allTodos = value.todos
+            next.snapshot = value.makeSnapshot()
+            dashboardState = next
+        }
     }
 
     func start() {
         guard timer == nil else { return }
         loadGrokLiveQuotaSetting()
         loadOwnerNameSetting()
+        loadTodoRefineOnAddSetting()
+        loadTextModelSettings()
+        primeWork()
         refresh()
         refresh(sync: true)
         refreshCollection(runIfDue: true)
@@ -929,7 +1241,7 @@ final class ATMDataStore: ObservableObject {
         liveStatusTimer = timer
     }
 
-    /// Starts the notch socket and refreshes as soon as an event lands.
+    /// Starts the hook socket and refreshes as soon as an event lands.
     ///
     /// This is the whole point of the hook channel: `atm session status` is a
     /// scrape of transcript files plus `ps`, so it cannot see a blocked
@@ -1121,6 +1433,192 @@ final class ATMDataStore: ObservableObject {
     /// a successful write it re-reads the effective value: an
     /// ATM_GROK_LIVE_QUOTA env override beats the config file, and the toggle
     /// must show what `atm quota` will actually do.
+    func loadTodoRefineOnAddSetting() {
+        Task {
+            guard let runner = try? ATMCommandRunner() else { return }
+            let outcome: ATMCommandOutcome<ATMConfigBoolValue> = await decodeCommand(
+                runner,
+                arguments: ["config", "get", "todo_refine_on_add", "--json"]
+            )
+            if let value = outcome.value {
+                todoRefineOnAdd = value.value
+            }
+        }
+    }
+
+    func setTodoRefineOnAdd(_ enabled: Bool) {
+        guard enabled != todoRefineOnAdd else { return }
+        todoRefineOnAdd = enabled
+        Task {
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(["config", "set", "todo_refine_on_add", enabled ? "true" : "false"])
+                loadTodoRefineOnAddSetting()
+            } catch {
+                todoRefineOnAdd = !enabled
+                errorMessage = "任务整理设置未保存：\(ATMErrorText.compact(error.localizedDescription, limit: 160))"
+            }
+        }
+    }
+
+    func loadTextModelSettings() {
+        Task {
+            guard let runner = try? ATMCommandRunner() else { return }
+            async let credentialOutcome: ATMCommandOutcome<ATMTextModelCredentialStatus> = decodeCommand(
+                runner,
+                arguments: ["config", "credential", "status", "--json"]
+            )
+            async let baseOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
+                runner,
+                arguments: ["config", "get", "text_model_base_url", "--json"]
+            )
+            async let modelOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
+                runner,
+                arguments: ["config", "get", "text_model_name", "--json"]
+            )
+            let (credential, base, model) = await (credentialOutcome, baseOutcome, modelOutcome)
+            if let value = credential.value { textModelAPIKeyConfigured = value.configured }
+            if let value = base.value { textModelBaseURL = value.value }
+            if let value = model.value { textModelName = value.value }
+            textModelSettingsErrorMessage = credential.error ?? base.error ?? model.error
+        }
+    }
+
+    func saveTextModelSettings(apiKey: String, baseURL: String, model: String) {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty, !trimmedModel.isEmpty, !isSavingTextModelSettings else { return }
+        guard let endpoint = URL(string: trimmedBaseURL),
+              endpoint.host != nil,
+              endpoint.scheme == "http" || endpoint.scheme == "https" else {
+            textModelSettingsErrorMessage = "Endpoint 必须是有效的 http 或 https URL"
+            return
+        }
+        isSavingTextModelSettings = true
+        textModelTestSuccessMessage = nil
+        textModelSettingsErrorMessage = nil
+        Task {
+            defer { isSavingTextModelSettings = false }
+            do {
+                let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let runner = try ATMCommandRunner()
+                if !trimmedAPIKey.isEmpty {
+                    _ = try await runner.run(
+                        ["config", "credential", "set"],
+                        standardInput: Data(trimmedAPIKey.utf8)
+                    )
+                    textModelAPIKeyConfigured = true
+                }
+                _ = try await runner.run(["config", "set", "text_model_base_url", trimmedBaseURL])
+                _ = try await runner.run(["config", "set", "text_model_name", trimmedModel])
+                loadTextModelSettings()
+            } catch {
+                textModelSettingsErrorMessage = "模型设置未保存：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            }
+        }
+    }
+
+    func clearTextModelAPIKey() {
+        guard !isSavingTextModelSettings, !isTestingTextModelSettings else { return }
+        isSavingTextModelSettings = true
+        textModelTestSuccessMessage = nil
+        textModelSettingsErrorMessage = nil
+        Task {
+            defer { isSavingTextModelSettings = false }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(["config", "credential", "delete"])
+                textModelAPIKeyConfigured = false
+            } catch {
+                textModelSettingsErrorMessage = "API Key 未删除：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            }
+        }
+    }
+
+    func testTextModelSettings(apiKey: String, baseURL: String, model: String) {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty, !trimmedModel.isEmpty,
+              !isSavingTextModelSettings, !isTestingTextModelSettings else { return }
+        guard let endpoint = URL(string: trimmedBaseURL),
+              endpoint.host != nil,
+              endpoint.scheme == "http" || endpoint.scheme == "https" else {
+            textModelTestSuccessMessage = nil
+            textModelSettingsErrorMessage = "Endpoint 必须是有效的 http 或 https URL"
+            return
+        }
+
+        let draftKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !draftKey.isEmpty || textModelAPIKeyConfigured else {
+            textModelTestSuccessMessage = nil
+            textModelSettingsErrorMessage = "请先填写 DeepSeek API Key"
+            return
+        }
+
+        isTestingTextModelSettings = true
+        textModelTestSuccessMessage = nil
+        textModelSettingsErrorMessage = nil
+        Task {
+            defer { isTestingTextModelSettings = false }
+            do {
+                let runner = try ATMCommandRunner()
+                var environment = [
+                    "ATM_TEXT_MODEL_BASE_URL": trimmedBaseURL,
+                    "ATM_TEXT_MODEL_MODEL": trimmedModel,
+                ]
+                if !draftKey.isEmpty {
+                    environment["ATM_TEXT_MODEL_API_KEY"] = draftKey
+                }
+                let data = try await runner.run(
+                    ["config", "test-text-model", "--json"],
+                    environmentOverrides: environment
+                )
+                let result = try JSONDecoder().decode(ATMTextModelTestResult.self, from: data)
+                guard result.ok else {
+                    throw ATMCommandError.failed(
+                        arguments: ["config", "test-text-model"],
+                        status: 1,
+                        message: "服务返回 ok=false"
+                    )
+                }
+                textModelTestSuccessMessage = "连接成功 · \(trimmedModel) · \(result.latencyMS) ms"
+            } catch {
+                textModelSettingsErrorMessage = "连接失败：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            }
+        }
+    }
+
+    func clearTextModelTestResult() {
+        textModelTestSuccessMessage = nil
+    }
+
+    func refineTodo(id: String, automatic: Bool = false) {
+        let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !refiningTodoIDs.contains(trimmed) else { return }
+        refiningTodoIDs.insert(trimmed)
+        refineErrorByTodoID[trimmed] = nil
+        Task {
+            defer { refiningTodoIDs.remove(trimmed) }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(ATMCommandBuilder.refineTodo(id: trimmed))
+                // Children and a rewritten title only exist after refine returns.
+                refresh()
+                loadProgress(for: trimmed)
+            } catch {
+                let message = ATMErrorText.compact(error.localizedDescription, limit: 180)
+                refineErrorByTodoID[trimmed] = message
+                if !automatic {
+                    errorMessage = message
+                }
+            }
+        }
+    }
+
+    func dismissRefineError(for id: String) {
+        refineErrorByTodoID[id] = nil
+    }
+
     func setGrokLiveQuota(_ enabled: Bool) {
         guard enabled != grokLiveQuotaEnabled else { return }
         grokLiveQuotaEnabled = enabled
@@ -1186,23 +1684,46 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
-    func runCollectionNow() {
-        guard !isCollecting else { return }
+    func isCollecting(sourceID: String) -> Bool {
+        collectingSourceIDs.contains(sourceID)
+            || collectionOverview.latestRun(for: sourceID)?.status == "running"
+    }
+
+    func collectionError(for sourceID: String) -> String? {
+        collectionSourceErrors[sourceID]
+            ?? collectionOverview.latestRun(for: sourceID).flatMap { run in
+                run.status == "failed" ? run.error : nil
+            }
+    }
+
+    /// The Collection workspace operates one source at a time. Besides making
+    /// the action's scope visible to the user, `--source` prevents an unrelated
+    /// disabled, slow, or unhealthy connector from changing this source's run.
+    func runCollectionNow(source: ATMCollectionSource) {
+        guard source.enabled, !isCollecting else { return }
         notifyCollectionRuns(collectionOverview.runs)
         isCollecting = true
+        collectingSourceIDs.insert(source.id)
+        collectionSourceErrors[source.id] = nil
         collectionErrorMessage = nil
         lastCollectionAttemptAt = Date()
         Task {
-            defer { isCollecting = false }
+            defer {
+                collectingSourceIDs.remove(source.id)
+                isCollecting = false
+            }
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["collect", "run", "--json"])
+                _ = try await runner.run(ATMCollectionRunCommand.arguments(sourceID: source.id))
                 let data = try await runner.run(["collect", "status", "--limit", "200", "--json"])
                 collectionOverview = try JSONDecoder().decode(ATMCollectionOverview.self, from: data)
+                collectionSourceErrors[source.id] = nil
                 notifyCollectionRuns(collectionOverview.runs)
                 refresh()
             } catch {
-                collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 240)
+                let message = ATMErrorText.compact(error.localizedDescription, limit: 240)
+                collectionSourceErrors[source.id] = message
+                collectionErrorMessage = message
                 refreshCollection()
             }
         }
@@ -1246,6 +1767,7 @@ final class ATMDataStore: ObservableObject {
         strategy: String,
         decisionUnit: String,
         intervalMinutes: Int,
+        autoDispatch: Bool,
         enabled: Bool
     ) {
         let connectorID = connector.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1268,6 +1790,7 @@ final class ATMDataStore: ObservableObject {
                 if !trimmedExclude.isEmpty { arguments += ["--exclude", trimmedExclude] }
                 if !trimmedInstruction.isEmpty { arguments += ["--instruction", trimmedInstruction] }
                 if !trimmedKnowledge.isEmpty { arguments += ["--knowledge-collection", trimmedKnowledge] }
+                if autoDispatch && strategy == "tasks" { arguments.append("--auto-dispatch") }
                 if !enabled { arguments.append("--disabled") }
                 _ = try await runner.run(arguments)
                 refreshCollection(runIfDue: collectionOverview.enabled)
@@ -1326,9 +1849,12 @@ final class ATMDataStore: ObservableObject {
             do {
                 let runner = try ATMCommandRunner()
                 _ = try await runner.run(["collect", "source", enabled ? "enable" : "disable", source.id, "--json"])
+                collectionSourceErrors[source.id] = nil
                 refreshCollection()
             } catch {
-                collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
+                let message = ATMErrorText.compact(error.localizedDescription, limit: 200)
+                collectionSourceErrors[source.id] = message
+                collectionErrorMessage = message
             }
         }
     }
@@ -1493,13 +2019,9 @@ final class ATMDataStore: ObservableObject {
                     }
                 }
 
-                let dashboardArguments: [String] = {
-                    var arguments = ["dashboard", "--json"]
-                    if let sessionID = ATMAgentSessionContext.sessionID() {
-                        arguments += ["--agent-session", sessionID]
-                    }
-                    return arguments
-                }()
+                let dashboardArguments = ATMCommandBuilder.dashboard(
+                    sessionID: ATMAgentSessionContext.sessionID()
+                )
                 let dashboardRequestStartedAt = Date()
                 // Quota lives in the agents' own logs rather than the session
                 // index, so it is a separate command. Run it concurrently with
@@ -1586,12 +2108,17 @@ final class ATMDataStore: ObservableObject {
                     nextState.allTodos = incoming
                     var snapshot = value.makeSnapshot()
                         .removingTodos(withIDs: deletedIDs)
-                    if ATMLiveStatusRefreshPolicy.shouldPreserveFastStatus(
-                        lastAppliedAt: lastLiveStatusAppliedAt,
-                        dashboardRequestStartedAt: dashboardRequestStartedAt
-                    ) {
-                        snapshot = snapshot.replacingLiveStatus(dashboardState.snapshot.liveStatus)
-                    }
+                    snapshot = snapshot.replacingLiveStatus(
+                        ATMLiveStatusRefreshPolicy.mergedLiveStatus(
+                            dashboard: snapshot.liveStatus,
+                            fast: dashboardState.snapshot.liveStatus,
+                            preserveFast: ATMLiveStatusRefreshPolicy.shouldPreserveFastStatus(
+                                lastAppliedAt: lastLiveStatusAppliedAt,
+                                dashboardRequestStartedAt: dashboardRequestStartedAt
+                            ),
+                            signals: agentEvents.signals
+                        )
+                    )
                     for updated in updatedTodos.values
                     where !observedTransitionIDs.contains(updated.id) {
                         snapshot = snapshot.replacingTodo(updated)
@@ -1638,6 +2165,10 @@ final class ATMDataStore: ObservableObject {
                 ATMLog.failure("refresh_failed", error: error.localizedDescription)
             }
         }
+    }
+
+    func dismissDashboardError() {
+        errorMessage = nil
     }
 
     func perform(_ action: ATMTodoAction, on todo: ATMTodo) {
@@ -1771,6 +2302,9 @@ final class ATMDataStore: ObservableObject {
                 }
                 if let createdID {
                     onCreated?(createdID)
+                    if todoRefineOnAdd {
+                        refineTodo(id: createdID, automatic: true)
+                    }
                 }
                 refresh()
             } catch {
@@ -1903,6 +2437,172 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
+    func taskRuns(for todoID: String) -> [ATMTaskRun] {
+        taskRunsByTodoID[todoID] ?? []
+    }
+
+    func taskRunLog(for todoID: String) -> String? {
+        taskRunLogsByTodoID[todoID]
+    }
+
+    func taskRunLogError(for todoID: String) -> String? {
+        taskRunLogErrorsByTodoID[todoID]
+    }
+
+    func loadTaskRuns(for todoID: String) {
+        guard !loadingTaskRunTodoIDs.contains(todoID) else { return }
+        loadingTaskRunTodoIDs.insert(todoID)
+        Task {
+            defer { loadingTaskRunTodoIDs.remove(todoID) }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(["todo", "runs", todoID, "--json"])
+                let runs = try JSONDecoder().decode([ATMTaskRun].self, from: data)
+                if taskRunsByTodoID[todoID] != runs {
+                    taskRunsByTodoID[todoID] = runs
+                }
+            } catch {
+                // Older CLI builds have no task-run endpoint. Leave the rest of
+                // task detail usable; explicit dispatch still surfaces its error.
+                taskRunsByTodoID[todoID] = taskRunsByTodoID[todoID] ?? []
+            }
+        }
+    }
+
+    func loadTaskRunLog(for todoID: String) {
+        guard !loadingTaskRunLogTodoIDs.contains(todoID) else { return }
+        guard !(taskRunsByTodoID[todoID] ?? []).isEmpty else { return }
+        loadingTaskRunLogTodoIDs.insert(todoID)
+        Task {
+            defer { loadingTaskRunLogTodoIDs.remove(todoID) }
+            do {
+                let runner = try ATMCommandRunner()
+                let log = try await runner.run(ATMTaskRunLogPolicy.arguments(todoID: todoID))
+                let text = String(decoding: log, as: UTF8.self)
+                taskRunLogErrorsByTodoID[todoID] = nil
+                if taskRunLogsByTodoID[todoID] != text {
+                    taskRunLogsByTodoID[todoID] = text
+                }
+            } catch {
+                // Preserve the last readable log, but make a first-load failure
+                // actionable instead of leaving “日志加载中…” on screen forever.
+                taskRunLogErrorsByTodoID[todoID] = ATMErrorText.compact(error.localizedDescription)
+            }
+        }
+    }
+
+    func loadTaskRunAgents() {
+        guard !isLoadingTaskRunAgents else { return }
+        isLoadingTaskRunAgents = true
+        Task {
+            defer { isLoadingTaskRunAgents = false }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(["todo", "agents", "--json"])
+                taskRunAgents = try JSONDecoder().decode([ATMTaskRunAgent].self, from: data)
+            } catch {
+                errorMessage = ATMErrorText.compact(error.localizedDescription)
+            }
+        }
+    }
+
+    /// Opens the Todo in Codex Desktop and stops there.
+    ///
+    /// Deliberately changes nothing locally: `todo handoff` claims no run and
+    /// does not start the Todo, because the human has not pressed Enter yet.
+    /// Work is recorded when the Agent runs `atm session bind`, which the next
+    /// refresh picks up like any other externally-started session.
+    func handoffTodo(_ todo: ATMTodo) {
+        guard !isActing else { return }
+        isActing = true
+        errorMessage = nil
+        Task {
+            defer { isActing = false }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(ATMCommandBuilder.handoffTodo(id: todo.id))
+            } catch {
+                errorMessage = "在 Codex 里打开失败：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            }
+        }
+    }
+
+    func dispatchTodo(_ todo: ATMTodo, agent: ATMTaskRunAgent) {
+        guard !isActing else { return }
+        isActing = true
+        errorMessage = nil
+        Task {
+            defer { isActing = false }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(
+                    ATMCommandBuilder.dispatchTaskRun(
+                        id: todo.id,
+                        agent: agent.id,
+                        policy: agent.dispatchPolicy
+                    )
+                )
+                let result = try JSONDecoder().decode(ATMTaskRunDispatch.self, from: data)
+                let previous = taskRunsByTodoID[todo.id] ?? []
+                taskRunsByTodoID[todo.id] = [result.run] + previous.filter { $0.id != result.run.id }
+                refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+                loadTaskRuns(for: todo.id)
+            }
+        }
+    }
+
+    func continueTodo(_ todo: ATMTodo, run: ATMTaskRun, instructions: String) {
+        let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !isActing, !instructions.isEmpty else { return }
+        isActing = true
+        errorMessage = nil
+        Task {
+            defer { isActing = false }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(
+                    ATMCommandBuilder.continueTaskRun(
+                        id: todo.id,
+                        agent: run.agent,
+                        policy: run.policy,
+                        instructions: instructions
+                    )
+                )
+                let result = try JSONDecoder().decode(ATMTaskRunDispatch.self, from: data)
+                let previous = taskRunsByTodoID[todo.id] ?? []
+                taskRunsByTodoID[todo.id] = [result.run] + previous.filter { $0.id != result.run.id }
+                refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+                loadTaskRuns(for: todo.id)
+            }
+        }
+    }
+
+    func interruptTaskRun(todoID: String) {
+        guard !isActing,
+              taskRunsByTodoID[todoID]?.first?.isActive == true else { return }
+        isActing = true
+        errorMessage = nil
+        Task {
+            defer { isActing = false }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(ATMCommandBuilder.interruptTaskRun(id: todoID))
+                let result = try JSONDecoder().decode(ATMTaskRunDispatch.self, from: data)
+                let previous = taskRunsByTodoID[todoID] ?? []
+                taskRunsByTodoID[todoID] = [result.run] + previous.filter { $0.id != result.run.id }
+                refreshLiveStatus()
+                refresh()
+            } catch {
+                errorMessage = error.localizedDescription
+                loadTaskRuns(for: todoID)
+            }
+        }
+    }
+
     /// Fetches the line a human pastes into a fresh agent session. The CLI owns
     /// the wording, so the app cannot drift from `atm todo prompt`; the caller
     /// writes it to the pasteboard, which is where every other copy action in
@@ -1942,6 +2642,18 @@ final class ATMDataStore: ObservableObject {
         let decoded = try JSONDecoder().decode([ATMKnowledgeDocumentSummary].self, from: data)
         var seen = Set<String>()
         return decoded.filter { ($0.status ?? "active") == status && seen.insert($0.documentID).inserted }
+    }
+
+    /// Archived documents remain attached to their original collection. The
+    /// desktop app presents them through one synthetic library, so fetch the
+    /// unscoped list once and aggregate by status rather than querying every
+    /// collection separately.
+    func archivedKnowledgeDocuments() async throws -> [ATMKnowledgeDocumentSummary] {
+        let runner = try ATMCommandRunner()
+        let data = try await runner.run(["knowledge", "list", "--json"])
+        let decoded = try JSONDecoder().decode([ATMKnowledgeDocumentSummary].self, from: data)
+        var seen = Set<String>()
+        return decoded.filter { ($0.status ?? "active") == "archived" && seen.insert($0.documentID).inserted }
     }
 
     func createCollection(id: String, name: String) async throws {
@@ -2155,5 +2867,101 @@ final class ATMDataStore: ObservableObject {
         let runner = try ATMCommandRunner()
         let data = try await runner.run(["session", "show", sessionID])
         return String(decoding: data, as: UTF8.self)
+    }
+
+    // MARK: - Session index
+
+    /// One page of sessions. Matches the cap the other browse surfaces use: the
+    /// point is that every session is reachable, not that a thousand rows render
+    /// at once.
+    static let indexedSessionPageSize = 200
+
+    /// Loads the durable session index. `reset` starts over at the newest page,
+    /// which is also what a filter change needs; otherwise the next page is
+    /// appended.
+    func loadIndexedSessions(reset: Bool = false, agent: String? = nil, project: String? = nil) {
+        guard !isLoadingIndexedSessions else { return }
+        if !reset && indexedSessionsReachedEnd { return }
+        let offset = reset ? 0 : indexedSessions.count
+        isLoadingIndexedSessions = true
+        Task {
+            defer { isLoadingIndexedSessions = false }
+            do {
+                let runner = try ATMCommandRunner()
+                var arguments = [
+                    "session", "list", "--all", "--order", "desc",
+                    "--limit", String(Self.indexedSessionPageSize),
+                    "--offset", String(offset),
+                    "--json",
+                ]
+                if let agent, !agent.isEmpty { arguments += ["--agent", agent] }
+                if let project, !project.isEmpty { arguments += ["--project", project] }
+                let data = try await runner.run(arguments)
+                let page = try JSONDecoder().decode([ATMIndexedSession].self, from: data)
+                indexedSessionsError = nil
+                // A short page is the end of the index. Tracking it explicitly
+                // keeps the list from asking for a page that will always be empty
+                // every time the view scrolls.
+                indexedSessionsReachedEnd = page.count < Self.indexedSessionPageSize
+                if reset {
+                    indexedSessions = page
+                } else {
+                    let known = Set(indexedSessions.map(\.id))
+                    indexedSessions += page.filter { !known.contains($0.id) }
+                }
+            } catch {
+                indexedSessionsError = ATMErrorText.compact(error.localizedDescription)
+            }
+        }
+    }
+
+    // MARK: - Session reads
+
+    private func sessionReadKey(_ sessionID: String, _ mode: ATMSessionReadMode) -> String {
+        "\(mode.rawValue)|\(sessionID)"
+    }
+
+    func sessionTranscript(_ sessionID: String, mode: ATMSessionReadMode) -> ATMSessionTranscript? {
+        sessionTranscripts[sessionReadKey(sessionID, mode)]
+    }
+
+    func sessionTimeline(_ sessionID: String) -> [ATMSessionTimelineEntry]? {
+        sessionTimelines[sessionID]
+    }
+
+    func sessionReadError(_ sessionID: String, mode: ATMSessionReadMode) -> String? {
+        sessionReadErrors[sessionReadKey(sessionID, mode)]
+    }
+
+    func isLoadingSessionRead(_ sessionID: String, mode: ATMSessionReadMode) -> Bool {
+        loadingSessionReads.contains(sessionReadKey(sessionID, mode))
+    }
+
+    /// Reads one session at one depth. Results are cached per (session, mode):
+    /// a transcript is immutable history for every mode except the tail of a live
+    /// session, and `reload` is what refreshes that case explicitly.
+    func loadSessionRead(_ sessionID: String, mode: ATMSessionReadMode, reload: Bool = false) {
+        let key = sessionReadKey(sessionID, mode)
+        guard !loadingSessionReads.contains(key) else { return }
+        if !reload {
+            if mode == .timeline, sessionTimelines[sessionID] != nil { return }
+            if mode != .timeline, sessionTranscripts[key] != nil { return }
+        }
+        loadingSessionReads.insert(key)
+        Task {
+            defer { loadingSessionReads.remove(key) }
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(mode.arguments(sessionID: sessionID))
+                if mode == .timeline {
+                    sessionTimelines[sessionID] = try JSONDecoder().decode([ATMSessionTimelineEntry].self, from: data)
+                } else {
+                    sessionTranscripts[key] = try JSONDecoder().decode(ATMSessionTranscript.self, from: data)
+                }
+                sessionReadErrors[key] = nil
+            } catch {
+                sessionReadErrors[key] = ATMErrorText.compact(error.localizedDescription)
+            }
+        }
     }
 }

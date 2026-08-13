@@ -1,6 +1,6 @@
 import AppKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var statusBarController: StatusBarController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -25,6 +25,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 所以不给菜单项绑固定 target，由这层转交。
     @MainActor @objc func newTodoFromMenu(_ sender: Any?) {
         statusBarController?.addTodoFromShortcut()
+    }
+
+    /// Main-menu actions keep history shortcuts active regardless of which
+    /// SwiftUI control currently owns keyboard focus.
+    @MainActor @objc func navigateBackFromMenu(_ sender: Any?) {
+        statusBarController?.navigateBack()
+    }
+
+    @MainActor @objc func navigateForwardFromMenu(_ sender: Any?) {
+        statusBarController?.navigateForward()
+    }
+
+    @MainActor func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        switch menuItem.action {
+        case #selector(navigateBackFromMenu(_:)):
+            return statusBarController?.canNavigateBack == true
+        case #selector(navigateForwardFromMenu(_:)):
+            return statusBarController?.canNavigateForward == true
+        default:
+            return true
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

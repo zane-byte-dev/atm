@@ -1,6 +1,64 @@
 import Foundation
 import UserNotifications
 
+/// Whether an agent blocking on you raises a system notification.
+///
+/// Only a master switch: there is deliberately no per-reason granularity, and no
+/// quiet-hours setting of ATM's own. Notification Center already runs 专注模式
+/// and Do Not Disturb better than this app could, and every knob added here is
+/// one more place for the two to disagree.
+enum ATMAgentAttentionNotifyPreferences {
+    static let enabledKey = "ATMAgentAttentionNotifyEnabled"
+    static let defaultEnabled = true
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        guard defaults.object(forKey: enabledKey) != nil else { return defaultEnabled }
+        return defaults.bool(forKey: enabledKey)
+    }
+}
+
+/// Where a click on a delivered notification should land.
+///
+/// Before this the delegate ignored `userInfo` outright and opened the desktop
+/// window for everything. That is still right for a todo, but an agent waiting
+/// on 授权 needs its own terminal, not ATM.
+enum ATMNotificationRoute: Equatable {
+    case todo(String)
+    case agentSession(String)
+    case app
+
+    /// Rebuilds the route from a delivered notification's `userInfo`.
+    static func from(userInfo: [AnyHashable: Any]) -> ATMNotificationRoute {
+        if let sessionID = userInfo["session_id"] as? String, !sessionID.isEmpty {
+            return .agentSession(sessionID)
+        }
+        if let todoID = userInfo["todo_id"] as? String, !todoID.isEmpty {
+            return .todo(todoID)
+        }
+        return .app
+    }
+}
+
+/// A "this agent is blocked on you" banner.
+///
+/// Built only from `attentionSignal`, so the subtitle can name the actual reason
+/// the agent gave (等待授权 / 等待输入 / …) rather than a guess.
+struct ATMAgentAttentionNotificationPayload: Equatable {
+    let title: String
+    let subtitle: String
+    let body: String
+
+    static func make(session: ATMLiveSession) -> ATMAgentAttentionNotificationPayload? {
+        guard let signal = session.attentionSignal else { return nil }
+        let project = session.project.trimmingCharacters(in: .whitespacesAndNewlines)
+        return ATMAgentAttentionNotificationPayload(
+            title: project.isEmpty ? "ATM" : "ATM · \(project)",
+            subtitle: "\(ATMAgentDisplay.name(session.tool)) \(signal.displayReason)",
+            body: session.presenceTitle
+        )
+    }
+}
+
 /// Human-facing todo lifecycle events. Start/edit noise is out of scope; these
 /// are the moments a person at the desk should notice.
 enum ATMTodoNotifyEvent: String, Equatable {
@@ -143,17 +201,17 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
     // UNUserNotificationCenter 要求进程是正规 .app bundle；
     // swift run / 裸可执行文件没有 bundle，访问会抛 NSInternalInconsistencyException。
     // 此时降级为 nil，所有通知操作变为 no-op，方便本地开发调试。
-    private let center: UNUserNotificationCenter? = Bundle.main.bundleURL.pathExtension == "app"
+    private let center: UNUserNotificationCenter? = ATMAppBundle.isBundled
         ? UNUserNotificationCenter.current()
         : nil
-    private var onOpenATM: (() -> Void)?
+    private var onOpen: ((ATMNotificationRoute) -> Void)?
 
     private override init() {
         super.init()
     }
 
-    func start(onOpenATM: @escaping () -> Void) {
-        self.onOpenATM = onOpenATM
+    func start(onOpen: @escaping (ATMNotificationRoute) -> Void) {
+        self.onOpen = onOpen
         guard let center else {
             NSLog("ATMNotificationManager: 无 app bundle，通知功能已禁用（swift run 开发模式）")
             return
@@ -188,6 +246,49 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         )
     }
 
+    /// Identifier for one session's attention banner.
+    ///
+    /// Stable rather than UUID-suffixed like the todo notifications: an agent can
+    /// re-signal the same block, and the second delivery should replace the first
+    /// instead of stacking. It also makes the banner withdrawable once the agent
+    /// moves on.
+    static func agentAttentionIdentifier(sessionID: String) -> String {
+        "atm-agent-attention-\(sessionID)"
+    }
+
+    func sendAgentAttention(_ session: ATMLiveSession) {
+        guard let center,
+              ATMAgentAttentionNotifyPreferences.isEnabled(),
+              let payload = ATMAgentAttentionNotificationPayload.make(session: session)
+        else { return }
+        let content = UNMutableNotificationContent()
+        content.title = payload.title
+        content.subtitle = payload.subtitle
+        content.body = payload.body
+        // Silent on purpose: 提示音 already chimes for `attentionRequired` off the
+        // same event, and letting both fire means two sounds for one moment.
+        content.sound = nil
+        content.categoryIdentifier = "ATM_AGENT_ATTENTION"
+        content.userInfo = ["session_id": session.id, "event": "agent_attention"]
+
+        center.add(
+            UNNotificationRequest(
+                identifier: Self.agentAttentionIdentifier(sessionID: session.id),
+                content: content,
+                trigger: nil
+            )
+        )
+    }
+
+    /// Pulls a banner back once the agent is no longer waiting. A stale 等待授权
+    /// sitting in Notification Center is worse than never having sent it.
+    func withdrawAgentAttention(sessionID: String) {
+        guard let center else { return }
+        let identifiers = [Self.agentAttentionIdentifier(sessionID: sessionID)]
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
     func sendCollectionSummary(_ runs: [ATMCollectionRun]) {
         guard let center, let payload = ATMCollectionNotificationPayload.make(runs: runs) else { return }
         let content = UNMutableNotificationContent()
@@ -219,8 +320,9 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        let route = ATMNotificationRoute.from(userInfo: response.notification.request.content.userInfo)
         DispatchQueue.main.async { [weak self] in
-            self?.onOpenATM?()
+            self?.onOpen?(route)
             completionHandler()
         }
     }

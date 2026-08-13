@@ -121,6 +121,35 @@ struct ATMBrandMark: View {
 
 @MainActor
 enum ATMBrandAssets {
+    private static let resourceBundle: Bundle = {
+        let name = "ATMMenuBarApp_ATMMenuBarApp.bundle"
+        let candidates = [
+            Bundle.main.resourceURL,
+            Bundle.main.bundleURL,
+            Bundle.main.executableURL?.deletingLastPathComponent(),
+        ]
+        for baseURL in candidates.compactMap({ $0 }) {
+            if let bundle = Bundle(url: baseURL.appendingPathComponent(name, isDirectory: true)) {
+                return bundle
+            }
+        }
+        return Bundle.module
+    }()
+
+    private static let agentIconImages: [String: NSImage] = {
+        let names = [
+            "agent-claude", "agent-codex", "agent-pi", "agent-copilot",
+            "agent-cursor", "agent-qoder", "agent-grok",
+        ]
+        return Dictionary(uniqueKeysWithValues: names.compactMap { name in
+            guard
+                let url = resourceBundle.url(forResource: name, withExtension: "png"),
+                let image = NSImage(contentsOf: url)
+            else { return nil }
+            return (name, image)
+        })
+    }()
+
     static func menuBarImage(scale: CGFloat = NSScreen.main?.backingScaleFactor ?? 2) -> NSImage {
         let pointSize = NSSize(width: 18, height: 18)
         let renderer = ImageRenderer(
@@ -136,6 +165,10 @@ enum ATMBrandAssets {
         image.accessibilityDescription = "ATM"
         return image
     }
+
+    static func agentIconImage(resourceName: String) -> NSImage? {
+        agentIconImages[resourceName]
+    }
 }
 
 extension ATMAgentDisplay {
@@ -143,19 +176,19 @@ extension ATMAgentDisplay {
     static func brandBackground(_ agent: String) -> Color {
         switch key(agent) {
         case "claude":
-            return Color(red: 218 / 255, green: 119 / 255, blue: 86 / 255) // Anthropic coral
+            return Color(red: 238 / 255, green: 111 / 255, blue: 79 / 255)
         case "codex":
-            return Color(red: 16 / 255, green: 163 / 255, blue: 127 / 255) // OpenAI green
+            return Color(red: 9 / 255, green: 121 / 255, blue: 108 / 255)
         case "pi":
-            return Color(red: 108 / 255, green: 66 / 255, blue: 221 / 255)
+            return Color(red: 110 / 255, green: 80 / 255, blue: 164 / 255)
         case "copilot":
-            return Color(red: 36 / 255, green: 41 / 255, blue: 47 / 255) // GitHub ink
+            return Color(red: 67 / 255, green: 68 / 255, blue: 70 / 255)
         case "cursor":
-            return Color(red: 14 / 255, green: 14 / 255, blue: 16 / 255)
+            return Color(red: 28 / 255, green: 28 / 255, blue: 29 / 255)
         case "qoder", "qodercli", "qoderwork":
-            return Color(red: 22 / 255, green: 119 / 255, blue: 255 / 255)
+            return Color(red: 28 / 255, green: 112 / 255, blue: 226 / 255)
         case "grokbuild":
-            return Color(red: 12 / 255, green: 12 / 255, blue: 12 / 255)
+            return Color(red: 49 / 255, green: 52 / 255, blue: 59 / 255)
         default:
             return Color(nsColor: .controlAccentColor)
         }
@@ -169,8 +202,9 @@ extension ATMAgentDisplay {
 
 /// Full-color client logo chip (Agent list, quota, usage, search).
 ///
-/// Drawn in-app so we do not need bundled SVG/PNG packs. Shapes track the
-/// familiar product mark enough to read at 13–22pt.
+/// Known clients use the approved bundled icon set so every surface renders the
+/// exact same silhouette and flat background. Unknown clients retain a compact
+/// generated monogram rather than showing a missing image.
 struct ATMAgentMark: View {
     let agent: String
     var size: CGFloat = 18
@@ -178,195 +212,50 @@ struct ATMAgentMark: View {
     private var key: String { ATMAgentDisplay.key(agent) }
 
     var body: some View {
-        Canvas { context, canvasSize in
-            let side = min(canvasSize.width, canvasSize.height)
-            let rect = CGRect(
-                x: (canvasSize.width - side) / 2,
-                y: (canvasSize.height - side) / 2,
-                width: side,
-                height: side
-            )
-            let corner = side * 0.28
-            let bg = Path(roundedRect: rect, cornerRadius: corner, style: .continuous)
-            context.fill(bg, with: .color(ATMAgentDisplay.brandBackground(agent)))
-
-            let inset = side * 0.18
-            let logoRect = rect.insetBy(dx: inset, dy: inset)
-            drawLogo(context: context, in: logoRect, key: key)
-        }
+        mark
         .frame(width: size, height: size)
         .accessibilityLabel(ATMAgentDisplay.name(agent))
         .help(ATMAgentDisplay.name(agent))
     }
 
-    private func drawLogo(context: GraphicsContext, in rect: CGRect, key: String) {
-        let white = Color.white
-        switch key {
-        case "claude":
-            drawClaudeStar(context: context, in: rect, color: white)
-        case "codex":
-            drawOpenAIBlossom(context: context, in: rect, color: white)
-        case "pi":
-            drawPiGlyph(context: context, in: rect, color: white)
-        case "copilot":
-            drawCopilotMark(context: context, in: rect, color: white)
-        case "cursor":
-            drawCursorPointer(context: context, in: rect, color: white)
-        case "qoder", "qodercli", "qoderwork":
-            drawQoderMark(context: context, in: rect, color: white)
-        case "grokbuild":
-            drawGrokMark(context: context, in: rect, color: white)
-        default:
-            drawMonogramFallback(context: context, in: rect, color: white)
+    @ViewBuilder
+    private var mark: some View {
+        if
+            let resourceName = ATMAgentDisplay.iconResourceName(key),
+            let image = ATMBrandAssets.agentIconImage(resourceName: resourceName)
+        {
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .antialiased(true)
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: size * 0.235,
+                        style: .circular
+                    )
+                )
+        } else {
+            Canvas { context, canvasSize in
+                let side = min(canvasSize.width, canvasSize.height)
+                let rect = CGRect(
+                    x: (canvasSize.width - side) / 2,
+                    y: (canvasSize.height - side) / 2,
+                    width: side,
+                    height: side
+                )
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: side * 0.235, style: .circular),
+                    with: .color(ATMAgentDisplay.brandBackground(agent))
+                )
+                let monogram = ATMAgentDisplay.monogram(agent)
+                context.draw(
+                    Text(monogram)
+                        .font(.system(size: side * (monogram.count > 1 ? 0.38 : 0.48), weight: .bold, design: .rounded))
+                        .foregroundColor(.white),
+                    at: CGPoint(x: rect.midX, y: rect.midY),
+                    anchor: .center
+                )
+            }
         }
-    }
-
-    /// Anthropic-style multi-point starburst.
-    private func drawClaudeStar(context: GraphicsContext, in rect: CGRect, color: Color) {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let outer = min(rect.width, rect.height) * 0.48
-        let inner = outer * 0.38
-        var path = Path()
-        let points = 6
-        for i in 0..<(points * 2) {
-            let radius = i.isMultiple(of: 2) ? outer : inner
-            let angle = -Double.pi / 2 + Double(i) * Double.pi / Double(points)
-            let point = CGPoint(
-                x: center.x + CGFloat(cos(angle)) * radius,
-                y: center.y + CGFloat(sin(angle)) * radius
-            )
-            if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
-        }
-        path.closeSubpath()
-        context.fill(path, with: .color(color))
-    }
-
-    /// OpenAI-style hexagonal knot (simplified interlocking petals).
-    private func drawOpenAIBlossom(context: GraphicsContext, in rect: CGRect, color: Color) {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let r = min(rect.width, rect.height) * 0.42
-        let nodeR = r * 0.22
-        let stroke = max(r * 0.18, 1.1)
-        var ring = Path()
-        for i in 0..<6 {
-            let angle = -Double.pi / 2 + Double(i) * Double.pi / 3
-            let point = CGPoint(
-                x: center.x + CGFloat(cos(angle)) * r * 0.62,
-                y: center.y + CGFloat(sin(angle)) * r * 0.62
-            )
-            if i == 0 { ring.move(to: point) } else { ring.addLine(to: point) }
-        }
-        ring.closeSubpath()
-        context.stroke(ring, with: .color(color), style: StrokeStyle(lineWidth: stroke, lineJoin: .round))
-        for i in 0..<6 {
-            let angle = -Double.pi / 2 + Double(i) * Double.pi / 3
-            let point = CGPoint(
-                x: center.x + CGFloat(cos(angle)) * r * 0.62,
-                y: center.y + CGFloat(sin(angle)) * r * 0.62
-            )
-            context.fill(
-                Path(ellipseIn: CGRect(x: point.x - nodeR, y: point.y - nodeR, width: nodeR * 2, height: nodeR * 2)),
-                with: .color(color)
-            )
-        }
-    }
-
-    private func drawPiGlyph(context: GraphicsContext, in rect: CGRect, color: Color) {
-        let fontSize = min(rect.width, rect.height) * 0.95
-        context.draw(
-            Text("π")
-                .font(.system(size: fontSize, weight: .bold, design: .rounded))
-                .foregroundColor(color),
-            at: CGPoint(x: rect.midX, y: rect.midY),
-            anchor: .center
-        )
-    }
-
-    /// Copilot-ish pilot head: helmet oval + visor + chin.
-    private func drawCopilotMark(context: GraphicsContext, in rect: CGRect, color: Color) {
-        let w = rect.width
-        let h = rect.height
-        var helmet = Path()
-        helmet.addEllipse(in: CGRect(
-            x: rect.minX + w * 0.12,
-            y: rect.minY + h * 0.08,
-            width: w * 0.76,
-            height: h * 0.72
-        ))
-        context.stroke(helmet, with: .color(color), style: StrokeStyle(lineWidth: max(w * 0.1, 1), lineCap: .round))
-
-        var visor = Path()
-        visor.addRoundedRect(
-            in: CGRect(x: rect.minX + w * 0.22, y: rect.minY + h * 0.32, width: w * 0.56, height: h * 0.22),
-            cornerSize: CGSize(width: h * 0.1, height: h * 0.1)
-        )
-        context.fill(visor, with: .color(color))
-
-        var chin = Path()
-        chin.move(to: CGPoint(x: rect.midX - w * 0.12, y: rect.minY + h * 0.72))
-        chin.addLine(to: CGPoint(x: rect.midX, y: rect.maxY - h * 0.06))
-        chin.addLine(to: CGPoint(x: rect.midX + w * 0.12, y: rect.minY + h * 0.72))
-        context.stroke(chin, with: .color(color), style: StrokeStyle(lineWidth: max(w * 0.09, 1), lineCap: .round, lineJoin: .round))
-    }
-
-    /// Cursor-style pointer glyph.
-    private func drawCursorPointer(context: GraphicsContext, in rect: CGRect, color: Color) {
-        let w = rect.width
-        let h = rect.height
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX + w * 0.18, y: rect.minY + h * 0.12))
-        path.addLine(to: CGPoint(x: rect.minX + w * 0.18, y: rect.maxY - h * 0.12))
-        path.addLine(to: CGPoint(x: rect.minX + w * 0.42, y: rect.minY + h * 0.58))
-        path.addLine(to: CGPoint(x: rect.minX + w * 0.55, y: rect.minY + h * 0.78))
-        path.addLine(to: CGPoint(x: rect.minX + w * 0.62, y: rect.minY + h * 0.62))
-        path.addLine(to: CGPoint(x: rect.minX + w * 0.82, y: rect.minY + h * 0.55))
-        path.closeSubpath()
-        context.fill(path, with: .color(color))
-    }
-
-    /// Qoder: bold Q ring with tail.
-    private func drawQoderMark(context: GraphicsContext, in rect: CGRect, color: Color) {
-        let stroke = max(min(rect.width, rect.height) * 0.16, 1.2)
-        let ring = rect.insetBy(dx: stroke * 0.4, dy: stroke * 0.4)
-        context.stroke(
-            Path(ellipseIn: ring.insetBy(dx: stroke * 0.55, dy: stroke * 0.55)),
-            with: .color(color),
-            style: StrokeStyle(lineWidth: stroke, lineCap: .round)
-        )
-        var tail = Path()
-        tail.move(to: CGPoint(x: rect.midX + ring.width * 0.12, y: rect.midY + ring.height * 0.12))
-        tail.addLine(to: CGPoint(x: rect.maxX - stroke * 0.2, y: rect.maxY - stroke * 0.15))
-        context.stroke(tail, with: .color(color), style: StrokeStyle(lineWidth: stroke, lineCap: .round))
-    }
-
-    /// xAI / Grok-ish angular star-X.
-    private func drawGrokMark(context: GraphicsContext, in rect: CGRect, color: Color) {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let outer = min(rect.width, rect.height) * 0.48
-        let inner = outer * 0.32
-        var path = Path()
-        for i in 0..<8 {
-            let radius = i.isMultiple(of: 2) ? outer : inner
-            let angle = -Double.pi / 2 + Double(i) * Double.pi / 4
-            let point = CGPoint(
-                x: center.x + CGFloat(cos(angle)) * radius,
-                y: center.y + CGFloat(sin(angle)) * radius
-            )
-            if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
-        }
-        path.closeSubpath()
-        context.fill(path, with: .color(color))
-    }
-
-    private func drawMonogramFallback(context: GraphicsContext, in rect: CGRect, color: Color) {
-        let glyph = ATMAgentDisplay.monogram(agent)
-        let fontSize = min(rect.width, rect.height) * (glyph.count > 1 ? 0.55 : 0.72)
-        context.draw(
-            Text(glyph)
-                .font(.system(size: fontSize, weight: .bold, design: .rounded))
-                .foregroundColor(color),
-            at: CGPoint(x: rect.midX, y: rect.midY),
-            anchor: .center
-        )
     }
 }

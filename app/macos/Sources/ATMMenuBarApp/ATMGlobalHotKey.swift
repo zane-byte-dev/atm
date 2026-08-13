@@ -5,7 +5,20 @@ import Carbon.HIToolbox
 /// key table, so the shared event handler ignores registrations made by anyone
 /// else linked into this process.
 private let atmHotKeySignature = OSType(0x41_54_4D_4B) // 'ATMK'
-private let atmGlobalHotKeyID: UInt32 = 1
+
+/// Which of ATM's global shortcuts a Carbon registration belongs to.
+///
+/// The raw values are the ids Carbon hands back in the event, so they are part of
+/// the wire format between `register` and the C callback: stable, distinct, and
+/// never reused for a different meaning.
+enum ATMHotKeyAction: UInt32, CaseIterable {
+    /// Bring ATM to the front (or send it away again).
+    case launcher = 1
+    /// Hold to dictate; releasing writes the transcript into the focused app.
+    case voiceInput = 2
+    /// Bare ⎋, held only while dictation is running. See `registerTransient`.
+    case cancelVoice = 3
+}
 
 /// A global shortcut: one virtual key code plus its modifier mask.
 ///
@@ -123,6 +136,36 @@ enum ATMGlobalHotKeyTarget: String, CaseIterable, Identifiable {
     }
 }
 
+/// The storage behind one shortcut a person can bind: which UserDefaults keys hold
+/// it, what it falls back to, and how to read it back.
+///
+/// Two shortcuts now share this — opening ATM and holding to dictate — and the part
+/// worth writing once is the fallback rule, not the pair of key names.
+struct ATMHotKeyBinding {
+    let enabledKey: String
+    let hotKeyKey: String
+    let defaultEnabled: Bool
+    let defaultHotKey: ATMHotKey
+
+    var isEnabled: Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: enabledKey) != nil else { return defaultEnabled }
+        return defaults.bool(forKey: enabledKey)
+    }
+
+    /// Falls back to the default rather than to "no shortcut": a value we cannot
+    /// parse means a corrupted preference, and silently losing the shortcut looks
+    /// exactly like the feature being broken.
+    var hotKey: ATMHotKey {
+        guard let raw = UserDefaults.standard.string(forKey: hotKeyKey),
+              let hotKey = ATMHotKey(storageValue: raw),
+              hotKey.isValid else {
+            return defaultHotKey
+        }
+        return hotKey
+    }
+}
+
 /// Where the global shortcut lives. Same shape as `ATMAgentNotchPreferences`: raw
 /// UserDefaults keys the settings screen binds to with `@AppStorage`, plus
 /// resolved accessors for the non-SwiftUI callers.
@@ -138,11 +181,15 @@ enum ATMGlobalHotKeyPreferences {
     /// it, which is the point of the setting.
     static let defaultHotKey = ATMHotKey(keyCode: UInt16(kVK_ANSI_A), modifiers: [.command, .option])
 
-    static var isEnabled: Bool {
-        let defaults = UserDefaults.standard
-        guard defaults.object(forKey: enabledKey) != nil else { return defaultEnabled }
-        return defaults.bool(forKey: enabledKey)
-    }
+    static let binding = ATMHotKeyBinding(
+        enabledKey: enabledKey,
+        hotKeyKey: hotKeyKey,
+        defaultEnabled: defaultEnabled,
+        defaultHotKey: defaultHotKey
+    )
+
+    static var isEnabled: Bool { binding.isEnabled }
+    static var hotKey: ATMHotKey { binding.hotKey }
 
     static var target: ATMGlobalHotKeyTarget {
         guard let raw = UserDefaults.standard.string(forKey: targetKey),
@@ -151,27 +198,34 @@ enum ATMGlobalHotKeyPreferences {
         }
         return target
     }
+}
 
-    /// Falls back to the default rather than to "no shortcut": a value we cannot
-    /// parse means a corrupted preference, and silently losing the shortcut looks
-    /// exactly like the feature being broken.
-    static var hotKey: ATMHotKey {
-        guard let raw = UserDefaults.standard.string(forKey: hotKeyKey),
-              let hotKey = ATMHotKey(storageValue: raw),
-              hotKey.isValid else {
-            return defaultHotKey
+extension ATMHotKeyAction {
+    /// The preference this action reads, or nil when nothing about it is bindable.
+    ///
+    /// `cancelVoice` has none on purpose: it is ⎋, ATM owns it, and it only exists
+    /// while dictation is running — see `ATMGlobalHotKeyManager.registerTransient`.
+    var binding: ATMHotKeyBinding? {
+        switch self {
+        case .launcher: return ATMGlobalHotKeyPreferences.binding
+        case .voiceInput: return ATMVoiceInputPreferences.hotKeyBinding
+        case .cancelVoice: return nil
         }
-        return hotKey
     }
 }
 
-/// Holds the system-wide shortcut that brings ATM to the front.
+/// Holds ATM's system-wide shortcuts.
 ///
 /// Uses Carbon's `RegisterEventHotKey` rather than an `NSEvent` global monitor:
 /// the monitor form of keyboard events requires Input Monitoring permission and
 /// only observes — it cannot stop the keystroke from also reaching whatever app
 /// is in front. A registered hot key needs no permission prompt and is consumed
 /// by us, which is what a launcher shortcut has to do.
+///
+/// One manager rather than one per shortcut: the Carbon event handler is installed
+/// against the process-wide dispatcher target and filters by our signature, so a
+/// second manager would see the first one's events and both would have to agree on
+/// who owns which id. Keeping the id table in one place removes that question.
 @MainActor
 final class ATMGlobalHotKeyManager: ObservableObject {
     static let shared = ATMGlobalHotKeyManager()
@@ -185,14 +239,21 @@ final class ATMGlobalHotKeyManager: ObservableObject {
         case unavailable(ATMHotKey)
     }
 
-    @Published private(set) var registration: Registration = .off
+    @Published private(set) var registrations: [ATMHotKeyAction: Registration] = [:]
 
-    /// Set by `StatusBarController`; the manager knows nothing about panels.
-    var onTrigger: (() -> Void)?
+    /// Set by `StatusBarController`; the manager knows nothing about panels or
+    /// microphones. `onReleased` only fires for shortcuts whose whole point is how
+    /// long you hold them — the launcher ignores it.
+    var onPressed: ((ATMHotKeyAction) -> Void)?
+    var onReleased: ((ATMHotKeyAction) -> Void)?
 
-    private var hotKeyRef: EventHotKeyRef?
+    private var refs: [ATMHotKeyAction: EventHotKeyRef] = [:]
     private var eventHandler: EventHandlerRef?
     private var defaultsObserver: NSObjectProtocol?
+
+    func registration(for action: ATMHotKeyAction) -> Registration {
+        registrations[action] ?? .off
+    }
 
     func start() {
         installEventHandler()
@@ -214,42 +275,67 @@ final class ATMGlobalHotKeyManager: ObservableObject {
             NotificationCenter.default.removeObserver(defaultsObserver)
             self.defaultsObserver = nil
         }
-        unregister()
+        for action in ATMHotKeyAction.allCases {
+            unregister(action)
+        }
+        registrations = [:]
         if let eventHandler {
             RemoveEventHandler(eventHandler)
             self.eventHandler = nil
         }
     }
 
-    /// Brings the live registration in line with the stored preference. Safe to
+    /// Brings the live registrations in line with the stored preferences. Safe to
     /// call on every UserDefaults change: an unchanged shortcut is left alone, and
     /// a combination that already failed is not retried until it changes, so a
     /// conflict cannot turn into a registration loop.
     func apply() {
-        guard ATMGlobalHotKeyPreferences.isEnabled else {
-            unregister()
-            registration = .off
-            return
+        for action in ATMHotKeyAction.allCases {
+            guard let binding = action.binding else { continue }
+            guard binding.isEnabled else {
+                unregister(action)
+                registrations[action] = .off
+                continue
+            }
+            let desired = binding.hotKey
+            let current = registration(for: action)
+            // Already settled, either way. Re-registering an unchanged shortcut
+            // would churn on every unrelated preference write, and retrying one
+            // that a different app owns would loop; turning the setting off and on
+            // again is the deliberate way to retry.
+            if current == .active(desired) || current == .unavailable(desired) {
+                continue
+            }
+            register(action, desired)
         }
-        let desired = ATMGlobalHotKeyPreferences.hotKey
-        // Already settled, either way. Re-registering an unchanged shortcut would
-        // churn on every unrelated preference write, and retrying one that a
-        // different app owns would loop; turning the setting off and on again is
-        // the deliberate way to retry.
-        if registration == .active(desired) || registration == .unavailable(desired) {
-            return
-        }
-        register(desired)
     }
 
-    private func register(_ hotKey: ATMHotKey) {
-        unregister()
-        guard hotKey.isValid else {
-            registration = .off
+    /// Takes a shortcut ATM owns outright for as long as something is running,
+    /// bypassing both the preference table and `ATMHotKey.isValid`.
+    ///
+    /// `isValid` demands ⌘, ⌃ or ⌥ because a bare letter bound forever would fight
+    /// ordinary typing. Bare ⎋ held only while dictation is recording is the case
+    /// that rule exists to allow: "press ⎋ to cancel" has to be true from the very
+    /// first recording, and the alternative — `NSEvent.addGlobalMonitorForEvents` —
+    /// needs Accessibility permission, so it would be a lie exactly when someone is
+    /// still staring at the permission prompt.
+    func registerTransient(_ action: ATMHotKeyAction, hotKey: ATMHotKey) {
+        register(action, hotKey, requireModifiers: false)
+    }
+
+    func unregisterTransient(_ action: ATMHotKeyAction) {
+        unregister(action)
+        registrations[action] = .off
+    }
+
+    private func register(_ action: ATMHotKeyAction, _ hotKey: ATMHotKey, requireModifiers: Bool = true) {
+        unregister(action)
+        if requireModifiers, !hotKey.isValid {
+            registrations[action] = .off
             return
         }
         var ref: EventHotKeyRef?
-        let identifier = EventHotKeyID(signature: atmHotKeySignature, id: atmGlobalHotKeyID)
+        let identifier = EventHotKeyID(signature: atmHotKeySignature, id: action.rawValue)
         let status = RegisterEventHotKey(
             UInt32(hotKey.keyCode),
             hotKey.carbonModifiers,
@@ -260,35 +346,43 @@ final class ATMGlobalHotKeyManager: ObservableObject {
         )
         guard status == noErr, let ref else {
             // Almost always `eventHotKeyExistsErr`: another app holds it.
-            registration = .unavailable(hotKey)
+            registrations[action] = .unavailable(hotKey)
             ATMLog.failure(
                 "global_hotkey_register_failed",
                 error: "OSStatus \(status)",
-                fields: ["hotkey": hotKey.displayString]
+                fields: ["hotkey": hotKey.displayString, "action": String(describing: action)]
             )
             return
         }
-        hotKeyRef = ref
-        registration = .active(hotKey)
+        refs[action] = ref
+        registrations[action] = .active(hotKey)
     }
 
-    private func unregister() {
-        guard let hotKeyRef else { return }
-        UnregisterEventHotKey(hotKeyRef)
-        self.hotKeyRef = nil
+    private func unregister(_ action: ATMHotKeyAction) {
+        guard let ref = refs.removeValue(forKey: action) else { return }
+        UnregisterEventHotKey(ref)
     }
 
+    /// Both kinds, in one handler. Release is what makes hold-to-dictate possible:
+    /// Carbon reports it for the same registration, so nothing has to watch the
+    /// keyboard to notice a key coming back up.
     private func installEventHandler() {
         guard eventHandler == nil else { return }
-        var spec = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        var specs = [
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            ),
+            EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyReleased)
+            ),
+        ]
         let status = InstallEventHandler(
             GetEventDispatcherTarget(),
             atmGlobalHotKeyEventHandler,
-            1,
-            &spec,
+            specs.count,
+            &specs,
             nil,
             &eventHandler
         )
@@ -297,14 +391,19 @@ final class ATMGlobalHotKeyManager: ObservableObject {
         }
     }
 
-    fileprivate func handleHotKeyPressed() {
-        onTrigger?()
+    fileprivate func handle(action: ATMHotKeyAction, isPressed: Bool) {
+        if isPressed {
+            onPressed?(action)
+        } else {
+            onReleased?(action)
+        }
     }
 }
 
 /// Carbon calls back through a bare C function pointer, so it cannot capture the
-/// manager. Only one hot key is registered under our signature, so resolving the
-/// shared manager is unambiguous.
+/// manager. Every hot key under our signature belongs to the shared manager, so
+/// resolving it is unambiguous; the id says which shortcut and the event kind says
+/// whether the key went down or came back up.
 private func atmGlobalHotKeyEventHandler(
     _ callRef: EventHandlerCallRef?,
     _ event: EventRef?,
@@ -323,9 +422,16 @@ private func atmGlobalHotKeyEventHandler(
     )
     guard status == noErr,
           identifier.signature == atmHotKeySignature,
-          identifier.id == atmGlobalHotKeyID else {
+          let action = ATMHotKeyAction(rawValue: identifier.id) else {
         return OSStatus(eventNotHandledErr)
     }
-    Task { @MainActor in ATMGlobalHotKeyManager.shared.handleHotKeyPressed() }
+    let kind = GetEventKind(event)
+    guard kind == UInt32(kEventHotKeyPressed) || kind == UInt32(kEventHotKeyReleased) else {
+        return OSStatus(eventNotHandledErr)
+    }
+    let isPressed = kind == UInt32(kEventHotKeyPressed)
+    Task { @MainActor in
+        ATMGlobalHotKeyManager.shared.handle(action: action, isPressed: isPressed)
+    }
     return noErr
 }

@@ -184,12 +184,11 @@ func memoryScore(content, query string, createdAt time.Time) float64 {
 	}
 	queryTokens := tokenize(query)
 	tokens := tokenize(content)
-	// Match on at least one query token, mirroring knowledge search: the old
-	// all-tokens gate zeroed a memory whenever a single query character was
-	// absent, which is too harsh under per-char Chinese tokenization. The
-	// coverage factor below keeps complete matches ranked above partial ones.
+	// Match a complete user-entered term, mirroring knowledge search. This keeps
+	// OR-style recall across terms while preventing a compact Chinese query such
+	// as "搜索" from matching an unrelated memory containing only "索".
 	matched := matchedTokenCount(tokens, queryTokens)
-	if matched == 0 {
+	if matched == 0 || !matchesAnyQueryTerm(content, query) {
 		return 0
 	}
 	frequency := make(map[string]int)

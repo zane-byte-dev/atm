@@ -97,16 +97,26 @@ final class ATMAgentEventBus: ObservableObject {
                 source: event.source,
                 receivedAt: now
             )
-            // Record under every identifier the sender gave us. Which one joins
-            // depends on the agent: Claude Code's session id matches the parsed
-            // session id directly, while Codex reports a full thread id that the
-            // parser keeps as resumeID, and cwd is the last resort.
-            for key in keys where signals[key] != signal {
+            // A sender that named its session gets exactly that key. Writing the
+            // `cwd` alias too is what turned one agent's permission prompt into a
+            // 等待授权 banner on every other session in the same repository:
+            // `joinKeys` lets any row claim a directory key, and several agents
+            // share one. The alias is only the last resort for a hook that
+            // reported no session id at all, which `Envelope.Validate` permits.
+            for key in event.sessionKey.map({ [$0] }) ?? keys where signals[key] != signal {
                 signals[key] = signal
                 changed = true
             }
         case .started, .resumed, .completed, .sessionEnd:
-            for key in keys where signals.removeValue(forKey: key) != nil {
+            if let sessionKey = event.sessionKey, signals.removeValue(forKey: sessionKey) != nil {
+                changed = true
+            }
+            // Clearing a directory key is the counterpart of the alias above, so
+            // it has to be as narrow: another agent's live signal can be sitting
+            // under the same `cwd`, and retiring it here would leave that agent
+            // waiting with no banner at all.
+            if let cwd = event.cwdKey, signals[cwd]?.source == event.source {
+                signals.removeValue(forKey: cwd)
                 changed = true
             }
         case .sessionStart:
@@ -168,7 +178,7 @@ enum ATMAgentHookAuthority {
     ///   - seenSessionKeys: session identifiers a hook event has already arrived
     ///     for (`ATMAgentEventBus.hookSessionKeys`).
     ///   - report: what `atm agent hook status` found in the agents' config files.
-    ///   - isListening: whether the notch socket is actually accepting events. If
+    ///   - isListening: whether the hook socket is actually accepting events. If
     ///     it is not, no hook can reach us and handing the state over would leave
     ///     the session with no source at all.
     static func isAuthoritative(
@@ -221,11 +231,21 @@ enum ATMAgentAttentionJoin {
         in signals: [String: ATMAgentAttentionSignal],
         now: Date
     ) -> ATMAgentAttentionSignal? {
-        for key in joinKeys(for: session) {
+        for key in sessionKeys(for: session) {
             guard let signal = signals[key], signal.isLive(at: now) else { continue }
             return signal
         }
-        return nil
+        // The directory fallback, and only for the agent that raised it. A repo
+        // routinely holds a Codex session, a Claude Code session and an
+        // unattended run at once; matching on `cwd` alone made one agent's
+        // 等待授权 appear on all of them, naming the wrong tool and pointing at
+        // sessions that were not waiting for anything.
+        guard let cwd = trimmed(session.cwd),
+              let signal = signals[cwd],
+              signal.isLive(at: now),
+              ATMAgentHookSource.source(forTool: session.tool) == signal.source
+        else { return nil }
+        return signal
     }
 
     /// The identifiers a session can be matched by, most specific first.
@@ -234,6 +254,10 @@ enum ATMAgentAttentionJoin {
     /// session id to eight characters and keeps the full thread id — the one the
     /// hook reports — in `resumeID`. `cwd` is the last resort for agents whose
     /// hook session id does not correspond to anything the parser stores.
+    ///
+    /// Used by `isHookBacked`, where being generous only silences a duplicate
+    /// chime. The attention join deliberately does not use this: see `signal`,
+    /// which gates the `cwd` fallback on the agent matching.
     static func joinKeys(for session: ATMLiveSession) -> [String] {
         var keys = sessionKeys(for: session)
         if let cwd = trimmed(session.cwd), !keys.contains(cwd) {

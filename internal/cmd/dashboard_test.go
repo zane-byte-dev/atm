@@ -3,7 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/contract"
@@ -78,6 +80,15 @@ func TestDashboardReturnsVersionedAggregateSnapshot(t *testing.T) {
 		snapshot.ProjectDayStats == nil || snapshot.ProjectHourStats == nil {
 		t.Fatal("dashboard arrays must encode as [] rather than null")
 	}
+	// Hour buckets reach back through yesterday, not only today. Both single-day
+	// windows are drawn as an hourly shape, and yesterday used to collapse into one
+	// bar because its hours were never queried. The buckets are zero-filled, so the
+	// first one is the window's own start whether or not yesterday saw traffic.
+	yesterday := time.Now().In(config.Loc).AddDate(0, 0, -1).Format("2006-01-02")
+	if len(snapshot.HourStats) == 0 ||
+		!strings.HasPrefix(snapshot.HourStats[0].Date, yesterday) {
+		t.Errorf("hour buckets start at %#v, want one dated %s", firstOf(snapshot.HourStats), yesterday)
+	}
 	var rawFields map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &rawFields); err != nil {
 		t.Fatal(err)
@@ -87,12 +98,111 @@ func TestDashboardReturnsVersionedAggregateSnapshot(t *testing.T) {
 	}
 }
 
+func firstOf[T any](values []T) any {
+	if len(values) == 0 {
+		return nil
+	}
+	return values[0]
+}
+
+// The task list must not wait on the statistics. `--sections work` is what the
+// desktop app asks for to fill its window on launch, so it has to carry every
+// field a task row reads and none of the aggregation that made the full snapshot
+// take a second.
+func TestDashboardWorkSectionOmitsStatisticsButKeepsTasks(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	oldJSON, oldAgent, oldSession, oldSections := jsonOutput, agentFlag, sessionIDFlag, dashboardSections
+	t.Cleanup(func() {
+		jsonOutput, agentFlag, sessionIDFlag, dashboardSections = oldJSON, oldAgent, oldSession, oldSections
+	})
+	jsonOutput = true
+	agentFlag = ""
+	sessionIDFlag = ""
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Dashboard contract", Priority: "P1",
+		Status: store.TodoStatusOpen, Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	seedCommandSession(t)
+
+	dashboardSections = []string{"work"}
+	var runErr error
+	raw := captureStdout(t, func() {
+		runErr = runDashboard(dashboardCmd, nil)
+	})
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	var snapshot dashboardEnvelope
+	if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+		t.Fatalf("decode dashboard: %v\n%s", err, raw)
+	}
+	// Same version as the full snapshot: this is one section of the same
+	// contract, not a second format the app has to recognise separately.
+	if snapshot.SchemaVersion != contract.DashboardSchemaVersion {
+		t.Fatalf("schema version = %d", snapshot.SchemaVersion)
+	}
+	if len(snapshot.Todos) != 1 || snapshot.Todos[0].ID != "t1" || snapshot.Work.Summary.Open != 1 {
+		t.Fatalf("work snapshot = %#v, todos=%#v", snapshot.Work, snapshot.Todos)
+	}
+	// Absent, not zero-valued: a range dated 0001-01-01 would read as a real
+	// window that happened to have no traffic.
+	if len(snapshot.Ranges) != 0 {
+		t.Errorf("ranges = %v, want none", keysOf(snapshot.Ranges))
+	}
+	for name, series := range map[string]int{
+		"day_stats":          len(snapshot.DayStats),
+		"hour_stats":         len(snapshot.HourStats),
+		"model_day_stats":    len(snapshot.ModelDayStats),
+		"model_hour_stats":   len(snapshot.ModelHourStats),
+		"project_day_stats":  len(snapshot.ProjectDayStats),
+		"project_hour_stats": len(snapshot.ProjectHourStats),
+	} {
+		if series != 0 {
+			t.Errorf("%s = %d rows, want none", name, series)
+		}
+	}
+	// Still arrays, so the app's decoder sees an empty section rather than null.
+	if snapshot.DayStats == nil || snapshot.HourStats == nil ||
+		snapshot.ModelDayStats == nil || snapshot.ModelHourStats == nil ||
+		snapshot.ProjectDayStats == nil || snapshot.ProjectHourStats == nil {
+		t.Error("omitted sections must encode as [] rather than null")
+	}
+}
+
+func TestDashboardSectionsSelection(t *testing.T) {
+	all := dashboardSectionSet{work: true, stats: true}
+	for _, testCase := range []struct {
+		names []string
+		want  dashboardSectionSet
+	}{
+		{nil, all},
+		{[]string{}, all},
+		{[]string{"work"}, dashboardSectionSet{work: true}},
+		{[]string{"stats"}, dashboardSectionSet{stats: true}},
+		{[]string{"work", "stats"}, all},
+	} {
+		got, err := parseDashboardSections(testCase.names)
+		if err != nil || got != testCase.want {
+			t.Errorf("parseDashboardSections(%v) = %+v, %v; want %+v", testCase.names, got, err, testCase.want)
+		}
+	}
+	// An unknown section must fail rather than silently return everything: a typo
+	// that quietly runs the second of aggregation is the bug this flag exists to avoid.
+	if _, err := parseDashboardSections([]string{"todos"}); err == nil {
+		t.Error("parseDashboardSections accepted an unknown section")
+	}
+}
+
 func TestStatsSessionUsageReturnsEventTimeRowsOnDemand(t *testing.T) {
 	withIsolatedCommandEnv(t)
 	withCommandFlags(t)
 	seedCommandSession(t)
 	jsonOutput = true
-	statsDaysFlag = 1
+	// Two days, not one: the seed is an hour old, which lands on yesterday for the
+	// first hour after midnight and made this assert on the clock.
+	statsDaysFlag = 2
 	statsByFlag = "session-usage"
 
 	var runErr error

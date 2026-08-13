@@ -32,7 +32,11 @@ make install    # 构建并安装到 /usr/local/bin
 
 ### macOS 菜单栏
 
-独立菜单栏 App 常驻显示今日 Token；主窗口提供任务、收集、Agent、知识和用量工作区。收集工作区
+独立菜单栏 App 常驻显示今日 Token；主窗口提供任务、收集、Agent、知识和用量工作区。Agent 工作区侧栏分
+「活跃 / 全部」：活跃是实时窗口内的会话，全部走持久索引并按开始时间倒序分页，会话滑出实时窗口后仍然点得到。
+会话详情的「对话」提供三段式阅读——摘要（最近几轮）、时序（消息与模型请求交错，含每次请求的用量）、
+完整（全部轮次，并尽可能带上思考过程）；思考读不到时会区分「文件已被 Agent 轮转掉」和「这个 Agent 不存
+思考正文」，而不是都渲染成空白。收集工作区
 把钉钉等外部来源的消息自动分类为新 Todo、知识沉淀或忽略记录，并提供失败重试、纠错与撤销；与历史 Todo 有关时在新 Todo 中记录关联，不合并事项。
 处理记录跟随它写出去的 Todo：那个 Todo 被完成或废弃后（在哪儿关的都算），这条记录一并
 了结，折叠进「沉淀与已了结」，主列表只留还欠一个动作的跟进。
@@ -54,8 +58,10 @@ open app/macos/dist/ATM.app
 # 会话 (别名: atm s)
 atm session status  [--agent X]                          # AI 工具实时状态
 atm session list    [--agent X] [--days N] [--project P] # 最近会话列表
+atm session list    --all --order desc --limit 200 [--offset N]  # 整个索引，按开始时间倒序分页
 atm session search  <keyword>  [--agent X]               # 全文搜索会话历史
 atm session show    <session-id> [--thinking]            # 查看完整 Q/A（可含模型思考过程）
+                                                         # Codex/Grok/Pi 有思考正文；Claude Code 只存签名，会明说
 atm session timeline <session-id>                        # 消息与模型请求时间线
 atm session clip    <keyword>  [--agent X]               # 复制 AI 回复到剪贴板
 atm session export  [--format json|csv] [--days N]       # 导出原始数据
@@ -64,7 +70,7 @@ atm session forget  <session-id> [-y]                    # 永久移除源文件
 # 待办与工作状态
 atm now                                     # 工作中、等待中、待验收、阻塞和到期复查
 atm dashboard --json                       # 一次返回带 schema_version 的桌面聚合快照
-atm todo    [list|add|start|submit|done|drop|trash|restore|show|context|edit|move|log|doc|prompt]
+atm todo    [list|add|refine|start|run|runs|tail|submit|done|drop|trash|restore|show|context|edit|move|log|doc|prompt]
 atm todo start <id>                         # 进入工作中；done/dropped 会重新开始
 atm todo context [id] --json                # 临时、只读汇总 Todo、Session 与 Git 上下文
 atm todo submit [id] --reason "实现及证据"   # 显式提交待确认，不直接标记 done
@@ -80,6 +86,14 @@ atm todo wake <id> --reason "流水线完成"     # 外部事件/人工条件显
 atm todo reconcile                          # 补偿唤醒并审计缺失、放弃、循环依赖
 atm todo bulk done <id>... --reason "完成"  # 批量完成（也支持 drop/move/edit）
 atm todo prompt <id> --copy                 # 复制一行启动提示，粘贴进新的 Agent 会话
+atm todo handoff <id>                       # 在任务的工作目录里打开 Codex 并填好这行提示（不自动执行）
+atm todo handoff <id> --print               # 只输出深链，不打开
+atm todo run <id> [--cwd /path/to/repo]      # 后台派发给 Codex；默认 guarded
+atm todo agents                              # 查看 Codex 是否已安装与费用说明
+atm todo run <id> --continue "修改要求"       # 恢复该 Todo 最近一次 Codex 会话并继续修改
+atm todo runs <id>                           # 查看每次派发的状态、PID 与退出结果
+atm todo interrupt <id>                      # 中断当前 Agent 进程树，Todo 保持工作中
+atm todo tail <id> [-f] [--bytes N]          # 查看/持续跟随最近一次派发日志，可限制最近 N 字节
 atm todo match --prompt                 # 启动时只给当前仓库最多 3 个候选
 atm session bind <id>                   # 当前 agent 会话接手 TODO，并自动 start
 atm session current                     # 查看当前会话绑定
@@ -92,6 +106,8 @@ atm todo lint <id>                      # 检查冗长动态、无效 tID 和文
 atm todo add "<title>" --desc-file <path>  # - 表示从 stdin 读取多行描述
 atm todo add --batch                       # 从 YAML/JSON stdin 批量创建；示例见 --help
 id=$(atm todo add "<title>")               # 非 JSON 模式 stdout 仅输出新 ID
+atm todo add "<title>" --refine            # 创建后立刻润色；复杂任务会拆分子任务并写计划
+atm todo refine <id>                       # 润色已有任务；--dry-run 只看提案，--no-split 不拆分
 atm todo trash <id>                        # 移到回收站，不确认、可恢复
 atm todo list --status trashed             # 查看回收站（archived 仍是兼容别名）
 atm todo restore <id>                      # 从回收站恢复原状态
@@ -108,6 +124,7 @@ atm diagnose [--bundle] [-o path]                # 报障用支持包：版本/s
 atm sync    [--agent X]                          # 手动触发数据同步
 atm sync status [--agent X] --json               # 只读查看索引新鲜度、最近同步结果与错误
 atm config  [init]                               # 查看/初始化配置文件
+atm config credential status|set|delete          # 内置文本服务的 API Key：set 从 stdin 读，不进 argv
 atm backup  [-o path]                            # 归档无处重建的记录（todo/记忆/知识/收集账本）
 atm restore <archive> [--yes]                    # 从归档恢复；被替换的数据移到 pre-restore-<时间>/
 
@@ -118,6 +135,7 @@ atm collect status --json                         # 健康状态、来源、运�
 atm collect source search deploy --connector slack --kind channel --limit 10
 atm collect source add --connector slack --kind channel --id C123 --name deploys
 atm collect source add --connector github --kind issue --id owner/repo#42 --project atm
+atm collect source add --connector slack --kind channel --id C123 --project atm --auto-dispatch
 atm collect source add --connector slack --kind channel --id C456 --strategy observe --interval 60
 atm collect source add --connector slack --kind channel --id C456 --knowledge-collection inbox
 atm collect source add --connector slack --kind channel --id C456 --instruction "只关注 MR 和需求"
@@ -171,19 +189,58 @@ atm memory forget <memory-id> [--scope project:mox]
 atm artifact save <title> --file report.md
 ```
 
+`todo refine` 用 ATM 内置的 DeepSeek 文本服务把一条任务整理成可执行卡片：润色标题和需求，复杂工作写计划，
+能独立关闭的部分拆成子任务并由父任务等待。它直接调用 DeepSeek Chat Completions，默认模型是适合轻量文本
+职能的 `deepseek-v4-flash`，关闭思考模式并要求 JSON 输出；它既不启动 Agent，也不复用或回退到
+`collection_model_command`。API Key 保存在 `~/.atm/credentials.json`（目录 `0700`、文件 `0600`），
+不进普通配置、备份、诊断包、argv 或日志：App 在“设置 → 模型”里填，CLI 用 `atm config credential set`
+（从 stdin 读）存同一份，`DEEPSEEK_API_KEY` 临时覆盖。模型和 endpoint 可在模型设置页修改，或通过
+`text_model_name`、`text_model_base_url` 配置项覆盖；设置页的“测试连接”会使用当前草稿值发送一个最小
+JSON 请求，不保存设置、也不读取或修改 Todo。CLI 可用 `atm config test-text-model` 做同样检查；
+`ATM_TEXT_MODEL_MODEL`、`ATM_TEXT_MODEL_BASE_URL` 适合临时调试。`todo add` 默认不整理；桌面添加在
+`todo_refine_on_add`（默认开）时会自动跑一次。
+
 `todo prompt` 输出一行交给人粘贴进新 Agent 会话的指针，不搬运需求本身：Agent 按指针自己去读
 `todo doc`，拿到的永远是当前版本。想在会话之外补充需求就用 `todo log --section 补充`，它写进同一份
-文档，接手的 Agent 一并读到。ATM 不代管 Agent 执行，所以没有 Agent 任务后台进程；任务完成后由 Agent 自己
-`todo submit` 进入 `review`。
+文档，接手的 Agent 一并读到。
+
+`todo run` 是显式的本地执行入口，**只派发 Codex**（`todo agents` 显示本机是否已安装与费用说明）。
+Codex 是唯一沙箱能被 ATM 强制、线程 id 能被 ATM 找回的 CLI，所以委派收敛到它一个：guarded 用
+`codex exec --sandbox workspace-write` 并额外开放 ATM 数据目录，边界由 sandbox 而不是 prompt 保证。
+全局 `--agent` 只是读过滤器（看哪个 Agent 的会话、任务与用量），传给 `todo run` 会被拒绝而不是
+静默启动另一个 CLI。`--policy trusted` 绕过审批与 sandbox，必须显式传入并会输出警告。
+
+派发 prompt 不要求 Agent 用 ATM 记录进展，只要求它把结果、证据和遗留问题写在最后一段回复里：这次执行的
+会话本来就被索引成全文，Todo 详情直接读取会话最后一条回复，再写一遍等于把 ATM 已经拥有的文字抄进第二张表。
+
+它先创建唯一的 `task_runs` claim，再启动一个脱离调用终端的 ATM controller 来运行 Codex。同一 Todo 同时
+最多一个 starting/running Run；进程异常消失后，下次派发会把旧 claim 记为失败再重试。Agent 退出 0 只会把
+仍在进行中的 Todo 提交到 `review`，永远不会自动 `done`；非零退出只记录 Run 失败，不改变 Todo 生命周期。
+`todo interrupt` 会停止 controller 及其 Agent 子进程树，将 Run 单独记为 `interrupted`，并让 Todo 保持
+`in_progress`。子进程退出或被 interrupt 之后，controller 会向 App 发一条 `session_end`——它是唯一确知
+子进程已经没了的一方，否则 App 会拿着一条「等待授权」信号直到安全 TTL 过期。每次派发的工作目录、策略、
+controller PID、时间、退出码和日志路径均独立保存。
+
+已有执行关联到 Codex 线程后，可用 `--continue` 发送新的修改要求：ATM 创建新的 Run 审计记录（续跑的意图记在
+`resume_session_id`，与记录「这次执行实际是哪个会话」的 `session_id` 分开），并通过 `codex exec resume`
+恢复原线程上下文。传给 Codex 的必须是线程 UUID：Codex 会把认不出的 id 当成线程名，找不到时不报错而是静默新开
+一个会话，所以 ATM 先把 `rollout-<时间>-<uuid>` 归一成 UUID，归一不出来就直接拒绝而不是假装续上。
+`task_runs` 里 Claude、Grok、Pi 时代的行作为执行履历保留，但 `--continue` 只认 Codex 的会话：它们的
+session id 是 ATM 自己生成的，Codex 会把它当线程名静默新开一轮。
+macOS 任务详情提供“委派任务”、实时状态、失败重试与“继续修改”输入框；来源开启自动派发时也复用完全相同的入口。
 
 `collect` 是连接器采集面，不是 Agent 调度器。来源通过注册表按 `connector` 路由；连接器使用
 [版本化 stdin/stdout JSON 协议](docs/connector-protocol.md)，无需链接进 ATM。公开核心不内置服务专属适配器。
 macOS 菜单栏 App 常驻时按默认 5 分钟间隔采集；主窗口关闭不影响采集，退出 App 后停止。每个白名单来源有独立
 checkpoint，并重叠回读 20 分钟，消息 ID 与来源标记共同保证重复拉取不会重复新建。语义匹配只用于在新 Todo 中记录相关历史 Todo，不会把新事项补充进旧 Todo。认证由连接器管理，ATM 不保存连接器 token/Cookie。
+`tasks` 来源可用 `--auto-dispatch`（App 中为“新 Todo 自动交给 Codex”）显式开启一次性派发，默认关闭；
+`observe` 在存储层强制禁止派发。分类完成和 Agent 派发分别记账：Codex 启动失败时 Todo 仍保留，处理记录展示
+失败证据，可从 Todo 详情人工重试；成功 Run 仍只进入 `review`。自动派发来源必须配置项目，工作目录只从这项
+可信配置解析（`~/mox/<project>`、`~/work/<project>` 或绝对路径），不接受聊天或分类模型改写执行目录。
 模型只输出固定决策 JSON，TodoWriter 才能写 ATM；权限、模型或写入失败会显示为等待重试且不会推进 checkpoint。
 采集默认关闭，启用前需在 `collection_connectors` 中配置并验证连接器。
 
-分类模型由 `collection_model_command` 决定，可以写成按序尝试的候选链
+收集分类模型仍由 `collection_model_command` 决定，可以写成按序尝试的候选链
 （`atm config set collection_model_command "grok,codex"`）：前一个被限额、超时或没装时自动换下一个，
 一个 CLI 挂掉不再整条采集停摆。内置 `codex` 与 `grok` 两套无头调用方式（都在一次性工作目录里跑、只读沙箱、
 禁联网搜索/记忆/子 Agent；grok 没有 `--ignore-user-config` 等价开关，差异见文档）；其他 CLI 通过
@@ -224,9 +281,11 @@ Parser 层自动处理以下噪音，保证存储和展示的数据是真实用�
 - **Codex**：SessionStart hook 可调用 [`integrations/codex-atm-context.sh`](integrations/codex-atm-context.sh)，避免把完整 `atm now --json` 反复塞入上下文
 - **其他 agent**（Claude Code 等）：以该文件内容作为 prompt/skill 参考
 
-## 刘海事件推送
+## Agent 事件推送与通知
 
-刘海默认靠每 3 秒扫一遍会话记录来判断「这个会话是不是在等你」。这条路有两个躲不开的短板：会话记录是异步落盘的，而 Agent 卡在工具授权那一刻**根本不会写下任何文字**——恰恰是最该提醒你的时刻反而看不见。
+Agent 卡住等你时，ATM 发一条系统通知，点击直接跳到它所在的终端；Agent 继续往下走之后通知自动撤回。菜单栏同时显示「需要你 N」，不看通知也能一眼扫到。跑完一轮不发通知——那不是被挡住，用提示音就够。
+
+通知**只在 hook 报出确切原因时触发**。不装 hook 的话，ATM 只能每 3 秒扫一遍会话记录去猜「这个会话是不是在等你」，而这条路有两个躲不开的短板：会话记录是异步落盘的，而 Agent 卡在工具授权那一刻**根本不会写下任何文字**——恰恰是最该提醒你的时刻反而看不见。所以那种关键词推测只计入菜单栏计数和 Agent 页，不会弹通知。
 
 装上 hook 后，Agent 会在事件发生时直接推给 ATM：
 
@@ -240,13 +299,13 @@ atm agent hook uninstall          # 原样摘掉
 
 - 写入的是 Agent 自己的配置（`~/.claude/settings.json`、`~/.codex/hooks.json`、`~/.grok/hooks/atm-notch.json`、`~/.qoder/settings.json`），**只增删 ATM 自己那几条**，同一份配置里其他工具的 hook 一条不动
 - 装的都是只上报的 hook（`SessionStart` / `UserPromptSubmit` / `Stop` / `SessionEnd` / `Notification`），**不会拦住工具调用，也不会替你做授权决定**；App 没在跑时 hook 立刻静默退出，不影响 Agent
-- 事件走 `~/.atm/notch.sock`（0600），只在本机；带的是会话 ID、cwd 和一句提示文字
+- 事件走 `~/.atm/notch.sock`（0600），只在本机；带的是会话 ID、cwd 和一句提示文字。socket 与 hook 文件沿用 `notch` 这个名字只是历史包袱（那套 UI 已经被通知取代），改名会让已装好的 hook 全部失效，因此保持不动
 - **Grok Build** 使用独立文件 `~/.grok/hooks/atm-notch.json`，与同目录其他 hook 文件合并加载；payload 支持 Grok 的 camelCase 字段
-- **Qoder** 的 hook 事件名与 payload 与 Claude 同构，一份 `~/.qoder/settings.json` 同时覆盖 Qoder IDE 与 Qoder CLI。Qoder 只在启动时读这份配置，**装完要重启 Qoder 才生效**；刘海因此不看「文件里装了」而只认真实收到的事件，重启前维持原来的关键词判断，收到第一个事件后自动切换
-- **Pi** 没有 hook 配置文件，把 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 复制到 `~/.pi/agent/extensions/` 即可。Pi 的 `agent_settled` 上报为「已完成」而不是「需要你」——它分不清是做完了还是卡住了，而 attention 是刘海最高优先级的状态，猜错会让每一轮结束都变橙
-- 没接 hook 的 Agent（copilot / qoderwork）继续走原来的关键词判断，行为不变
+- **Qoder** 的 hook 事件名与 payload 与 Claude 同构，一份 `~/.qoder/settings.json` 同时覆盖 Qoder IDE 与 Qoder CLI。Qoder 只在启动时读这份配置，**装完要重启 Qoder 才生效**；ATM 因此不看「文件里装了」而只认真实收到的事件，重启前维持原来的关键词判断，收到第一个事件后自动切换
+- **Pi** 没有 hook 配置文件，把 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 复制到 `~/.pi/agent/extensions/` 即可。Pi 的 `agent_settled` 上报为「已完成」而不是「需要你」——它分不清是做完了还是卡住了，而只有「需要你」会弹通知，猜错会让每一轮结束都弹一条
+- 没接 hook 的 Agent（copilot / qoderwork）继续走关键词判断：仍会计入菜单栏的「需要你」计数，但不发通知
 
-也可以在 App 的「设置 → 通用 → Agent 事件推送」里一键安装并查看接入状态。
+也可以在 App 的「设置 → 通知」里一键安装并查看接入状态，以及开关通知本身。
 
 ## 数据源
 
@@ -282,6 +341,10 @@ input/output/cache token 明细；Pi 还支持
 会分别归入实际模型；模型统计同时按 client（codex、claude、pi 等）区分，
 同名模型不会跨 client 合并。`atm stats --by session` 仍展示会话汇总。
 
+`~/.atm` 建为 `0700`，`config.json` 与 `credentials.json` 写为 `0600`：这个目录里既有会话正文也有一把
+API Key，默认不该对同机其他用户可读，旧安装的宽权限在下一次写配置时被收紧。`credentials.json` 权限比
+`0600` 宽时 ATM 拒绝读取并提示 `chmod`，而不是照用一把可能已被别人看过的 Key。
+
 结构化观测数据、工作状态和连接器审计都存储在 `~/.atm/atm.db`（SQLite + WAL）。Todo、tag、依赖、link、
 Session Binding 和 Comment 使用规范化表，状态与优先级枚举、日期格式由 CHECK 约束保证，
 Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事务：先取写锁再读快照，
@@ -303,6 +366,8 @@ App 无法在自己崩溃时写日志，因此用一个「上次是否正常退�
 `atm backup` 归档这个库真正无处重建的部分：Todo、共享记忆、中央知识、连接器收集账本和 review 游标。
 会话镜像被有意排除——它由 `atm sync` 从各家 transcript 重建，归档因此小到一个量级，值得经常做。
 排除的方式是清空而不是删表：恢复出来的库 schema 完整，`atm doctor` 立刻可读，下一次 sync 把行填回来。
+`credentials.json` 也被有意排除，且不算作「未备份」的遗漏项：归档要经常做、要拷来拷去，不该顺手带走
+一把还在用的 API Key。换机器后重新 `atm config credential set` 就行。
 
 它同时是 schema 太旧被拒时的逃生口。`atm backup` 不走会 migrate 的打开路径，所以被
 `minUpgradableVersion` 硬拒的库仍然备份得出来——先备份，再删库重建索引，这个顺序写在拒绝信息里。
@@ -374,9 +439,10 @@ Knowledge、Memory 和 Artifact 只通过 ATM CLI 访问。搜索时传入 sessi
 回答后用 feedback 标记采纳、纠正或拒绝；聚合质量分会温和影响后续检索排序。
 `knowledge audit` 只输出重复、陈旧、源文件漂移和低质量建议，不自动归档。
 
-ATM 不再提供 Agent Schedule/Run、HTTP、Webhook、独立 daemon/serve 或 MCP 服务。Agent 定时任务属于运行 Agent
-的客户端；Enchanted 只在应用打开且 Mac 唤醒期间执行，错过的 occurrence 不补跑。ATM 也不代管
-Agent 执行：把任务交给 Agent 是 `todo prompt` 复制一行指针，由人粘贴进自己看得见的会话。
+ATM 不提供 Agent Schedule、HTTP、Webhook、独立 daemon/serve 或 MCP 服务。Agent 定时任务属于运行 Agent 的客户端；
+Enchanted 只在应用打开且 Mac 唤醒期间执行，错过的 occurrence 不补跑。ATM 代管显式发起的 `todo run`，以及
+来源明确开启 `auto_dispatch` 后对新 Todo 的一次性同路径派发；它不是 Agent 自循环，失败不会自动无限重启。
+需要人在可见会话里工作时仍使用 `todo prompt`。
 
 ```json
 {

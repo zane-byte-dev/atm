@@ -12,6 +12,10 @@ import SwiftUI
 struct ATMHotKeyRecorder: View {
     @Binding var hotKey: ATMHotKey
     var isEnabled: Bool = true
+    /// What "恢复默认" restores. Passed in rather than read from
+    /// `ATMGlobalHotKeyPreferences`: more than one shortcut is recorded by this
+    /// field now, and each has its own default.
+    var defaultHotKey: ATMHotKey = ATMGlobalHotKeyPreferences.defaultHotKey
 
     @State private var isRecording = false
     @State private var monitor: Any?
@@ -45,8 +49,8 @@ struct ATMHotKeyRecorder: View {
                 Text(rejectedIncomplete ? "至少需要 ⌘、⌃ 或 ⌥ 之一" : "按 ⎋ 取消")
                     .font(ATMFont.footnote)
                     .foregroundStyle(rejectedIncomplete ? ATMTheme.warning : ATMTheme.secondary)
-            } else if hotKey != ATMGlobalHotKeyPreferences.defaultHotKey {
-                Button("恢复默认") { hotKey = ATMGlobalHotKeyPreferences.defaultHotKey }
+            } else if hotKey != defaultHotKey {
+                Button("恢复默认") { hotKey = defaultHotKey }
                     .buttonStyle(.link)
                     .font(ATMFont.footnote)
                     .disabled(!isEnabled)

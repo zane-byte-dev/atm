@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/logging"
 )
 
 // A provider that reports nothing — a daily quota before today's first
@@ -84,34 +85,41 @@ func loadQuotaProviderCache() quotaProviderCache {
 	return cache
 }
 
-// saveQuotaProviderCache writes atomically and swallows every failure: a cache
-// ATM could not update is one placeholder the next run cannot draw, which is not
-// worth a warning on a command whose job is to print a quota.
+// saveQuotaProviderCache never fails its caller: a cache ATM could not update is
+// one placeholder the next run cannot draw, which is not worth an error on a
+// command whose job is to print a quota. The failure goes to the log instead of
+// nowhere, so `atm diagnose` can explain a card that stopped ageing.
 func saveQuotaProviderCache(cache quotaProviderCache) {
+	if err := writeQuotaProviderCache(cache); err != nil {
+		logging.Failure("quota_provider_cache_not_saved", "atm quota", err, nil)
+	}
+}
+
+func writeQuotaProviderCache(cache quotaProviderCache) error {
 	cache.Version = quotaProviderCacheVersion
 	data, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
-		return
+		return err
 	}
 	path := quotaProviderCachePath()
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".atm-quota-provider-*.tmp")
 	if err != nil {
-		return
+		return err
 	}
 	temporaryPath := temporary.Name()
 	defer os.Remove(temporaryPath)
 	if err := temporary.Chmod(0o600); err != nil {
 		temporary.Close()
-		return
+		return err
 	}
 	if _, err := temporary.Write(append(data, '\n')); err != nil {
 		temporary.Close()
-		return
+		return err
 	}
 	if err := temporary.Close(); err != nil {
-		return
+		return err
 	}
-	_ = os.Rename(temporaryPath, path)
+	return os.Rename(temporaryPath, path)
 }
 
 // pruneQuotaProviderCache forgets providers that are no longer configured, so

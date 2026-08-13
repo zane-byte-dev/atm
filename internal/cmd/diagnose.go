@@ -295,6 +295,9 @@ func diagnoseDataDir() ([]diagnoseDataEntry, error) {
 	}
 	var out []diagnoseDataEntry
 	for _, item := range items {
+		if item.Name() == config.CredentialsFileName {
+			continue
+		}
 		entry := diagnoseDataEntry{Name: item.Name(), Kind: "file"}
 		if item.IsDir() {
 			entry.Kind = "dir"

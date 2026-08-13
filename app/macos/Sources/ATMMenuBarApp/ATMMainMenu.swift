@@ -27,6 +27,7 @@ enum ATMMainMenu {
         main.addItem(submenu(title: appName, items: appItems(appName: appName)))
         main.addItem(submenu(title: "文件", items: fileItems()))
         main.addItem(submenu(title: "编辑", items: editItems()))
+        main.addItem(submenu(title: "前往", items: navigationItems()))
         main.addItem(submenu(title: "窗口", items: windowItems()))
         return main
     }
@@ -66,6 +67,16 @@ enum ATMMainMenu {
             item("删除", #selector(NSText.delete(_:)), ""),
             .separator(),
             item("全选", #selector(NSText.selectAll(_:)), "a"),
+        ]
+    }
+
+    /// Browser-style history shortcuts. These live in the main menu so they
+    /// continue to work while a text field or Markdown editor owns focus; the
+    /// app delegate validates each item against the live navigation stacks.
+    private static func navigationItems() -> [NSMenuItem] {
+        [
+            item("后退", #selector(AppDelegate.navigateBackFromMenu(_:)), "["),
+            item("前进", #selector(AppDelegate.navigateForwardFromMenu(_:)), "]"),
         ]
     }
 
