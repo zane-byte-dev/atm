@@ -6,10 +6,20 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zane-byte-dev/atm/internal/config"
 )
+
+func withTextModelCredentialDir(t *testing.T) {
+	t.Helper()
+	oldAtmDir := config.AtmDir
+	config.AtmDir = filepath.Join(t.TempDir(), ".atm")
+	t.Cleanup(func() { config.AtmDir = oldAtmDir })
+}
 
 func TestBuiltinTextModelUsesDedicatedDeepSeekProtocol(t *testing.T) {
 	var captured deepSeekChatRequest
@@ -67,7 +77,29 @@ func TestBuiltinTextModelUsesStandardDeepSeekAPIKey(t *testing.T) {
 	}
 }
 
+func TestBuiltinTextModelReadsPrivateCredentialFile(t *testing.T) {
+	withTextModelCredentialDir(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer file-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+	if err := config.SaveTextModelAPIKey("file-key"); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(textModelAPIKeyEnv, "")
+	t.Setenv(deepSeekAPIKeyEnv, "")
+	t.Setenv(textModelBaseURLEnv, server.URL)
+	if _, err := runBuiltinTextModel(context.Background(), "", time.Second,
+		"todo-refine", proposalJSONSchema, "prompt"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBuiltinTextModelDoesNotFallBackToAgent(t *testing.T) {
+	withTextModelCredentialDir(t)
 	t.Setenv(textModelAPIKeyEnv, "")
 	t.Setenv(deepSeekAPIKeyEnv, "")
 	_, err := runBuiltinTextModel(context.Background(), "codex", time.Second,

@@ -63,6 +63,10 @@ private struct ATMConfigStringValue: Decodable {
     let value: String
 }
 
+private struct ATMTextModelCredentialStatus: Decodable {
+    let configured: Bool
+}
+
 private struct ATMTextModelTestResult: Decodable {
     let ok: Bool
     let latencyMS: Int
@@ -508,11 +512,6 @@ struct ATMCommandRunner: Sendable {
             let commonPath = "/usr/local/bin:/opt/homebrew/bin:\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin"
             environment["PATH"] = commonPath + ":" + (environment["PATH"] ?? "")
             environment["ATM_SKIP_LOCAL_NOTIFICATION"] = "1"
-            if arguments.starts(with: ["todo", "refine"]),
-               let apiKey = (try? ATMTextModelKeychain.readAPIKey()) ?? nil,
-               !apiKey.isEmpty {
-                environment["ATM_TEXT_MODEL_API_KEY"] = apiKey
-            }
             // Credentials and unsaved advanced settings for the connection
             // check travel only in the child environment, never argv or logs.
             for (key, value) in environmentOverrides {
@@ -1464,14 +1463,11 @@ final class ATMDataStore: ObservableObject {
 
     func loadTextModelSettings() {
         Task {
-            var keychainError: String?
-            do {
-                textModelAPIKeyConfigured = try ATMTextModelKeychain.readAPIKey() != nil
-            } catch {
-                textModelAPIKeyConfigured = false
-                keychainError = "API Key 状态读取失败：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
-            }
             guard let runner = try? ATMCommandRunner() else { return }
+            async let credentialOutcome: ATMCommandOutcome<ATMTextModelCredentialStatus> = decodeCommand(
+                runner,
+                arguments: ["config", "credential", "status", "--json"]
+            )
             async let baseOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
                 runner,
                 arguments: ["config", "get", "text_model_base_url", "--json"]
@@ -1480,10 +1476,11 @@ final class ATMDataStore: ObservableObject {
                 runner,
                 arguments: ["config", "get", "text_model_name", "--json"]
             )
-            let (base, model) = await (baseOutcome, modelOutcome)
+            let (credential, base, model) = await (credentialOutcome, baseOutcome, modelOutcome)
+            if let value = credential.value { textModelAPIKeyConfigured = value.configured }
             if let value = base.value { textModelBaseURL = value.value }
             if let value = model.value { textModelName = value.value }
-            textModelSettingsErrorMessage = keychainError ?? base.error ?? model.error
+            textModelSettingsErrorMessage = credential.error ?? base.error ?? model.error
         }
     }
 
@@ -1503,11 +1500,15 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { isSavingTextModelSettings = false }
             do {
-                if !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    try ATMTextModelKeychain.saveAPIKey(apiKey)
+                let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                let runner = try ATMCommandRunner()
+                if !trimmedAPIKey.isEmpty {
+                    _ = try await runner.run(
+                        ["config", "credential", "set"],
+                        standardInput: Data(trimmedAPIKey.utf8)
+                    )
                     textModelAPIKeyConfigured = true
                 }
-                let runner = try ATMCommandRunner()
                 _ = try await runner.run(["config", "set", "text_model_base_url", trimmedBaseURL])
                 _ = try await runner.run(["config", "set", "text_model_name", trimmedModel])
                 loadTextModelSettings()
@@ -1519,13 +1520,18 @@ final class ATMDataStore: ObservableObject {
 
     func clearTextModelAPIKey() {
         guard !isSavingTextModelSettings, !isTestingTextModelSettings else { return }
-        do {
-            try ATMTextModelKeychain.deleteAPIKey()
-            textModelAPIKeyConfigured = false
-            textModelTestSuccessMessage = nil
-            textModelSettingsErrorMessage = nil
-        } catch {
-            textModelSettingsErrorMessage = "API Key 未删除：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+        isSavingTextModelSettings = true
+        textModelTestSuccessMessage = nil
+        textModelSettingsErrorMessage = nil
+        Task {
+            defer { isSavingTextModelSettings = false }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(["config", "credential", "delete"])
+                textModelAPIKeyConfigured = false
+            } catch {
+                textModelSettingsErrorMessage = "API Key 未删除：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
+            }
         }
     }
 
@@ -1543,15 +1549,7 @@ final class ATMDataStore: ObservableObject {
         }
 
         let draftKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let effectiveKey: String
-        do {
-            effectiveKey = draftKey.isEmpty ? (try ATMTextModelKeychain.readAPIKey() ?? "") : draftKey
-        } catch {
-            textModelTestSuccessMessage = nil
-            textModelSettingsErrorMessage = "API Key 读取失败：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
-            return
-        }
-        guard !effectiveKey.isEmpty else {
+        guard !draftKey.isEmpty || textModelAPIKeyConfigured else {
             textModelTestSuccessMessage = nil
             textModelSettingsErrorMessage = "请先填写 DeepSeek API Key"
             return
@@ -1564,13 +1562,16 @@ final class ATMDataStore: ObservableObject {
             defer { isTestingTextModelSettings = false }
             do {
                 let runner = try ATMCommandRunner()
+                var environment = [
+                    "ATM_TEXT_MODEL_BASE_URL": trimmedBaseURL,
+                    "ATM_TEXT_MODEL_MODEL": trimmedModel,
+                ]
+                if !draftKey.isEmpty {
+                    environment["ATM_TEXT_MODEL_API_KEY"] = draftKey
+                }
                 let data = try await runner.run(
                     ["config", "test-text-model", "--json"],
-                    environmentOverrides: [
-                        "ATM_TEXT_MODEL_API_KEY": effectiveKey,
-                        "ATM_TEXT_MODEL_BASE_URL": trimmedBaseURL,
-                        "ATM_TEXT_MODEL_MODEL": trimmedModel,
-                    ]
+                    environmentOverrides: environment
                 )
                 let result = try JSONDecoder().decode(ATMTextModelTestResult.self, from: data)
                 guard result.ok else {

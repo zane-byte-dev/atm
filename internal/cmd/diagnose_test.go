@@ -172,6 +172,9 @@ func TestDiagnoseExcludesRecordContent(t *testing.T) {
 	if err := os.WriteFile(secretDoc, []byte("SECRETKNOWLEDGEBODY\n"), 0600); err != nil {
 		t.Fatalf("write knowledge: %v", err)
 	}
+	if err := config.SaveTextModelAPIKey("SECRETDEEPSEEKKEY"); err != nil {
+		t.Fatalf("write credential: %v", err)
+	}
 
 	target := filepath.Join(t.TempDir(), "bundle.json")
 	writeDiagnoseBundle(t, target)
@@ -182,6 +185,7 @@ func TestDiagnoseExcludesRecordContent(t *testing.T) {
 	for _, secret := range []string{
 		"SECRETTODOTITLE", "SECRETTODOBODY",
 		"SECRETKNOWLEDGETITLE", "SECRETKNOWLEDGEBODY",
+		"SECRETDEEPSEEKKEY", config.CredentialsFileName,
 	} {
 		if strings.Contains(string(data), secret) {
 			t.Errorf("bundle leaked %s", secret)

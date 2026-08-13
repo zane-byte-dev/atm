@@ -42,15 +42,9 @@ struct DesktopAgentsView: View {
     }
 
     private var sessions: [ATMLiveSession] {
-        store.snapshot.liveStatus.sessions
-            .filter { $0.activityState != "unobserved" }
-            .sorted {
-                if $0.presenceState != $1.presenceState {
-                    return presenceOrder($0.presenceState) < presenceOrder($1.presenceState)
-                }
-                if $0.ageSeconds != $1.ageSeconds { return $0.ageSeconds < $1.ageSeconds }
-                return $0.id < $1.id
-            }
+        ATMAgentPresenceOrdering.sorted(
+            store.snapshot.liveStatus.sessions.filter { $0.activityState != "unobserved" }
+        )
     }
 
     private var selectedSession: ATMLiveSession? {
@@ -420,13 +414,6 @@ struct DesktopAgentsView: View {
         }
     }
 
-    private func presenceOrder(_ state: ATMAgentPresenceState) -> Int {
-        switch state {
-        case .attention: return 0
-        case .active: return 1
-        case .recent: return 2
-        }
-    }
 }
 
 private extension ATMAgentPresenceState {

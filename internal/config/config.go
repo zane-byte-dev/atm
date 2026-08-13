@@ -100,7 +100,7 @@ var (
 	CollectionModelRunners map[string]ModelRunnerConfig
 	// TextModelBaseURL and TextModelName configure ATM's narrow built-in text
 	// service. Credentials deliberately stay out of config.json: the CLI reads
-	// DEEPSEEK_API_KEY and the App supplies its Keychain value to child commands.
+	// ~/.atm/credentials.json, with DEEPSEEK_API_KEY as an ephemeral override.
 	TextModelBaseURL = "https://api.deepseek.com"
 	TextModelName    = "deepseek-v4-flash"
 	// TodoRefineOnAdd is the desktop default after a human files a todo: run
@@ -326,7 +326,10 @@ func SetConfigValue(key string, value any) error {
 		}
 	}
 	raw[key] = value
-	if err := os.MkdirAll(AtmDir, 0755); err != nil {
+	if err := os.MkdirAll(AtmDir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(AtmDir, 0700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(raw, "", "  ")
@@ -334,7 +337,10 @@ func SetConfigValue(key string, value any) error {
 		return err
 	}
 	b = append(b, '\n')
-	return os.WriteFile(ConfigPath, b, 0644)
+	if err := os.WriteFile(ConfigPath, b, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(ConfigPath, 0600)
 }
 
 func expandHome(p string) string {
@@ -381,7 +387,10 @@ func InitConfig() error {
 	if _, err := os.Stat(ConfigPath); err == nil {
 		return fmt.Errorf("config file already exists: %s", ConfigPath)
 	}
-	if err := os.MkdirAll(AtmDir, 0755); err != nil {
+	if err := os.MkdirAll(AtmDir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(AtmDir, 0700); err != nil {
 		return err
 	}
 	cfg := FileConfig{
@@ -406,7 +415,10 @@ func InitConfig() error {
 	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	b = append(b, '\n')
-	return os.WriteFile(ConfigPath, b, 0644)
+	if err := os.WriteFile(ConfigPath, b, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(ConfigPath, 0600)
 }
 
 func shortenHome(p string) string {

@@ -25,6 +25,10 @@ func init() {
 	configCmd.AddCommand(configSetCmd)
 	configCmd.AddCommand(configGetCmd)
 	configCmd.AddCommand(configTestTextModelCmd)
+	configCredentialCmd.AddCommand(configCredentialStatusCmd)
+	configCredentialCmd.AddCommand(configCredentialSetCmd)
+	configCredentialCmd.AddCommand(configCredentialDeleteCmd)
+	configCmd.AddCommand(configCredentialCmd)
 	rootCmd.AddCommand(configCmd)
 }
 
@@ -38,6 +42,7 @@ var configCmd = &cobra.Command{
   atm config get <key>        Read one setting (effective value)
   atm config set <key> <val>  Write one setting to ~/.atm/config.json
   atm config test-text-model  Test the built-in text service without changing a Todo
+  atm config credential ...   Manage the local DeepSeek credential
   atm config update-pricing   Fetch latest model pricing from OpenRouter
 
 Settable keys:
@@ -68,8 +73,9 @@ Settable keys:
                                 model pass to polish the card and split complex
                                 work (default true). CLI todo add is never
                                 implicit; use todo add --refine or
-                                todo refine <id>. ATM.app reads its Keychain;
-                                CLI users set DEEPSEEK_API_KEY`,
+                                todo refine <id>. The saved API Key lives in
+                                ~/.atm/credentials.json (mode 0600); CLI users
+                                can temporarily override it with DEEPSEEK_API_KEY`,
 	// Only `init` is a valid positional arg; anything else errors instead of
 	// silently falling through to "show config".
 	ValidArgs: []string{"init"},
@@ -214,6 +220,77 @@ var configTestTextModelCmd = &cobra.Command{
 			return nil
 		}
 		fmt.Printf("DeepSeek text model is ready (%d ms)\n", result.LatencyMS)
+		return nil
+	},
+}
+
+var configCredentialCmd = &cobra.Command{
+	Use:   "credential",
+	Short: "Manage the local DeepSeek credential",
+	Args:  cobra.NoArgs,
+	RunE:  showHelp,
+}
+
+var configCredentialStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Report whether the DeepSeek credential is configured",
+	Args:  cobra.NoArgs,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		configured, err := config.TextModelAPIKeyConfigured()
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			output.JSON(map[string]any{"configured": configured})
+			return nil
+		}
+		if configured {
+			fmt.Println("DeepSeek API Key is configured")
+		} else {
+			fmt.Println("DeepSeek API Key is not configured")
+		}
+		return nil
+	},
+}
+
+var configCredentialSetCmd = &cobra.Command{
+	Use:   "set",
+	Short: "Read the DeepSeek API Key from stdin and save it privately",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		const maxCredentialBytes = 64 << 10
+		data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), maxCredentialBytes+1))
+		if err != nil {
+			return fmt.Errorf("read DeepSeek API Key from stdin: %w", err)
+		}
+		if len(data) > maxCredentialBytes {
+			return fmt.Errorf("DeepSeek API Key exceeds %d bytes", maxCredentialBytes)
+		}
+		if err := config.SaveTextModelAPIKey(string(data)); err != nil {
+			return err
+		}
+		if jsonOutput {
+			output.JSON(map[string]any{"configured": true})
+			return nil
+		}
+		fmt.Printf("Saved DeepSeek API Key to %s\n", config.CredentialsPath())
+		return nil
+	},
+}
+
+var configCredentialDeleteCmd = &cobra.Command{
+	Use:   "delete",
+	Short: "Delete the locally saved DeepSeek credential",
+	Args:  cobra.NoArgs,
+	RunE: func(_ *cobra.Command, _ []string) error {
+		if err := config.DeleteTextModelAPIKey(); err != nil {
+			return err
+		}
+		if jsonOutput {
+			output.JSON(map[string]any{"configured": false})
+			return nil
+		}
+		fmt.Println("Deleted DeepSeek API Key")
 		return nil
 	},
 }

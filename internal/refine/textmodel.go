@@ -76,6 +76,13 @@ func runBuiltinTextModel(ctx context.Context, _ string, timeout time.Duration,
 	}
 	apiKey := firstNonEmptyEnv(textModelAPIKeyEnv, deepSeekAPIKeyEnv)
 	if apiKey == "" {
+		var err error
+		apiKey, err = config.ReadTextModelAPIKey()
+		if err != nil {
+			return nil, fmt.Errorf("read built-in DeepSeek credential: %w", err)
+		}
+	}
+	if apiKey == "" {
 		return nil, fmt.Errorf("built-in DeepSeek text model is unavailable: configure Settings > Model in ATM.app or set %s", deepSeekAPIKeyEnv)
 	}
 	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv(textModelBaseURLEnv)), "/")

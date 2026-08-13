@@ -124,6 +124,7 @@ atm diagnose [--bundle] [-o path]                # 报障用支持包：版本/s
 atm sync    [--agent X]                          # 手动触发数据同步
 atm sync status [--agent X] --json               # 只读查看索引新鲜度、最近同步结果与错误
 atm config  [init]                               # 查看/初始化配置文件
+atm config credential status|set|delete          # 内置文本服务的 API Key：set 从 stdin 读，不进 argv
 atm backup  [-o path]                            # 归档无处重建的记录（todo/记忆/知识/收集账本）
 atm restore <archive> [--yes]                    # 从归档恢复；被替换的数据移到 pre-restore-<时间>/
 
@@ -191,12 +192,13 @@ atm artifact save <title> --file report.md
 `todo refine` 用 ATM 内置的 DeepSeek 文本服务把一条任务整理成可执行卡片：润色标题和需求，复杂工作写计划，
 能独立关闭的部分拆成子任务并由父任务等待。它直接调用 DeepSeek Chat Completions，默认模型是适合轻量文本
 职能的 `deepseek-v4-flash`，关闭思考模式并要求 JSON 输出；它既不启动 Agent，也不复用或回退到
-`collection_model_command`。ATM App 用户在“设置 → 模型”填写 API Key，它只保存在 macOS 钥匙串；CLI 用户
-可设置 `DEEPSEEK_API_KEY`。模型和 endpoint 也可在模型设置页修改，或通过 `text_model_name`、
-`text_model_base_url` 配置项覆盖；设置页的“测试连接”会使用当前草稿值发送一个最小 JSON 请求，不保存设置、
-也不读取或修改 Todo。CLI 可用 `atm config test-text-model` 做同样检查；`ATM_TEXT_MODEL_MODEL`、
-`ATM_TEXT_MODEL_BASE_URL` 适合临时调试。密钥不写入
-ATM 配置、命令参数或日志。`todo add` 默认不整理；桌面添加在 `todo_refine_on_add`（默认开）时会自动跑一次。
+`collection_model_command`。API Key 保存在 `~/.atm/credentials.json`（目录 `0700`、文件 `0600`），
+不进普通配置、备份、诊断包、argv 或日志：App 在“设置 → 模型”里填，CLI 用 `atm config credential set`
+（从 stdin 读）存同一份，`DEEPSEEK_API_KEY` 临时覆盖。模型和 endpoint 可在模型设置页修改，或通过
+`text_model_name`、`text_model_base_url` 配置项覆盖；设置页的“测试连接”会使用当前草稿值发送一个最小
+JSON 请求，不保存设置、也不读取或修改 Todo。CLI 可用 `atm config test-text-model` 做同样检查；
+`ATM_TEXT_MODEL_MODEL`、`ATM_TEXT_MODEL_BASE_URL` 适合临时调试。`todo add` 默认不整理；桌面添加在
+`todo_refine_on_add`（默认开）时会自动跑一次。
 
 `todo prompt` 输出一行交给人粘贴进新 Agent 会话的指针，不搬运需求本身：Agent 按指针自己去读
 `todo doc`，拿到的永远是当前版本。想在会话之外补充需求就用 `todo log --section 补充`，它写进同一份
@@ -339,6 +341,10 @@ input/output/cache token 明细；Pi 还支持
 会分别归入实际模型；模型统计同时按 client（codex、claude、pi 等）区分，
 同名模型不会跨 client 合并。`atm stats --by session` 仍展示会话汇总。
 
+`~/.atm` 建为 `0700`，`config.json` 与 `credentials.json` 写为 `0600`：这个目录里既有会话正文也有一把
+API Key，默认不该对同机其他用户可读，旧安装的宽权限在下一次写配置时被收紧。`credentials.json` 权限比
+`0600` 宽时 ATM 拒绝读取并提示 `chmod`，而不是照用一把可能已被别人看过的 Key。
+
 结构化观测数据、工作状态和连接器审计都存储在 `~/.atm/atm.db`（SQLite + WAL）。Todo、tag、依赖、link、
 Session Binding 和 Comment 使用规范化表，状态与优先级枚举、日期格式由 CHECK 约束保证，
 Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事务：先取写锁再读快照，
@@ -360,6 +366,8 @@ App 无法在自己崩溃时写日志，因此用一个「上次是否正常退�
 `atm backup` 归档这个库真正无处重建的部分：Todo、共享记忆、中央知识、连接器收集账本和 review 游标。
 会话镜像被有意排除——它由 `atm sync` 从各家 transcript 重建，归档因此小到一个量级，值得经常做。
 排除的方式是清空而不是删表：恢复出来的库 schema 完整，`atm doctor` 立刻可读，下一次 sync 把行填回来。
+`credentials.json` 也被有意排除，且不算作「未备份」的遗漏项：归档要经常做、要拷来拷去，不该顺手带走
+一把还在用的 API Key。换机器后重新 `atm config credential set` 就行。
 
 它同时是 schema 太旧被拒时的逃生口。`atm backup` 不走会 migrate 的打开路径，所以被
 `minUpgradableVersion` 硬拒的库仍然备份得出来——先备份，再删库重建索引，这个顺序写在拒绝信息里。

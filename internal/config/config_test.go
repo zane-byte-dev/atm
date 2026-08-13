@@ -92,6 +92,12 @@ func TestInitAndLoadConfig(t *testing.T) {
 	if _, err := os.Stat(ConfigPath); err != nil {
 		t.Fatalf("config file missing: %v", err)
 	}
+	if info, err := os.Stat(AtmDir); err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("ATM data directory mode = %v, %v", info.Mode().Perm(), err)
+	}
+	if info, err := os.Stat(ConfigPath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("config file mode = %v, %v", info.Mode().Perm(), err)
+	}
 	if err := InitConfig(); err == nil {
 		t.Fatal("InitConfig should fail when config already exists")
 	}
@@ -219,6 +225,9 @@ func TestSetConfigValueWritesAndPreservesUnknownFields(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Fatalf("config after set is missing %q:\n%s", want, data)
 		}
+	}
+	if info, err := os.Stat(ConfigPath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("updated config mode = %v, %v", info.Mode().Perm(), err)
 	}
 
 	// Flipping back to false must overwrite, not append.

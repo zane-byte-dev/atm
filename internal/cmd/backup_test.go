@@ -4,8 +4,10 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -113,6 +115,54 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(fresh, path)); err != nil {
 			t.Fatalf("%s did not survive the round trip: %v", path, err)
 		}
+	}
+}
+
+func TestBackupExplicitlyExcludesCredentials(t *testing.T) {
+	withTempAtmDir(t)
+	seedBackupSource(t)
+	if err := config.SaveTextModelAPIKey("must-not-be-backed-up"); err != nil {
+		t.Fatal(err)
+	}
+
+	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
+	runBackupTo(t, archive)
+	file, err := os.Open(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gz.Close()
+	tarReader := tar.NewReader(gz)
+	for {
+		header, err := tarReader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(header.Name, config.CredentialsFileName) {
+			t.Fatalf("credentials unexpectedly present in backup as %q", header.Name)
+		}
+		data, err := io.ReadAll(tarReader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "must-not-be-backed-up") {
+			t.Fatalf("credential leaked into backup entry %q", header.Name)
+		}
+	}
+	unbacked, err := unbackedEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(unbacked, config.CredentialsFileName) {
+		t.Fatalf("credentials should be an explicit exclusion, unbacked=%v", unbacked)
 	}
 }
 

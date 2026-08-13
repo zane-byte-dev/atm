@@ -35,8 +35,10 @@ a database from a much older version. `atm backup` exists for exactly that case.
   `collection_model_command`, and rewrites the title plus the 需求 section.
   The default is `deepseek-v4-flash` in non-thinking JSON mode; it reads
   `DEEPSEEK_API_KEY` from the environment. ATM.app also has a dedicated 模型
-  settings tab that stores the key in macOS Keychain and injects it only into
-  child CLI commands; credentials stay out of ATM config, argv, and logs.
+  settings tab that stores the key in `~/.atm/credentials.json` with mode 0600;
+  the Go client reads it directly, while `DEEPSEEK_API_KEY` remains an ephemeral
+  override. Credentials stay out of normal config output, backups, diagnostic
+  bundles, argv, and logs, without Keychain prompts in re-signed dev builds.
   Model and endpoint overrides live behind Advanced Settings. Its 测试连接
   action uses the current drafts in a minimal schema request without saving or
   touching a Todo; CLI users can run `atm config test-text-model`. Complex work gets
@@ -197,6 +199,13 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Changed
 
+- **`~/.atm` 不再对同机其他用户可读。** 目录建为 `0700`，`config.json` 写为 `0600`，旧安装的
+  `0755`/`0644` 在下一次写配置时被收紧。这个目录一直放着会话正文、Todo 和记忆，现在还多了一把
+  API Key：`credentials.json` 同样是 `0600`，权限比它宽时 ATM 拒绝读取并提示 `chmod`——照用一把
+  可能已被别人看过的 Key 比报错更糟。它由 `atm config credential status | set | delete` 管理，
+  `set` 从 stdin 读，Key 因此不进 argv 也不进 shell 历史，`status` 只回答「配了没有」；
+  `atm backup` 和 `atm diagnose --bundle` 都整个跳过这个文件，而且备份不把它算作「未备份」的
+  遗漏项——归档和报障包都是要拷来拷去的东西，不该顺手带走一份活着的凭据。
 - **一段讨论里的同一件事只留一条 Todo。** 收集每 5 分钟判定一批消息，而一个群会在几十分钟
   里反复回到同一个话题，每次回来都是新的一批。此前分类器被明确要求「相关也只能新建」，于是
   钉钉里一次技能激活的排查，从 09:52 到 10:11 连着建了 t210、t211、t212、t213 四条——四条都
@@ -235,6 +244,21 @@ a database from a much older version. `atm backup` exists for exactly that case.
   destroys every record that has nowhere to rebuild from.
 
 ### Fixed
+
+- **「Agent 执行」页只在真有执行记录时出现。** 默认的交接路径不产生 `task_runs`——会话由 Codex
+  自己拥有，ATM 通过 `session bind` 认识它——所以这一页在默认路径上永远是空的，空态还在指路一个
+  已经不存在的动作：「选择一个 Agent 后，这里会显示执行状态」，而委派面板早已收成单目标确认。
+  现在有执行记录才显示，和 Agent 页「全部日志」同一条规矩，无人值守跑批时该有的东西一个不少。
+  顺带修掉一个一直存在的毛病：被藏起来的页（回收站早就会藏掉三个）仍可能是 `selectedTab` 的值，
+  于是内容区落到兜底分支、一个胶囊都不高亮；现在会拉回「任务描述」。
+
+- **活跃 Agent 的行不再自己跳动。** 活跃段按活动时长排序，而 Agent 每输出一行就把这个时长归零，
+  于是一次轮询就能让几行互换位置——正在读的那行跑掉了。活跃段现在按会话身份排序，内容照常刷新；
+  `需要你` 和 `最近` 段仍按时长排，那里时长才是人要比较的东西。
+
+- **昨日的「分时用量」不再是一根柱子。** 昨日和今日在日面板里都是单日窗口、都以「分时用量」为标题，
+  但小时桶只回溯一天，昨日因此拿不到小时数据、退化成一个日桶画成单根柱子。回溯改成两天，并且由桶
+  自身的日期决定按小时还是按天渲染，而不是从窗口长度推断。
 
 - **「等待授权」不再刷屏。** 三个缺陷叠在一起：一个 Agent 的授权请求会点亮同目录**所有**会话
   （信号同时按 session id 和 cwd 记录，而 join 允许任意会话用自己的 cwd 命中，于是 Grok 的

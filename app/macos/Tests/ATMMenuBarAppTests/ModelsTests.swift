@@ -1989,6 +1989,30 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(session.latestUserInputText, "Rework the notch state badges")
     }
 
+    func testActiveAgentPresenceOrderDoesNotChangeWhenActivityAgesRefresh() {
+        func active(_ id: String, age: Int) -> ATMLiveSession {
+            ATMLiveSession(
+                tool: "Codex",
+                sessionID: id,
+                project: "atm",
+                ageSeconds: age,
+                activityState: "active"
+            )
+        }
+
+        let firstPoll = ATMAgentPresenceOrdering.sorted([
+            active("session-b", age: 2),
+            active("session-a", age: 40),
+        ])
+        let nextPoll = ATMAgentPresenceOrdering.sorted([
+            active("session-a", age: 1),
+            active("session-b", age: 41),
+        ])
+
+        XCTAssertEqual(firstPoll.map(\.sessionID), ["session-a", "session-b"])
+        XCTAssertEqual(nextPoll.map(\.sessionID), firstPoll.map(\.sessionID))
+    }
+
     func testATMTaskRunUsesTodoTitleInsteadOfControllerPrompt() throws {
         let prompt = """
         You are the unattended Agent run for ATM Todo t252: 增加前进后退导航.

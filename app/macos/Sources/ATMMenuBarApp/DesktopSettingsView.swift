@@ -1184,7 +1184,7 @@ struct DesktopSettingsView: View {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("DeepSeek API")
                                 .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                            Text("用于任务优化等轻量文本处理。API Key 保存在 macOS 钥匙串，不会写入 ATM 配置、命令参数或日志。")
+                            Text("用于任务优化等轻量文本处理。API Key 保存在 ~/.atm/credentials.json，仅当前用户可读，不会进入普通配置、备份、命令参数或日志。")
                                 .font(ATMFont.footnote)
                                 .foregroundStyle(ATMTheme.secondary)
                                 .fixedSize(horizontal: false, vertical: true)

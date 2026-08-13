@@ -506,6 +506,38 @@ enum ATMAgentPresenceState: String, CaseIterable, Identifiable {
     }
 }
 
+enum ATMAgentPresenceOrdering {
+    static func sorted(_ sessions: [ATMLiveSession]) -> [ATMLiveSession] {
+        sessions.sorted { lhs, rhs in
+            let lhsState = lhs.presenceState
+            let rhsState = rhs.presenceState
+            if lhsState != rhsState {
+                return rank(lhsState) < rank(rhsState)
+            }
+
+            // An Agent resetting its activity age is a content update, not a
+            // reason to move its row. Keep the active section anchored to the
+            // session identity so polling and new output cannot reshuffle it.
+            if lhsState == .active {
+                return lhs.id < rhs.id
+            }
+
+            if lhs.ageSeconds != rhs.ageSeconds {
+                return lhs.ageSeconds < rhs.ageSeconds
+            }
+            return lhs.id < rhs.id
+        }
+    }
+
+    private static func rank(_ state: ATMAgentPresenceState) -> Int {
+        switch state {
+        case .attention: return 0
+        case .active: return 1
+        case .recent: return 2
+        }
+    }
+}
+
 extension ATMLiveSession {
     var isCurrentlyActive: Bool {
         activityState == "active" && ageSeconds < 120
