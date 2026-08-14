@@ -11,6 +11,7 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/textmodel"
 )
 
 // DigestInput is what a summariser gets: one source's insight decisions for one
@@ -281,25 +282,18 @@ func defaultDigestTitle(source store.CollectionSource, date string) string {
 	return sourceDisplayName(source) + " " + date + " 动态"
 }
 
-// AutomaticSummarizer distils a day of insights with the same model command and
-// sandbox as classification.
+// AutomaticSummarizer distils a day of insights with the same built-in text
+// service as classification.
 type AutomaticSummarizer struct {
-	ModelCommand string
-	Timeout      time.Duration
+	Timeout time.Duration
 }
 
 func (summarizer AutomaticSummarizer) Summarize(ctx context.Context, input DigestInput) (DigestContent, error) {
 	if len(input.Items) == 0 {
 		return DigestContent{}, fmt.Errorf("digest needs at least one insight")
 	}
-	// A digest is prose, so the keyword classifier has nothing to offer here:
-	// "rule" in the chain is a classification fallback only.
-	models, _ := splitModelCandidates(summarizer.ModelCommand)
-	if len(models) == 0 {
-		return DigestContent{}, fmt.Errorf("collection digest needs a model command; rule mode cannot summarise")
-	}
-	data, err := runCollectionModel(ctx, models, summarizer.Timeout,
-		"digest", digestJSONSchema, digestPrompt(input))
+	data, err := runTextModel(ctx, textmodel.TaskDigest, summarizer.Timeout,
+		digestJSONSchema, digestPrompt(input))
 	if err != nil {
 		return DigestContent{}, err
 	}

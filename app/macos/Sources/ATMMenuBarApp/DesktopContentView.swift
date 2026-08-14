@@ -1487,6 +1487,7 @@ struct DesktopTodoDetail: View {
                 store.loadBoundSessions(for: todo.id)
                 store.loadTaskRuns(for: todo.id)
                 store.loadTaskRunAgents()
+                store.loadProgress(for: todo.id)
             }
             // Selecting another row rebuilds this view (`.id(todo.id)`), so a
             // request aimed at a not-yet-selected todo arrives here rather than in
@@ -1811,6 +1812,16 @@ struct DesktopTodoDetail: View {
     private var readContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                if let refineSource = store.refineSource(for: todo.id) {
+                    Label("from \(refineSource)", systemImage: "sparkles")
+                        .font(ATMFont.font(.caption, weight: .semibold))
+                        .foregroundStyle(ATMTheme.accent)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(ATMTheme.accentFill, in: Capsule())
+                        .help("任务优化来源")
+                }
+
                 if let description = nonEmpty(todo.description) {
                     ATMMarkdownContentView(source: description)
                         .frame(maxWidth: .infinity, alignment: .leading)

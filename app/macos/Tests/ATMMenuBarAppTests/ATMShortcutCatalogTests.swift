@@ -5,7 +5,7 @@ final class ATMShortcutCatalogTests: XCTestCase {
     func testSettingsExposeDedicatedShortcutTab() {
         XCTAssertEqual(
             ATMSettingsTab.allCases,
-            [.general, .shortcuts, .voice, .notify, .todo, .model, .connectors]
+            [.general, .shortcuts, .voice, .notify, .todo, .model]
         )
         XCTAssertEqual(ATMSettingsTab.shortcuts.title, "快捷键")
         XCTAssertEqual(ATMSettingsTab.shortcuts.systemImage, "keyboard")

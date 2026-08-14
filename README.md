@@ -157,8 +157,8 @@ atm collect item delete <item-id>... -y            # 删除处理记录本身；
 # history 和 run 拉到的聊天原文都会同步进 ~/.atm/atm.db，默认保留 90 天：
 #   atm config set collection_message_retention_days 30   # 改成 30 天
 #   atm config set collection_message_retention_days 0    # 0 = 永久保留
-# 分类模型可写成候选链，前一个限额/超时/没装就自动换下一个：
-#   atm config set collection_model_command "grok,codex"
+# 分类用 ATM 内置的文本模型，和 todo refine 共用一套 Key 与配置：
+#   atm config test-text-model                        # 先确认凭据和 endpoint 通
 
 # 中央知识、共享记忆和产物
 atm knowledge catalog
@@ -191,11 +191,12 @@ atm artifact save <title> --file report.md
 
 `todo refine` 用 ATM 内置的 DeepSeek 文本服务把一条任务整理成可执行卡片：润色标题和需求，复杂工作写计划，
 能独立关闭的部分拆成子任务并由父任务等待。它直接调用 DeepSeek Chat Completions，默认模型是适合轻量文本
-职能的 `deepseek-v4-flash`，关闭思考模式并要求 JSON 输出；它既不启动 Agent，也不复用或回退到
-`collection_model_command`。API Key 保存在 `~/.atm/credentials.json`（目录 `0700`、文件 `0600`），
+职能的 `deepseek-v4-flash`，关闭思考模式并要求 JSON 输出；它不启动 Agent。API Key 保存在 `~/.atm/credentials.json`（目录 `0700`、文件 `0600`），
 不进普通配置、备份、诊断包、argv 或日志：App 在“设置 → 模型”里填，CLI 用 `atm config credential set`
 （从 stdin 读）存同一份，`DEEPSEEK_API_KEY` 临时覆盖。模型和 endpoint 可在模型设置页修改，或通过
-`text_model_name`、`text_model_base_url` 配置项覆盖；设置页的“测试连接”会使用当前草稿值发送一个最小
+`text_model_name`、`text_model_base_url` 配置项覆盖。每次整理会在任务分析中持久显示
+`from <来源>`；“设置 → 模型”可编辑 `text_model_source` 来源标识和 `todo_refine_prompt` 自定义指令。
+默认 Prompt 采用保守拆分策略：同一功能的分析、设计、编码、测试和集成阶段保持在一张 Todo 中，只有可分别交付、验收和关闭的成果才拆为子任务。用户可直接修改；Prompt 追加在 ATM 固定的安全、事实与 JSON 格式规则之后，留空恢复默认。设置页的“测试连接”会使用当前草稿值发送一个最小
 JSON 请求，不保存设置、也不读取或修改 Todo。CLI 可用 `atm config test-text-model` 做同样检查；
 `ATM_TEXT_MODEL_MODEL`、`ATM_TEXT_MODEL_BASE_URL` 适合临时调试。`todo add` 默认不整理；桌面添加在
 `todo_refine_on_add`（默认开）时会自动跑一次。
@@ -240,13 +241,13 @@ checkpoint，并重叠回读 20 分钟，消息 ID 与来源标记共同保证�
 模型只输出固定决策 JSON，TodoWriter 才能写 ATM；权限、模型或写入失败会显示为等待重试且不会推进 checkpoint。
 采集默认关闭，启用前需在 `collection_connectors` 中配置并验证连接器。
 
-收集分类模型仍由 `collection_model_command` 决定，可以写成按序尝试的候选链
-（`atm config set collection_model_command "grok,codex"`）：前一个被限额、超时或没装时自动换下一个，
-一个 CLI 挂掉不再整条采集停摆。内置 `codex` 与 `grok` 两套无头调用方式（都在一次性工作目录里跑、只读沙箱、
-禁联网搜索/记忆/子 Agent；grok 没有 `--ignore-user-config` 等价开关，差异见文档）；其他 CLI 通过
-[`collection_model_runners` 模板](docs/collection-model-runner.md)自行声明 argv 和取值路径，不用改代码。
-链尾可以放 `rule` 作为最后兜底，降级产生的记录会写明原因。ATM 会跳过分类自己在
-`atm-collection-model-*` 工作目录里留下的 CLI 会话，它们不进 `atm session` 和 `atm stats`。
+收集分类、日报沉淀和 `todo refine` 共用 ATM 内置的文本模型服务：一次 schema 约束的 HTTP 调用，
+没有 CLI、没有工具、没有沙箱和工作目录，因此聊天里的注入无处可去。凭据、模型和 endpoint 也是同一套
+（`~/.atm/credentials.json`、`text_model_name`、`text_model_base_url`），用 `atm config test-text-model` 验证。
+分类**失败即停**：模型不可用或答案读不出来时，这批消息保持未判定，checkpoint 不推进，下一轮重建后重试，
+直到该记录的重试预算用完——绝不用关键词猜一个 Todo 塞进你的列表。`atm doctor` 会在采集已启用但没有 Key 时
+先说出来，因为分类跑在后台，静默失败只会表现为「来源突然不产出了」。ATM 仍会跳过早期 CLI 分类在
+`atm-collection-model-*` 工作目录里留下的会话，它们不进 `atm session` 和 `atm stats`。
 
 `todo context` 是每次调用即时生成的只读快照，不代表 handoff 已持久化，也不触发 review 状态。
 它默认使用 Todo 的单一活跃 Session 绑定；没有活跃绑定时退回最近绑定，

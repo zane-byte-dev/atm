@@ -3,6 +3,19 @@ import XCTest
 @testable import ATMMenuBarApp
 
 final class ModelsTests: XCTestCase {
+    func testTodoRefineMetadataReadsLatestPersistedSource() {
+        let content = """
+        ## 分析
+
+        - [2026-08-12 10:00] 模型整理（simple） · from deepseek：单一交付
+        - [2026-08-13 11:00] 模型整理（complex） · from company gateway
+
+          先拆解，再实现。
+        """
+        XCTAssertEqual(ATMTodoRefineMetadata.source(from: content), "company gateway")
+        XCTAssertNil(ATMTodoRefineMetadata.source(from: "## 分析\n\n待补充"))
+    }
+
     private struct CLIResult {
         let status: Int32
         let stdout: Data
@@ -43,7 +56,7 @@ final class ModelsTests: XCTestCase {
             """
             {
               "enabled":true,"interval_minutes":5,"lookback_minutes":60,
-              "model_command":"codex",
+              "model":"deepseek-v4-flash",
               "connector_health":[{"connector":"example","status":"ready","checked_at":110}],
               "summary":{"sources":1,"enabled_sources":1,"fetched_today":3,
                          "created_today":1,"appended_today":1,"insight_today":0,

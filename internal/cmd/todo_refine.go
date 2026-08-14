@@ -36,10 +36,13 @@ The dedicated schema-constrained model rewrites the title and the 需求 section
 Complex work also gets a plan in 分析.
 Independently trackable pieces become child todos the parent waits on.
 
-This is one API call, not an Agent loop, and it never dispatches work or falls
-back to collection_model_command. In ATM.app, configure Settings > Model; CLI
+This is one API call, not an Agent loop, and it never dispatches work. It shares
+its credential, model and endpoint with collection classification and digests.
+In ATM.app, configure Settings > Model; CLI
 users can set DEEPSEEK_API_KEY. The default model is deepseek-v4-flash with
 thinking disabled. Config or ATM_TEXT_MODEL_* can override model and endpoint.
+Every written analysis records "from <text_model_source>". Optional
+todo_refine_prompt guidance is appended after ATM's fixed safety and JSON rules.
 in_progress todos are polished but not split, so an active session is not
 unbound. Re-running refine will not mint a second set of children.
 
@@ -214,6 +217,7 @@ func reportRefine(cmd *cobra.Command, todo store.Todo, prepared refine.Prepared,
 		"children":            children,
 		"dry_run":             dryRun,
 		"changed":             refine.Changed(prepared),
+		"source":              prepared.Source,
 	}
 	if dryRun {
 		payload["proposal"] = proposal

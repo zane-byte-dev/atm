@@ -24,9 +24,8 @@ func withTempConfigHome(t *testing.T) string {
 	oldCollectionEnabled := CollectionEnabled
 	oldCollectionInterval := CollectionIntervalMinutes
 	oldCollectionLookback := CollectionLookbackMinutes
-	oldCollectionModel := CollectionModelCommand
 	oldTextModelBaseURL, oldTextModelName := TextModelBaseURL, TextModelName
-	oldCollectionModelRunners := CollectionModelRunners
+	oldTextModelSource, oldTodoRefinePrompt := TextModelSource, TodoRefinePrompt
 	oldCollectionConnectors := CollectionConnectors
 	oldQuotaProviders := QuotaProviders
 	oldTodoRefineOnAdd := TodoRefineOnAdd
@@ -51,10 +50,10 @@ func withTempConfigHome(t *testing.T) string {
 	CollectionEnabled = false
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
-	CollectionModelCommand = "codex"
 	TextModelBaseURL = "https://api.deepseek.com"
 	TextModelName = "deepseek-v4-flash"
-	CollectionModelRunners = nil
+	TextModelSource = "deepseek"
+	TodoRefinePrompt = DefaultTodoRefinePrompt
 	CollectionConnectors = nil
 	QuotaProviders = nil
 	TodoRefineOnAdd = true
@@ -74,9 +73,8 @@ func withTempConfigHome(t *testing.T) string {
 		CollectionEnabled = oldCollectionEnabled
 		CollectionIntervalMinutes = oldCollectionInterval
 		CollectionLookbackMinutes = oldCollectionLookback
-		CollectionModelCommand = oldCollectionModel
 		TextModelBaseURL, TextModelName = oldTextModelBaseURL, oldTextModelName
-		CollectionModelRunners = oldCollectionModelRunners
+		TextModelSource, TodoRefinePrompt = oldTextModelSource, oldTodoRefinePrompt
 		CollectionConnectors = oldCollectionConnectors
 		QuotaProviders = oldQuotaProviders
 		TodoRefineOnAdd = oldTodoRefineOnAdd
@@ -114,10 +112,10 @@ func TestInitAndLoadConfig(t *testing.T) {
   "collection_enabled": true,
   "collection_interval_minutes": 7,
   "collection_lookback_minutes": 90,
-  "collection_model_command": "rule",
   "text_model_base_url": "https://deepseek.example.test/v1/",
   "text_model_name": "deepseek-test",
-  "collection_model_runners": {"house": {"command": "~/bin/house-cli", "args": ["--schema", "{{schema_path}}"], "output_field": "result", "timeout_seconds": 60}},
+  "text_model_source": "company gateway",
+  "todo_refine_prompt": "Prefer acceptance criteria that name observable behavior.",
   "collection_connectors": {"slack": {"command": "~/bin/atm-connector-slack", "args": ["--workspace", "example"], "timeout_seconds": 30}},
   "quota_providers": {"example": {"command": "~/bin/atm-quota-example", "args": ["--profile", "work"], "timeout_seconds": 8, "visible_metrics": ["amount"]}},
   "data_dir": "~/atm-data",
@@ -150,18 +148,14 @@ func TestInitAndLoadConfig(t *testing.T) {
 	if Pricing["test-model"] != [4]float64{1, 2, 3, 4} || Subscriptions["codex"] != 20 {
 		t.Fatalf("pricing = %#v, subscriptions = %#v", Pricing, Subscriptions)
 	}
-	if !CollectionEnabled || CollectionIntervalMinutes != 7 || CollectionLookbackMinutes != 90 ||
-		CollectionModelCommand != "rule" {
-		t.Fatalf("collection config = enabled:%v interval:%d lookback:%d model:%s",
-			CollectionEnabled, CollectionIntervalMinutes, CollectionLookbackMinutes,
-			CollectionModelCommand)
+	if !CollectionEnabled || CollectionIntervalMinutes != 7 || CollectionLookbackMinutes != 90 {
+		t.Fatalf("collection config = enabled:%v interval:%d lookback:%d",
+			CollectionEnabled, CollectionIntervalMinutes, CollectionLookbackMinutes)
 	}
-	if TextModelBaseURL != "https://deepseek.example.test/v1" || TextModelName != "deepseek-test" {
-		t.Fatalf("text model config = base:%s model:%s", TextModelBaseURL, TextModelName)
-	}
-	if runner := CollectionModelRunners["house"]; runner.Command != "~/bin/house-cli" ||
-		len(runner.Args) != 2 || runner.OutputField != "result" || runner.TimeoutSeconds != 60 {
-		t.Fatalf("collection model runners = %#v", CollectionModelRunners)
+	if TextModelBaseURL != "https://deepseek.example.test/v1" || TextModelName != "deepseek-test" ||
+		TextModelSource != "company gateway" || !strings.Contains(TodoRefinePrompt, "observable behavior") {
+		t.Fatalf("text model config = base:%s model:%s source:%s prompt:%q",
+			TextModelBaseURL, TextModelName, TextModelSource, TodoRefinePrompt)
 	}
 	if connector := CollectionConnectors["slack"]; connector.Command != "~/bin/atm-connector-slack" ||
 		len(connector.Args) != 2 || connector.TimeoutSeconds != 30 {
@@ -177,19 +171,8 @@ func TestInitAndLoadConfig(t *testing.T) {
 	}
 }
 
-func TestCollectionModelCandidatesSplitsTheChain(t *testing.T) {
-	withTempConfigHome(t)
-	got := CollectionModelCandidates(" grok --effort low , codex ,, ")
-	if len(got) != 2 || got[0] != "grok --effort low" || got[1] != "codex" {
-		t.Fatalf("candidates = %#v", got)
-	}
-	// An unset command still resolves to the configured default chain.
-	CollectionModelCommand = "grok,codex"
-	if got := CollectionModelCandidates(""); len(got) != 2 || got[0] != "grok" {
-		t.Fatalf("default candidates = %#v", got)
-	}
-}
-
+// Classification no longer launches a CLI, but the sessions those runs left on
+// disk still have to be recognised so the parsers keep skipping them.
 func TestIsCollectionModelWorkdirMatchesEncodedPaths(t *testing.T) {
 	if !IsCollectionModelWorkdir("/private/var/folders/kq/T/" + CollectionModelWorkdirPrefix + "2291227821") {
 		t.Fatal("scratch path not recognised")
@@ -303,6 +286,26 @@ func TestTodoRefineOnAddDefaultsOnAndCanBeDisabled(t *testing.T) {
 	LoadConfig()
 	if !TodoRefineOnAdd {
 		t.Fatal("env must force auto-refine on")
+	}
+}
+
+func TestTodoRefinePromptDefaultsConservativeAndBlankRestoresIt(t *testing.T) {
+	withTempConfigHome(t)
+	for _, want := range []string{"默认将任务判定为 simple", "连续实施阶段", "分别验收和关闭"} {
+		if !strings.Contains(TodoRefinePrompt, want) {
+			t.Fatalf("default refine prompt missing %q:\n%s", want, TodoRefinePrompt)
+		}
+	}
+	if err := os.MkdirAll(AtmDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ConfigPath, []byte(`{"todo_refine_prompt":""}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	TodoRefinePrompt = "custom policy"
+	LoadConfig()
+	if TodoRefinePrompt != DefaultTodoRefinePrompt {
+		t.Fatalf("blank config should restore default, got %q", TodoRefinePrompt)
 	}
 }
 

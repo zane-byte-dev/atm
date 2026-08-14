@@ -68,11 +68,6 @@ var (
 	CollectionEnabled         = false
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
-	// A comma-separated candidate chain: the first command that runs wins, and
-	// the next one is tried when the previous exits non-zero, times out or is
-	// not installed. That is what keeps collection alive when one CLI is rate
-	// limited. A single command remains a valid chain of one.
-	CollectionModelCommand = "codex"
 	// Synced chat is kept for this many days; 0 keeps it forever. Reading a
 	// conversation stores it so it can be searched and read offline, and that
 	// archive would otherwise grow for as long as the sources stay enabled.
@@ -93,16 +88,21 @@ var (
 	// keep service credentials and private endpoints outside ATM while returning
 	// versioned, provider-neutral cards for the CLI and App.
 	QuotaProviders map[string]QuotaProviderConfig
-	// CollectionModelRunners describes how to drive a CLI that ATM has no
-	// built-in profile for, so a third-party agent CLI can classify chat without
-	// a code change. Keys are the names used in CollectionModelCommand; a key
-	// that matches a built-in profile overrides it.
-	CollectionModelRunners map[string]ModelRunnerConfig
 	// TextModelBaseURL and TextModelName configure ATM's narrow built-in text
 	// service. Credentials deliberately stay out of config.json: the CLI reads
 	// ~/.atm/credentials.json, with DEEPSEEK_API_KEY as an ephemeral override.
 	TextModelBaseURL = "https://api.deepseek.com"
 	TextModelName    = "deepseek-v4-flash"
+	// TextModelSource is the short, human-facing provenance label persisted
+	// with model-produced Todo analysis. It is explicit rather than inferred
+	// from the endpoint: an OpenAI-compatible gateway URL does not identify the
+	// model that actually answered.
+	TextModelSource = "deepseek"
+	// TodoRefinePrompt is editable policy appended to ATM's fixed safety and
+	// output-shape prompt. The default is deliberately conservative: phases of
+	// one feature stay in one Todo instead of becoming analysis/design/test
+	// checklist children.
+	TodoRefinePrompt = DefaultTodoRefinePrompt
 	// TodoRefineOnAdd is the desktop default after a human files a todo: run
 	// one schema-constrained model pass to polish the card and, when the work
 	// is independently trackable, split it. CLI `todo add` never does this
@@ -113,54 +113,31 @@ var (
 	TodoRefineOnAdd = true
 )
 
-// CollectionModelWorkdirPrefix names the scratch directory every model run gets.
-// It is a shared constant because the parsers key off it: a CLI that persists a
-// session per working directory would otherwise file every classification as a
-// real ATM session in a throwaway project.
+const DefaultTodoRefinePrompt = `任务拆分默认采用保守策略：
+- 默认将任务判定为 simple。
+- 只有至少存在两个可独立交付、独立验收、独立关闭的成果时，才判定为 complex 并创建子任务。
+- “分析、设计、编码、测试、集成、发布”等同一功能的连续实施阶段不是独立成果，不得仅因存在多个步骤就拆成子任务。
+- 如果同一个实现者可以在一次连续工作会话中完成全部验收，保持 simple，把必要步骤写入 plan，不创建子任务。
+- 创建子任务时，reason 必须说明这些成果为何能够分别验收和关闭；无法说明则不要拆分。
+- 信息不足时保留原始事实，并在约束中明确标注待确认内容，不要自行补全。`
+
+// CollectionModelWorkdirPrefix named the scratch directory ATM gave each run
+// back when classification drove an Agent CLI. Classification is now a plain
+// HTTP call that creates no directory and no session, but the sessions those
+// runs left behind are still on disk, so the parsers still have to recognise and
+// skip them: without this they would surface as real ATM sessions in throwaway
+// projects.
 const CollectionModelWorkdirPrefix = "atm-collection-model-"
 
 // IsCollectionModelWorkdir reports whether a path (or a CLI's URL-encoded
-// rendering of one) points inside a classifier scratch directory.
+// rendering of one) points inside one of those leftover scratch directories.
 func IsCollectionModelWorkdir(path string) bool {
 	return strings.Contains(path, CollectionModelWorkdirPrefix)
-}
-
-// CollectionModelCandidates splits the configured command into the ordered
-// chain to try. Candidates are separated by commas; each one keeps its own
-// arguments, which is why a candidate whose arguments contain a comma has to be
-// declared in collection_model_runners instead.
-func CollectionModelCandidates(commandLine string) []string {
-	if strings.TrimSpace(commandLine) == "" {
-		commandLine = CollectionModelCommand
-	}
-	var candidates []string
-	for _, candidate := range strings.Split(commandLine, ",") {
-		if candidate = strings.TrimSpace(candidate); candidate != "" {
-			candidates = append(candidates, candidate)
-		}
-	}
-	return candidates
 }
 
 type CollectionConnectorConfig struct {
 	Command        string   `json:"command"`
 	Args           []string `json:"args,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
-}
-
-// ModelRunnerConfig teaches ATM how to call one CLI in headless,
-// schema-constrained mode. Args are a template: {{schema_path}},
-// {{schema_json}}, {{prompt_path}} and {{workdir}} are substituted per run, and
-// a template without a prompt placeholder gets the prompt on stdin.
-// OutputField unwraps a CLI that answers with an envelope instead of the bare
-// object. A custom runner must carry its own sandbox flags — ATM cannot know
-// how a third-party CLI denies network and filesystem writes.
-type ModelRunnerConfig struct {
-	// Command defaults to the map key, so a key may be either a real binary
-	// name or an alias whose command and flags are defined here.
-	Command        string   `json:"command,omitempty"`
-	Args           []string `json:"args,omitempty"`
-	OutputField    string   `json:"output_field,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
 }
 
@@ -191,10 +168,10 @@ type FileConfig struct {
 	CollectionLookbackMinutes int   `json:"collection_lookback_minutes,omitempty"`
 	// Pointer because 0 is a meaningful setting here: keep chat forever.
 	CollectionMessageRetentionDays *int                                 `json:"collection_message_retention_days,omitempty"`
-	CollectionModelCommand         string                               `json:"collection_model_command,omitempty"`
-	CollectionModelRunners         map[string]ModelRunnerConfig         `json:"collection_model_runners,omitempty"`
 	TextModelBaseURL               string                               `json:"text_model_base_url,omitempty"`
 	TextModelName                  string                               `json:"text_model_name,omitempty"`
+	TextModelSource                string                               `json:"text_model_source,omitempty"`
+	TodoRefinePrompt               string                               `json:"todo_refine_prompt,omitempty"`
 	CollectionConnectors           map[string]CollectionConnectorConfig `json:"collection_connectors,omitempty"`
 	// Pointer so "absent" (keep the on-by-default) is distinct from false.
 	TodoRefineOnAdd *bool                          `json:"todo_refine_on_add,omitempty"`
@@ -206,6 +183,7 @@ type FileConfig struct {
 }
 
 func LoadConfig() {
+	TodoRefinePrompt = DefaultTodoRefinePrompt
 	loadConfigFile()
 	applyEnvOverrides()
 }
@@ -267,19 +245,22 @@ func loadConfigFile() {
 	if cfg.CollectionMessageRetentionDays != nil && *cfg.CollectionMessageRetentionDays >= 0 {
 		CollectionMessageRetentionDays = *cfg.CollectionMessageRetentionDays
 	}
-	if cfg.CollectionModelCommand != "" {
-		CollectionModelCommand = cfg.CollectionModelCommand
-	}
 	if strings.TrimSpace(cfg.TextModelBaseURL) != "" {
 		TextModelBaseURL = strings.TrimRight(strings.TrimSpace(cfg.TextModelBaseURL), "/")
 	}
 	if strings.TrimSpace(cfg.TextModelName) != "" {
 		TextModelName = strings.TrimSpace(cfg.TextModelName)
 	}
+	if strings.TrimSpace(cfg.TextModelSource) != "" {
+		TextModelSource = strings.Join(strings.Fields(cfg.TextModelSource), " ")
+	}
+	TodoRefinePrompt = DefaultTodoRefinePrompt
+	if strings.TrimSpace(cfg.TodoRefinePrompt) != "" {
+		TodoRefinePrompt = strings.TrimSpace(cfg.TodoRefinePrompt)
+	}
 	if cfg.TodoRefineOnAdd != nil {
 		TodoRefineOnAdd = *cfg.TodoRefineOnAdd
 	}
-	CollectionModelRunners = cfg.CollectionModelRunners
 	CollectionConnectors = cfg.CollectionConnectors
 	QuotaProviders = cfg.QuotaProviders
 	if cfg.DataDir != "" {
@@ -367,10 +348,10 @@ func ShowConfig() string {
 		CollectionIntervalMinutes:      CollectionIntervalMinutes,
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
-		CollectionModelCommand:         CollectionModelCommand,
-		CollectionModelRunners:         CollectionModelRunners,
 		TextModelBaseURL:               TextModelBaseURL,
 		TextModelName:                  TextModelName,
+		TextModelSource:                TextModelSource,
+		TodoRefinePrompt:               TodoRefinePrompt,
 		CollectionConnectors:           CollectionConnectors,
 		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		QuotaProviders:                 QuotaProviders,
@@ -407,9 +388,10 @@ func InitConfig() error {
 		CollectionIntervalMinutes:      CollectionIntervalMinutes,
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
-		CollectionModelCommand:         CollectionModelCommand,
 		TextModelBaseURL:               TextModelBaseURL,
 		TextModelName:                  TextModelName,
+		TextModelSource:                TextModelSource,
+		TodoRefinePrompt:               TodoRefinePrompt,
 		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		DataDir:                        "~/.atm",
 	}

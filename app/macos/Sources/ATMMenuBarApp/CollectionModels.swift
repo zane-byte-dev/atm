@@ -681,7 +681,7 @@ struct ATMCollectionOverview: Decodable, Equatable {
     let enabled: Bool
     let intervalMinutes: Int
     let lookbackMinutes: Int
-    let modelCommand: String
+    let model: String
     let connectorHealth: [ATMCollectionConnectorHealth]
     let summary: ATMCollectionSummary
     let sources: [ATMCollectionSource]
@@ -690,16 +690,15 @@ struct ATMCollectionOverview: Decodable, Equatable {
     let digests: [ATMCollectionDigest]
 
     enum CodingKeys: String, CodingKey {
-        case enabled, summary, sources, runs, items, digests
+        case enabled, model, summary, sources, runs, items, digests
         case intervalMinutes = "interval_minutes"
         case lookbackMinutes = "lookback_minutes"
-        case modelCommand = "model_command"
         case connectorHealth = "connector_health"
     }
 
     static let empty = ATMCollectionOverview(
         enabled: false, intervalMinutes: 5, lookbackMinutes: 60,
-        modelCommand: "codex", connectorHealth: [], summary: .empty,
+        model: "deepseek-v4-flash", connectorHealth: [], summary: .empty,
         sources: [], runs: [], items: [], digests: []
     )
 

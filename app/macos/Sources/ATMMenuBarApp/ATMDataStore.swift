@@ -1050,6 +1050,8 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var todoRefineOnAdd = true
     @Published private(set) var textModelBaseURL = "https://api.deepseek.com"
     @Published private(set) var textModelName = "deepseek-v4-flash"
+    @Published private(set) var textModelSource = "deepseek"
+    @Published private(set) var todoRefinePrompt = ""
     @Published private(set) var textModelAPIKeyConfigured = false
     @Published private(set) var isSavingTextModelSettings = false
     @Published private(set) var isTestingTextModelSettings = false
@@ -1057,6 +1059,7 @@ final class ATMDataStore: ObservableObject {
     @Published var textModelSettingsErrorMessage: String?
     @Published private(set) var refiningTodoIDs: Set<String> = []
     @Published private(set) var refineErrorByTodoID: [String: String] = [:]
+    @Published private(set) var refineSourceByTodoID: [String: String] = [:]
     /// Internal refresh gate only. No view renders this flag, so publishing it
     /// needlessly rebuilt the desktop at both ends of every one-minute refresh.
     private(set) var isLoading = false
@@ -1476,18 +1479,39 @@ final class ATMDataStore: ObservableObject {
                 runner,
                 arguments: ["config", "get", "text_model_name", "--json"]
             )
-            let (credential, base, model) = await (credentialOutcome, baseOutcome, modelOutcome)
+            async let sourceOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
+                runner,
+                arguments: ["config", "get", "text_model_source", "--json"]
+            )
+            async let promptOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
+                runner,
+                arguments: ["config", "get", "todo_refine_prompt", "--json"]
+            )
+            let (credential, base, model, source, prompt) = await (
+                credentialOutcome, baseOutcome, modelOutcome, sourceOutcome, promptOutcome
+            )
             if let value = credential.value { textModelAPIKeyConfigured = value.configured }
             if let value = base.value { textModelBaseURL = value.value }
             if let value = model.value { textModelName = value.value }
-            textModelSettingsErrorMessage = credential.error ?? base.error ?? model.error
+            if let value = source.value { textModelSource = value.value }
+            if let value = prompt.value { todoRefinePrompt = value.value }
+            textModelSettingsErrorMessage = credential.error ?? base.error ?? model.error ?? source.error ?? prompt.error
         }
     }
 
-    func saveTextModelSettings(apiKey: String, baseURL: String, model: String) {
+    func saveTextModelSettings(
+        apiKey: String,
+        baseURL: String,
+        model: String,
+        source: String,
+        todoRefinePrompt: String
+    ) {
         let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedBaseURL.isEmpty, !trimmedModel.isEmpty, !isSavingTextModelSettings else { return }
+        let trimmedSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedPrompt = todoRefinePrompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty, !trimmedModel.isEmpty, !trimmedSource.isEmpty,
+              !isSavingTextModelSettings else { return }
         guard let endpoint = URL(string: trimmedBaseURL),
               endpoint.host != nil,
               endpoint.scheme == "http" || endpoint.scheme == "https" else {
@@ -1511,6 +1535,8 @@ final class ATMDataStore: ObservableObject {
                 }
                 _ = try await runner.run(["config", "set", "text_model_base_url", trimmedBaseURL])
                 _ = try await runner.run(["config", "set", "text_model_name", trimmedModel])
+                _ = try await runner.run(["config", "set", "text_model_source", trimmedSource])
+                _ = try await runner.run(["config", "set", "todo_refine_prompt", trimmedPrompt])
                 loadTextModelSettings()
             } catch {
                 textModelSettingsErrorMessage = "模型设置未保存：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
@@ -2387,6 +2413,10 @@ final class ATMDataStore: ObservableObject {
         progressByTodoID[todoID] ?? []
     }
 
+    func refineSource(for todoID: String) -> String? {
+        refineSourceByTodoID[todoID]
+    }
+
     func isLoadingProgress(for todoID: String) -> Bool {
         loadingProgressTodoIDs.contains(todoID)
     }
@@ -2406,9 +2436,12 @@ final class ATMDataStore: ObservableObject {
                     let exists: Bool?
                 }
                 let doc = try JSONDecoder().decode(Doc.self, from: data)
-                progressByTodoID[todoID] = ATMTodoProgressEntry.parse(from: doc.content ?? "")
+                let content = doc.content ?? ""
+                progressByTodoID[todoID] = ATMTodoProgressEntry.parse(from: content)
+                refineSourceByTodoID[todoID] = ATMTodoRefineMetadata.source(from: content)
             } catch {
                 progressByTodoID[todoID] = []
+                refineSourceByTodoID[todoID] = nil
             }
         }
     }

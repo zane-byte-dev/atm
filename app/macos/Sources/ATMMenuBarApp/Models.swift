@@ -12,6 +12,26 @@ enum ATMTodoActivityKind: String, Hashable {
     case supplement = "补充"
 }
 
+enum ATMTodoRefineMetadata {
+    /// `internal/refine.FormatAnalysis` writes this human-visible marker on the
+    /// first line of every model refinement. Reading the persisted card rather
+    /// than the current setting keeps the App honest after a provider change.
+    private static let sourceMarker = " · from "
+
+    static func source(from content: String) -> String? {
+        for line in content.components(separatedBy: "\n").reversed() {
+            guard let marker = line.range(of: sourceMarker) else { continue }
+            var value = String(line[marker.upperBound...])
+            if let reason = value.range(of: "：") {
+                value = String(value[..<reason.lowerBound])
+            }
+            value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { return value }
+        }
+        return nil
+    }
+}
+
 struct ATMTodoProgressEntry: Identifiable, Hashable {
     let id: Int
     let timestamp: String

@@ -68,6 +68,27 @@ func TestParseTextModelBaseURL(t *testing.T) {
 	}
 }
 
+func TestParseTodoRefineDisplaySettings(t *testing.T) {
+	if value, err := parseTextModelSourceValue("  company   gateway  "); err != nil || value != "company gateway" {
+		t.Fatalf("source = %v, %v", value, err)
+	}
+	for _, value := range []string{"", "\n\t", strings.Repeat("x", 81)} {
+		if _, err := parseTextModelSourceValue(value); err == nil {
+			t.Fatalf("source %q should fail", value)
+		}
+	}
+	if value, err := parseTodoRefinePromptValue("\nPrefer observable acceptance criteria.\n"); err != nil ||
+		value != "Prefer observable acceptance criteria." {
+		t.Fatalf("prompt = %v, %v", value, err)
+	}
+	if value, err := parseTodoRefinePromptValue(""); err != nil || value != "" {
+		t.Fatalf("blank prompt should restore defaults: %v, %v", value, err)
+	}
+	if _, err := parseTodoRefinePromptValue(strings.Repeat("x", 4001)); err == nil {
+		t.Fatal("oversized prompt should fail")
+	}
+}
+
 func TestConfigTestTextModelReturnsAppContract(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}]}`)

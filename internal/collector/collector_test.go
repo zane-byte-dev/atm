@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/textmodel"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
@@ -1185,66 +1187,103 @@ func TestObservationSourceClampsAppendToInsight(t *testing.T) {
 	}
 }
 
-func TestAutomaticExtractorFailsClosedUnlessRuleModeIsExplicit(t *testing.T) {
-	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
-		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
-	if _, err := (AutomaticExtractor{ModelCommand: filepath.Join(t.TempDir(), "missing")}).Extract(context.Background(), batch, nil); err == nil {
-		t.Fatal("missing model command silently fell back")
-	}
-	decision, err := (AutomaticExtractor{ModelCommand: "rule"}).Extract(context.Background(), batch, nil)
-	if err != nil || decision.Action != "create" || decision.Project != "atm" || decision.Priority != "P2" {
-		t.Fatalf("explicit rule decision=%+v err=%v", decision, err)
-	}
-}
-
-// A rate-limited primary model is the whole reason the chain exists: the run
-// must continue on the next CLI instead of failing the source.
-func TestAutomaticExtractorFallsBackToTheNextModelInTheChain(t *testing.T) {
-	rateLimited := writeFakeModel(t, "rate-limited", "echo 'usage limit reached' >&2\nexit 1\n")
-	working := writeFakeModel(t, "working",
-		`printf '%s' '{"action":"create","title":"实现自动收集","summary":"从聊天创建 Todo","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"明确需求","confidence":0.9}'`)
-	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
-		RawContext: "2026-07-31 [测试发送人] 想做自动收集"}
-	decision, err := (AutomaticExtractor{ModelCommand: rateLimited + "," + working, Timeout: 5 * time.Second}).
-		Extract(context.Background(), batch, nil)
-	if err != nil || decision.Action != "create" || decision.Priority != "P1" {
-		t.Fatalf("chain decision=%+v err=%v", decision, err)
-	}
-}
-
-func TestAutomaticExtractorDegradesToRulesOnlyAtTheEndOfTheChain(t *testing.T) {
-	rateLimited := writeFakeModel(t, "rate-limited", "echo 'usage limit reached' >&2\nexit 1\n")
-	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
-		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
-	if _, err := (AutomaticExtractor{ModelCommand: rateLimited, Timeout: 5 * time.Second}).
-		Extract(context.Background(), batch, nil); err == nil {
-		t.Fatal("a chain without rule must fail closed when the model fails")
-	}
-	decision, err := (AutomaticExtractor{ModelCommand: rateLimited + ",rule", Timeout: 5 * time.Second}).
-		Extract(context.Background(), batch, nil)
-	if err != nil || decision.Action != "create" {
-		t.Fatalf("rule fallback decision=%+v err=%v", decision, err)
-	}
-	if !strings.Contains(decision.Reason, "降级") || !strings.Contains(decision.Reason, "usage limit reached") {
-		t.Fatalf("degraded decision should say why: %q", decision.Reason)
+// stubTextModel replaces ATM's built-in text service for one test, so
+// classification and digest tests never need a credential or a network.
+func stubTextModel(t *testing.T, answer func(task, prompt string) (string, error)) {
+	t.Helper()
+	old := runTextModel
+	t.Cleanup(func() { runTextModel = old })
+	runTextModel = func(_ context.Context, task string, _ time.Duration, _, prompt string) ([]byte, error) {
+		text, err := answer(task, prompt)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(text), nil
 	}
 }
 
 func TestAutomaticExtractorAcceptsSchemaConstrainedModelDecision(t *testing.T) {
-	script := filepath.Join(t.TempDir(), "fake-codex")
-	body := `#!/bin/sh
-printf '%s\n' '{"action":"create","title":"实现自动收集","summary":"从聊天创建 Todo","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"明确需求","confidence":0.98}'
-`
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatalf("write model command: %v", err)
-	}
+	capturedTask, capturedPrompt := "", ""
+	stubTextModel(t, func(task, prompt string) (string, error) {
+		capturedTask, capturedPrompt = task, prompt
+		return `{"action":"create","title":"实现自动收集","summary":"从聊天创建 Todo","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"明确需求","confidence":0.98}`, nil
+	})
 	batch := MessageBatch{Source: store.CollectionSource{Name: "产品群", Project: "atm", Priority: "P2"},
 		RawContext: "2026-07-31 [测试发送人] 想做自动收集并添加 Todo"}
-	decision, err := (AutomaticExtractor{ModelCommand: script, Timeout: 5 * time.Second}).Extract(
-		context.Background(), batch, nil,
-	)
+	decision, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, nil)
 	if err != nil || decision.Action != "create" || decision.Title != "实现自动收集" || decision.Priority != "P1" {
 		t.Fatalf("model decision=%+v err=%v", decision, err)
+	}
+	if capturedTask != textmodel.TaskDecision || !strings.Contains(capturedPrompt, "想做自动收集") {
+		t.Fatalf("task=%q prompt=%q", capturedTask, capturedPrompt)
+	}
+}
+
+// Classification writes to somebody's Todo list, so an unavailable model must
+// leave the batch undecided. The run then holds its checkpoint and retries the
+// same messages instead of filing a guess nobody can trace.
+func TestAutomaticExtractorFailsClosedWhenTheModelIsUnavailable(t *testing.T) {
+	stubTextModel(t, func(string, string) (string, error) {
+		return "", fmt.Errorf("built-in DeepSeek text model is unavailable")
+	})
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
+	decision, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, nil)
+	if err == nil {
+		t.Fatalf("unavailable model produced a decision: %+v", decision)
+	}
+	if decision.Action != "" {
+		t.Fatalf("failed classification still returned an action: %+v", decision)
+	}
+}
+
+// The endpoint enforces JSON, not this schema, so a loose answer reaches
+// validateDecision rather than being rejected by the transport. Nothing may be
+// normalized into a supported action on the way through.
+func TestAutomaticExtractorRejectsAnswersOutsideTheSchema(t *testing.T) {
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
+	for name, answer := range map[string]string{
+		"unsupported action":      `{"action":"assign","title":"实现自动收集","summary":"x","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"","confidence":0.9}`,
+		"append without id":       `{"action":"append","title":"实现自动收集","summary":"x","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"","confidence":0.9}`,
+		"insight without summary": `{"action":"insight","title":"实现自动收集","summary":"","item_type":"insight","project":"atm","priority":"P1","related_todo_id":"","reason":"","confidence":0.9}`,
+		"not an object":           "sorry, I cannot do that",
+	} {
+		stubTextModel(t, func(string, string) (string, error) { return answer, nil })
+		if _, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, nil); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+}
+
+func TestAutomaticSummarizerAsksForADigest(t *testing.T) {
+	capturedTask := ""
+	stubTextModel(t, func(task, _ string) (string, error) {
+		capturedTask = task
+		return `{"title":"产品群 2026-07-31 动态","body":"## 发布\n- 检查变绿"}`, nil
+	})
+	content, err := (AutomaticSummarizer{Timeout: 5 * time.Second}).Summarize(context.Background(), DigestInput{
+		Source: store.CollectionSource{Name: "产品群"}, Date: "2026-07-31",
+		Items: []store.CollectionItem{{Title: "发布检查变绿", Summary: "重跑后通过"}},
+	})
+	if err != nil || content.Title != "产品群 2026-07-31 动态" || !strings.Contains(content.Body, "检查变绿") {
+		t.Fatalf("digest content=%+v err=%v", content, err)
+	}
+	if capturedTask != textmodel.TaskDigest {
+		t.Fatalf("task=%q", capturedTask)
+	}
+}
+
+func TestAutomaticSummarizerFailsClosedWhenTheModelIsUnavailable(t *testing.T) {
+	stubTextModel(t, func(string, string) (string, error) {
+		return "", fmt.Errorf("built-in DeepSeek text model is unavailable")
+	})
+	_, err := (AutomaticSummarizer{Timeout: 5 * time.Second}).Summarize(context.Background(), DigestInput{
+		Source: store.CollectionSource{Name: "产品群"}, Date: "2026-07-31",
+		Items: []store.CollectionItem{{Title: "发布检查变绿", Summary: "重跑后通过"}},
+	})
+	if err == nil {
+		t.Fatal("unavailable model produced a digest")
 	}
 }
 

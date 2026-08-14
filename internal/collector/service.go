@@ -102,8 +102,8 @@ func DefaultService() Service {
 	executable, _ := os.Executable()
 	return Service{
 		Connectors: registry, RegistryError: registryErr,
-		Extractor:  AutomaticExtractor{ModelCommand: config.CollectionModelCommand},
-		Summarizer: AutomaticSummarizer{ModelCommand: config.CollectionModelCommand},
+		Extractor:  AutomaticExtractor{},
+		Summarizer: AutomaticSummarizer{},
 		Dispatcher: CommandTodoDispatcher{Executable: executable},
 		Now:        func() time.Time { return time.Now().In(config.Loc) },
 	}

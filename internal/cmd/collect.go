@@ -166,13 +166,13 @@ var collectStatusCmd = &cobra.Command{
 				IntervalMinutes int                          `json:"interval_minutes"`
 				LookbackMinutes int                          `json:"lookback_minutes"`
 				RetentionDays   int                          `json:"message_retention_days"`
-				ModelCommand    string                       `json:"model_command"`
+				Model           string                       `json:"model"`
 				ConnectorHealth []collectionConnectorHealth  `json:"connector_health"`
 				Messages        store.CollectionMessageStats `json:"messages"`
 				store.CollectionOverview
 			}{config.CollectionEnabled, config.CollectionIntervalMinutes,
 				config.CollectionLookbackMinutes, config.CollectionMessageRetentionDays,
-				config.CollectionModelCommand,
+				config.TextModelName,
 				collectionHealth(overview), archive, overview}
 			if jsonOutput {
 				output.JSON(value)

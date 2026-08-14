@@ -12,10 +12,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/refine"
+	"github.com/zane-byte-dev/atm/internal/textmodel"
 
 	"github.com/spf13/cobra"
 )
@@ -57,18 +58,16 @@ Settable keys:
   collection_lookback_minutes N Initial source lookback (default 60)
   collection_message_retention_days N  Days of synced chat to keep
                                 (default 90; 0 keeps it forever)
-  collection_model_command CMD  Structured classifier command (default codex).
-                                Accepts a comma-separated chain tried in order,
-                                e.g. "grok,codex" or "grok,codex,rule"; the next
-                                one runs when the previous is rate limited,
-                                times out or is not installed. codex and grok
-                                have built-in profiles; any other CLI needs a
-                                collection_model_runners entry in config.json
-                                (see docs/collection-model-runner.md)
   text_model_base_url URL         DeepSeek/OpenAI-compatible endpoint used by
                                   ATM's built-in text service
   text_model_name MODEL           Model used by the built-in text service
                                   (default deepseek-v4-flash)
+  text_model_source LABEL         Short provenance shown on refined Todos
+                                  (default deepseek, rendered as "from LABEL")
+  todo_refine_prompt TEXT         Editable refinement policy appended to ATM's
+                                  fixed safety and JSON-shape prompt. The default
+                                  keeps one feature's implementation phases in a
+                                  single Todo; pass an empty string to restore it
   todo_refine_on_add true|false After a human files a todo in the App, run one
                                 model pass to polish the card and split complex
                                 work (default true). CLI todo add is never
@@ -94,10 +93,30 @@ var settableConfigKeys = map[string]func(string) (any, error){
 	"collection_lookback_minutes": parsePositiveIntValue,
 	// 0 is a real setting here: keep synced chat forever.
 	"collection_message_retention_days": parseNonNegativeIntValue,
-	"collection_model_command":          parseNonEmptyStringValue,
 	"text_model_base_url":               parseHTTPURLValue,
 	"text_model_name":                   parseNonEmptyStringValue,
+	"text_model_source":                 parseTextModelSourceValue,
+	"todo_refine_prompt":                parseTodoRefinePromptValue,
 	"todo_refine_on_add":                parseBoolValue,
+}
+
+func parseTextModelSourceValue(s string) (any, error) {
+	value := strings.Join(strings.Fields(s), " ")
+	if value == "" {
+		return nil, fmt.Errorf("source label must not be empty")
+	}
+	if utf8.RuneCountInString(value) > 80 {
+		return nil, fmt.Errorf("source label must be at most 80 characters")
+	}
+	return value, nil
+}
+
+func parseTodoRefinePromptValue(s string) (any, error) {
+	value := strings.TrimSpace(s)
+	if utf8.RuneCountInString(value) > 4000 {
+		return nil, fmt.Errorf("todo refine prompt must be at most 4000 characters")
+	}
+	return value, nil
 }
 
 func parseHTTPURLValue(s string) (any, error) {
@@ -186,12 +205,14 @@ var configGetCmd = &cobra.Command{
 			value = config.CollectionLookbackMinutes
 		case "collection_message_retention_days":
 			value = config.CollectionMessageRetentionDays
-		case "collection_model_command":
-			value = config.CollectionModelCommand
 		case "text_model_base_url":
 			value = config.TextModelBaseURL
 		case "text_model_name":
 			value = config.TextModelName
+		case "text_model_source":
+			value = config.TextModelSource
+		case "todo_refine_prompt":
+			value = config.TodoRefinePrompt
 		case "todo_refine_on_add":
 			value = config.TodoRefineOnAdd
 		default:
@@ -211,7 +232,7 @@ var configTestTextModelCmd = &cobra.Command{
 	Short: "Test the built-in text service without changing a Todo",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		result, err := refine.CheckBuiltinTextModel(cmd.Context(), 45*time.Second)
+		result, err := textmodel.Check(cmd.Context(), 45*time.Second)
 		if err != nil {
 			return err
 		}

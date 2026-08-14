@@ -17,6 +17,22 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **收集分类和日报也走内置文本模型了，`grok`/`codex` 的 CLI 调用整条删除。** 分类和 refine 本来就是
+  同一种活儿——一次 schema 约束的纯文本调用，不读代码库、不用工具、不需要 Agent 循环。现在三者共用
+  `internal/textmodel`：同一份 `~/.atm/credentials.json`、同一个 `text_model_name`/`text_model_base_url`，
+  `atm config test-text-model` 一次验证全部。随之删掉的有 `collection_model_command`、
+  `collection_model_runners`、两套内置 CLI profile（`codex --ephemeral …` / `grok --prompt-file …`）、
+  一次性工作目录与它留下的会话清理，以及 `docs/collection-model-runner.md`。
+  `atm collect status --json` 的 `model_command` 字段改名为 `model`，值是模型名而不是 argv。
+  **注意这是三级链换成单点。** 以前 `grok,codex,rule` 里前一个限额就换下一个；现在 DeepSeek 挂了就是挂了。
+  所以分类改成**失败即停**：模型不可用、或答案不符合 decision schema 时，这批消息保持未判定，
+  checkpoint 不推进，下一轮重建后重试，直到该记录的重试预算用完。关键词兜底（`rule`）连同它会
+  「create 一个猜出来的 Todo」的行为一起删掉了——背景静默跑的东西，宁可不产出也不能产出错的。
+  另一处降级是 schema 约束：`--output-schema` 是硬约束，`response_format: json_object` 只保证是 JSON，
+  所以 `validateDecision` 现在是答案和 Todo 列表之间唯一的关卡，它跑在 normalize 之前，
+  免得把一个不支持的 action 规整成一个支持的。`atm doctor` 的 `collection_model_unavailable`
+  从「CLI 没装」改为「采集已启用但没有 Key」，仍然离线判断，不花模型调用。
+
 - **`atm todo handoff <id>` 把任务交给 Codex 桌面端，而不是替你跑。** 它在任务的工作目录里打开
   一个新会话、把 `todo prompt` 那行指针填进输入框，然后停下——**不按回车**。ATM 不启动 Agent、
   不占 `task_runs`、不改 Todo 状态；对话、审批和那一下回车都归 Codex，这也正是 ATM 一直写着的
@@ -31,8 +47,8 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 - **Adding a task can now polish itself.** A messy capture line is not a
   requirement. `atm todo refine [id]` runs one schema-constrained call through
-  ATM's built-in DeepSeek client, without launching an Agent or falling back to
-  `collection_model_command`, and rewrites the title plus the 需求 section.
+  ATM's built-in DeepSeek client, without launching an Agent, and rewrites the
+  title plus the 需求 section.
   The default is `deepseek-v4-flash` in non-thinking JSON mode; it reads
   `DEEPSEEK_API_KEY` from the environment. ATM.app also has a dedicated 模型
   settings tab that stores the key in `~/.atm/credentials.json` with mode 0600;
@@ -41,7 +57,11 @@ a database from a much older version. `atm backup` exists for exactly that case.
   bundles, argv, and logs, without Keychain prompts in re-signed dev builds.
   Model and endpoint overrides live behind Advanced Settings. Its 测试连接
   action uses the current drafts in a minimal schema request without saving or
-  touching a Todo; CLI users can run `atm config test-text-model`. Complex work gets
+  touching a Todo; CLI users can run `atm config test-text-model`. Refine
+  analysis now persists a configurable `from <source>` provenance label, and
+  the same settings page exposes an editable conservative refinement policy:
+  phases of one feature stay together, while independently acceptable outcomes
+  may split. ATM's schema, factuality, and prompt-injection rules stay fixed. Complex work gets
   a plan in 分析; independently trackable pieces become child todos the parent
   waits on.
   This is not an Agent loop and it never dispatches work. `in_progress` cards

@@ -43,6 +43,7 @@ struct DesktopCollectionView: View {
     @State private var itemDeletion: CollectionItemDeletion?
     @State private var historySource: ATMCollectionSource?
     @State private var showingIgnoredItems = false
+    @State private var showingCollectionSettings = false
     @State private var drawerTab = CollectionDrawerTab.records
     @State private var selectedSourceID: String?
     @AppStorage("ATMCollapsedCollectionSourceGroups") private var collapsedSourceGroupsRaw = ""
@@ -176,6 +177,18 @@ struct DesktopCollectionView: View {
                 items: [(.records, "记录"), (.sources, "来源")]
             )
             Spacer(minLength: 4)
+            ATMIconButton(
+                systemImage: "gearshape",
+                help: "收集设置",
+                chrome: .chip,
+                side: 30,
+                iconTier: .bodyLarge
+            ) {
+                showingCollectionSettings.toggle()
+            }
+            .popover(isPresented: $showingCollectionSettings, arrowEdge: .top) {
+                CollectionAutomationSettings(store: store)
+            }
             if drawerTab == .sources {
                 ATMIconButton(
                     systemImage: "plus",
@@ -825,6 +838,16 @@ private struct CollectionSourceDetail: View {
             sourceValueRow("类型", collectionKindLabel(source.kind))
             sourceValueRow("来源 ID", source.externalID, monospaced: true)
             sourceValueRow("项目", value(source.project, fallback: "未指定") ?? "未指定")
+            if let connectorHealth {
+                Divider()
+                CollectionConnectorHealthSummary(health: connectorHealth, showsName: false)
+            }
+        }
+    }
+
+    private var connectorHealth: ATMCollectionConnectorHealth? {
+        store.collectionOverview.connectorHealth.first {
+            $0.connector.caseInsensitiveCompare(source.connector) == .orderedSame
         }
     }
 
@@ -915,6 +938,152 @@ private struct CollectionSourceDetail: View {
     private func value(_ rawValue: String?, fallback: String? = nil) -> String? {
         let trimmed = (rawValue ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
+    }
+}
+
+/// Global scheduling belongs to the Collection workspace: it controls when all
+/// enabled sources are checked, while source-specific switches and rules stay on
+/// each source. Keeping this in a popover makes it available from both 记录 and 来源
+/// without recreating a second source-management screen under Settings.
+private struct CollectionAutomationSettings: View {
+    @ObservedObject var store: ATMDataStore
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Image(systemName: "tray.and.arrow.down")
+                    .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                    .foregroundStyle(ATMTheme.accent)
+                    .frame(width: 34, height: 34)
+                    .background(ATMTheme.accentFill, in: RoundedRectangle(cornerRadius: 9))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("收集设置")
+                        .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                    Text("全局调度与连接器状态")
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                Spacer()
+                Button("刷新") { store.refreshCollection() }
+                    .controlSize(.small)
+            }
+            .padding(18)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .top, spacing: 14) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("自动收集")
+                                    .font(ATMFont.font(.body, weight: .semibold))
+                                Text("ATM 常驻期间自动检查已启用来源；单个来源仍可暂停或手动收集。")
+                                    .font(ATMFont.footnote)
+                                    .foregroundStyle(ATMTheme.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 12)
+                            Toggle(
+                                "自动收集",
+                                isOn: Binding(
+                                    get: { store.collectionOverview.enabled },
+                                    set: { store.setCollectionEnabled($0) }
+                                )
+                            )
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                        }
+
+                        Stepper(
+                            "后台检查间隔：\(store.collectionOverview.intervalMinutes) 分钟",
+                            value: Binding(
+                                get: { store.collectionOverview.intervalMinutes },
+                                set: { store.setCollectionInterval($0) }
+                            ),
+                            in: 1...60
+                        )
+                        .font(ATMFont.body)
+
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            Text("分类模型")
+                                .font(ATMFont.footnote)
+                                .foregroundStyle(ATMTheme.secondary)
+                                .frame(width: 72, alignment: .leading)
+                            Text(store.collectionOverview.model)
+                                .font(ATMFont.mono(.footnote))
+                                .textSelection(.enabled)
+                            Spacer(minLength: 0)
+                        }
+                    }
+
+                    Divider()
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("连接器")
+                            .font(ATMFont.font(.body, weight: .semibold))
+                        if store.collectionOverview.connectorHealth.isEmpty {
+                            Label("尚未配置连接器", systemImage: "link.badge.plus")
+                                .font(ATMFont.footnote)
+                                .foregroundStyle(ATMTheme.secondary)
+                        } else {
+                            ForEach(store.collectionOverview.connectorHealth, id: \.connector) { health in
+                                CollectionConnectorHealthSummary(health: health)
+                                if health.connector != store.collectionOverview.connectorHealth.last?.connector {
+                                    Divider()
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(18)
+            }
+            .frame(maxHeight: 520)
+        }
+        .frame(width: 440)
+        .background(ATMTheme.elevated)
+        .onAppear { store.refreshCollection() }
+    }
+}
+
+/// The same connector truth is shown in the global collection control and on
+/// every source that uses it. That keeps status vocabulary and error handling
+/// from drifting between two screens again.
+private struct CollectionConnectorHealthSummary: View {
+    let health: ATMCollectionConnectorHealth
+    var showsName = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                if showsName {
+                    Text(health.connector)
+                        .font(ATMFont.mono(.footnote))
+                        .frame(width: 92, alignment: .leading)
+                }
+                Label(health.statusLabel, systemImage: health.statusIcon)
+                    .font(ATMFont.font(.footnote, weight: .medium))
+                    .foregroundStyle(ATMTheme.collectionHealthColor(health.status))
+                Spacer(minLength: 8)
+                Text(checkedAtLabel)
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+            if let error = health.error, !error.isEmpty {
+                Text(error)
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .padding(.leading, showsName ? 100 : 0)
+            }
+        }
+    }
+
+    private var checkedAtLabel: String {
+        guard let checkedAt = health.checkedAt else { return "等待首次收集" }
+        return "检测于 \(collectionRelativeTime(checkedAt))"
     }
 }
 
