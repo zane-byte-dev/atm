@@ -526,7 +526,7 @@ struct DesktopSearchPalette: View {
             }
             .atmRowSurface(isSelected: isSelected)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.atmRow)
     }
 
     private func emptyState(icon: String, title: String, detail: String) -> some View {

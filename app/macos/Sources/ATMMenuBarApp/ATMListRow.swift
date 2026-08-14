@@ -75,7 +75,8 @@ struct ATMDrawerDisclosureLabel: View {
 }
 
 /// 中栏标题区的双态 / 多态切换。视觉跟 macOS 的紧凑 segmented control 一致：
-/// 一块安静的底板承载所有选项，当前项用轻微抬升的实心表面表示，不再用网页式下划线。
+/// 一块安静的底板（`segmentTrack`，比 listPane 沉一档）承载所有选项，当前项用抬升的
+/// 实心表面表示，不再用网页式下划线。
 /// 固定等宽，只适合「文章 / 知识库」这类短标签；详情页长标签用 `ATMCapsuleTabs`。
 struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -94,7 +95,7 @@ struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
             // 始终是同一个实体视图，只改变横向位置。相比在两个 Button 中条件创建背景，
             // 这在 macOS 上不会被当成一次无动画的视图替换。
             RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(ATMTheme.elevated)
+                .fill(ATMTheme.rowSelected)
                 .frame(width: segmentWidth, height: segmentHeight)
                 .overlay {
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -125,14 +126,16 @@ struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
             }
         }
         .padding(2)
-        .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ATMTheme.segmentTrack, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: selectedIndex)
     }
 }
 
 /// 详情页分页：iOS 式可变宽度胶囊分段。
 ///
-/// 浅灰整条胶囊作底板，选中项是浮在上面的白胶囊（软阴影、无描边），未选中只剩灰色文案。
+/// 浅灰整条胶囊作底板（`segmentTrack`），选中项是浮在上面的白胶囊（软阴影、无描边），
+/// 未选中只剩灰色文案。底板必须自带灰度：右栏是 canvas，用系统 `controlFill` 时底板与
+/// 选中块在浅色下都是纯白，整条控件会跟背景叠成一块白，选中态只剩阴影可辨。
 /// 标签随文案伸缩，适合「执行动态」「Agent Sessions 3」这类长度不一的标题；
 /// 中栏短标签仍用固定等宽的 `ATMCompactSegmentedTabs`。
 struct ATMCapsuleTabs<Selection: Hashable>: View {
@@ -160,7 +163,7 @@ struct ATMCapsuleTabs<Selection: Hashable>: View {
                         .background {
                             if isSelected {
                                 Capsule()
-                                    .fill(ATMTheme.elevated)
+                                    .fill(ATMTheme.rowSelected)
                                     .shadow(color: .black.opacity(0.10), radius: 3, y: 1)
                                     .shadow(color: .black.opacity(0.04), radius: 0.5, y: 0)
                             }
@@ -172,17 +175,19 @@ struct ATMCapsuleTabs<Selection: Hashable>: View {
             }
         }
         .padding(3)
-        .background(ATMTheme.controlFill, in: Capsule())
+        .background(ATMTheme.segmentTrack, in: Capsule())
         .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: selection)
     }
 }
 
 /// 列表行与导航行的选中/悬停表面。
 ///
-/// 选中态**只用填充**：不描边，也不在选中时切字重。两者都会让行内文字重排——描边挤掉
-/// 一圈可用宽度，字重切换改变字形宽度——结果是点一下行标题就左右抖一下。此前五个列表面
-/// 各自实现了一遍，填充漂到 0.09–0.12 与系统原生实心 accent 四种，圆角漂到 6/7/8 且
-/// continuous 与非 continuous 混用，hover 只有两处有。行内容仍归各自的视图，这里只负责表面。
+/// 选中态**只用填充**：不描边、不投影，也不在选中时切字重。描边和字重切换都会让行内文字
+/// 重排（描边挤掉一圈可用宽度、字重改变字形宽度），结果是点一下行标题就左右抖一下；投影则
+/// 让每张选中卡在安静的中栏里浮起一层，中栏是导航抽屉而不是叠了卡片的画布，一块干净的实底
+/// 就够说明「在读这条」。此前五个列表面各自实现了一遍，填充漂到 0.09–0.12 与系统原生实心
+/// accent 四种，圆角漂到 6/7/8 且 continuous 与非 continuous 混用，hover 只有两处有。
+/// 行内容仍归各自的视图，这里只负责表面。
 enum ATMRowSurface {
     /// 中栏内容行：任务、Agent、知识、收集记录、搜索结果。
     case content
@@ -271,11 +276,6 @@ private struct ATMRowSurfaceModifier: ViewModifier {
                 alignment: .leading
             )
             .background(fill, in: RoundedRectangle(cornerRadius: surface.cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: surface.cornerRadius, style: .continuous)
-                    .stroke(selectionBorder)
-            }
-            .shadow(color: selectionShadow, radius: 9, y: 3)
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
             .animation(ATMMotion.resolved(ATMMotion.hover, reduceMotion: reduceMotion), value: isHovered)
@@ -288,20 +288,27 @@ private struct ATMRowSurfaceModifier: ViewModifier {
     private var fill: Color {
         if isSelected {
             return surface == .content
-                ? ATMTheme.elevated
+                ? ATMTheme.rowSelected
                 : ATMTheme.accent.opacity(surface.selectedFillOpacity)
         }
         if isHovered { return ATMTheme.primary.opacity(0.04) }
         return .clear
     }
+}
 
-    private var selectionBorder: Color {
-        isSelected && surface == .content ? ATMTheme.borderStrong : .clear
+/// 行按钮：点击时不给任何按下反馈。
+///
+/// macOS 的 `.plain` 会在按下期间把整个 label 调暗一档，落在中栏行上就是「点一下标题先灰
+/// 一下、松手才变选中」——行本身已经用选中表面回应了这次点击，按下态的调暗只是让文字闪一下
+/// 脏。命中区域和 hover 由 `atmRowSurface` 负责，这里只需要把 label 原样交回去。
+struct ATMRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
     }
+}
 
-    private var selectionShadow: Color {
-        isSelected && surface == .content ? Color.black.opacity(0.08) : .clear
-    }
+extension ButtonStyle where Self == ATMRowButtonStyle {
+    static var atmRow: ATMRowButtonStyle { ATMRowButtonStyle() }
 }
 
 extension View {

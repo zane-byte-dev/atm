@@ -145,13 +145,15 @@ struct DesktopAgentsView: View {
             }
 
             HStack {
-                ATMCapsuleTabs(
+                // 中栏短标签用紧凑段控，跟收集 / 知识的「记录 / 来源」「文章 / 知识库」一致；
+                // 胶囊留给右栏详情分页。
+                ATMCompactSegmentedTabs(
                     selection: $scope,
                     items: ListScope.allCases.map { (value: $0, title: $0.title) }
                 )
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 12)
+            .padding(.horizontal, 16)
             .padding(.bottom, 8)
 
             if scope == .all {
@@ -196,7 +198,7 @@ struct DesktopAgentsView: View {
                                                 isSelected: navigation.selectedAgentID == session.id
                                             )
                                         }
-                                        .buttonStyle(.plain)
+                                        .buttonStyle(.atmRow)
                                         // 行里不再逐张画来源，tooltip 兜住完整来源。
                                         .help(originLabel(session))
                                         .atmContentListRow()
@@ -281,7 +283,7 @@ struct DesktopAgentsView: View {
                                 isSelected: selectedIndexedSessionID == session.id
                             )
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.atmRow)
                         .atmContentListRow()
                     }
                     if !store.indexedSessionsReachedEnd {

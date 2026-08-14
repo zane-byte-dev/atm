@@ -72,7 +72,27 @@ func (extractor AutomaticExtractor) Extract(ctx context.Context, batch MessageBa
 	if err := validateDecision(decision); err != nil {
 		return Decision{}, err
 	}
-	return normalizeDecision(decision, batch.Source), nil
+	return normalizeDecision(borrowAppendTitle(decision, todos), batch.Source), nil
+}
+
+// borrowAppendTitle takes the target's own title when the model left an append
+// without one. An append writes only its summary, so the title is needed in two
+// places the model is not thinking about: the record ATM shows for this batch,
+// and the Todo created instead if the target turns out to be gone. Borrowing
+// costs nothing — the candidate list is already here — and beats losing a whole
+// batch over a field this decision barely uses. It is also the honest title:
+// what an append is about is the work it is appending to.
+func borrowAppendTitle(decision Decision, todos []store.Todo) Decision {
+	if decision.Action != "append" || strings.TrimSpace(decision.Title) != "" {
+		return decision
+	}
+	for _, todo := range todos {
+		if todo.ID == strings.TrimSpace(decision.RelatedTodoID) {
+			decision.Title = todo.Title
+			return decision
+		}
+	}
+	return decision
 }
 
 // runTextModel is the one seam collector tests replace, so classification and
@@ -127,7 +147,7 @@ Return exactly one JSON object matching the supplied schema.
 
 ` + strategy + `
 
-Use a concise action-oriented Chinese title. Preserve the actual goal in summary. Never invent a repository project; use the source project only when clearly applicable. Confidence is 0..1.
+Use a concise action-oriented Chinese title for every action except ignore. An append needs one too, naming the work being added to: ATM shows it on this batch's own record, and uses it if the target Todo turns out to be closed. Preserve the actual goal in summary. Never invent a repository project; use the source project only when clearly applicable. Confidence is 0..1.
 When markers are present, lines marked [新消息] are the only lines allowed to trigger a decision. Lines marked [上下文] were already processed and exist only to resolve references and preserve continuity. If no markers are present, every chat line is eligible (this is an explicit on-demand analysis).
 
 Source name: ` + batch.Source.Name + `
@@ -217,7 +237,12 @@ func validateDecision(decision Decision) error {
 	default:
 		return fmt.Errorf("collection model returned unsupported action %q", decision.Action)
 	}
-	if decision.Action != "ignore" && strings.TrimSpace(decision.Title) == "" {
+	// A create or an insight is nothing without a title: one becomes a Todo, the
+	// other a knowledge note, and both are read later by their title alone. An
+	// append is deliberately not held to this — borrowAppendTitle can take the
+	// target's, and only the create fallback in applyDecision genuinely needs one.
+	if (decision.Action == "create" || decision.Action == "insight") &&
+		strings.TrimSpace(decision.Title) == "" {
 		return fmt.Errorf("collection model returned %s without a title", decision.Action)
 	}
 	// A digest is built from titles and summaries alone — it never re-reads the

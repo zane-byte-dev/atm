@@ -32,6 +32,11 @@ a database from a much older version. `atm backup` exists for exactly that case.
   所以 `validateDecision` 现在是答案和 Todo 列表之间唯一的关卡，它跑在 normalize 之前，
   免得把一个不支持的 action 规整成一个支持的。`atm doctor` 的 `collection_model_unavailable`
   从「CLI 没装」改为「采集已启用但没有 Key」，仍然离线判断，不花模型调用。
+  切换后第一天真实跑出的第一个分歧是 append 带空标题——旧的 `--output-schema` 同样管不了它，
+  `required` 接受 `""`，差别只在模型对 prompt 的遵从度。所以：prompt 明确 append 也要标题；
+  校验只对 create/insight 强制标题；append 缺标题时**借目标 Todo 自己的标题**（候选列表里已经有了，
+  零额外读取）。唯一还会硬失败的是「目标在分类时就已经不活跃、因而借不到标题、又要回退成建 Todo」，
+  因为无标题的 Todo 比一次重试更糟。
 
 - **`atm todo handoff <id>` 把任务交给 Codex 桌面端，而不是替你跑。** 它在任务的工作目录里打开
   一个新会话、把 `todo prompt` 那行指针填进输入框，然后停下——**不按回车**。ATM 不启动 Agent、

@@ -161,7 +161,7 @@ struct DesktopSettingsView: View {
                     } label: {
                         settingsSidebarRow(tab)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.atmRow)
                 }
             }
             .padding(8)

@@ -585,6 +585,14 @@ func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decis
 		// trying to avoid, but it is still better than marking the batch handled
 		// with nothing written anywhere.
 		if todoID == "" {
+			// The only place an append's title is unavoidable. It is normally the
+			// target's own, borrowed at classification time, but a target that was
+			// already inactive then was never in the candidate list to borrow from.
+			// An untitled Todo is worse than a retry.
+			if strings.TrimSpace(decision.Title) == "" {
+				return item, fmt.Errorf("collection model returned append without a title and target %s is not active",
+					decision.RelatedTodoID)
+			}
 			todoID, err = createDecision(batch, decision)
 			if err != nil {
 				return item, err

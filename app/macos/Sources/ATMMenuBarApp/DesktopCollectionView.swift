@@ -300,7 +300,7 @@ struct DesktopCollectionView: View {
             .atmRowSurface(isSelected: selected)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.atmRow)
         .help("查看来源配置")
         .atmRightClickMenu {
             ATMMenuItem("查看聊天记录") { historySource = source }
@@ -514,7 +514,7 @@ struct DesktopCollectionView: View {
             CollectionItemRow(item: item)
                 .atmRowSurface(isSelected: selected)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.atmRow)
         .focusable(false)
         .atmContentListRow()
         // 右键只放导航和删除。重新处理、修正、撤销这些要看记录状态才知道能不能做，
@@ -2119,7 +2119,7 @@ private struct CollectionSourceEditor: View {
             }
             .atmRowSurface(isSelected: identity.selection == candidate)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.atmRow)
     }
 
     /// What the connector resolved, kept on screen after picking: the ID that

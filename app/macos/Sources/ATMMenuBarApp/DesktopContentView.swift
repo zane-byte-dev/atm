@@ -1235,7 +1235,7 @@ private struct DesktopTasksView: View {
                                         isSelected: navigation.selectedTodoID == todo.id
                                     )
                                 }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.atmRow)
                                     .focusable(false)
                                     .atmContentListRow()
                                     .atmRightClickMenu { todoMenuEntries(for: todo) }
@@ -3241,15 +3241,13 @@ private struct DesktopUsageContent: View, Equatable {
         }
     }
 
+    /// 右栏的页面分页，跟任务 / Agent / 收集详情共用胶囊分段，不用系统 segmented control：
+    /// 后者在这里是自成一路的第三种 tab 样式，而且定宽 260 会把两个短标签撑得过散。
     private var usagePagePicker: some View {
-        Picker("用量页面", selection: $pageTab) {
-            ForEach(ATMUsagePageTab.allCases) { tab in
-                Text(tab.title).tag(tab)
-            }
-        }
-        .labelsHidden()
-        .pickerStyle(.segmented)
-        .frame(width: 260)
+        ATMCapsuleTabs(
+            selection: $pageTab,
+            items: ATMUsagePageTab.allCases.map { (value: $0, title: $0.title) }
+        )
         .accessibilityLabel("用量页面")
     }
 

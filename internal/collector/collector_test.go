@@ -421,6 +421,47 @@ func TestServiceRefusesToAppendOutsideTheConversationThatFiledTheTodo(t *testing
 	}
 }
 
+// A target that was already closed at classification time was never in the
+// candidate list, so there was no title to borrow. The batch then falls back to
+// creating a Todo — and an untitled Todo in somebody's list is worse than a
+// failed record that retries.
+func TestServiceRefusesToFileAnUntitledTodoWhenAnAppendTargetIsGone(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{{ID: "t9", Title: "已经完成的任务", Priority: "P1",
+			Status: store.TodoStatusDone, Project: "atm", Created: store.Today()}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m2", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 11_000, Content: "那个已经完成的事还有个后续"}}, newest: 11_000}
+	extractor := &fakeExtractor{decision: Decision{Action: "append", Title: "",
+		Summary: "还有个后续", ItemType: "follow_up", Project: "atm", Priority: "P1",
+		RelatedTodoID: "t9", Reason: "自称与 t9 有关", Confidence: 0.9}}
+	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	// The source's run fails, which is how the checkpoint stays put and the batch
+	// comes back next time.
+	report, err := service.Run(context.Background(), source.ID)
+	if err == nil || !strings.Contains(err.Error(), "without a title") {
+		t.Fatalf("untitled create was not refused: err=%v", err)
+	}
+	if report.Runs[0].CreatedCount != 0 || report.Runs[0].FailedCount != 1 {
+		t.Fatalf("run counters=%+v", report.Runs[0])
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 {
+		t.Fatalf("an untitled Todo reached the list: %+v", todos.Items)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 || items[0].Status != "failed" || !strings.Contains(items[0].Error, "without a title") {
+		t.Fatalf("record does not explain the refusal: %+v", items)
+	}
+}
+
 func TestServiceDoesNotRegroupHandledMessagesWhenConversationExpands(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
@@ -1160,6 +1201,20 @@ func TestValidateDecisionRequiresAnAppendTargetAndPayload(t *testing.T) {
 	if err := validateDecision(complete); err != nil {
 		t.Fatalf("complete append rejected: %v", err)
 	}
+	// An append writes its summary into a card that already has a title, so the
+	// model leaving one out is not a reason to lose the batch.
+	noTitle := complete
+	noTitle.Title = " "
+	if err := validateDecision(noTitle); err != nil {
+		t.Fatalf("titleless append rejected: %v", err)
+	}
+	// A create and an insight are read later by their title alone.
+	for _, action := range []string{"create", "insight"} {
+		untitled := Decision{Action: action, Summary: "有内容但没标题", RelatedTodoID: "t210"}
+		if err := validateDecision(untitled); err == nil {
+			t.Fatalf("untitled %s accepted", action)
+		}
+	}
 	noTarget := complete
 	noTarget.RelatedTodoID = ""
 	if err := validateDecision(noTarget); err == nil {
@@ -1253,6 +1308,26 @@ func TestAutomaticExtractorRejectsAnswersOutsideTheSchema(t *testing.T) {
 		if _, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, nil); err == nil {
 			t.Fatalf("%s was accepted", name)
 		}
+	}
+}
+
+// The first real DeepSeek classification produced exactly this: a correct append
+// with an empty title, which the old CLI schema would also have allowed —
+// `required` accepts "". The target's own title is the answer, and it is already
+// in the candidate list the classifier was given.
+func TestAutomaticExtractorBorrowsTheTargetTitleForATitlelessAppend(t *testing.T) {
+	stubTextModel(t, func(string, string) (string, error) {
+		return `{"action":"append","title":"","summary":"重跑后通过了","item_type":"follow_up","project":"atm","priority":"P1","related_todo_id":"t9","reason":"同一件事的新进展","confidence":0.9}`, nil
+	})
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-08-14 [测试发送人] 那个发布检查重跑后过了"}
+	candidates := []store.Todo{{ID: "t9", Title: "修复发布检查失败", Status: store.TodoStatusOpen}}
+	decision, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, candidates)
+	if err != nil {
+		t.Fatalf("titleless append failed: %v", err)
+	}
+	if decision.Action != "append" || decision.Title != "修复发布检查失败" || decision.RelatedTodoID != "t9" {
+		t.Fatalf("decision=%+v", decision)
 	}
 }
 

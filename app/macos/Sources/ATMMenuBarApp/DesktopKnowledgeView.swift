@@ -428,7 +428,7 @@ struct DesktopKnowledgeView: View {
             .atmRowSurface(isSelected: isSelected)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.atmRow)
         .atmRightClickMenu {
             knowledgeLibraryManagementMenuEntries(collection)
         }
@@ -746,7 +746,7 @@ struct DesktopKnowledgeView: View {
             }
             .atmRowSurface(isSelected: selected)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.atmRow)
         .atmRightClickMenu { knowledgeMenuEntries(for: item) }
     }
 
