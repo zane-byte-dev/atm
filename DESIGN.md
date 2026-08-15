@@ -3,8 +3,9 @@
 这里只写**代码里读不出来的东西**：意图、边界和非目标。
 
 不写已实现功能清单、数据模型表或架构图 —— 那些的真相在代码里（schema 见
-[`internal/store/schema.go`](internal/store/schema.go)，命令面见 `atm --help` 和
-[README](README.md)），手抄一份只会腐烂并开始说假话。
+[`internal/store/schema.go`](internal/store/schema.go)，命令面见 `atm <命令> --help`），
+手抄一份只会腐烂并开始说假话。行为细节——状态怎么流转、失败时会发生什么、数据存在哪儿——
+写在 [`docs/internals.md`](docs/internals.md)。
 
 ## 定位
 
@@ -54,7 +55,8 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
   人点下完成时验收已经发生。删掉这个状态等于让 Agent 自己宣布完成。
 - **Session 镜像不主动清理**（2026-08-05 决定）：索引只增不减，没有保留期，没有后台 compaction。
   理由是它的存在意义就是比 Agent 自己的日志活得更久 —— Claude Code 三十天就清 `~/.claude/projects`，
-  而 ATM 承诺 `atm stats --days 90` 的历史不会自己缩水（见 README「数据源」）。任何自动清理都在
+  而 ATM 承诺 `atm stats --days 90` 的历史不会自己缩水（见
+  [`docs/internals.md` 的保留策略](docs/internals.md#保留策略)）。任何自动清理都在
   削弱这个承诺，而且「哪条会话不再需要」只有人知道：一条三个月前的会话可能是某个决定的唯一记录。
   库因此单调增长，这是有意接受的成本 —— 单用户单机的量级下，磁盘比丢失的历史便宜。
   现有的显式手段是 `atm session forget <id>`，一次一条，且源文件还在时会直接拒绝。
