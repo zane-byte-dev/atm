@@ -26,6 +26,7 @@ final class ATMShortcutCatalogTests: XCTestCase {
             "save-knowledge": "⌘S",
             "submit-form": "⌘↩",
             "cancel": "⎋",
+            "section": "⌘1–⌘6",
             "back": "⌘[",
             "forward": "⌘]",
             "minimize": "⌘M",

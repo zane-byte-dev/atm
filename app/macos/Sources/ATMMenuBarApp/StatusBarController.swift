@@ -65,6 +65,15 @@ final class StatusBarController {
         desktopWindow?.isVisible == true && desktopNavigation.canGoForward
     }
 
+    /// 主菜单「前往 → 任务 / 收集 / …」(⌘1–⌘6)。跟侧栏按钮走同一套副作用，
+    /// 否则用快捷键切到知识页会停在上一次的目录快照上。
+    func selectSection(_ section: ATMDesktopSection) {
+        openDesktop(section: section)
+        if section == .knowledge {
+            store.refreshKnowledgeCatalog()
+        }
+    }
+
     func navigateBack() {
         guard canNavigateBack else { return }
         desktopNavigation.goBack()

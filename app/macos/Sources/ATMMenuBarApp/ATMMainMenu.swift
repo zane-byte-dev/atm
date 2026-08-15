@@ -73,11 +73,24 @@ enum ATMMainMenu {
     /// Browser-style history shortcuts. These live in the main menu so they
     /// continue to work while a text field or Markdown editor owns focus; the
     /// app delegate validates each item against the live navigation stacks.
+    ///
+    /// 分区切换（⌘1–⌘6）同理归菜单：侧栏那五个按钮此前只能点，没有键盘入口，而分区
+    /// 是这个 App 里跳得最频繁的一层。顺序跟侧栏一致（设置在最后，它在侧栏底部）。
+    /// `tag` 带的是 `ATMDesktopSection.allCases` 的下标，由 app delegate 转回分区。
     private static func navigationItems() -> [NSMenuItem] {
-        [
-            item("后退", #selector(AppDelegate.navigateBackFromMenu(_:)), "["),
-            item("前进", #selector(AppDelegate.navigateForwardFromMenu(_:)), "]"),
-        ]
+        var items = ATMDesktopSection.allCases.enumerated().map { index, section in
+            let entry = item(
+                section.title,
+                #selector(AppDelegate.selectSectionFromMenu(_:)),
+                String(index + 1)
+            )
+            entry.tag = index
+            return entry
+        }
+        items.append(.separator())
+        items.append(item("后退", #selector(AppDelegate.navigateBackFromMenu(_:)), "["))
+        items.append(item("前进", #selector(AppDelegate.navigateForwardFromMenu(_:)), "]"))
+        return items
     }
 
     private static func windowItems() -> [NSMenuItem] {
