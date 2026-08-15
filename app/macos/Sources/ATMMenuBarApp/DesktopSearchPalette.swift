@@ -376,7 +376,12 @@ struct DesktopSearchPalette: View {
     @ViewBuilder
     private var content: some View {
         if trimmedQuery.isEmpty {
-            emptyState(icon: "magnifyingglass", title: "搜索 ATM", detail: "输入关键词查找任务、会话、知识与记忆")
+            ATMEmptyState(
+                icon: "magnifyingglass",
+                title: "搜索 ATM",
+                detail: "输入关键词查找任务、会话、知识与记忆",
+                size: .inline
+            )
         } else if isSearching, !hasResults {
             VStack(spacing: 8) {
                 ProgressView()
@@ -387,9 +392,24 @@ struct DesktopSearchPalette: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let searchErrorMessage, !hasResults && !isSearching {
-            searchFailureState(searchErrorMessage)
+            ATMEmptyState(
+                icon: "exclamationmark.triangle",
+                title: "部分搜索服务不可用",
+                detail: searchErrorMessage,
+                size: .inline,
+                isWarning: true,
+                detailLineLimit: 3,
+                actionTitle: "重试"
+            ) {
+                Task { await runSearch() }
+            }
         } else if !hasResults && !isSearching {
-            emptyState(icon: "questionmark.circle", title: "没有匹配结果", detail: "没有足够相关的内容，试试更短或更具体的关键词")
+            ATMEmptyState(
+                icon: "questionmark.circle",
+                title: "没有匹配结果",
+                detail: "没有足够相关的内容，试试更短或更具体的关键词",
+                size: .inline
+            )
         } else {
             ScrollViewReader { proxy in
                 ScrollView {
@@ -527,43 +547,6 @@ struct DesktopSearchPalette: View {
             .atmRowSurface(isSelected: isSelected)
         }
         .buttonStyle(.atmRow)
-    }
-
-    private func emptyState(icon: String, title: String, detail: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(ATMFont.font(.metric, weight: .light))
-                .foregroundStyle(ATMTheme.secondary)
-            Text(title)
-                .font(ATMFont.font(.bodyLarge, weight: .semibold))
-            Text(detail)
-                .font(ATMFont.body)
-                .foregroundStyle(ATMTheme.secondary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    private func searchFailureState(_ detail: String) -> some View {
-        VStack(spacing: 9) {
-            Image(systemName: "exclamationmark.triangle")
-                .font(ATMFont.font(.metric, weight: .light))
-                .foregroundStyle(ATMTheme.warning)
-            Text("部分搜索服务不可用")
-                .font(ATMFont.font(.bodyLarge, weight: .semibold))
-            Text(detail)
-                .font(ATMFont.footnote)
-                .foregroundStyle(ATMTheme.secondary)
-                .multilineTextAlignment(.center)
-                .lineLimit(3)
-            Button("重试") {
-                Task { await runSearch() }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func searchWarning(_ detail: String) -> some View {

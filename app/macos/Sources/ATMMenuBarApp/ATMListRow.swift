@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// 任务、收集和 Agent 共用的中栏标题。三者都是同一种「导航抽屉」，标题区不应该
-/// 因为业务不同而各自长出卡片、分隔线或额外的副标题层级。
+/// 任务栏的中栏标题。只有标题本身承载状态（任务 / 回收站）、尾部挂着真操作的抽屉才配
+/// 这一层——纯复读左侧栏选中项的标题一律不画，收集 / 知识 / Agent 都直接从段控起头。
 struct ATMDrawerHeader<Trailing: View>: View {
     let title: String
     let count: Int
@@ -14,22 +14,30 @@ struct ATMDrawerHeader<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(alignment: .firstTextBaseline, spacing: 7) {
-                    Text(title)
-                        .font(ATMFont.font(.title2, weight: .semibold))
-                    Text(String(count))
-                        .font(ATMFont.mono(.footnote, .semibold))
-                        .foregroundStyle(ATMTheme.secondary)
-                }
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 7) {
+                Text(title)
+                    .font(ATMFont.font(.title2, weight: .semibold))
+                Text(String(count))
+                    .font(ATMFont.mono(.footnote, .semibold))
+                    .foregroundStyle(ATMTheme.secondary)
             }
             Spacer()
             trailing
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 18)
-        .padding(.bottom, 14)
+        .atmDrawerHeaderRow()
+    }
+}
+
+extension View {
+    /// 中栏头部的统一外框：左右 16pt，纵向居中于 `drawerHeaderHeight`。
+    ///
+    /// 任务用大标题、收集 / 知识 / Agent 用段控，但四者都是同一条「中栏第一行」——
+    /// 高度和纵向居中必须一致，否则切页时下面的列表会整体上下平移。内容各自决定，
+    /// 这里只负责这一条带子本身。
+    func atmDrawerHeaderRow() -> some View {
+        padding(.horizontal, ATMDesktopLayout.drawerHeaderHorizontalPadding)
+            .frame(height: ATMDesktopLayout.drawerHeaderHeight)
     }
 }
 

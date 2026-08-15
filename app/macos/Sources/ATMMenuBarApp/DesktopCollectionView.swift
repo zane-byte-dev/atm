@@ -100,7 +100,6 @@ struct DesktopCollectionView: View {
         ) {
             VStack(spacing: 0) {
                 collectionDrawerTabs
-                Divider()
                 workspaceErrorBanner
                 Group {
                     if drawerTab == .records {
@@ -180,7 +179,7 @@ struct DesktopCollectionView: View {
             ATMIconButton(
                 systemImage: "gearshape",
                 help: "收集设置",
-                chrome: .chip,
+                chrome: .bare,
                 side: 30,
                 iconTier: .bodyLarge
             ) {
@@ -201,9 +200,7 @@ struct DesktopCollectionView: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .frame(height: 64)
+        .atmDrawerHeaderRow()
     }
 
     /// 采集失败有来源可归属，右栏的“采集状态”卡片已经说了；但添加/删除来源、
@@ -234,9 +231,9 @@ struct DesktopCollectionView: View {
     private var sourceManagementColumn: some View {
         Group {
             if store.collectionOverview.sources.isEmpty {
-                CollectionEmptyState(
+                ATMEmptyState(
+                    icon: "tray.2",
                     title: "还没有收集来源",
-                    systemImage: "tray.2",
                     detail: "点击右上角添加来源，ATM 会按设定周期自动收集。"
                 )
             } else {
@@ -316,9 +313,9 @@ struct DesktopCollectionView: View {
     private var itemColumn: some View {
         VStack(spacing: 0) {
             if filteredItems.isEmpty {
-                CollectionEmptyState(
+                ATMEmptyState(
+                    icon: "tray",
                     title: "暂无处理记录",
-                    systemImage: "tray",
                     detail: "添加来源后，ATM 会在后台自动收集。"
                 )
             } else {
@@ -548,9 +545,9 @@ struct DesktopCollectionView: View {
                 onDelete: { deleteCandidate = source }
             )
         } else if drawerTab == .sources {
-            CollectionEmptyState(
+            ATMEmptyState(
+                icon: "tray.2",
                 title: "还没有收集来源",
-                systemImage: "tray.2",
                 detail: "在中栏点击添加来源后，这里会显示它的配置。"
             )
         } else if let item = selectedItem {
@@ -562,9 +559,9 @@ struct DesktopCollectionView: View {
                 openTodo(item)
             }
         } else {
-            CollectionEmptyState(
-                title: "选择一条处理记录",
-                systemImage: "doc.text.magnifyingglass"
+            ATMEmptyState(
+                icon: "doc.text.magnifyingglass",
+                title: "选择一条处理记录"
             )
         }
     }
@@ -692,8 +689,10 @@ private struct CollectionSourceDetail: View {
                     )
 
                 VStack(alignment: .leading, spacing: 4) {
+                    // 字号字重跟 `ATMDetailHeader` 对齐。这一块不套那个壳：它是头像领衔的
+                    // 身份卡（40pt 图标在标题左边），结构本来就不是「眉标 / 标题 / 状态」三层。
                     Text(source.displayName)
-                        .font(ATMFont.font(.title2, weight: .bold))
+                        .font(ATMFont.font(.title2, weight: .semibold))
                         .lineLimit(1)
                     Label(sourceStatusText, systemImage: sourceStatusIcon)
                         .font(ATMFont.caption)
@@ -757,9 +756,9 @@ private struct CollectionSourceDetail: View {
                 .help(source.enabled ? "只收集这个来源" : "先启用这个来源")
             }
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
         .padding(.vertical, 18)
-        .background(ATMTheme.surface)
+        .background(ATMTheme.elevated)
     }
 
     private var sourceStatusText: String {
@@ -1087,30 +1086,6 @@ private struct CollectionConnectorHealthSummary: View {
     }
 }
 
-private struct CollectionEmptyState: View {
-    let title: String
-    let systemImage: String
-    var detail: String? = nil
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(ATMFont.font(.display, weight: .light))
-                .foregroundStyle(ATMTheme.secondary)
-            Text(title)
-                .font(ATMFont.font(.body, weight: .semibold))
-            if let detail {
-                Text(detail)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
 private struct CollectionItemRow: View {
     let item: ATMCollectionItem
 
@@ -1291,92 +1266,85 @@ private struct CollectionItemDetail: View {
     }
 
     private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 6) {
-                Label(
-                    collectionActionTitle(item.action, retryStopped: retryStopped),
-                    systemImage: collectionActionIcon(item.action, retryStopped: retryStopped)
-                )
-                .font(ATMFont.footnote)
-                .foregroundStyle(collectionActionColor(item.action, retryStopped: retryStopped))
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(
-                    collectionActionColor(item.action, retryStopped: retryStopped).opacity(0.10),
-                    in: Capsule()
-                )
-                Text(item.title?.isEmpty == false ? item.title! : "未生成标题")
-                    .font(ATMFont.font(.title3, weight: .bold))
-                    .textSelection(.enabled)
-                Button {
-                    copyCollectionItemID(item.id)
-                    copiedID = true
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("记录 ID")
-                        Text(item.id)
-                            .font(ATMFont.mono(.caption, .medium))
-                            .textSelection(.enabled)
-                        Image(systemName: copiedID ? "checkmark" : "doc.on.doc")
-                    }
-                    .font(ATMFont.caption)
-                    .foregroundStyle(copiedID ? ATMTheme.success : ATMTheme.secondary)
+        ATMDetailHeader(title: item.title?.isEmpty == false ? item.title! : "未生成标题") {
+            Label(
+                collectionActionTitle(item.action, retryStopped: retryStopped),
+                systemImage: collectionActionIcon(item.action, retryStopped: retryStopped)
+            )
+            .font(ATMFont.footnote)
+            .foregroundStyle(collectionActionColor(item.action, retryStopped: retryStopped))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                collectionActionColor(item.action, retryStopped: retryStopped).opacity(0.10),
+                in: Capsule()
+            )
+        } actions: {
+            HStack(spacing: 8) {
+                if item.todoID != nil {
+                    Button("打开 Todo", action: openTodo)
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                 }
-                .buttonStyle(.plain)
-                .help(copiedID ? "已复制" : "复制记录 ID")
-                .accessibilityLabel(copiedID ? "已复制记录 ID \(item.id)" : "复制记录 ID \(item.id)")
-            }
-            Spacer()
-            if item.todoID != nil {
-                Button("打开 Todo", action: openTodo)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-            if item.action == "ignore" {
-                Button("转成 Todo") { store.promoteCollectionItem(item) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-            // 撤销过的 item 状态回落成 `processed`（见 collector 的 revert），它的消息
-            // 因此进了 handled 名单、再也不会被自动重新收集——这个按钮是它唯一的回头路，
-            // 所以留在主位。重试已停止的失败项同理：不点它就真的没有下一轮了。还在预算
-            // 内的失败正相反，下一轮自己会重来，于是降级进菜单，只服务「刚修好连接器、
-            // 不想等下一轮」这种情况。
-            if item.action == "reverted" {
-                Button("重新处理") { store.reprocessCollectionItem(item) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            } else if retryStopped {
-                Button("重试") { store.reprocessCollectionItem(item) }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
-            // 其余条目要看状态才知道能不能做，删除对任何一条记录都成立，所以
-            // 菜单不再需要「有没有动作」那道门——它永远至少有一项。
-            Menu {
                 if item.action == "ignore" {
-                    Button("重新判断") { store.reprocessCollectionItem(item) }
+                    Button("转成 Todo") { store.promoteCollectionItem(item) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                 }
-                if item.action == "failed", !retryStopped {
-                    Button("立即重试") { store.reprocessCollectionItem(item) }
+                // 撤销过的 item 状态回落成 `processed`（见 collector 的 revert），它的消息
+                // 因此进了 handled 名单、再也不会被自动重新收集——这个按钮是它唯一的回头路，
+                // 所以留在主位。重试已停止的失败项同理：不点它就真的没有下一轮了。还在预算
+                // 内的失败正相反，下一轮自己会重来，于是降级进菜单，只服务「刚修好连接器、
+                // 不想等下一轮」这种情况。
+                if item.action == "reverted" {
+                    Button("重新处理") { store.reprocessCollectionItem(item) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                } else if retryStopped {
+                    Button("重试") { store.reprocessCollectionItem(item) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                 }
-                if canAmendTodoWrite {
-                    Button("修正标题、项目和优先级") { showingCorrection = true }
-                    Button("撤销自动处理", role: .destructive) { confirmingRevert = true }
-                    Divider()
+                // 其余条目要看状态才知道能不能做，删除对任何一条记录都成立，所以
+                // 菜单不再需要「有没有动作」那道门——它永远至少有一项。
+                Menu {
+                    if item.action == "ignore" {
+                        Button("重新判断") { store.reprocessCollectionItem(item) }
+                    }
+                    if item.action == "failed", !retryStopped {
+                        Button("立即重试") { store.reprocessCollectionItem(item) }
+                    }
+                    if canAmendTodoWrite {
+                        Button("修正标题、项目和优先级") { showingCorrection = true }
+                        Button("撤销自动处理", role: .destructive) { confirmingRevert = true }
+                        Divider()
+                    }
+                    Button("删除记录", role: .destructive) { confirmingDelete = true }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
                 }
-                Button("删除记录", role: .destructive) { confirmingDelete = true }
-            } label: {
-                Image(systemName: "ellipsis.circle")
+                .menuStyle(.borderlessButton)
+                .fixedSize()
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
+        } meta: {
+            Button {
+                copyCollectionItemID(item.id)
+                copiedID = true
+            } label: {
+                HStack(spacing: 6) {
+                    Text("记录 ID")
+                    Text(item.id)
+                        .font(ATMFont.mono(.caption, .medium))
+                        .textSelection(.enabled)
+                    Image(systemName: copiedID ? "checkmark" : "doc.on.doc")
+                }
+                .font(ATMFont.caption)
+                .foregroundStyle(copiedID ? ATMTheme.success : ATMTheme.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(copiedID ? "已复制" : "复制记录 ID")
+            .accessibilityLabel(copiedID ? "已复制记录 ID \(item.id)" : "复制记录 ID \(item.id)")
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 17)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated)
     }
 
     private var sourceSummary: some View {

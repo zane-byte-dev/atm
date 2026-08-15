@@ -134,16 +134,8 @@ struct DesktopAgentsView: View {
 
     private var agentList: some View {
         VStack(spacing: 0) {
-            ATMDrawerHeader(
-                title: "Agent",
-                count: scope == .live ? sessions.count : store.indexedSessions.count
-            ) {
-                Circle()
-                    .fill(sessions.contains(where: { $0.presenceState == .attention }) ? ATMTheme.warning : ATMTheme.success)
-                    .frame(width: 8, height: 8)
-                    .help(activeAgentSummary)
-            }
-
+            // 没有中栏大标题：左侧栏的高亮已经说了这是 Agent，分组标题也已经带了各自的
+            // 计数和状态色，跟收集 / 知识一样直接从范围段控起头。
             HStack {
                 // 中栏短标签用紧凑段控，跟收集 / 知识的「记录 / 来源」「文章 / 知识库」一致；
                 // 胶囊留给右栏详情分页。
@@ -153,8 +145,7 @@ struct DesktopAgentsView: View {
                 )
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
+            .atmDrawerHeaderRow()
 
             if scope == .all {
                 indexedList
@@ -168,18 +159,11 @@ struct DesktopAgentsView: View {
     private var liveList: some View {
         VStack(spacing: 0) {
             if sessions.isEmpty {
-                VStack(spacing: 9) {
-                    Image(systemName: "cpu")
-                        .font(ATMFont.font(.display, weight: .light))
-                    Text("当前没有活跃 Agent")
-                        .font(ATMFont.font(.bodyLarge, weight: .medium))
-                    Text("ATM 会在检测到新的 Agent 会话活动后自动显示。")
-                        .font(ATMFont.footnote)
-                        .multilineTextAlignment(.center)
-                }
-                .foregroundStyle(ATMTheme.secondary)
-                .padding(28)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ATMEmptyState(
+                    icon: "cpu",
+                    title: "当前没有活跃 Agent",
+                    detail: "ATM 会在检测到新的 Agent 会话活动后自动显示。"
+                )
             } else {
                 List {
                     ForEach(ATMAgentPresenceState.allCases) { state in
@@ -260,18 +244,11 @@ struct DesktopAgentsView: View {
                 .padding(8)
             }
             if store.indexedSessions.isEmpty {
-                VStack(spacing: 9) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(ATMFont.font(.display, weight: .light))
-                    Text(store.isLoadingIndexedSessions ? "读取会话索引…" : "索引里还没有会话")
-                        .font(ATMFont.font(.bodyLarge, weight: .medium))
-                    Text("同步过的 Agent 会话都会出现在这里，包括早已结束的。")
-                        .font(ATMFont.footnote)
-                        .multilineTextAlignment(.center)
-                }
-                .foregroundStyle(ATMTheme.secondary)
-                .padding(28)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                ATMEmptyState(
+                    icon: "clock.arrow.circlepath",
+                    title: store.isLoadingIndexedSessions ? "读取会话索引…" : "索引里还没有会话",
+                    detail: "同步过的 Agent 会话都会出现在这里，包括早已结束的。"
+                )
             } else {
                 List {
                     ForEach(store.indexedSessions) { session in
@@ -330,37 +307,7 @@ struct DesktopAgentsView: View {
         collapsedGroupsRaw = set.sorted().joined(separator: ",")
     }
 
-    private var activeAgentSummary: String {
-        let active = sessions.filter(\.isCurrentlyActive)
-        var parts = [
-            active.isEmpty
-                ? "最近 10 分钟有 \(sessions.count) 个可见会话"
-                : "\(active.count) 个会话正在活跃"
-        ]
-        if let origin = dominantOrigin {
-            parts.append(isOriginUniform ? origin : "\(origin) 等")
-        }
-        return parts.joined(separator: " · ")
-    }
-
-    /// 栏内最常见的来源。这一句是列表的「默认来源」，行里只画偏离它的那些——
-    /// 单项目单客户端时（最常见的情况）`Codex Desktop · atm` 本来会在每张卡的
-    /// 首行、最抢眼的位置复读一遍，而它恰恰是各行之间唯一不变的东西。
-    private var dominantOrigin: String? {
-        var counts: [String: Int] = [:]
-        for session in sessions {
-            counts[originLabel(session), default: 0] += 1
-        }
-        // 计数相同时按字典序定序，免得来源标签随轮询顺序跳动。
-        return counts.max { lhs, rhs in
-            lhs.value == rhs.value ? lhs.key > rhs.key : lhs.value < rhs.value
-        }?.key
-    }
-
-    private var isOriginUniform: Bool {
-        Set(sessions.map(originLabel)).count <= 1
-    }
-
+    /// 行里不画来源（单项目单客户端时它是各行唯一不变的东西），完整来源只挂 tooltip。
     private func originLabel(_ session: ATMLiveSession) -> String {
         let client = ATMAgentDisplay.clientName(session)
         let project = ATMAgentDisplay.projectName(session)
@@ -576,23 +523,11 @@ private struct DesktopAgentPresenceDetail: View {
     }
 
     private var detailHeader: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    headerIdentity
-                    Spacer(minLength: 8)
-                    headerActions
-                }
-                VStack(alignment: .leading, spacing: 9) {
-                    headerIdentity
-                    headerActions
-                }
-            }
-
-            Text(session.presenceTitle)
-                .font(ATMFont.font(.title2, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
-
+        ATMDetailHeader(title: session.presenceTitle) {
+            headerIdentity
+        } actions: {
+            headerActions
+        } meta: {
             HStack(spacing: 6) {
                 Circle()
                     .fill(session.presenceState.tint)
@@ -602,10 +537,6 @@ private struct DesktopAgentPresenceDetail: View {
                     .foregroundStyle(session.presenceState.tint)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.surface)
         .onChange(of: session.id) { _ in copied = false }
     }
 

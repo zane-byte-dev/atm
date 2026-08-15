@@ -7,10 +7,13 @@ import SwiftUI
 /// view owns the hover fill, tooltip, and accessibility label so every action
 /// chip stays consistent.
 struct ATMIconButton: View {
+    /// 按**动作性质**选，不按页面选：此前同一个「更多操作」溢出菜单在任务页是常驻实底、
+    /// 在收集 / 知识 / 快捷面板是 hover 才出底，同一个齿轮设置图标又比旁边的刷新多一圈底。
     enum Chrome {
-        /// Always shows a control-fill chip (detail toolbar, quick-panel actions).
+        /// 常驻实底。只给「新建 / 添加」这类创建主操作——它需要在一排安静的工具图标里
+        /// 自带重量。
         case chip
-        /// Transparent until hover (list/toolbars with sparse icons).
+        /// hover 才出底。其余全部：刷新、设置、复制、编辑，以及 `…` 溢出菜单。
         case bare
     }
 

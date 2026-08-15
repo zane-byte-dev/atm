@@ -271,9 +271,6 @@ struct DesktopKnowledgeView: View {
     private var itemList: some View {
         VStack(spacing: 0) {
             knowledgeDrawerTabs
-
-            Divider()
-
             Group {
                 if drawerTab == .articles {
                     articleGroups
@@ -336,9 +333,7 @@ struct DesktopKnowledgeView: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .frame(height: 64)
+        .atmDrawerHeaderRow()
     }
 
     private var articleGroups: some View {
@@ -379,9 +374,9 @@ struct DesktopKnowledgeView: View {
     private var knowledgeLibraryList: some View {
         Group {
             if store.isKnowledgeCatalogLoading && sortedKnowledgeCollections.isEmpty {
-                knowledgeState(icon: "hourglass", title: "正在读取知识库")
+                ATMEmptyState(icon: "hourglass", title: "正在读取知识库")
             } else if sortedKnowledgeCollections.isEmpty {
-                knowledgeState(icon: "folder", title: "还没有知识库", detail: "点击右上角新建第一个知识库")
+                ATMEmptyState(icon: "folder", title: "还没有知识库", detail: "点击右上角新建第一个知识库")
             } else {
                 ScrollView {
                     LazyVStack(spacing: 5) {
@@ -653,11 +648,11 @@ struct DesktopKnowledgeView: View {
                     onDelete: { onDeleteCollection(selectedLibrary) }
                 )
             } else if drawerTab == .libraries {
-                knowledgeState(icon: "folder", title: "还没有知识库", detail: "新建知识库后，这里会显示它的说明和数据")
+                ATMEmptyState(icon: "folder", title: "还没有知识库", detail: "新建知识库后，这里会显示它的说明和数据")
             } else if let item = selectedItem, editingItemID == item.id {
                 knowledgeEditor(for: item)
             } else if isDetailLoading {
-                knowledgeState(icon: "hourglass", title: "正在读取详情")
+                ATMEmptyState(icon: "hourglass", title: "正在读取详情")
             } else if let detailError {
                 let presentation = ATMErrorPresentation.resolve(detailError, fallbackTitle: "详情加载失败")
                 VStack {
@@ -679,13 +674,13 @@ struct DesktopKnowledgeView: View {
                     if let document {
                         documentDetail(document, summary: summary)
                     } else {
-                        knowledgeState(icon: "doc.text", title: summary.title)
+                        ATMEmptyState(icon: "doc.text", title: summary.title)
                     }
                 case .memory(let memory):
                     memoryDetail(memory)
                 }
             } else {
-                knowledgeState(
+                ATMEmptyState(
                     icon: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? "brain.head.profile" : "doc.text",
                     title: "选择一条内容",
                     detail: "从中栏查看知识详情"
@@ -1036,8 +1031,11 @@ struct DesktopKnowledgeView: View {
                 .foregroundStyle(ATMTheme.accent)
 
             HStack(alignment: .top, spacing: 10) {
+                // 跟任务 / Agent / 收集的 `ATMDetailHeader` 用同一档标题字号。这一页的标题
+                // 不套那个壳——它在文档流里、跟正文一起滚动，不是固定头——但字号必须一致，
+                // 否则切页时同一层级的标题会大一圈。
                 Text(title)
-                    .font(ATMFont.font(.metric, weight: .bold))
+                    .font(ATMFont.font(.title2, weight: .semibold))
                     .lineLimit(4)
                     .textSelection(.enabled)
                     .layoutPriority(1)
@@ -1384,26 +1382,6 @@ struct DesktopKnowledgeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .font(ATMFont.body)
-    }
-
-    private func knowledgeState(icon: String, title: String, detail: String? = nil) -> some View {
-        VStack(spacing: 9) {
-            Image(systemName: icon)
-                .font(ATMFont.font(.display, weight: .light))
-                .foregroundStyle(ATMTheme.secondary)
-            Text(title)
-                .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                .multilineTextAlignment(.center)
-            if let detail, !detail.isEmpty {
-                Text(detail)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(5)
-            }
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     @MainActor
@@ -2230,7 +2208,7 @@ private struct KnowledgeGovernanceSheet: View {
                 ProgressView("正在巡检知识库…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if let errorMessage {
-                knowledgeGovernanceState(icon: "exclamationmark.triangle", title: "巡检失败", detail: errorMessage)
+                ATMEmptyState(icon: "exclamationmark.triangle", title: "巡检失败", detail: errorMessage, size: .inline, isWarning: true)
             } else if let report {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
@@ -2242,8 +2220,13 @@ private struct KnowledgeGovernanceSheet: View {
                         }
 
                         if report.issues.isEmpty {
-                            knowledgeGovernanceState(icon: "checkmark.circle", title: "没有发现治理问题", detail: "重复、陈旧、来源漂移和低质量检查均通过")
-                                .frame(minHeight: 180)
+                            ATMEmptyState(
+                                icon: "checkmark.circle",
+                                title: "没有发现治理问题",
+                                detail: "重复、陈旧、来源漂移和低质量检查均通过",
+                                size: .inline,
+                                minHeight: 180
+                            )
                         } else {
                             governanceSectionTitle("待复核问题")
                             VStack(spacing: 8) {
@@ -2342,16 +2325,6 @@ private struct KnowledgeGovernanceSheet: View {
 
     private func governanceSectionTitle(_ title: String) -> some View {
         Text(title).font(ATMFont.font(.body, weight: .semibold))
-    }
-
-    private func knowledgeGovernanceState(icon: String, title: String, detail: String) -> some View {
-        VStack(spacing: 9) {
-            Image(systemName: icon).font(ATMFont.font(.display, weight: .light)).foregroundStyle(ATMTheme.secondary)
-            Text(title).font(ATMFont.font(.bodyLarge, weight: .semibold))
-            Text(detail).font(ATMFont.footnote).foregroundStyle(ATMTheme.secondary).multilineTextAlignment(.center)
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func localizedAuditCode(_ code: String) -> String {

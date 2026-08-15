@@ -538,6 +538,11 @@ private extension View {
 
 enum ATMDesktopLayout {
     static let titleBarHeight: CGFloat = 38
+    /// 中栏头部的固定高度。四个工作区（任务的标题头、收集 / 知识 / Agent 的段控头）都用
+    /// 它定高，切页时中栏第一行才不会上下跳——此前任务栏靠 18/14 的内边距长到约 56pt，
+    /// 另外三处各自写死 64pt。
+    static let drawerHeaderHeight: CGFloat = 64
+    static let drawerHeaderHorizontalPadding: CGFloat = 16
     static let expandedSidebarWidth: CGFloat = 160
     static let collapsedSidebarWidth: CGFloat = 58
     static let railDividerWidth: CGFloat = 1
@@ -872,14 +877,19 @@ struct DesktopContentView: View {
                 }
             }
             .padding(.trailing, 8)
+            // Native traffic lights sit slightly above the geometric centre of a
+            // full-size title bar. Nudge this row — which sits right beside them —
+            // onto that same visual baseline. The search field is 76pt away from
+            // the lights and reads against the bar's own top and bottom edges
+            // instead, so it stays centred in the bar and takes no nudge.
+            .padding(.bottom, 4)
         }
-        // Native traffic lights sit slightly above the geometric centre of a
-        // full-size title bar. Nudge our chrome onto that same visual baseline.
-        .padding(.bottom, 4)
         .frame(maxWidth: .infinity)
         .frame(height: ATMDesktopLayout.titleBarHeight)
         .background(.ultraThinMaterial)
-        .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
+        // 一条实线，不是投影：0.04 的软阴影落在三栏各自的底色上几乎看不见，顶栏和工作区
+        // 只剩材质通透度的差别，边界是「大概在这一带」而不是一条线。
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var collectionCreateSheet: some View {
@@ -1184,14 +1194,17 @@ private struct DesktopTasksView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 } else {
-                    Button {
+                    // 纯图标一律走 ATMIconButton——原生 `.bordered` 的方框让它比收集 / 知识
+                    // 同一位置的图标多一圈边，而带文字的「新建」「返回任务」才留给原生按钮。
+                    ATMIconButton(
+                        systemImage: "trash",
+                        help: "回收站",
+                        chrome: .bare,
+                        side: 30,
+                        iconTier: .bodyLarge
+                    ) {
                         showingTrash = true
-                    } label: {
-                        Image(systemName: "trash")
                     }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("回收站")
 
                     Button {
                         navigation.showAddTodo = true
@@ -1250,13 +1263,10 @@ private struct DesktopTasksView: View {
             .scrollContentBackground(.hidden)
             .overlay {
                 if visibleTodos.isEmpty {
-                    VStack(spacing: 7) {
-                        Image(systemName: "magnifyingglass")
-                            .font(ATMFont.font(.title2, weight: .light))
-                        Text(showingTrash ? "回收站为空" : "没有匹配的任务")
-                            .font(ATMFont.font(.body, weight: .medium))
-                    }
-                    .foregroundStyle(ATMTheme.secondary)
+                    ATMEmptyState(
+                        icon: "magnifyingglass",
+                        title: showingTrash ? "回收站为空" : "没有匹配的任务"
+                    )
                     .allowsHitTesting(false)
                 }
             }
@@ -1644,7 +1654,7 @@ struct DesktopTodoDetail: View {
     }
 
     private var detailHeader: some View {
-        VStack(alignment: .leading, spacing: 15) {
+        ATMDetailHeader(title: todo.title) {
             HStack(spacing: 7) {
                 Label(todo.project ?? "未分项目", systemImage: "folder")
                 Image(systemName: "chevron.right")
@@ -1652,50 +1662,36 @@ struct DesktopTodoDetail: View {
                 Text(todo.id.uppercased())
                     .font(ATMFont.mono(.footnote, .semibold))
                     .foregroundStyle(ATMTheme.accent)
-                Spacer(minLength: 10)
-                detailActions
             }
             .font(ATMFont.footnote)
             .foregroundStyle(ATMTheme.secondary)
-
-            // Status sits on its own line above the title. Beside it, a wrapped
-            // title pushed the badge off the first line's baseline and left a
-            // ragged notch in the text block; stacked, the title gets the full
-            // width and the badge reads as a label for the whole header.
-            VStack(alignment: .leading, spacing: 8) {
+        } actions: {
+            detailActions
+        } meta: {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 8) {
                     statusBadge
                     if store.isActing { ProgressView().controlSize(.small) }
                 }
-                Text(todo.title)
-                    .font(ATMFont.font(.title1, weight: .semibold))
-                    .foregroundStyle(ATMTheme.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
-            LazyVGrid(
-                columns: Array(
-                    repeating: GridItem(.flexible(minimum: 84), spacing: 8),
-                    count: 3
-                ),
-                spacing: 8
-            ) {
-                propertyCell("项目", value: todo.project ?? "未分项目", icon: "folder")
-                propertyCell(
-                    "优先级",
-                    value: ATMTodoPriorityStyle.label(todo.priority),
-                    icon: "flag",
-                    valueColor: priorityColor
-                )
-                propertyCell("创建", value: todo.created, icon: "calendar")
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.flexible(minimum: 84), spacing: 8),
+                        count: 3
+                    ),
+                    spacing: 8
+                ) {
+                    propertyCell("项目", value: todo.project ?? "未分项目", icon: "folder")
+                    propertyCell(
+                        "优先级",
+                        value: ATMTodoPriorityStyle.label(todo.priority),
+                        icon: "flag",
+                        valueColor: priorityColor
+                    )
+                    propertyCell("创建", value: todo.created, icon: "calendar")
+                }
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 17)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated)
     }
 
     @ViewBuilder
@@ -1715,7 +1711,7 @@ struct DesktopTodoDetail: View {
                     ATMIconMenuLabel(
                         systemImage: "ellipsis",
                         help: "更多操作",
-                        chrome: .chip,
+                        chrome: .bare,
                         isEnabled: !store.isActing,
                         side: 26,
                         iconTier: .body
@@ -2685,7 +2681,7 @@ struct DesktopTodoDetail: View {
             ATMIconMenuLabel(
                 systemImage: "ellipsis",
                 help: "更多操作",
-                chrome: .chip,
+                chrome: .bare,
                 isEnabled: !store.isActing,
                 side: 26,
                 iconTier: .body
@@ -4377,16 +4373,10 @@ private struct DesktopUsageContent: View, Equatable {
         .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
     }
 
+    /// 图表卡片里的占位。用量页的空态一律落在卡片内部，所以固定走 `.inline` 那一档，
+    /// 高度跟着图表区，避免卡片在有数据 / 没数据之间抽一下。
     private func usageEmptyState(_ title: String, icon: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(ATMFont.title1)
-                .foregroundStyle(ATMTheme.secondary)
-            Text(title)
-                .font(ATMFont.font(.body, weight: .medium))
-                .foregroundStyle(ATMTheme.secondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 220)
+        ATMEmptyState(icon: icon, title: title, size: .inline, minHeight: 220)
     }
 
     /// Drop filter values that no longer exist for the current range / cascade,
