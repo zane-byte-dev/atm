@@ -3,6 +3,36 @@ import XCTest
 @testable import ATMMenuBarApp
 
 final class ModelsTests: XCTestCase {
+    func testAIDayContractAndCommands() throws {
+        let data = Data("""
+        {"schema_version":2,"day":"2026-08-15","state":"ready","timezone":"Asia/Shanghai",
+         "features":{"session_count":2,"event_count":8,"turn_count":3,"tool_calls":4,"source_count":2,
+          "input_tokens":100,"output_tokens":50,"cache_create_tokens":10,"cache_read_tokens":20,
+          "generation_seconds":6,"active_seconds":6,"foreground_seconds":6,"background_seconds":0,
+          "semantic_counts":{"directive":2},"modality_counts":{"code":4}},
+         "concept":{"id":"code_architect","title":"代码架构师","explanation":"代码与工具构成主旋律。",
+          "tags":["grid","growth"],"evidence":[{"metric":"code_events","value":4,"unit":"events"}],"confidence":0.9},
+         "badge":{"id":"code_architect","name":"代码架构师","description":"代码与工具构成主旋律。",
+          "family":"grid","kind":"growth","level":1,"unlocked":true,"qualified_days":1,
+          "qualified_dates":["2026-08-15"],"next_level_days":7,"progress":0,"score":0.88,
+          "evidence":[{"metric":"code_events","value":4,"unit":"events"}]},
+         "baseline_days":12,"generated_at":1,"engine_version":2}
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let result = try decoder.decode(ATMAIDayResult.self, from: data)
+        XCTAssertEqual(result.badge?.id, "code_architect")
+        XCTAssertEqual(result.features.totalTokens, 180)
+        XCTAssertEqual(result.badge?.qualifiedDates, ["2026-08-15"])
+        XCTAssertEqual(ATMAIDayCommand.today, ["day", "today", "--json"])
+        XCTAssertEqual(ATMAIDayCommand.dashboard, ["day", "dashboard", "--days", "180", "--json"])
+        XCTAssertEqual(
+            ATMAIDayCommand.feedback(day: "2026-08-15", verdict: "corrected", badge: "code_architect"),
+            ["day", "feedback", "2026-08-15", "--verdict", "corrected", "--badge", "code_architect", "--json"]
+        )
+        XCTAssertEqual(ATMCommandPolicy.timeout(for: ATMAIDayCommand.today), 60)
+    }
+
     func testTodoRefineMetadataReadsLatestPersistedSource() {
         let content = """
         ## 分析

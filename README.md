@@ -81,6 +81,21 @@ atm backup                              # 归档无处重建的记录（todo/记
 atm restore <archive>                   # 从归档恢复
 ```
 
+**AI Day**
+
+```bash
+atm day today                           # 生成今天的概念、徽章和证据
+atm day atlas                           # 查看 12 枚徽章与等级进度
+atm day history --days 90               # 查看历史日历
+atm day feedback 2026-08-15 --verdict corrected --badge code_architect
+atm day privacy show                    # 检查语义分类、保留期与来源权限
+atm day sources pause codex             # 暂停一个来源
+atm day export --json > ai-day.json     # 导出全部衍生数据（不含原文）
+```
+
+AI Day 在本机把会话镜像归一化为不含原文的事件，按最近 30 个有效日生成每日唯一结果。完整的数据模型、
+12 枚徽章、评分规则、隐私与删除命令见 [AI Day 说明](docs/ai-day.md)。
+
 **知识与记忆**
 
 ```bash
@@ -107,7 +122,7 @@ atm collect run                          # 立即增量收集一次
 
 ## macOS 菜单栏 App
 
-独立菜单栏 App 常驻显示今日 Token 和「需要你 N」，主窗口提供任务、收集、Agent、知识和用量五个
+独立菜单栏 App 常驻显示今日 Token 和「需要你 N」，主窗口提供任务、收集、Agent、知识、用量和 AI Day 六个
 工作区。会话详情的「对话」支持摘要、时序、完整三种读法；收集工作区把钉钉等外部来源的消息分类成
 Todo 或知识沉淀，并可重试、纠错与撤销。
 

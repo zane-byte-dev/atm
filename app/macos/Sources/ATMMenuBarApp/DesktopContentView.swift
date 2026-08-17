@@ -9,6 +9,7 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
     case agents
     case knowledge
     case usage
+    case aiDay
     case settings
 
     var id: String { rawValue }
@@ -19,6 +20,7 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
         case .agents: return "Agent"
         case .knowledge: return "知识"
         case .usage: return "用量"
+        case .aiDay: return "AI Day"
         case .settings: return "设置"
         }
     }
@@ -29,6 +31,7 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
         case .agents: return "cpu"
         case .knowledge: return "books.vertical"
         case .usage: return "chart.xyaxis.line"
+        case .aiDay: return "sparkles"
         case .settings: return "gearshape"
         }
     }
@@ -43,6 +46,7 @@ enum ATMDesktopLocation: Equatable {
     case agents(sessionID: String?, runTodoID: String?)
     case knowledge(libraryID: String?, documentID: String?)
     case usage
+    case aiDay
     case settings
 }
 
@@ -435,6 +439,8 @@ final class ATMDesktopNavigation: ObservableObject {
             )
         case .usage:
             return .usage
+        case .aiDay:
+            return .aiDay
         case .settings:
             return .settings
         }
@@ -471,6 +477,8 @@ final class ATMDesktopNavigation: ObservableObject {
             section = .knowledge
         case .usage:
             section = .usage
+        case .aiDay:
+            section = .aiDay
         case .settings:
             section = .settings
         }
@@ -747,6 +755,8 @@ struct DesktopContentView: View {
                         .id("knowledge-library")
                 case .usage:
                     DesktopUsageView(store: store)
+                case .aiDay:
+                    DesktopAIDayView()
                 case .settings:
                     DesktopSettingsView(store: store)
                 }

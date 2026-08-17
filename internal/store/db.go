@@ -206,6 +206,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 39
+		case 39:
+			if err := migrateV39ToV40(db); err != nil {
+				return err
+			}
+			version = 40
+		case 40:
+			if err := migrateV40ToV41(db); err != nil {
+				return err
+			}
+			version = 41
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -985,6 +995,82 @@ func migrateV38ToV39(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 39`); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV39ToV40 adds the rebuildable AI Day projection. No existing rows
+// need backfilling: `atm day rebuild` derives them from the session mirror on
+// demand, and keeping migration free of product logic makes upgrades predictable.
+func migrateV39ToV40(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS ai_day_features (
+			day                 TEXT PRIMARY KEY CHECK (day GLOB '` + datePattern + `'),
+			timezone            TEXT NOT NULL,
+			session_count       INTEGER NOT NULL DEFAULT 0,
+			turn_count          INTEGER NOT NULL DEFAULT 0,
+			tool_calls          INTEGER NOT NULL DEFAULT 0,
+			source_count        INTEGER NOT NULL DEFAULT 0,
+			input_tokens        INTEGER NOT NULL DEFAULT 0,
+			output_tokens       INTEGER NOT NULL DEFAULT 0,
+			cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+			generation_seconds  INTEGER NOT NULL DEFAULT 0,
+			built_at            INTEGER NOT NULL,
+			feature_version     INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_results (
+			day            TEXT PRIMARY KEY REFERENCES ai_day_features(day) ON DELETE CASCADE,
+			state          TEXT NOT NULL CHECK (state IN ('ready','empty')),
+			concept_id     TEXT NOT NULL DEFAULT '',
+			title          TEXT NOT NULL DEFAULT '',
+			explanation    TEXT NOT NULL DEFAULT '',
+			tags_json      TEXT NOT NULL DEFAULT '[]',
+			evidence_json  TEXT NOT NULL DEFAULT '[]',
+			confidence     REAL NOT NULL DEFAULT 0,
+			baseline_days  INTEGER NOT NULL DEFAULT 0,
+			generated_at   INTEGER NOT NULL,
+			engine_version INTEGER NOT NULL
+		)`,
+		`UPDATE schema_version SET version = 40`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func migrateV40ToV41(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS ai_day_events (event_id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, source TEXT NOT NULL, session_hash TEXT NOT NULL, event_type TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, modality TEXT NOT NULL DEFAULT 'general', execution_mode TEXT NOT NULL DEFAULT 'interactive', input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_create_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0, semantic_labels_json TEXT NOT NULL DEFAULT '[]', semantic_confidence REAL NOT NULL DEFAULT 0, raw_content_retained INTEGER NOT NULL DEFAULT 0 CHECK (raw_content_retained = 0), schema_version INTEGER NOT NULL, ingested_at INTEGER NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_day_events_time ON ai_day_events(occurred_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_day_events_source_time ON ai_day_events(source, occurred_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_day_events_session_time ON ai_day_events(session_hash, occurred_at)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_session_features (day TEXT NOT NULL CHECK (day GLOB '` + datePattern + `'), session_hash TEXT NOT NULL, source TEXT NOT NULL, modality TEXT NOT NULL DEFAULT 'general', execution_mode TEXT NOT NULL DEFAULT 'interactive', event_count INTEGER NOT NULL DEFAULT 0, turn_count INTEGER NOT NULL DEFAULT 0, tool_calls INTEGER NOT NULL DEFAULT 0, active_seconds INTEGER NOT NULL DEFAULT 0, semantic_counts_json TEXT NOT NULL DEFAULT '{}', built_at INTEGER NOT NULL, feature_version INTEGER NOT NULL, PRIMARY KEY (day, session_hash))`,
+		`CREATE TABLE IF NOT EXISTS ai_day_feature_details (day TEXT PRIMARY KEY REFERENCES ai_day_features(day) ON DELETE CASCADE, event_count INTEGER NOT NULL DEFAULT 0, active_seconds INTEGER NOT NULL DEFAULT 0, foreground_seconds INTEGER NOT NULL DEFAULT 0, background_seconds INTEGER NOT NULL DEFAULT 0, semantic_counts_json TEXT NOT NULL DEFAULT '{}', modality_counts_json TEXT NOT NULL DEFAULT '{}')`,
+		`CREATE TABLE IF NOT EXISTS ai_day_badge_days (day TEXT NOT NULL REFERENCES ai_day_features(day) ON DELETE CASCADE, badge_id TEXT NOT NULL, qualified INTEGER NOT NULL DEFAULT 0, selected INTEGER NOT NULL DEFAULT 0, level INTEGER NOT NULL DEFAULT 0, score REAL NOT NULL DEFAULT 0, evidence_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (day, badge_id))`,
+		`CREATE TABLE IF NOT EXISTS ai_day_badge_progress (badge_id TEXT PRIMARY KEY, level INTEGER NOT NULL DEFAULT 0, qualified_days INTEGER NOT NULL DEFAULT 0, last_qualified TEXT NOT NULL DEFAULT '', cooldown_until TEXT NOT NULL DEFAULT '', first_unlocked TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_feedback (day TEXT PRIMARY KEY, verdict TEXT NOT NULL CHECK (verdict IN ('accurate','inaccurate','corrected')), corrected_badge_id TEXT NOT NULL DEFAULT '', semantic_labels_json TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_sources (source TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, semantic_enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+		`UPDATE schema_version SET version = 41`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

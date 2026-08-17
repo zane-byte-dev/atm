@@ -761,6 +761,11 @@ func NormalizeAgent(s string) string {
 		return "qoderwork"
 	case "grok", "grokbuild", "grok-build", "grok-cli":
 		return "grokbuild"
+	// ATM 自己：它是内置文本模型的 client，用量记在 `store.BuiltinAgent` 名下。这里
+	// 认它是为了 `--agent atm` 能过校验；它没有 parser adapter，所以不参与 sync，
+	// 也不会出现在活跃面板里。
+	case "atm":
+		return "atm"
 	default:
 		return ""
 	}

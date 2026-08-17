@@ -117,16 +117,87 @@ type chatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	Usage struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		// DeepSeek 自家的字段。配成别的 OpenAI 兼容端点时它不存在，那边给的是
+		// prompt_tokens_details.cached_tokens，所以两个都读、取非零的那个。
+		PromptCacheHitTokens int64 `json:"prompt_cache_hit_tokens"`
+		PromptTokensDetails  struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+	} `json:"usage"`
 	Error struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
 	} `json:"error"`
 }
 
+// Usage is what the endpoint reported for one call. 全零表示它什么都没报——
+// 网关可以不返回 usage 块，这时「这次调用花了多少」就是不可知，不是零。
+type Usage struct {
+	InputTokens    int64
+	OutputTokens   int64
+	CacheHitTokens int64
+}
+
+// Reported tells a zero-token record (endpoint said nothing) from a real reading.
+func (u Usage) Reported() bool {
+	return u.InputTokens > 0 || u.OutputTokens > 0 || u.CacheHitTokens > 0
+}
+
+// Call is one attempted request to the built-in model: what it was for, what it
+// cost in tokens, how long it took, and whether it came back.
+type Call struct {
+	Task       string
+	Model      string
+	Usage      Usage
+	DurationMS int64
+	StartedAt  time.Time
+	// Err is the failure text, empty on success. 失败也要记：超时和 HTTP 4xx 同样
+	// 占了一次调用，而只记成功会让「这条链路好不好使」永远看起来是满分。
+	Err string
+}
+
+// Sink receives one record per **发出去过**的调用。nil 表示不记录。
+//
+// 为什么是 sink 而不是返回值：`Run` 的两个生产调用方（collector 的判定、refine 的
+// 整理）手上都没有 *sql.DB，而这个包不该反过来依赖 store——它只是个 HTTP 客户端。
+// 由命令层在打开可写数据库时挂上（见 cmd 的 withDB），实现要能被任意 goroutine 调用。
+var Sink func(Call)
+
+// callRecord keeps the bookkeeping out of the exported Call: only a request that
+// actually left the process is worth a row.
+type callRecord struct {
+	call      Call
+	attempted bool
+}
+
 // Run asks for one JSON object matching schema. The returned bytes are the
 // model's answer and nothing else: validating that it says something ATM is
 // willing to act on stays with the caller.
 func Run(ctx context.Context, taskName string, timeout time.Duration, schema, prompt string) ([]byte, error) {
+	record := callRecord{call: Call{Task: taskName, StartedAt: time.Now()}}
+	data, err := run(ctx, taskName, timeout, schema, prompt, &record)
+	if err != nil {
+		record.call.Err = err.Error()
+	}
+	record.call.DurationMS = time.Since(record.call.StartedAt).Milliseconds()
+	// 只记真的发出去了的请求。任务名不认、没配 key 这些根本没到网络层，也没花钱，
+	// 记下来只会把「调用了多少次模型」搅浑。
+	if sink := Sink; sink != nil && record.attempted {
+		sink(record.call)
+	}
+	return data, err
+}
+
+func run(
+	ctx context.Context,
+	taskName string,
+	timeout time.Duration,
+	schema, prompt string,
+	record *callRecord,
+) ([]byte, error) {
 	spec, ok := tasks[taskName]
 	if !ok {
 		return nil, fmt.Errorf("built-in text model does not support task %q", taskName)
@@ -146,6 +217,7 @@ func Run(ctx context.Context, taskName string, timeout time.Duration, schema, pr
 	if model == "" {
 		model = config.TextModelName
 	}
+	record.call.Model = model
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
@@ -182,6 +254,7 @@ func Run(ctx context.Context, taskName string, timeout time.Duration, schema, pr
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "atm/text-model")
 
+	record.attempted = true
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		if modelCtx.Err() == context.DeadlineExceeded {
@@ -205,6 +278,14 @@ func Run(ctx context.Context, taskName string, timeout time.Duration, schema, pr
 		}
 		return nil, fmt.Errorf("decode DeepSeek text-model response: %w", err)
 	}
+	record.call.Usage = Usage{
+		InputTokens:  decoded.Usage.PromptTokens,
+		OutputTokens: decoded.Usage.CompletionTokens,
+		CacheHitTokens: max64(
+			decoded.Usage.PromptCacheHitTokens,
+			decoded.Usage.PromptTokensDetails.CachedTokens,
+		),
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		message := strings.TrimSpace(decoded.Error.Message)
 		if message == "" {
@@ -223,6 +304,13 @@ func Run(ctx context.Context, taskName string, timeout time.Duration, schema, pr
 		return nil, fmt.Errorf("DeepSeek text model truncated its JSON response")
 	}
 	return trimJSONFences([]byte(content)), nil
+}
+
+func max64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // trimJSONFences unwraps a fenced answer. json_object mode should never produce

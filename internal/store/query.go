@@ -93,6 +93,12 @@ func ListSessions(db *sql.DB, startTS, endTS int64, agent, project string) ([]Li
 	if agent != "" {
 		query += " AND s.agent = ?"
 		args = append(args, agent)
+	} else {
+		// ATM 自己的模型调用也是会话行（它就是 DeepSeek 的一个 client），但这张列表
+		// 的单位是「一次对话」：那些行没有问答、没有摘要可读。默认挡掉，点名
+		// `--agent atm` 才列出来。token 和成本仍然照常进各项用量统计。
+		query += " AND s.agent <> ?"
+		args = append(args, BuiltinAgent)
 	}
 	query += " ORDER BY s.created_at"
 
@@ -296,12 +302,20 @@ func GetSession(db *sql.DB, idOrPrefix string) (*ShowResult, error) {
 }
 
 func GetReport(db *sql.DB, startTS, endTS int64, agent string) ([]ReportResult, error) {
+	// 时间条件整体括起来。少这一层括号时 SQL 的 AND 比 OR 结合更紧，后面追加的
+	// `AND agent = ?` 只作用在 OR 的第二个分支上——于是 `atm report --agent claude`
+	// 会把窗口内**任何** Agent 新建的会话都算进来。
 	query := `SELECT id, short_id, agent, project, created_at, summary, file_path FROM sessions
-		WHERE (created_ts >= ? AND created_ts < ?) OR (last_ts >= ? AND last_ts < ?)`
+		WHERE ((created_ts >= ? AND created_ts < ?) OR (last_ts >= ? AND last_ts < ?))`
 	args := []any{startTS, endTS, startTS, endTS}
 	if agent != "" {
 		query += " AND agent = ?"
 		args = append(args, agent)
+	} else {
+		// 日报讲的是「今天跟哪些 Agent 做了什么」，ATM 自己的判定和整理不是那种事。
+		// 跟 ListSessions 一条规矩：默认不出现，点名 `--agent atm` 才给。
+		query += " AND agent <> ?"
+		args = append(args, BuiltinAgent)
 	}
 	query += " ORDER BY agent, created_at"
 

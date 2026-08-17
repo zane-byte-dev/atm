@@ -48,7 +48,11 @@ func SetVersion(v string) {
 }
 
 func Execute() {
+	bufferBuiltinModelCalls()
 	if err := rootCmd.Execute(); err != nil {
+		// 失败路径也要落账：一次超时的收集判定同样占了一次调用。os.Exit 不跑 defer，
+		// 所以这里和成功路径各显式落一次。
+		flushBuiltinModelCalls()
 		// stderr is for whoever is watching; the log is for whoever is not. The
 		// App, collection and hooks all invoke atm unattended, and until this
 		// existed their failures vanished with the process.
@@ -56,6 +60,7 @@ func Execute() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+	flushBuiltinModelCalls()
 }
 
 // failedCommandPath names the subcommand that failed, without its arguments.

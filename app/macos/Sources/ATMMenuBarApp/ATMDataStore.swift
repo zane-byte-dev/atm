@@ -24,6 +24,7 @@ enum ATMCommandError: LocalizedError {
 enum ATMCommandPolicy {
     static func timeout(for arguments: [String]) -> TimeInterval {
         if arguments.first == "sync" { return 120 }
+        if arguments.first == "day" { return 60 }
         if arguments.starts(with: ["collect", "run"]) { return 300 }
         // One model call per source that has new insights, plus a knowledge write.
         if arguments.starts(with: ["collect", "digest"]) { return 300 }
