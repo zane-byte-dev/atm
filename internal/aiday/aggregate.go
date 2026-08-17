@@ -50,7 +50,14 @@ func aggregate(ctx context.Context, db *sql.DB, start, end time.Time, loc *time.
 		f.CacheReadTokens += cacheRead
 		f.GenerationSeconds += duration / 1000
 		s.active += duration / 1000
-		f.ModalityCounts[modality] += quantity
+		// Modality counts only turns and tool use, one per event, and never
+		// weighted by quantity. Including `usage` events buried every real signal
+		// under a "general" count equal to the day's API-call volume (137 general
+		// vs 1 code on a day spent entirely in code), and weighting by quantity
+		// mixed "one turn" with "this tool ran thirty times" in one total.
+		if eventType == "turn" || eventType == "tool" {
+			f.ModalityCounts[modality]++
+		}
 		sources[source] = true
 		var labels []string
 		if json.Unmarshal([]byte(labelsJSON), &labels) == nil {

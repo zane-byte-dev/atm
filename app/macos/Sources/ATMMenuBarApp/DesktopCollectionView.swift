@@ -14,7 +14,9 @@ private struct CollectionItemDeletion {
     var groupName: String? = nil
 
     var title: String {
-        guard let groupName else { return "删除这条处理记录？" }
+        guard let groupName else {
+            return items.count > 1 ? "删除主记录及 \(items.count - 1) 条补充？" : "删除这条处理记录？"
+        }
         return "清空「\(groupName)」的 \(items.count) 条记录？"
     }
 
@@ -24,6 +26,9 @@ private struct CollectionItemDeletion {
 
     var message: String {
         guard groupName != nil else {
+            if items.count > 1 {
+                return "主记录和折叠在详情里的 \(items.count - 1) 条补充会一起从本地删除，关联 Todo 保留。刚收集到的记录可能在下一轮重新出现。"
+            }
             return items.first.map(collectionDeleteWarning(for:)) ?? ""
         }
         let kept = items.compactMap(\.todoID).filter { !$0.isEmpty }.count
@@ -67,6 +72,10 @@ struct DesktopCollectionView: View {
         store.collectionOverview.items
     }
 
+    private var groupedItems: [ATMCollectionItem] {
+        ATMCollectionItemGrouping.visibleItems(filteredItems)
+    }
+
     private var selectedItem: ATMCollectionItem? {
         guard let id = navigation.selectedCollectionItemID else { return displayedItems.first }
         return displayedItems.first { $0.id == id } ?? displayedItems.first
@@ -79,11 +88,11 @@ struct DesktopCollectionView: View {
     }
 
     private var primaryItems: [ATMCollectionItem] {
-        filteredItems.filter { !shouldCollapse($0) }
+        groupedItems.filter { !shouldCollapse($0) }
     }
 
     private var ignoredItems: [ATMCollectionItem] {
-        filteredItems.filter(shouldCollapse)
+        groupedItems.filter(shouldCollapse)
     }
 
     private var displayedItems: [ATMCollectionItem] {
@@ -365,10 +374,10 @@ struct DesktopCollectionView: View {
                             }
                         } header: {
                             genericSourceSectionHeader(
-                                "沉淀与已了结",
+                                "已保存与已了结",
                                 count: ignoredItems.count,
                                 expanded: $showingIgnoredItems,
-                                clear: { requestClear("沉淀与已了结", items: ignoredItems) }
+                                clear: { requestClear("已保存与已了结", items: ignoredItems) }
                             )
                         }
                     }
@@ -400,7 +409,10 @@ struct DesktopCollectionView: View {
 
     private func requestClear(_ groupName: String, items: [ATMCollectionItem]) {
         guard !items.isEmpty else { return }
-        itemDeletion = CollectionItemDeletion(items: items, groupName: groupName)
+        itemDeletion = CollectionItemDeletion(
+            items: recordsIncludingSupplements(items),
+            groupName: groupName
+        )
     }
 
     private func sourceSectionHeader(
@@ -485,7 +497,7 @@ struct DesktopCollectionView: View {
         .textCase(nil)
     }
 
-    /// 分组标题右侧的省略号菜单。三种分组（来源、其他来源、沉淀与已了结）用同一个，
+    /// 分组标题右侧的省略号菜单。三种分组（来源、其他来源、已保存与已了结）用同一个，
     /// 免得每加一项动作就有一处漏改样式。
     private func sectionActionMenu<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         Menu {
@@ -508,7 +520,7 @@ struct DesktopCollectionView: View {
         return Button {
             navigation.selectedCollectionItemID = item.id
         } label: {
-            CollectionItemRow(item: item)
+            CollectionItemRow(item: item, supplementCount: supplements(for: item).count)
                 .atmRowSurface(isSelected: selected)
         }
         .buttonStyle(.atmRow)
@@ -525,7 +537,7 @@ struct DesktopCollectionView: View {
             }
             ATMMenuSeparator()
             ATMMenuItem("删除记录", destructive: true) {
-                itemDeletion = CollectionItemDeletion(items: [item])
+                itemDeletion = CollectionItemDeletion(items: recordsIncludingSupplements([item]))
             }
         }
     }
@@ -554,10 +566,15 @@ struct DesktopCollectionView: View {
             CollectionItemDetail(
                 store: store,
                 item: item,
-                source: source(for: item)
-            ) {
-                openTodo(item)
-            }
+                source: source(for: item),
+                supplements: supplements(for: item),
+                openTodo: { openTodo(item) },
+                openKnowledge: { collection, documentID in
+                    navigation.selectedKnowledgeLibraryID = collection
+                    navigation.locateKnowledgeDocumentID = "document:\(documentID)"
+                    navigation.section = .knowledge
+                }
+            )
         } else {
             ATMEmptyState(
                 icon: "doc.text.magnifyingglass",
@@ -574,6 +591,15 @@ struct DesktopCollectionView: View {
 
     private func source(for item: ATMCollectionItem) -> ATMCollectionSource? {
         store.collectionOverview.sources.first { $0.id == item.sourceID }
+    }
+
+    private func supplements(for item: ATMCollectionItem) -> [ATMCollectionItem] {
+        ATMCollectionItemGrouping.supplements(for: item, in: filteredItems)
+    }
+
+    private func recordsIncludingSupplements(_ items: [ATMCollectionItem]) -> [ATMCollectionItem] {
+        var seen = Set<String>()
+        return items.flatMap { [$0] + supplements(for: $0) }.filter { seen.insert($0.id).inserted }
     }
 
     private func sourceStatusText(_ source: ATMCollectionSource) -> String {
@@ -806,7 +832,7 @@ private struct CollectionSourceDetail: View {
                 sourceValueRow("读取", "\(run.fetchedCount) 条")
                 sourceValueRow(
                     "结果",
-                    "新建 \(run.createdCount) · 补充 \(run.appendedCount) · 沉淀 \(run.insightCount) · 忽略 \(run.ignoredCount)"
+                    "新建 \(run.createdCount) · 补充 \(run.appendedCount) · 结论 \(run.insightCount) · 忽略 \(run.ignoredCount)"
                 )
                 if let error = store.collectionError(for: source.id), !error.isEmpty {
                     sourceTextBlock("失败原因", error)
@@ -855,7 +881,7 @@ private struct CollectionSourceDetail: View {
             sourceValueRow("来源开关", source.enabled ? "已启用" : "已暂停")
             sourceValueRow("自动调度", store.collectionOverview.enabled ? "正在运行" : "总开关已关闭")
             sourceValueRow("间隔", "每 \(source.effectiveIntervalMinutes) 分钟")
-            sourceValueRow("处理方式", source.effectiveStrategy == "observe" ? "只观察，不创建 Todo" : "创建或补充 Todo")
+            sourceValueRow("处理方式", source.effectiveStrategy == "observe" ? "收集结论，按需保存" : "创建或补充 Todo")
             sourceValueRow("Agent 派发", source.automaticallyDispatches ? "新 Todo 自动交给 Codex" : "仅收集，由人决定")
             sourceValueRow("判断单位", source.effectiveDecisionUnit == "message" ? "单条消息" : "消息窗口")
             sourceValueRow("默认优先级", source.priority)
@@ -880,7 +906,7 @@ private struct CollectionSourceDetail: View {
                     sourceTextBlock("排除规则", excludePattern, monospaced: true)
                 }
                 if let knowledgeCollection {
-                    sourceValueRow("知识库", knowledgeCollection)
+                    sourceValueRow("默认保存到", knowledgeCollection)
                 }
             }
         }
@@ -1088,6 +1114,7 @@ private struct CollectionConnectorHealthSummary: View {
 
 private struct CollectionItemRow: View {
     let item: ATMCollectionItem
+    let supplementCount: Int
 
     private var itemType: ATMCollectionItemType {
         ATMCollectionItemType.resolve(item.itemType)
@@ -1112,13 +1139,25 @@ private struct CollectionItemRow: View {
             VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                 Text(item.title?.isEmpty == false
                     ? item.title!
-                    : collectionActionTitle(item.action, retryStopped: retryStopped))
+                    : collectionActionTitle(
+                        item.action,
+                        retryStopped: retryStopped,
+                        saved: item.knowledgeDocumentID?.isEmpty == false
+                    ))
                     .font(ATMFont.font(.body, weight: .medium))
                     .lineLimit(2)
                 HStack(spacing: 5) {
                     Text(itemType.title)
                     Text("·")
-                    Text(collectionActionTitle(item.action, retryStopped: retryStopped))
+                    Text(collectionActionTitle(
+                        item.action,
+                        retryStopped: retryStopped,
+                        saved: item.knowledgeDocumentID?.isEmpty == false
+                    ))
+                    if supplementCount > 0 {
+                        Text("·")
+                        Text("补充 \(supplementCount)")
+                    }
                     if item.dispatchStatus == "failed" {
                         Text("·")
                         Text("Agent 派发失败")
@@ -1155,7 +1194,9 @@ private struct CollectionItemDetail: View {
     @ObservedObject var store: ATMDataStore
     let item: ATMCollectionItem
     let source: ATMCollectionSource?
+    let supplements: [ATMCollectionItem]
     let openTodo: () -> Void
+    let openKnowledge: (String, String) -> Void
 
     @State private var selectedTab: DetailTab = .decision
     @State private var showingCorrection = false
@@ -1203,14 +1244,18 @@ private struct CollectionItemDetail: View {
                  : "ATM 会追加一条撤销说明；原补充保留供审计，不会改写历史。")
         }
         .confirmationDialog(
-            "删除这条处理记录？",
+            supplements.isEmpty ? "删除这条处理记录？" : "删除主记录及 \(supplements.count) 条补充？",
             isPresented: $confirmingDelete,
             titleVisibility: .visible
         ) {
-            Button("删除记录", role: .destructive) { store.deleteCollectionItem(item) }
+            Button("删除记录", role: .destructive) {
+                store.deleteCollectionItems([item] + supplements)
+            }
             Button("取消", role: .cancel) {}
         } message: {
-            Text(collectionDeleteWarning(for: item))
+            Text(supplements.isEmpty
+                ? collectionDeleteWarning(for: item)
+                : "主记录和折叠在详情里的 \(supplements.count) 条补充会一起从本地删除，关联 Todo 保留。")
         }
         .onChange(of: item.id) { _ in copiedID = false }
     }
@@ -1268,7 +1313,11 @@ private struct CollectionItemDetail: View {
     private var header: some View {
         ATMDetailHeader(title: item.title?.isEmpty == false ? item.title! : "未生成标题") {
             Label(
-                collectionActionTitle(item.action, retryStopped: retryStopped),
+                collectionActionTitle(
+                    item.action,
+                    retryStopped: retryStopped,
+                    saved: item.knowledgeDocumentID?.isEmpty == false
+                ),
                 systemImage: collectionActionIcon(item.action, retryStopped: retryStopped)
             )
             .font(ATMFont.footnote)
@@ -1419,7 +1468,8 @@ private struct CollectionItemDetail: View {
     }
 
     /// 结论：这批消息最后落成了什么。`summary` 是分类器留下的正文——create 时是建出的
-    /// Todo 写了什么，append 时是这次补充加了什么，insight 时是沉淀进知识库的内容。
+    /// Todo 写了什么，append 时是这次补充加了什么，insight 时是先留在这里、等待用户
+    /// 明确保存的内容。
     private var outcomeSummary: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -1437,6 +1487,58 @@ private struct CollectionItemDetail: View {
                 .font(ATMFont.body)
                 .fixedSize(horizontal: false, vertical: true)
                 .textSelection(.enabled)
+            if item.action == "insight" {
+                if let documentID = item.knowledgeDocumentID, !documentID.isEmpty {
+                    Button {
+                        openKnowledge(item.knowledgeCollection ?? knowledgeDestination, documentID)
+                    } label: {
+                        Label("打开已保存知识", systemImage: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                } else {
+                    Button {
+                        store.saveCollectionItemToKnowledge(item)
+                    } label: {
+                        Label("保存到 \(knowledgeDestination)", systemImage: "tray.and.arrow.down")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(store.isCollecting)
+                }
+            }
+            if !supplements.isEmpty {
+                Divider()
+                    .padding(.vertical, 4)
+                HStack(alignment: .firstTextBaseline) {
+                    sectionTitle("补充内容")
+                    Spacer()
+                    Text("\(supplements.count) 条")
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(supplements) { supplement in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Text(collectionSupplementTime(supplement))
+                                if let sender = supplement.sender, !sender.isEmpty {
+                                    Text("·")
+                                    Text(sender)
+                                }
+                            }
+                            .font(ATMFont.caption)
+                            .foregroundStyle(ATMTheme.secondary)
+                            Text(supplement.summary?.isEmpty == false
+                                ? supplement.summary!
+                                : supplement.title ?? "暂无补充摘要。")
+                                .font(ATMFont.body)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
             if let todoID = item.todoID, !todoID.isEmpty {
                 Text(todoRelationLine(todoID))
                     .font(ATMFont.footnote)
@@ -1460,6 +1562,11 @@ private struct CollectionItemDetail: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var knowledgeDestination: String {
+        let configured = source?.knowledgeCollection?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return configured.isEmpty ? "inbox" : configured
     }
 
     /// 关联的 Todo 及其当前状态。归档要点出来：`打开 Todo` 会落到任务台不再列出的
@@ -2209,7 +2316,7 @@ private struct CollectionSourceEditor: View {
                 formField("处理策略", hint: strategyHint) {
                     Picker("处理策略", selection: $strategy) {
                         Label("提取任务", systemImage: "checklist").tag("tasks")
-                        Label("沉淀知识", systemImage: "books.vertical").tag("observe")
+                        Label("收集结论", systemImage: "books.vertical").tag("observe")
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
@@ -2242,7 +2349,7 @@ private struct CollectionSourceEditor: View {
                         }
                     }
                     if strategy == "observe" {
-                        formField("知识库集合", hint: "留空时沉淀到 inbox") {
+                        formField("默认知识库", hint: "结论由你确认保存；留空时保存到 inbox") {
                             TextField("inbox", text: $knowledgeCollection)
                                 .textFieldStyle(.roundedBorder)
                         }
@@ -2323,7 +2430,7 @@ private struct CollectionSourceEditor: View {
 
     private var strategyHint: String {
         strategy == "observe"
-            ? "识别可复用信息并写入知识库，不创建任务"
+            ? "识别可复用信息，先放入结论；由你确认后再保存到知识库"
             : "从消息中识别需求、缺陷和待办，创建或补充任务"
     }
 
@@ -2530,17 +2637,24 @@ private struct CollectionHistorySheet: View {
 /// 收集到的消息还在下一轮的重读窗口里，那一轮会把这条记录重新建出来——不说，看着
 /// 就像删除失败。
 private func collectionDeleteWarning(for item: ATMCollectionItem) -> String {
+    if item.knowledgeDocumentID?.isEmpty == false {
+        return "记录会从本地删除，已经保存的知识保留。刚收集到的记录可能在下一轮重新出现。"
+    }
     if let todoID = item.todoID, !todoID.isEmpty {
         return "记录会从本地删除，\(todoID) 保留。如果是这次判断错了，请先用「撤销自动处理」。"
     }
     return "记录会从本地删除。刚收集到的记录可能在下一轮重新出现，更早的删掉就不会再回来。"
 }
 
-private func collectionActionTitle(_ action: String, retryStopped: Bool = false) -> String {
+private func collectionActionTitle(
+    _ action: String,
+    retryStopped: Bool = false,
+    saved: Bool = false
+) -> String {
     switch action {
     case "create": return "已创建"
     case "append": return "已补充"
-    case "insight": return "已沉淀"
+    case "insight": return saved ? "已保存" : "待保存"
     case "ignore": return "无需处理"
     // 「等待重试」听着像在等人按一下；实际是下一轮 collect 自动重来。重试预算用尽后
     // 就真的没有下一轮了，这时才需要人出手，两种情况必须分开说。
@@ -2587,6 +2701,15 @@ private func collectionRelativeTime(_ timestamp: Int64) -> String {
     if elapsed < 3_600 { return "\(elapsed / 60) 分钟前" }
     if elapsed < 86_400 { return "\(elapsed / 3_600) 小时前" }
     return "\(elapsed / 86_400) 天前"
+}
+
+private func collectionSupplementTime(_ item: ATMCollectionItem) -> String {
+    let timestamp = item.occurredAt ?? item.createdAt
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.timeZone = .current
+    formatter.dateFormat = "MM-dd HH:mm"
+    return formatter.string(from: Date(timeIntervalSince1970: TimeInterval(timestamp)))
 }
 
 private func collectionNextRunText(_ overview: ATMCollectionOverview) -> String {

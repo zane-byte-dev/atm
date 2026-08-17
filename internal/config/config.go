@@ -72,8 +72,8 @@ var (
 	// conversation stores it so it can be searched and read offline, and that
 	// archive would otherwise grow for as long as the sources stay enabled.
 	CollectionMessageRetentionDays = 90
-	// Where a source's daily digest is filed when the source names no knowledge
-	// collection of its own.
+	// Default knowledge destination when an explicitly saved collection
+	// conclusion (or optional manual digest) names no collection of its own.
 	CollectionDigestCollection = "inbox"
 	// How long a due digest waits for more insights before spending a model call.
 	// Background callers poll far more often than a day's chat changes, and each

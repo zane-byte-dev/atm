@@ -112,6 +112,7 @@ atm collect status                       # 健康状态、来源、处理记录
 atm collect source add --connector slack --kind channel --id C123 --project atm
 atm collect enable                       # 开启 App 常驻期间的后台自动收集
 atm collect run                          # 立即增量收集一次
+atm collect item save <item-id>          # 确认后把收集结论保存为知识
 ```
 
 全局 flag：
@@ -124,7 +125,7 @@ atm collect run                          # 立即增量收集一次
 
 独立菜单栏 App 常驻显示今日 Token 和「需要你 N」，主窗口提供任务、收集、Agent、知识、用量和 AI Day 六个
 工作区。会话详情的「对话」支持摘要、时序、完整三种读法；收集工作区把钉钉等外部来源的消息分类成
-Todo 或知识沉淀，并可重试、纠错与撤销。
+Todo 或待确认结论，结论由用户明确保存到知识库，并可重试、纠错与撤销。
 
 ```bash
 app/macos/Scripts/build-app.sh

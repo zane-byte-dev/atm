@@ -47,6 +47,9 @@ import (
 // existing session mirror and are never copied into this product surface. v41
 // completes that projection with content-free normalized events, session
 // aggregates, badge history/progress, feedback, source permissions and settings.
+// v43 stops treating an insight as an automatic knowledge write: each collection
+// item records the knowledge document created only after the user explicitly
+// saves its conclusion.
 // Keep
 // the minimum at 21 while those upgrade steps exist; after the live database has
 // been upgraded,
@@ -55,7 +58,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 41
+	SchemaVersion        = 43
 	minUpgradableVersion = 21
 )
 
@@ -193,7 +196,17 @@ func createSchema(tx *sql.Tx) error {
 			explanation    TEXT NOT NULL DEFAULT '',
 			tags_json      TEXT NOT NULL DEFAULT '[]',
 			evidence_json  TEXT NOT NULL DEFAULT '[]',
+			-- How much to trust this conclusion: baseline length, evidence
+			-- strength and source coverage combined. Never raised by feedback.
 			confidence     REAL NOT NULL DEFAULT 0,
+			-- The selected badge's own normalized signal, kept separate so a
+			-- weak-evidence day is distinguishable from a short-history one.
+			evidence_strength REAL NOT NULL DEFAULT 0,
+			-- 'computed' or 'user_corrected'.
+			origin         TEXT NOT NULL DEFAULT 'computed',
+			-- What the engine chose before a correction, so its own answer is
+			-- preserved rather than overwritten by the user's.
+			computed_badge_id TEXT NOT NULL DEFAULT '',
 			baseline_days  INTEGER NOT NULL DEFAULT 0,
 			generated_at   INTEGER NOT NULL,
 			engine_version INTEGER NOT NULL
@@ -446,8 +459,8 @@ func createSchema(tx *sql.Tx) error {
 			-- instruction, unlike the chat itself. exclude_pattern is the blunt
 			-- inverse (drop anything containing these keywords, no model call).
 			instruction     TEXT NOT NULL DEFAULT '',
-			-- Which knowledge collection this source's daily digest is written to.
-			-- Empty falls back to config.CollectionDigestCollection.
+			-- Default knowledge destination for an explicitly saved conclusion and
+			-- for optional manual digests. Empty falls back to the configured default.
 			knowledge_collection TEXT NOT NULL DEFAULT '',
 			-- What this source is allowed to produce. 'tasks' may reach the Todo
 			-- list; 'observe' may not, however concrete the chat looks — the
@@ -510,9 +523,9 @@ func createSchema(tx *sql.Tx) error {
 			sender          TEXT NOT NULL DEFAULT '',
 			occurred_at     INTEGER NOT NULL DEFAULT 0,
 			raw_context     TEXT NOT NULL DEFAULT '',
-			-- Where this batch ended up. 'insight' is the knowledge destination:
-			-- worth remembering, but not work, so it feeds the source's daily
-			-- digest instead of the Todo list. 'ignore' means genuine noise.
+			-- Where this batch ended up. 'insight' is a conclusion worth keeping,
+			-- but not work; it stays here until the user explicitly saves it to
+			-- knowledge. 'ignore' means genuine noise.
 			action          TEXT NOT NULL DEFAULT 'pending'
 				CHECK (action IN ('pending','create','append','insight','ignore','failed','reverted')),
 			-- What an on-demand analysis decided but has not carried out: '' means
@@ -528,6 +541,10 @@ func createSchema(tx *sql.Tx) error {
 			priority        TEXT NOT NULL DEFAULT '',
 			reason          TEXT NOT NULL DEFAULT '',
 			confidence      REAL NOT NULL DEFAULT 0,
+			-- An insight first lives as this record's conclusion. These fields stay
+			-- empty until the user explicitly saves it to central knowledge.
+			knowledge_document_id TEXT NOT NULL DEFAULT '',
+			knowledge_collection  TEXT NOT NULL DEFAULT '',
 			todo_id         TEXT REFERENCES todos(id) ON DELETE SET NULL,
 			status          TEXT NOT NULL DEFAULT 'pending'
 				CHECK (status IN ('pending','processed','failed')),

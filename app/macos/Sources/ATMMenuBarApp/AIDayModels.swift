@@ -28,6 +28,9 @@ struct ATMAIDayFeatures: Codable {
     let modalityCounts: [String: Int64]
 
     var totalTokens: Int64 { inputTokens + outputTokens + cacheCreateTokens + cacheReadTokens }
+    /// Excludes cache reads, which scale with context size rather than with work
+    /// done and are one to two orders of magnitude larger than the rest.
+    var workTokens: Int64 { inputTokens + outputTokens + cacheCreateTokens }
 }
 
 struct ATMAIDayConcept: Codable {
@@ -37,6 +40,33 @@ struct ATMAIDayConcept: Codable {
     let tags: [String]
     let evidence: [ATMAIDayEvidence]
     let confidence: Double
+    // Optional so a newer app against an older `atm` degrades to the previous
+    // contract instead of failing to decode the pane entirely.
+    let evidenceStrength: Double?
+    let origin: String?
+    let computedId: String?
+    let computedTitle: String?
+
+    var strength: Double { evidenceStrength ?? 0 }
+    var isUserCorrected: Bool { (origin ?? "computed") == "user_corrected" }
+}
+
+struct ATMAIDayCoverage: Codable {
+    let complete: Bool
+    let expectedSources: Int
+    let presentSources: Int
+    let missingSources: [String]?
+    let dataThrough: Int64
+
+    var dataThroughDate: Date? { dataThrough > 0 ? Date(timeIntervalSince1970: Double(dataThrough)) : nil }
+}
+
+struct ATMAIDayFeedback: Codable {
+    let day: String
+    let verdict: String
+    let correctedBadgeId: String?
+    let semanticLabels: [String]?
+    let updatedAt: Int64
 }
 
 struct ATMAIDayBadge: Codable, Identifiable, Hashable {
@@ -65,9 +95,17 @@ struct ATMAIDayResult: Codable, Identifiable {
     let features: ATMAIDayFeatures
     let concept: ATMAIDayConcept?
     let badge: ATMAIDayBadge?
+    let candidates: [ATMAIDayBadge]?
     let baselineDays: Int
+    let provisional: Bool?
+    let coverage: ATMAIDayCoverage?
+    let feedback: ATMAIDayFeedback?
     let generatedAt: Int64
     var id: String { day }
+
+    var isProvisional: Bool { provisional ?? false }
+    var generatedAtDate: Date { Date(timeIntervalSince1970: Double(generatedAt)) }
+    var hasContent: Bool { state != "empty" && badge != nil && concept != nil }
 }
 
 struct ATMAIDayAtlas: Codable {
@@ -121,6 +159,12 @@ enum ATMAIDayCommand {
         if let badge { args += ["--badge", badge] }
         return args + ["--json"]
     }
+    static func clearFeedback(day: String) -> [String] {
+        ["day", "feedback", day, "--clear", "--json"]
+    }
+    static func show(day: String) -> [String] {
+        ["day", "show", day, "--json"]
+    }
 }
 
 @MainActor
@@ -130,7 +174,15 @@ final class ATMAIDayStore: ObservableObject {
     @Published private(set) var history: ATMAIDayHistory?
     @Published private(set) var privacy: ATMAIDayPrivacy?
     @Published private(set) var isLoading = false
+    @Published private(set) var lastRefreshed: Date?
     @Published var errorMessage: String?
+
+    /// A day in progress keeps changing as sessions flush into the mirror, so the
+    /// pane refreshes on its own instead of showing whatever was true when it was
+    /// first opened. Long enough not to rebuild constantly, short enough that the
+    /// numbers do not visibly lag.
+    private static let autoRefreshInterval: TimeInterval = 420
+    private var timer: Timer?
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -150,15 +202,53 @@ final class ATMAIDayStore: ObservableObject {
                 atlas = dashboard.atlas
                 history = dashboard.history
                 privacy = dashboard.privacy
+                lastRefreshed = Date()
                 errorMessage = nil
             } catch { errorMessage = error.localizedDescription }
             isLoading = false
         }
     }
 
+    /// Refreshes only when the data is old enough to be worth rebuilding for,
+    /// so returning to the tab or reactivating the app is cheap.
+    func refreshIfStale() {
+        guard let lastRefreshed else {
+            refresh()
+            return
+        }
+        if Date().timeIntervalSince(lastRefreshed) >= Self.autoRefreshInterval { refresh() }
+    }
+
+    func startAutoRefresh() {
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: Self.autoRefreshInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refreshIfStale() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
+    }
+
+    func stopAutoRefresh() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    /// Loads one past day in full, for the history drill-down.
+    func loadDay(_ day: String) async throws -> ATMAIDayResult {
+        let data = try await ATMCommandRunner().run(ATMAIDayCommand.show(day: day))
+        return try decoder.decode(ATMAIDayResult.self, from: data)
+    }
+
     func submitFeedback(verdict: String, badge: String? = nil) {
         guard let day = today?.day else { return }
         mutate(ATMAIDayCommand.feedback(day: day, verdict: verdict, badge: badge))
+    }
+
+    /// Undo for the feedback buttons: a correction overrides the engine for that
+    /// day indefinitely and is one click away, so it has to be one click back.
+    func clearFeedback() {
+        guard let day = today?.day else { return }
+        mutate(ATMAIDayCommand.clearFeedback(day: day))
     }
 
     func setSource(_ source: ATMAIDaySource, enabled: Bool) {

@@ -57,6 +57,7 @@ var (
 	collectItemTitle        string
 	collectItemProject      string
 	collectItemPriority     string
+	collectItemCollection   string
 )
 
 func init() {
@@ -97,10 +98,10 @@ func init() {
 	collectSourceAddCmd.Flags().StringVar(&collectSourceFocus, "instruction", "",
 		"what to watch this source for, in your own words (e.g. 只关注 MR 和需求)")
 	collectSourceAddCmd.Flags().StringVar(&collectSourceKnowledge, "knowledge-collection", "",
-		"knowledge collection this source's daily digest is filed into (default: "+
+		"default knowledge collection for explicitly saved conclusions (default: "+
 			config.CollectionDigestCollection+")")
 	collectSourceAddCmd.Flags().StringVar(&collectSourceStrategy, "strategy", store.CollectionStrategyTasks,
-		"processing strategy: tasks (may create Todos) or observe (knowledge only)")
+		"processing strategy: tasks (may create Todos) or observe (conclusions only)")
 	collectSourceAddCmd.Flags().StringVar(&collectSourceUnit, "decision-unit", store.CollectionDecisionUnitWindow,
 		"what one decision covers: window (messages within 15 minutes) or message "+
 			"(each message on its own — for notification feeds)")
@@ -127,11 +128,13 @@ func init() {
 	}
 	collectItemRevertCmd.Flags().BoolVarP(&collectYes, "yes", "y", false, "skip confirmation")
 	collectItemDeleteCmd.Flags().BoolVarP(&collectYes, "yes", "y", false, "skip confirmation")
+	collectItemSaveCmd.Flags().StringVar(&collectItemCollection, "collection", "",
+		"knowledge collection to save into (default: source setting or "+config.CollectionDigestCollection+")")
 
 	collectSourceCmd.AddCommand(collectSourceListCmd, collectSourceSearchCmd, collectSourceAddCmd,
 		collectSourceEnableCmd, collectSourceDisableCmd, collectSourceDeleteCmd)
 	collectItemCmd.AddCommand(collectItemReprocessCmd, collectItemPromoteCmd, collectItemCorrectCmd,
-		collectItemRevertCmd, collectItemDeleteCmd)
+		collectItemSaveCmd, collectItemRevertCmd, collectItemDeleteCmd)
 	collectCmd.AddCommand(collectStatusCmd, collectRunCmd, collectDigestCmd, collectEnableCmd,
 		collectDisableCmd, collectHistoryCmd, collectSearchCmd, collectAnalyzeCmd,
 		collectSourceCmd, collectItemCmd)
@@ -949,7 +952,7 @@ func collectionAnalyzeText(report collector.AnalyzeReport, applied bool) string 
 		builder.WriteString("确认后落地：atm collect item promote <item-id>\n")
 	}
 	if report.Insights > 0 {
-		builder.WriteString("沉淀内容写入知识库：atm collect digest --source " + report.SourceID + "\n")
+		builder.WriteString("结论确认后保存：atm collect item save <item-id>\n")
 	}
 	return builder.String()
 }
@@ -1120,6 +1123,19 @@ var collectItemCorrectCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		item, err := collector.DefaultService().Correct(args[0], collectionItemCorrection(cmd))
+		if err != nil {
+			return err
+		}
+		return printCollectionItem(item)
+	},
+}
+
+var collectItemSaveCmd = &cobra.Command{
+	Use:   "save <item-id>",
+	Short: "Save an insight conclusion to the knowledge base",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		item, err := collector.DefaultService().SaveConclusion(args[0], collectItemCollection)
 		if err != nil {
 			return err
 		}

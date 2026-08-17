@@ -38,8 +38,9 @@ type CollectionSource struct {
 	// Instruction is what this source should be watched for, in the user's own
 	// words. It reaches the classifier as trusted instruction; the chat does not.
 	Instruction string `json:"instruction,omitempty"`
-	// KnowledgeCollection is where this source's daily digest is filed. Empty
-	// means config.CollectionDigestCollection.
+	// KnowledgeCollection is the default destination when a user explicitly
+	// saves one of this source's conclusions (and for optional manual digests).
+	// Empty means config.CollectionDigestCollection.
 	KnowledgeCollection string `json:"knowledge_collection,omitempty"`
 	Strategy            string `json:"strategy"`
 	// DecisionUnit is how much of a fetched window one decision covers:
@@ -130,8 +131,13 @@ type CollectionItem struct {
 	Priority       string  `json:"priority,omitempty"`
 	Reason         string  `json:"reason,omitempty"`
 	Confidence     float64 `json:"confidence,omitempty"`
-	TodoID         string  `json:"todo_id,omitempty"`
-	Status         string  `json:"status"`
+	// KnowledgeDocumentID is empty while an insight is only a conclusion in the
+	// collection workspace. It is set by the explicit save action, never by the
+	// classifier or background collection.
+	KnowledgeDocumentID string `json:"knowledge_document_id,omitempty"`
+	KnowledgeCollection string `json:"knowledge_collection,omitempty"`
+	TodoID              string `json:"todo_id,omitempty"`
+	Status              string `json:"status"`
 	// Attempts counts how many times processing this batch has been tried.
 	// Automatic retries stop at MaxCollectionAttempts; see
 	// CollectionRetriesExhausted.
@@ -465,13 +471,15 @@ func PutCollectionItem(db *sql.DB, item CollectionItem) (CollectionItem, bool, e
 	}
 	result, err := db.Exec(`INSERT INTO collection_items
 		(id,source_id,connector,conversation_id,fingerprint,message_ids,sender,occurred_at,
-		 raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,todo_id,
-		 status,attempts,dispatch_status,dispatch_error,error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
+		raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,
+		 knowledge_document_id,knowledge_collection,todo_id,status,attempts,dispatch_status,dispatch_error,
+		 error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
 		item.ID, item.SourceID, item.Connector, item.ConversationID, item.Fingerprint,
 		string(messageIDs), item.Sender, item.OccurredAt, item.RawContext, item.Action,
 		item.ProposedAction, item.Title, item.Summary, item.ItemType, item.Project, item.Priority, item.Reason,
-		item.Confidence, nullableString(item.TodoID), item.Status, item.Attempts,
+		item.Confidence, item.KnowledgeDocumentID, item.KnowledgeCollection,
+		nullableString(item.TodoID), item.Status, item.Attempts,
 		item.DispatchStatus, item.DispatchError, item.Error, item.CreatedAt, item.UpdatedAt)
 	if err != nil {
 		return CollectionItem{}, false, err
@@ -492,9 +500,10 @@ func UpdateCollectionItem(db *sql.DB, item CollectionItem) error {
 	item.UpdatedAt = time.Now().In(config.Loc).Unix()
 	_, err = db.Exec(`UPDATE collection_items SET conversation_id=?,message_ids=?,sender=?,occurred_at=?,
 		raw_context=?,action=?,proposed_action=?,title=?,summary=?,item_type=?,project=?,priority=?,reason=?,confidence=?,
-		todo_id=?,status=?,attempts=?,dispatch_status=?,dispatch_error=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
+		knowledge_document_id=?,knowledge_collection=?,todo_id=?,status=?,attempts=?,dispatch_status=?,dispatch_error=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
 		item.Sender, item.OccurredAt, item.RawContext, item.Action, item.ProposedAction, item.Title, item.Summary,
 		item.ItemType, item.Project, item.Priority, item.Reason, item.Confidence,
+		item.KnowledgeDocumentID, item.KnowledgeCollection,
 		nullableString(item.TodoID), item.Status, item.Attempts, item.DispatchStatus,
 		item.DispatchError, item.Error, item.UpdatedAt, item.ID)
 	return err
@@ -900,7 +909,8 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 // created_at and updated_at exist on both sides of the join.
 const collectionItemSelect = `SELECT i.id,i.source_id,i.connector,i.conversation_id,i.fingerprint,
 	i.message_ids,i.sender,i.occurred_at,i.raw_context,i.action,i.proposed_action,i.title,i.summary,
-	i.item_type,i.project,i.priority,i.reason,i.confidence,COALESCE(i.todo_id,''),i.status,i.attempts,
+	i.item_type,i.project,i.priority,i.reason,i.confidence,i.knowledge_document_id,i.knowledge_collection,
+	COALESCE(i.todo_id,''),i.status,i.attempts,
 	i.dispatch_status,i.dispatch_error,i.error,
 	i.created_at,i.updated_at,COALESCE(t.status,''),t.archived_at IS NOT NULL
 	FROM collection_items i LEFT JOIN todos t ON t.id=i.todo_id`
@@ -933,7 +943,8 @@ func scanCollectionItem(scanner collectionScanner) (CollectionItem, error) {
 	err := scanner.Scan(&item.ID, &item.SourceID, &item.Connector, &item.ConversationID,
 		&item.Fingerprint, &messageIDs, &item.Sender, &item.OccurredAt, &item.RawContext,
 		&item.Action, &item.ProposedAction, &item.Title, &item.Summary, &item.ItemType, &item.Project,
-		&item.Priority, &item.Reason, &item.Confidence, &item.TodoID, &item.Status, &item.Attempts,
+		&item.Priority, &item.Reason, &item.Confidence, &item.KnowledgeDocumentID,
+		&item.KnowledgeCollection, &item.TodoID, &item.Status, &item.Attempts,
 		&item.DispatchStatus, &item.DispatchError, &item.Error, &item.CreatedAt, &item.UpdatedAt,
 		&item.TodoStatus, &todoArchived)
 	item.TodoArchived = todoArchived != 0

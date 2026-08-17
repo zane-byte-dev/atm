@@ -5,32 +5,98 @@ import XCTest
 final class ModelsTests: XCTestCase {
     func testAIDayContractAndCommands() throws {
         let data = Data("""
-        {"schema_version":2,"day":"2026-08-15","state":"ready","timezone":"Asia/Shanghai",
+        {"schema_version":3,"day":"2026-08-15","state":"ready","timezone":"Asia/Shanghai",
          "features":{"session_count":2,"event_count":8,"turn_count":3,"tool_calls":4,"source_count":2,
           "input_tokens":100,"output_tokens":50,"cache_create_tokens":10,"cache_read_tokens":20,
           "generation_seconds":6,"active_seconds":6,"foreground_seconds":6,"background_seconds":0,
           "semantic_counts":{"directive":2},"modality_counts":{"code":4}},
          "concept":{"id":"code_architect","title":"代码架构师","explanation":"代码与工具构成主旋律。",
-          "tags":["grid","growth"],"evidence":[{"metric":"code_events","value":4,"unit":"events"}],"confidence":0.9},
+          "tags":["grid","growth"],"evidence":[{"metric":"code_events","value":4,"unit":"events"},
+          {"metric":"tool_calls","value":4,"unit":"calls"}],"confidence":0.72,
+          "evidence_strength":0.45,"origin":"user_corrected","computed_id":"deep_collaboration",
+          "computed_title":"深度共创"},
          "badge":{"id":"code_architect","name":"代码架构师","description":"代码与工具构成主旋律。",
           "family":"grid","kind":"growth","level":1,"unlocked":true,"qualified_days":1,
           "qualified_dates":["2026-08-15"],"next_level_days":7,"progress":0,"score":0.88,
           "evidence":[{"metric":"code_events","value":4,"unit":"events"}]},
-         "baseline_days":12,"generated_at":1,"engine_version":2}
+         "candidates":[{"id":"deep_collaboration","name":"深度共创","description":"多轮互动。",
+          "family":"crystal","kind":"growth","level":0,"unlocked":false,"qualified_days":0,
+          "qualified_dates":[],"next_level_days":3,"progress":0,"score":0.5}],
+         "baseline_days":12,"provisional":true,
+         "coverage":{"complete":false,"expected_sources":3,"present_sources":2,
+          "missing_sources":["claude"],"data_through":1755400000},
+         "feedback":{"day":"2026-08-15","verdict":"corrected","corrected_badge_id":"code_architect","updated_at":2},
+         "generated_at":1,"engine_version":3}
         """.utf8)
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         let result = try decoder.decode(ATMAIDayResult.self, from: data)
         XCTAssertEqual(result.badge?.id, "code_architect")
         XCTAssertEqual(result.features.totalTokens, 180)
+        // Cache reads track context size, not work, so they stay out of the figure
+        // shown as "how much happened today".
+        XCTAssertEqual(result.features.workTokens, 160)
         XCTAssertEqual(result.badge?.qualifiedDates, ["2026-08-15"])
+        XCTAssertTrue(result.isProvisional)
+        XCTAssertEqual(result.coverage?.complete, false)
+        XCTAssertEqual(result.coverage?.missingSources, ["claude"])
+        XCTAssertEqual(result.feedback?.verdict, "corrected")
+        XCTAssertEqual(result.candidates?.count, 1)
+        // A correction records the user's judgement without erasing the engine's.
+        XCTAssertTrue(result.concept?.isUserCorrected == true)
+        XCTAssertEqual(result.concept?.computedTitle, "深度共创")
+        XCTAssertEqual(result.concept?.strength, 0.45)
+        XCTAssertLessThan(result.concept?.confidence ?? 1, 1)
         XCTAssertEqual(ATMAIDayCommand.today, ["day", "today", "--json"])
         XCTAssertEqual(ATMAIDayCommand.dashboard, ["day", "dashboard", "--days", "180", "--json"])
         XCTAssertEqual(
             ATMAIDayCommand.feedback(day: "2026-08-15", verdict: "corrected", badge: "code_architect"),
             ["day", "feedback", "2026-08-15", "--verdict", "corrected", "--badge", "code_architect", "--json"]
         )
+        XCTAssertEqual(
+            ATMAIDayCommand.clearFeedback(day: "2026-08-15"),
+            ["day", "feedback", "2026-08-15", "--clear", "--json"]
+        )
+        XCTAssertEqual(ATMAIDayCommand.show(day: "2026-08-15"), ["day", "show", "2026-08-15", "--json"])
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ATMAIDayCommand.today), 60)
+    }
+
+    /// The app ships separately from `atm`, so an older CLI must degrade to the
+    /// previous contract rather than fail the whole pane.
+    func testAIDayResultDecodesWithoutTheNewProvenanceFields() throws {
+        let data = Data("""
+        {"schema_version":2,"day":"2026-08-15","state":"ready","timezone":"Asia/Shanghai",
+         "features":{"session_count":1,"event_count":2,"turn_count":2,"tool_calls":0,"source_count":1,
+          "input_tokens":10,"output_tokens":5,"cache_create_tokens":0,"cache_read_tokens":0,
+          "generation_seconds":1,"active_seconds":1,"foreground_seconds":1,"background_seconds":0,
+          "semantic_counts":{},"modality_counts":{}},
+         "concept":{"id":"deep_collaboration","title":"深度共创","explanation":"多轮互动。",
+          "tags":["crystal","growth"],"evidence":[],"confidence":0.6},
+         "baseline_days":0,"generated_at":1,"engine_version":2}
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let result = try decoder.decode(ATMAIDayResult.self, from: data)
+        XCTAssertFalse(result.isProvisional)
+        XCTAssertFalse(result.concept?.isUserCorrected == true)
+        XCTAssertEqual(result.concept?.strength, 0)
+        XCTAssertNil(result.coverage)
+        XCTAssertNil(result.feedback)
+    }
+
+    func testAIDayTokenFormattingIsReadable() {
+        XCTAssertEqual(ATMAIDayFormat.tokens(17_214_880), "17.2M")
+        XCTAssertEqual(ATMAIDayFormat.tokens(2_400), "2.4K")
+        XCTAssertEqual(ATMAIDayFormat.tokens(860), "860")
+    }
+
+    func testAtlasGuideReportsDistanceToNextLevel() {
+        let badge = ATMAIDayBadge(
+            id: "code_architect", name: "代码架构师", description: "", family: "grid", kind: "growth",
+            level: 1, unlocked: true, qualifiedDays: 4, qualifiedDates: [], nextLevelDays: 7,
+            progress: 0.57, lastQualified: nil, cooldownUntil: nil, score: nil, evidence: nil
+        )
+        XCTAssertEqual(ATMAIDayAtlasGuide.nextStep(badge), "距 L2 还差 3 天")
     }
 
     func testTodoRefineMetadataReadsLatestPersistedSource() {
@@ -165,7 +231,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["config", "test-text-model", "--json"]), 45)
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)
         XCTAssertEqual(notification?.subtitle, "自动收集完成")
-        XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 沉淀 0 · 失败 0")
+        XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 结论 0 · 失败 0")
     }
 
     func testCollectionManualRunIsScopedToOneSource() {
@@ -173,6 +239,34 @@ final class ModelsTests: XCTestCase {
             ATMCollectionRunCommand.arguments(sourceID: "cs-example"),
             ["collect", "run", "--source", "cs-example", "--json"]
         )
+    }
+
+    func testCollectionGroupsTodoSupplementsUnderTheCreateRecord() throws {
+        let data = Data(
+            """
+            [
+              {"id":"create","source_id":"s","connector":"c","fingerprint":"f1",
+               "message_ids":["m1"],"action":"create","todo_id":"t1","status":"processed",
+               "created_at":10,"updated_at":10},
+              {"id":"late","source_id":"s","connector":"c","fingerprint":"f2",
+               "message_ids":["m2"],"action":"append","todo_id":"t1","summary":"第二次补充",
+               "occurred_at":30,"status":"processed","created_at":30,"updated_at":30},
+              {"id":"early","source_id":"s","connector":"c","fingerprint":"f3",
+               "message_ids":["m3"],"action":"append","todo_id":"t1","summary":"第一次补充",
+               "occurred_at":20,"status":"processed","created_at":20,"updated_at":20},
+              {"id":"standalone","source_id":"s","connector":"c","fingerprint":"f4",
+               "message_ids":["m4"],"action":"append","todo_id":"external-todo","status":"processed",
+               "created_at":40,"updated_at":40}
+            ]
+            """.utf8
+        )
+        let items = try JSONDecoder().decode([ATMCollectionItem].self, from: data)
+        XCTAssertEqual(ATMCollectionItemGrouping.visibleItems(items).map(\.id), ["create", "standalone"])
+        XCTAssertEqual(
+            ATMCollectionItemGrouping.supplements(for: items[0], in: items).map(\.id),
+            ["early", "late"]
+        )
+        XCTAssertTrue(ATMCollectionItemGrouping.supplements(for: items[3], in: items).isEmpty)
     }
 
     func testTaskRunDecodesExecutionEvidence() throws {

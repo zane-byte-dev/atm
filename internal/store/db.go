@@ -216,6 +216,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 41
+		case 41:
+			if err := migrateV41ToV42(db); err != nil {
+				return err
+			}
+			version = 42
+		case 42:
+			if err := migrateV42ToV43(db); err != nil {
+				return err
+			}
+			version = 43
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -1071,6 +1081,87 @@ func migrateV40ToV41(db *sql.DB) error {
 		if _, err := tx.Exec(statement); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+// migrateV41ToV42 records where an AI Day conclusion came from, and discards the
+// derived projections built by the previous engine.
+//
+// The reset is deliberate. The v2 engine's rarity term read badge rows for days
+// *after* the day being scored, so every rebuild of the same range produced
+// different history and the sequence never converged — the stored badge days,
+// levels and per-day concepts are output from a non-deterministic process and
+// cannot be reconciled with the days a rebuild would now produce. Modality
+// counting, tool-to-day attribution and self-source filtering also changed, so
+// the features themselves differ. These tables exist to be rebuilt from the
+// session mirror; user-authored rows (feedback, source and privacy settings) are
+// kept.
+func migrateV41ToV42(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, column := range []struct{ name, definition string }{
+		{"evidence_strength", `ALTER TABLE ai_day_results ADD COLUMN evidence_strength REAL NOT NULL DEFAULT 0`},
+		{"origin", `ALTER TABLE ai_day_results ADD COLUMN origin TEXT NOT NULL DEFAULT 'computed'`},
+		{"computed_badge_id", `ALTER TABLE ai_day_results ADD COLUMN computed_badge_id TEXT NOT NULL DEFAULT ''`},
+	} {
+		has, err := tableHasColumn(tx, "ai_day_results", column.name)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := tx.Exec(column.definition); err != nil {
+			return err
+		}
+	}
+	statements := []string{
+		`DELETE FROM ai_day_badge_progress`,
+		`DELETE FROM ai_day_badge_days`,
+		`DELETE FROM ai_day_session_features`,
+		`DELETE FROM ai_day_feature_details`,
+		`DELETE FROM ai_day_results`,
+		`DELETE FROM ai_day_features`,
+		`DELETE FROM ai_day_events`,
+		`UPDATE schema_version SET version = 42`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// migrateV42ToV43 keeps collected insights in their own conclusion until the
+// user explicitly saves one. Existing insight records remain unsaved: old daily
+// digest documents cannot be mapped back to one item without guessing.
+func migrateV42ToV43(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, column := range []struct{ name, definition string }{
+		{"knowledge_document_id", `ALTER TABLE collection_items ADD COLUMN knowledge_document_id TEXT NOT NULL DEFAULT ''`},
+		{"knowledge_collection", `ALTER TABLE collection_items ADD COLUMN knowledge_collection TEXT NOT NULL DEFAULT ''`},
+	} {
+		has, err := tableHasColumn(tx, "collection_items", column.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := tx.Exec(column.definition); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 43`); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

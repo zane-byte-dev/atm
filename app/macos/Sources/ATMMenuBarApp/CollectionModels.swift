@@ -422,6 +422,10 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     let priority: String?
     let reason: String?
     let confidence: Double?
+    /// Empty while an insight only lives in the Collection workspace's
+    /// conclusion. Set after the user explicitly saves it as knowledge.
+    let knowledgeDocumentID: String?
+    let knowledgeCollection: String?
     let todoID: String?
     let status: String
     /// How many times this batch has been tried. Absent from older CLI output,
@@ -459,6 +463,8 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
         case todoStatus = "todo_status"
         case todoArchived = "todo_archived"
         case retryStopped = "retry_stopped"
+        case knowledgeDocumentID = "knowledge_document_id"
+        case knowledgeCollection = "knowledge_collection"
     }
 }
 
@@ -509,13 +515,46 @@ extension ATMCollectionItem {
     }
 
     /// The main list is what you glance at, and that means work: things ATM filed
-    /// or wants filed. An insight is deliberately not work — its readable form is
-    /// the day's digest in the knowledge base — so it collapses alongside noise
-    /// rather than competing with Todos for attention. A record whose Todo is
-    /// already closed is no longer work either: keeping it up here turned the
-    /// workspace into a history feed, where twelve of twenty rows wanted nothing.
+    /// or wants filed. An unsaved insight still needs the user's decision, so it
+    /// stays visible until its conclusion has explicitly been saved to knowledge.
+    /// A record whose Todo is already closed is no longer work either: keeping it
+    /// up here turned the workspace into a history feed, where twelve of twenty
+    /// rows wanted nothing.
     var shouldCollapseInCollection: Bool {
-        action == "ignore" || action == "insight" || todoClosed
+        action == "ignore"
+            || (action == "insight" && knowledgeDocumentID?.isEmpty == false)
+            || todoClosed
+    }
+}
+
+/// Collection's middle column is one row per filed Todo, not one row per write.
+/// A create is the durable headline; later append decisions remain audit records
+/// but are presented inside that create's detail. An append without a matching
+/// create stays visible so older or externally-created Todos never disappear.
+enum ATMCollectionItemGrouping {
+    static func visibleItems(_ items: [ATMCollectionItem]) -> [ATMCollectionItem] {
+        let createdTodoIDs = Set(items.compactMap { item -> String? in
+            guard item.action == "create", let todoID = item.todoID, !todoID.isEmpty else { return nil }
+            return todoID
+        })
+        return items.filter { item in
+            guard item.action == "append", let todoID = item.todoID else { return true }
+            return !createdTodoIDs.contains(todoID)
+        }
+    }
+
+    static func supplements(
+        for item: ATMCollectionItem,
+        in items: [ATMCollectionItem]
+    ) -> [ATMCollectionItem] {
+        guard item.action == "create", let todoID = item.todoID, !todoID.isEmpty else { return [] }
+        return items
+            .filter { $0.action == "append" && $0.todoID == todoID }
+            .sorted {
+                let lhs = $0.occurredAt ?? $0.createdAt
+                let rhs = $1.occurredAt ?? $1.createdAt
+                return lhs == rhs ? $0.id < $1.id : lhs < rhs
+            }
     }
 }
 

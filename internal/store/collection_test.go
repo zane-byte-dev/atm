@@ -87,6 +87,52 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 	}
 }
 
+func TestMigrateV42AddsExplicitKnowledgeSaveLink(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "migration", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _, err := PutCollectionItem(db, CollectionItem{
+		SourceID: source.ID, Connector: "test", Fingerprint: "migration-item",
+		MessageIDs: []string{"m1"}, Action: "insight", Status: "processed", Summary: "保留的结论",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE collection_items DROP COLUMN knowledge_document_id`,
+		`ALTER TABLE collection_items DROP COLUMN knowledge_collection`,
+		`UPDATE schema_version SET version=42`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("prepare v42: %v", err)
+		}
+	}
+	db.Close()
+
+	db, err = Open()
+	if err != nil {
+		t.Fatalf("migrate v42: %v", err)
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := GetCollectionItem(db, item.ID)
+	if err != nil || version != SchemaVersion || migrated.Summary != "保留的结论" ||
+		migrated.KnowledgeDocumentID != "" || migrated.KnowledgeCollection != "" {
+		t.Fatalf("version=%d item=%+v err=%v", version, migrated, err)
+	}
+}
+
 func TestCollectionOverviewKeepsLatestRunForEverySource(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()

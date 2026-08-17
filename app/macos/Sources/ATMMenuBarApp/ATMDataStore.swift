@@ -1681,12 +1681,6 @@ final class ATMDataStore: ObservableObject {
                     lastCollectionAttemptAt = Date()
                     defer { isCollecting = false }
                     _ = try await runner.run(["collect", "run", "--due", "--json"])
-                    // Whatever this run filed as an insight is only readable once
-                    // it reaches the knowledge base. --due decides for itself
-                    // whether enough has accumulated to be worth a model call, so
-                    // calling it on every collection cycle is cheap; a failure
-                    // here must not lose the run that just succeeded.
-                    _ = try? await runner.run(["collect", "digest", "--due", "--json"])
                     let refreshed = try await runner.run(["collect", "status", "--limit", "200", "--json"])
                     status = try JSONDecoder().decode(ATMCollectionOverview.self, from: refreshed)
                     if let status { notifyCollectionRuns(status.runs) }
@@ -1900,6 +1894,12 @@ final class ATMDataStore: ObservableObject {
 
     func reprocessCollectionItem(_ item: ATMCollectionItem) {
         runCollectionItemAction(["reprocess", item.id])
+    }
+
+    /// Insight classification stops at the conclusion. This explicit action is
+    /// the only Collection-workspace path that creates central knowledge.
+    func saveCollectionItemToKnowledge(_ item: ATMCollectionItem) {
+        runCollectionItemAction(["save", item.id])
     }
 
     func promoteCollectionItem(

@@ -43,6 +43,64 @@ func Rebuild(ctx context.Context, db *sql.DB, from, to time.Time, loc *time.Loca
 	return summary, nil
 }
 
+// Refresh is the zero-configuration entry point used by `atm day today` and the
+// desktop dashboard. It fills in any missing day in the baseline window and
+// always rebuilds the current day, but leaves already-built past days alone.
+// Rebuilding the whole window on every read meant opening the app could silently
+// rewrite last month's badges; changing history stays an explicit `day rebuild`.
+func Refresh(ctx context.Context, db *sql.DB, now time.Time, loc *time.Location, windowDays int) (RebuildSummary, error) {
+	today := dayStart(now, loc)
+	if err := EnsureCollectionStart(ctx, db, today.Format(time.DateOnly)); err != nil {
+		return RebuildSummary{}, err
+	}
+	built, err := builtDays(ctx, db, today.AddDate(0, 0, -windowDays).Format(time.DateOnly), today.Format(time.DateOnly))
+	if err != nil {
+		return RebuildSummary{}, err
+	}
+	summary := RebuildSummary{SchemaVersion: ContractVersion, From: today.AddDate(0, 0, -windowDays).Format(time.DateOnly), To: today.Format(time.DateOnly)}
+	for i := windowDays; i >= 0; i-- {
+		day := today.AddDate(0, 0, -i)
+		key := day.Format(time.DateOnly)
+		if i > 0 && built[key] {
+			continue
+		}
+		result, err := RebuildDay(ctx, db, day, loc)
+		if err != nil {
+			return RebuildSummary{}, fmt.Errorf("refresh %s: %w", key, err)
+		}
+		summary.Days = append(summary.Days, result)
+	}
+	summary.Count = len(summary.Days)
+	if _, err := PruneEvents(ctx, db, now); err != nil {
+		return RebuildSummary{}, err
+	}
+	if len(summary.Days) == 0 {
+		result, err := Load(ctx, db, today.Format(time.DateOnly))
+		if err != nil {
+			return RebuildSummary{}, err
+		}
+		summary.Days, summary.Count = []Result{result}, 1
+	}
+	return summary, nil
+}
+
+func builtDays(ctx context.Context, db *sql.DB, from, to string) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT day FROM ai_day_features WHERE day>=? AND day<=?`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	built := map[string]bool{}
+	for rows.Next() {
+		var day string
+		if err := rows.Scan(&day); err != nil {
+			return nil, err
+		}
+		built[day] = true
+	}
+	return built, rows.Err()
+}
+
 func RebuildDay(ctx context.Context, db *sql.DB, day time.Time, loc *time.Location) (Result, error) {
 	start := dayStart(day, loc)
 	end := start.AddDate(0, 0, 1)
@@ -57,7 +115,12 @@ func RebuildDay(ctx context.Context, db *sql.DB, day time.Time, loc *time.Locati
 	if err != nil {
 		return Result{}, err
 	}
-	result := selectReward(ctx, db, features, baseline, time.Now().Unix())
+	provisional := isProvisional(start, time.Now(), loc)
+	coverage, err := dayCoverage(ctx, db, start, end)
+	if err != nil {
+		return Result{}, err
+	}
+	result := selectReward(ctx, db, features, baseline, provisional, coverage, time.Now().Unix())
 	if err := save(ctx, db, result); err != nil {
 		return Result{}, err
 	}
@@ -67,17 +130,62 @@ func RebuildDay(ctx context.Context, db *sql.DB, day time.Time, loc *time.Locati
 	return Load(ctx, db, result.Day)
 }
 
+// isProvisional reports whether the day has not yet ended in the user's
+// timezone, i.e. whether more of it is still expected to arrive.
+func isProvisional(dayStartLocal, now time.Time, loc *time.Location) bool {
+	return now.In(loc).Before(dayStartLocal.AddDate(0, 0, 1))
+}
+
+// dayCoverage compares the sources that produced events on this day against
+// those active in the surrounding week. AI Day reads a mirror that other
+// processes fill in as sessions flush, so "no tool calls today" routinely means
+// "not synced yet" rather than "you used no tools".
+func dayCoverage(ctx context.Context, db *sql.DB, start, end time.Time) (*Coverage, error) {
+	weekStart := start.AddDate(0, 0, -7).Unix()
+	rows, err := db.QueryContext(ctx, `
+		SELECT source,
+		       MAX(CASE WHEN occurred_at >= ? AND occurred_at < ? THEN 1 ELSE 0 END) AS present
+		FROM ai_day_events
+		WHERE occurred_at >= ? AND occurred_at < ?
+		GROUP BY source ORDER BY source`, start.Unix(), end.Unix(), weekStart, end.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	coverage := &Coverage{Complete: true}
+	for rows.Next() {
+		var source string
+		var present int
+		if err := rows.Scan(&source, &present); err != nil {
+			return nil, err
+		}
+		coverage.ExpectedSource++
+		if present == 1 {
+			coverage.PresentSource++
+		} else {
+			coverage.MissingSources = append(coverage.MissingSources, source)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	coverage.Complete = len(coverage.MissingSources) == 0
+	_ = db.QueryRowContext(ctx, `SELECT COALESCE(MAX(occurred_at),0) FROM ai_day_events WHERE occurred_at < ?`, end.Unix()).Scan(&coverage.DataThrough)
+	return coverage, nil
+}
+
 func Load(ctx context.Context, db *sql.DB, day string) (Result, error) {
 	var result Result
-	var conceptID, title, explanation, tagsJSON, evidenceJSON string
-	var confidence float64
+	var conceptID, title, explanation, tagsJSON, evidenceJSON, origin, computedID string
+	var confidence, evidenceStrength float64
 	err := db.QueryRowContext(ctx, `
 		SELECT f.day, f.timezone, f.session_count, f.turn_count, f.tool_calls,
 		       f.source_count, f.input_tokens, f.output_tokens,
 		       f.cache_create_tokens, f.cache_read_tokens, f.generation_seconds,
 		       f.built_at, f.feature_version,
 		       r.state, r.concept_id, r.title, r.explanation, r.tags_json,
-		       r.evidence_json, r.confidence, r.baseline_days,
+		       r.evidence_json, r.confidence, r.evidence_strength, r.origin,
+		       r.computed_badge_id, r.baseline_days,
 		       r.generated_at, r.engine_version
 		FROM ai_day_features f
 		JOIN ai_day_results r ON r.day = f.day
@@ -88,7 +196,8 @@ func Load(ctx context.Context, db *sql.DB, day string) (Result, error) {
 		&result.Features.CacheCreateTokens, &result.Features.CacheReadTokens,
 		&result.Features.GenerationSeconds, &result.Features.BuiltAt, &result.Features.FeatureVersion,
 		&result.State, &conceptID, &title, &explanation, &tagsJSON, &evidenceJSON,
-		&confidence, &result.BaselineDays, &result.GeneratedAt, &result.EngineVersion,
+		&confidence, &evidenceStrength, &origin, &computedID, &result.BaselineDays,
+		&result.GeneratedAt, &result.EngineVersion,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Result{}, ErrDayNotBuilt
@@ -101,7 +210,15 @@ func Load(ctx context.Context, db *sql.DB, day string) (Result, error) {
 	result.Features.Day = result.Day
 	result.Features.Timezone = result.Timezone
 	if conceptID != "" {
-		concept := &Concept{ID: conceptID, Title: title, Explanation: explanation, Confidence: confidence}
+		concept := &Concept{ID: conceptID, Title: title, Explanation: explanation, Confidence: confidence, Origin: origin, EvidenceStrength: evidenceStrength, ComputedID: computedID}
+		if computedID != "" {
+			if d, ok := definition(computedID); ok {
+				concept.ComputedTitle = d.Name
+			}
+		}
+		if concept.Origin == "" {
+			concept.Origin = "computed"
+		}
 		if err := json.Unmarshal([]byte(tagsJSON), &concept.Tags); err != nil {
 			return Result{}, fmt.Errorf("decode tags: %w", err)
 		}
@@ -110,20 +227,68 @@ func Load(ctx context.Context, db *sql.DB, day string) (Result, error) {
 		}
 		result.Concept = concept
 	}
-	if result.State != "empty" {
+
+	parsed, err := time.ParseInLocation(time.DateOnly, day, locationOf(result.Timezone))
+	if err != nil {
+		return Result{}, fmt.Errorf("decode day: %w", err)
+	}
+	loc := locationOf(result.Timezone)
+	result.Provisional = isProvisional(parsed, time.Now(), loc)
+	if result.State != "empty" && !result.Provisional {
 		baseline, err := loadBaseline(ctx, db, day, 30)
 		if err != nil {
 			return Result{}, err
 		}
 		result.Percentiles = percentiles(result.Features, baseline)
 	}
+	if result.State != "empty" {
+		coverage, err := dayCoverage(ctx, db, parsed, parsed.AddDate(0, 0, 1))
+		if err != nil {
+			return Result{}, err
+		}
+		result.Coverage = coverage
+	}
+	feedback, err := loadFeedback(ctx, db, day)
+	if err != nil {
+		return Result{}, err
+	}
+	result.Feedback = feedback
 	if err := loadFeatureDetails(ctx, db, &result); err != nil {
 		return Result{}, err
 	}
 	if err := loadSelectedBadge(ctx, db, &result); err != nil {
 		return Result{}, err
 	}
+	if err := loadCandidates(ctx, db, &result); err != nil {
+		return Result{}, err
+	}
 	return result, nil
+}
+
+// loadCandidates restores the badges that qualified for the day. The correction
+// flow needs them: "which badge was today really" is a far better question when
+// the alternatives the engine actually considered are visible.
+func loadCandidates(ctx context.Context, db *sql.DB, result *Result) error {
+	rows, err := db.QueryContext(ctx, `SELECT badge_id,score,evidence_json FROM ai_day_badge_days WHERE day=? AND qualified=1 ORDER BY score DESC, badge_id`, result.Day)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, evidenceJSON string
+		var score float64
+		if err := rows.Scan(&id, &score, &evidenceJSON); err != nil {
+			return err
+		}
+		d, ok := definition(id)
+		if !ok {
+			continue
+		}
+		badge := Badge{ID: d.ID, Name: d.Name, Description: d.Description, Family: d.Family, Kind: d.Kind, Score: score, QualifiedDates: []string{}}
+		_ = json.Unmarshal([]byte(evidenceJSON), &badge.Evidence)
+		result.Candidates = append(result.Candidates, badge)
+	}
+	return rows.Err()
 }
 
 func aggregateLegacy(ctx context.Context, db *sql.DB, start, end time.Time, loc *time.Location) (Features, error) {
@@ -293,6 +458,7 @@ func percentiles(current Features, baseline []Features) map[string]float64 {
 		"turn_count":   0.5,
 		"tool_calls":   0.5,
 		"total_tokens": 0.5,
+		"work_tokens":  0.5,
 	}
 	if len(baseline) == 0 {
 		return result
@@ -300,15 +466,53 @@ func percentiles(current Features, baseline []Features) map[string]float64 {
 	turns := make([]int64, 0, len(baseline))
 	tools := make([]int64, 0, len(baseline))
 	tokens := make([]int64, 0, len(baseline))
+	work := make([]int64, 0, len(baseline))
 	for _, f := range baseline {
 		turns = append(turns, f.TurnCount)
 		tools = append(tools, f.ToolCalls)
 		tokens = append(tokens, f.TotalTokens())
+		work = append(work, f.WorkTokens())
 	}
 	result["turn_count"] = rank(current.TurnCount, turns)
 	result["tool_calls"] = rank(current.ToolCalls, tools)
 	result["total_tokens"] = rank(current.TotalTokens(), tokens)
+	result["work_tokens"] = rank(current.WorkTokens(), work)
 	return result
+}
+
+func defaultOrigin(origin string) string {
+	if origin == "" {
+		return "computed"
+	}
+	return origin
+}
+
+// locationOf resolves a stored timezone name, falling back to UTC so a result
+// row written under a since-removed zone still loads.
+func locationOf(name string) *time.Location {
+	if name == "" {
+		return time.UTC
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+func loadFeedback(ctx context.Context, db *sql.DB, day string) (*Feedback, error) {
+	var f Feedback
+	var raw string
+	err := db.QueryRowContext(ctx, `SELECT day,verdict,corrected_badge_id,semantic_labels_json,updated_at FROM ai_day_feedback WHERE day=?`, day).
+		Scan(&f.Day, &f.Verdict, &f.CorrectedBadge, &raw, &f.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_ = json.Unmarshal([]byte(raw), &f.SemanticLabels)
+	return &f, nil
 }
 
 func rank(value int64, baseline []int64) float64 {
@@ -363,17 +567,21 @@ func save(ctx context.Context, db *sql.DB, result Result) error {
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO ai_day_results
 		(day, state, concept_id, title, explanation, tags_json, evidence_json,
-		 confidence, baseline_days, generated_at, engine_version)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 confidence, evidence_strength, origin, computed_badge_id,
+		 baseline_days, generated_at, engine_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(day) DO UPDATE SET
 		 state=excluded.state, concept_id=excluded.concept_id, title=excluded.title,
 		 explanation=excluded.explanation, tags_json=excluded.tags_json,
 		 evidence_json=excluded.evidence_json, confidence=excluded.confidence,
+		 evidence_strength=excluded.evidence_strength, origin=excluded.origin,
+		 computed_badge_id=excluded.computed_badge_id,
 		 baseline_days=excluded.baseline_days, generated_at=excluded.generated_at,
 		 engine_version=excluded.engine_version`,
 		result.Day, result.State, concept.ID, concept.Title, concept.Explanation,
-		string(tagsJSON), string(evidenceJSON), concept.Confidence, result.BaselineDays,
-		result.GeneratedAt, result.EngineVersion)
+		string(tagsJSON), string(evidenceJSON), concept.Confidence,
+		concept.EvidenceStrength, defaultOrigin(concept.Origin), concept.ComputedID,
+		result.BaselineDays, result.GeneratedAt, result.EngineVersion)
 	if err != nil {
 		return err
 	}

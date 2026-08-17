@@ -41,13 +41,16 @@ func LoadHistory(ctx context.Context, db *sql.DB, from, to string) (History, err
 
 func LoadAtlas(ctx context.Context, db *sql.DB) (Atlas, error) {
 	a := Atlas{SchemaVersion: ContractVersion, GeneratedAt: time.Now().Unix(), Total: len(badgeCatalog), Badges: make([]Badge, 0, len(badgeCatalog))}
+	// Progression is scoped to the collection start, so the listed dates must be
+	// too — otherwise a badge reads "L1 · 3 days" above six backfilled dates.
+	start := collectionStart(ctx, db)
 	for _, d := range badgeCatalog {
 		b := Badge{ID: d.ID, Name: d.Name, Description: d.Description, Family: d.Family, Kind: d.Kind}
 		_ = db.QueryRowContext(ctx, `SELECT level,qualified_days,last_qualified,cooldown_until FROM ai_day_badge_progress WHERE badge_id=?`, d.ID).Scan(&b.Level, &b.QualifiedDays, &b.LastQualified, &b.CooldownUntil)
 		b.Unlocked = b.Level > 0
 		b.NextLevelDays = nextLevel(b.Level)
 		b.Progress = levelProgress(b.Level, b.QualifiedDays)
-		dateRows, dateErr := db.QueryContext(ctx, `SELECT day FROM ai_day_badge_days WHERE badge_id=? AND qualified=1 ORDER BY day DESC LIMIT 60`, d.ID)
+		dateRows, dateErr := db.QueryContext(ctx, `SELECT day FROM ai_day_badge_days WHERE badge_id=? AND qualified=1 AND day>=? ORDER BY day DESC LIMIT 60`, d.ID, start)
 		if dateErr != nil {
 			return a, dateErr
 		}
@@ -123,6 +126,25 @@ func SaveFeedback(ctx context.Context, db *sql.DB, feedback Feedback) error {
 	return err
 }
 
+// ClearFeedback removes a day's verdict so the engine's own conclusion applies
+// again. A correction has to be undoable: it overrides the computed badge for
+// that day indefinitely, and the app submits one on a single click.
+func ClearFeedback(ctx context.Context, db *sql.DB, day string) error {
+	if _, err := time.Parse(time.DateOnly, day); err != nil {
+		return fmt.Errorf("invalid feedback day: %w", err)
+	}
+	_, err := db.ExecContext(ctx, `DELETE FROM ai_day_feedback WHERE day=?`, day)
+	return err
+}
+
+// CountEventsOlderThan reports how many derived events a retention change would
+// delete, so the caller can say so before doing it.
+func CountEventsOlderThan(ctx context.Context, db *sql.DB, days int, now time.Time) (int64, error) {
+	var n int64
+	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ai_day_events WHERE occurred_at < ?`, now.AddDate(0, 0, -days).Unix()).Scan(&n)
+	return n, err
+}
+
 func LoadPrivacy(ctx context.Context, db *sql.DB) (Privacy, error) {
 	p := Privacy{SchemaVersion: ContractVersion, SemanticEnabled: settingBool(ctx, db, "semantic_enabled", true), RetentionDays: settingInt(ctx, db, "retention_days", 90), RawRetained: false, Sources: []SourceSetting{}}
 	rows, err := db.QueryContext(ctx, `WITH names AS (SELECT DISTINCT COALESCE(NULLIF(agent,''),'unknown') source FROM sessions UNION SELECT source FROM ai_day_sources) SELECT n.source,COALESCE(s.enabled,1),COALESCE(s.semantic_enabled,1),COUNT(e.event_id),COALESCE(MAX(e.occurred_at),0) FROM names n LEFT JOIN ai_day_sources s ON s.source=n.source LEFT JOIN ai_day_events e ON e.source=n.source GROUP BY n.source,s.enabled,s.semantic_enabled ORDER BY n.source`)
@@ -134,6 +156,11 @@ func LoadPrivacy(ctx context.Context, db *sql.DB) (Privacy, error) {
 		var s SourceSetting
 		if err := rows.Scan(&s.Source, &s.Enabled, &s.SemanticEnabled, &s.EventCount, &s.LastEventAt); err != nil {
 			return p, err
+		}
+		// ATM's own model calls are never ingested, so offering a permission
+		// toggle for them would present a control that does nothing.
+		if IsSelfSource(s.Source) {
+			continue
 		}
 		p.Sources = append(p.Sources, s)
 	}

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -41,12 +42,11 @@ var dayTodayCmd = &cobra.Command{
 			if err := syncDaySources(db); err != nil {
 				return err
 			}
-			today := time.Now().In(config.Loc)
-			// Zero-configuration first use: derive the recent calendar window before
-			// selecting today, otherwise a database with years of session history
-			// would still report a cold-start concept until the user discovered the
-			// explicit rebuild command.
-			summary, err := aiday.Rebuild(cmd.Context(), db, today.AddDate(0, 0, -30), today, config.Loc)
+			// Zero-configuration first use still backfills the baseline window, but
+			// only for days that have never been built. Rewriting already-built days
+			// on every read let a routine refresh silently change last month's
+			// badges; that stays an explicit `atm day rebuild`.
+			summary, err := aiday.Refresh(cmd.Context(), db, time.Now(), config.Loc, 30)
 			if err != nil {
 				return err
 			}
@@ -164,9 +164,33 @@ func printDay(result aiday.Result) {
 		return
 	}
 	fmt.Printf("  %s\n", result.Concept.Explanation)
-	fmt.Printf("  %d sessions · %d turns · %d tool calls · %s tokens · baseline %d days\n",
+	// The evidence is the point of the feature; printing only generic aggregates
+	// left the one thing the card is supposed to justify off the screen.
+	for _, evidence := range result.Concept.Evidence {
+		line := fmt.Sprintf("  · %s %s", formatEvidenceValue(evidence), dayEvidenceLabel(evidence.Metric))
+		if evidence.Comparison != "" {
+			line += fmt.Sprintf(" (%s)", strings.Replace(evidence.Comparison, "recent_p", "近 30 日 P", 1))
+		}
+		fmt.Println(line)
+	}
+	if result.Concept.Origin == "user_corrected" {
+		fmt.Printf("  由你修正 · 引擎原判断：%s\n", result.Concept.ComputedTitle)
+	}
+	fmt.Printf("  %d sessions · %d turns · %d tool calls · %s work tokens (%s incl. cache) · baseline %d days\n",
 		result.Features.SessionCount, result.Features.TurnCount, result.Features.ToolCalls,
-		formatDayTokens(result.Features.TotalTokens()), result.BaselineDays)
+		formatDayTokens(result.Features.WorkTokens()), formatDayTokens(result.Features.TotalTokens()),
+		result.BaselineDays)
+	fmt.Printf("  confidence %.0f%% (evidence %.0f%%)", result.Concept.Confidence*100, result.Concept.EvidenceStrength*100)
+	if result.Feedback != nil {
+		fmt.Printf(" · feedback: %s", result.Feedback.Verdict)
+	}
+	fmt.Println()
+	if result.Provisional {
+		fmt.Printf("  ⧗ 今天还没结束，结论会随数据到达变化（数据截至 %s，未与历史比较）\n", formatDayClock(result.Coverage))
+	}
+	if result.Coverage != nil && !result.Coverage.Complete {
+		fmt.Printf("  ⚠ 数据可能不完整：近 7 天活跃的 %s 今天还没有事件\n", strings.Join(result.Coverage.MissingSources, ", "))
+	}
 }
 
 func printDayLine(result aiday.Result) {
@@ -174,7 +198,48 @@ func printDayLine(result aiday.Result) {
 	if result.Concept != nil {
 		title = result.Concept.Title
 	}
-	fmt.Printf("%s  %s\n", result.Day, title)
+	suffix := ""
+	if result.Provisional {
+		suffix = "  (provisional)"
+	}
+	fmt.Printf("%s  %s%s\n", result.Day, title, suffix)
+}
+
+func formatDayClock(coverage *aiday.Coverage) string {
+	if coverage == nil || coverage.DataThrough == 0 {
+		return "未知"
+	}
+	return time.Unix(coverage.DataThrough, 0).In(config.Loc).Format("15:04")
+}
+
+func formatEvidenceValue(evidence aiday.Evidence) string {
+	if evidence.Value == float64(int64(evidence.Value)) {
+		return fmt.Sprintf("%d%s", int64(evidence.Value), evidenceUnitSuffix(evidence.Unit))
+	}
+	return fmt.Sprintf("%.1f%s", evidence.Value, evidenceUnitSuffix(evidence.Unit))
+}
+
+func evidenceUnitSuffix(unit string) string {
+	if unit == "%" {
+		return "%"
+	}
+	return ""
+}
+
+func dayEvidenceLabel(metric string) string {
+	labels := map[string]string{
+		"source_count": "AI 来源", "session_count": "会话", "turn_count": "对话轮次",
+		"tool_calls": "工具调用", "total_tokens": "Token", "work_tokens": "有效 Token",
+		"generation_seconds": "生成秒数", "code_events": "代码事件", "visual_events": "视觉事件",
+		"quality_loops": "质检循环", "refinements": "细化", "detail_turns": "细节追问",
+		"modality_count": "任务模态", "corrections": "纠正", "acceptances": "直接确认",
+		"consecutive_days": "连续使用", "modality_share": "模态占比", "loop_share": "质检占比",
+		"detail_share": "追问占比", "correction_share": "纠正占比", "acceptance_share": "确认占比",
+	}
+	if label, ok := labels[metric]; ok {
+		return label
+	}
+	return metric
 }
 
 func formatDayTokens(value int64) string {

@@ -224,6 +224,11 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Changed
 
+- **收集结论不再自动进入 inbox。** `insight` 先作为一条“待保存”结论留在收集工作区，用户在
+  结论详情明确点击后，才由 `atm collect item save <item-id>` 写入来源配置的知识库（默认 inbox）；
+  重复保存返回同一文档。App 后台不再跟随每轮收集执行 `collect digest --due`。同一个 Todo 的
+  `append` 记录也不再与 `create` 平铺：中栏保留新建主记录，后续补充按时间收进它的详情；找不到
+  对应新建记录的历史补充仍单独显示，避免旧数据消失。
 - **`~/.atm` 不再对同机其他用户可读。** 目录建为 `0700`，`config.json` 写为 `0600`，旧安装的
   `0755`/`0644` 在下一次写配置时被收紧。这个目录一直放着会话正文、Todo 和记忆，现在还多了一把
   API Key：`credentials.json` 同样是 `0600`，权限比它宽时 ATM 拒绝读取并提示 `chmod`——照用一把

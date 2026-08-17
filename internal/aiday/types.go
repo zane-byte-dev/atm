@@ -4,11 +4,19 @@
 package aiday
 
 const (
-	ContractVersion = 2
-	EventVersion    = 1
-	FeatureVersion  = 2
-	EngineVersion   = 2
+	ContractVersion = 3
+	EventVersion    = 2
+	FeatureVersion  = 3
+	EngineVersion   = 3
 )
+
+// SelfSources are ATM's own model calls. They are recorded in usage_events like
+// any agent's, but they are ATM working on the user's behalf rather than the
+// user working with an AI, so counting them would invent a second "AI source"
+// the user never chose.
+var SelfSources = map[string]bool{"atm": true}
+
+func IsSelfSource(source string) bool { return SelfSources[source] }
 
 var SemanticIntents = []string{
 	"correction", "retry", "refinement", "question", "directive",
@@ -42,6 +50,14 @@ func (f Features) TotalTokens() int64 {
 	return f.InputTokens + f.OutputTokens + f.CacheCreateTokens + f.CacheReadTokens
 }
 
+// WorkTokens excludes cache reads. A cached prompt is re-read on every turn, so
+// cache_read grows with context size rather than with work done and dwarfs the
+// rest by one to two orders of magnitude. Thresholds, percentiles and anything
+// shown as "how much happened today" use this instead of TotalTokens.
+func (f Features) WorkTokens() int64 {
+	return f.InputTokens + f.OutputTokens + f.CacheCreateTokens
+}
+
 func (f Features) Empty() bool {
 	return f.EventCount == 0 && f.SessionCount == 0 && f.TurnCount == 0 && f.ToolCalls == 0 && f.TotalTokens() == 0
 }
@@ -60,7 +76,31 @@ type Concept struct {
 	Explanation string     `json:"explanation"`
 	Tags        []string   `json:"tags"`
 	Evidence    []Evidence `json:"evidence"`
-	Confidence  float64    `json:"confidence"`
+	// Confidence is how much to trust this specific conclusion. It combines
+	// baseline length, the selected badge's evidence strength and source
+	// coverage. It is never raised by user feedback: a correction changes what
+	// the day is, not how certain the engine is.
+	Confidence float64 `json:"confidence"`
+	// EvidenceStrength is the selected badge's own normalized signal, split out
+	// so a card can say "weak evidence, long history" instead of one blended number.
+	EvidenceStrength float64 `json:"evidence_strength"`
+	// Origin is "computed" or "user_corrected".
+	Origin string `json:"origin"`
+	// ComputedID/ComputedTitle preserve what the engine chose before a
+	// correction, so the UI can show both instead of erasing its own answer.
+	ComputedID    string `json:"computed_id,omitempty"`
+	ComputedTitle string `json:"computed_title,omitempty"`
+}
+
+// Coverage reports whether the day's inputs look complete. AI Day reads a
+// session mirror that other processes fill in as sessions flush, so a day being
+// viewed can legitimately be missing a source that was active all week.
+type Coverage struct {
+	Complete       bool     `json:"complete"`
+	ExpectedSource int      `json:"expected_sources"`
+	PresentSource  int      `json:"present_sources"`
+	MissingSources []string `json:"missing_sources,omitempty"`
+	DataThrough    int64    `json:"data_through"`
 }
 
 type Badge struct {
@@ -83,18 +123,25 @@ type Badge struct {
 
 // Result is the versioned public contract returned by `atm day`.
 type Result struct {
-	SchemaVersion int                `json:"schema_version"`
-	Day           string             `json:"day"`
-	State         string             `json:"state"`
-	Timezone      string             `json:"timezone"`
-	Features      Features           `json:"features"`
-	Concept       *Concept           `json:"concept,omitempty"`
-	Badge         *Badge             `json:"badge,omitempty"`
-	Candidates    []Badge            `json:"candidates,omitempty"`
-	BaselineDays  int                `json:"baseline_days"`
-	Percentiles   map[string]float64 `json:"percentiles,omitempty"`
-	GeneratedAt   int64              `json:"generated_at"`
-	EngineVersion int                `json:"engine_version"`
+	SchemaVersion int      `json:"schema_version"`
+	Day           string   `json:"day"`
+	State         string   `json:"state"`
+	Timezone      string   `json:"timezone"`
+	Features      Features `json:"features"`
+	Concept       *Concept `json:"concept,omitempty"`
+	Badge         *Badge   `json:"badge,omitempty"`
+	Candidates    []Badge  `json:"candidates,omitempty"`
+	BaselineDays  int      `json:"baseline_days"`
+	// Percentiles is omitted while Provisional is true: ranking a partial day
+	// against complete days puts every in-progress day at the bottom.
+	Percentiles map[string]float64 `json:"percentiles,omitempty"`
+	// Provisional marks a day that has not finished in the user's timezone. Its
+	// conclusion is the best read of the data so far and is expected to change.
+	Provisional bool      `json:"provisional"`
+	Coverage    *Coverage `json:"coverage,omitempty"`
+	Feedback    *Feedback `json:"feedback,omitempty"`
+	GeneratedAt   int64 `json:"generated_at"`
+	EngineVersion int   `json:"engine_version"`
 }
 
 type Atlas struct {

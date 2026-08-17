@@ -1528,3 +1528,60 @@ func TestDigestHonorsSourceKnowledgeCollection(t *testing.T) {
 		t.Fatalf("digest collection=%+v err=%v", report, err)
 	}
 }
+
+func TestSaveConclusionWritesKnowledgeOnlyAfterExplicitAction(t *testing.T) {
+	withCollectorStore(t)
+	source := observationSource(t)
+	occurred := time.Now().In(config.Loc).Add(-time.Hour).Unix()
+	insightItem(t, source, "m-save-1", "先看结论再保存", occurred)
+	itemID := store.CollectionItemID(source.Connector, "fp-m-save-1")
+
+	documents, err := knowledge.List(config.AtmDir, nil)
+	if err != nil || len(documents) != 0 {
+		t.Fatalf("classification must not write knowledge: docs=%+v err=%v", documents, err)
+	}
+	service := Service{}
+	saved, err := service.SaveConclusion(itemID, "")
+	if err != nil {
+		t.Fatalf("save conclusion: %v", err)
+	}
+	if saved.KnowledgeDocumentID == "" || saved.KnowledgeCollection != config.CollectionDigestCollection {
+		t.Fatalf("saved item=%+v", saved)
+	}
+	document, err := knowledge.Get(config.AtmDir, saved.KnowledgeDocumentID)
+	if err != nil || !strings.Contains(document.Content, "先看结论再保存 的细节") ||
+		!strings.Contains(document.Content, itemID) {
+		t.Fatalf("saved document=%+v err=%v", document, err)
+	}
+
+	// A repeated click opens the same result; it never files a duplicate.
+	again, err := service.SaveConclusion(itemID, "another-library")
+	if err != nil || again.KnowledgeDocumentID != saved.KnowledgeDocumentID {
+		t.Fatalf("repeated save=%+v err=%v", again, err)
+	}
+	documents, _ = knowledge.List(config.AtmDir, nil)
+	if len(documents) != 1 {
+		t.Fatalf("repeated save created duplicates: %+v", documents)
+	}
+}
+
+func TestSaveConclusionRejectsTodoDecision(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _, err := store.PutCollectionItem(db, store.CollectionItem{
+		SourceID: source.ID, Connector: source.Connector, Fingerprint: "todo-conclusion",
+		MessageIDs: []string{"m1"}, Action: "create", Status: "processed",
+		Title: "一个任务", Summary: "任务结论",
+	})
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Service{}).SaveConclusion(item.ID, ""); err == nil {
+		t.Fatal("todo decision was accepted as a saveable insight")
+	}
+}

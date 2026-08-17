@@ -192,10 +192,13 @@ atm collect source list --json
 atm collect run [--source <source-id>] --json
 atm collect run --due --json                       # 后台按来源独立频率运行
 
-# 把当天沉淀（action=insight）汇总成一篇知识文档，每来源每天一篇，重跑原地重写
+# insight 先留在处理记录的“结论”；确认后再显式保存，重复执行不会产生副本
+atm collect item save <item-id> [--collection <collection-id>] --json
+
+# 可选的人工批量入口：把当天 insight 汇总成一篇知识文档，每来源每天一篇，重跑原地重写
 atm collect digest [--source <source-id>] [--date 2026-08-03] --json
 atm collect digest --dry-run --json                # 只看摘要正文，不写知识库
-atm collect digest --due --json                    # 后台：距上次沉淀不足 60 分钟就跳过
+atm collect digest --due --json                    # 手动批量时按 60 分钟间隔跳过
 
 # 看来源原文：同时同步进本地库，不产生 Todo
 atm collect history "<source-id>" --limit 50 --json
@@ -214,7 +217,7 @@ atm collect item delete <item-id> <item-id> ... -y --json
 来源 ID 由连接器定义。连接器支持搜索时，先 `source search`，把候选连同 `detail`
 念给人听，让人确认是哪一个，再用 `--connector/--kind/--id` 精确添加；不要自行挑选同名候选。
 
-每段聊天的判定有四个出口：`create`/`append` 落到 Todo，`insight` 落到知识库（当天汇总成一篇文档），
+每段聊天的判定有四个出口：`create`/`append` 落到 Todo，`insight` 先落到收集记录自己的结论，
 `ignore` 是真噪音。`tasks` 来源默认每 5 分钟、四个出口都可用；`observe` 来源默认每 60 分钟，
 **在配置层被限制为只能 `insight`/`ignore`**——模型判成 create/append 也会被降级成 insight，
 所以闲聊群不可能替别人建任务。人显式 `collect item promote` 不受这个限制。
@@ -225,7 +228,8 @@ atm collect item delete <item-id> <item-id> ... -y --json
 这时 `related_todo_id` 只作上下文关联。`append` 只能落在**这个会话自己建过的** Todo 上：
 手写的 Todo 或别的群的 Todo 不会被聊天改写，目标已关闭或不属于本会话时退回新建。
 
-沉淀内容只在 `collect digest` 跑过之后才在知识库里可读；App 常驻时会跟着每次收集调用 `--due`。
+结论只有在用户运行 `collect item save`（或 App 点击保存）后才进入知识库；`collect digest` 保留为人工
+批量汇总入口，App 常驻收集不会自动调用它。
 需要完整聊天时仍用 `collect history`；已添加的来源可以直接用它的名字或 source-id，不必再搜一次。
 
 取用顺序：**先 `collect search` 查本地**（不打网络、可离线、能命中历史里没成 Todo 的闲聊），

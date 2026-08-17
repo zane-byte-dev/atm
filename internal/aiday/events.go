@@ -36,6 +36,13 @@ func normalizeDay(ctx context.Context, db *sql.DB, start, end time.Time) error {
 	}
 	now := time.Now().Unix()
 	insert := func(event normalizedEvent) error {
+		// ATM's own model calls are recorded like any agent's. They are ATM
+		// working for the user, not the user working with another AI, so letting
+		// them through would manufacture a second "AI source" and hand out
+		// 模型指挥家 for a background classifier call.
+		if IsSelfSource(event.source) {
+			return nil
+		}
 		state, ok := sourceState[event.source]
 		if ok && !state.enabled {
 			return nil
@@ -83,6 +90,9 @@ func normalizeDay(ctx context.Context, db *sql.DB, start, end time.Time) error {
 		if source == "" {
 			source = "unknown"
 		}
+		if IsSelfSource(source) {
+			continue
+		}
 		if err := ensureSource(ctx, tx, source, now); err != nil {
 			rows.Close()
 			return err
@@ -106,6 +116,9 @@ func normalizeDay(ctx context.Context, db *sql.DB, start, end time.Time) error {
 		if err := rows.Scan(&sessionID, &seq, &content, &ts, &source); err != nil {
 			rows.Close()
 			return err
+		}
+		if IsSelfSource(source) {
+			continue
 		}
 		classification := Classify(content)
 		if err := ensureSource(ctx, tx, source, now); err != nil {
@@ -134,6 +147,9 @@ func normalizeDay(ctx context.Context, db *sql.DB, start, end time.Time) error {
 			rows.Close()
 			return err
 		}
+		if IsSelfSource(source) {
+			continue
+		}
 		e.id, e.source, e.sessionHash, e.eventType, e.modality, e.executionMode, e.occurredAt = eventID("usage", fmt.Sprint(id)), source, sessionHash(sessionID), "usage", "general", "interactive", ts
 		if err := ensureSource(ctx, tx, source, now); err != nil {
 			rows.Close()
@@ -148,18 +164,53 @@ func normalizeDay(ctx context.Context, db *sql.DB, start, end time.Time) error {
 		return err
 	}
 
-	rows, err = tx.QueryContext(ctx, `SELECT t.session_id, t.name, t.count, s.created_ts, COALESCE(NULLIF(s.agent,''),'unknown') FROM tools t JOIN sessions s ON s.id=t.session_id WHERE s.created_ts >= ? AND s.created_ts < ?`, startTS, endTS)
+	// `tools` is a per-session lifetime aggregate with no event timestamp
+	// (PRIMARY KEY (session_id, name)), so a day has to be inferred. Attributing
+	// every row to the session's creation day — the previous behaviour — put a
+	// long session's entire tool history on the day it started, while turns and
+	// usage for the same session were attributed by event time. Instead, split
+	// each row across the days the session was measurably active, in proportion
+	// to that day's share of the session's usage events. Sessions with no usage
+	// rows to weight by fall back to the creation day.
+	rows, err = tx.QueryContext(ctx, `
+		SELECT t.session_id, t.name, t.count, s.created_ts,
+		       COALESCE(NULLIF(s.agent,''),'unknown'),
+		       (SELECT COUNT(*) FROM usage_events u WHERE u.session_id=t.session_id AND u.ts>=? AND u.ts<?) AS day_usage,
+		       (SELECT COUNT(*) FROM usage_events u WHERE u.session_id=t.session_id) AS all_usage,
+		       (SELECT COALESCE(MIN(u.ts),0) FROM usage_events u WHERE u.session_id=t.session_id AND u.ts>=? AND u.ts<?) AS first_day_usage
+		FROM tools t JOIN sessions s ON s.id=t.session_id
+		WHERE (s.created_ts >= ? AND s.created_ts < ?)
+		   OR EXISTS (SELECT 1 FROM usage_events u WHERE u.session_id=t.session_id AND u.ts>=? AND u.ts<?)`,
+		startTS, endTS, startTS, endTS, startTS, endTS, startTS, endTS)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var sessionID, name, source string
-		var count, ts int64
-		if err := rows.Scan(&sessionID, &name, &count, &ts, &source); err != nil {
+		var count, createdTS, dayUsage, allUsage, firstDayUsage int64
+		if err := rows.Scan(&sessionID, &name, &count, &createdTS, &source, &dayUsage, &allUsage, &firstDayUsage); err != nil {
 			rows.Close()
 			return err
 		}
-		if err := insert(normalizedEvent{id: eventID("tool", sessionID, name), source: source, sessionHash: sessionHash(sessionID), eventType: "tool", quantity: count, modality: modalityFromTool(name), executionMode: "agentic", occurredAt: ts}); err != nil {
+		quantity, occurredAt := count, createdTS
+		switch {
+		case allUsage > 0 && dayUsage > 0:
+			// Round to nearest so the per-day shares sum back to the session
+			// total rather than systematically undercounting.
+			quantity = (count*dayUsage + allUsage/2) / allUsage
+			occurredAt = firstDayUsage
+		case allUsage > 0:
+			quantity = 0 // active elsewhere, not on this day
+		case createdTS < startTS || createdTS >= endTS:
+			quantity = 0
+		}
+		if quantity <= 0 {
+			continue
+		}
+		// The day is part of the id: one tool row can now yield an event on each
+		// day the session was active, and a day-independent id would let the
+		// second day's insert overwrite the first.
+		if err := insert(normalizedEvent{id: eventID("tool", sessionID, name, start.Format(time.DateOnly)), source: source, sessionHash: sessionHash(sessionID), eventType: "tool", quantity: quantity, modality: modalityFromTool(name), executionMode: "agentic", occurredAt: occurredAt}); err != nil {
 			rows.Close()
 			return err
 		}
@@ -236,16 +287,27 @@ func modalityFromText(text string) string {
 	return "general"
 }
 
+// modalityFromTool is the reliable half of modality detection: a tool name is
+// chosen by the agent for a purpose, unlike the wording of a user's message.
 func modalityFromTool(name string) string {
 	lower := strings.ToLower(name)
-	if strings.Contains(lower, "image") || strings.Contains(lower, "video") || strings.Contains(lower, "render") {
-		return "visual"
+	for _, term := range []string{"image", "video", "render", "screenshot", "diagram", "figma"} {
+		if strings.Contains(lower, term) {
+			return "visual"
+		}
 	}
-	if strings.Contains(lower, "search") || strings.Contains(lower, "web") || strings.Contains(lower, "browser") {
-		return "research"
+	for _, term := range []string{"websearch", "webfetch", "search", "browser", "fetch", "curl", "crawl"} {
+		if strings.Contains(lower, term) {
+			return "research"
+		}
 	}
-	if strings.Contains(lower, "exec") || strings.Contains(lower, "shell") || strings.Contains(lower, "code") || strings.Contains(lower, "test") {
-		return "code"
+	for _, term := range []string{
+		"edit", "write", "read", "bash", "shell", "exec", "grep", "glob",
+		"notebook", "patch", "diff", "code", "test", "build", "compile", "lint", "git",
+	} {
+		if strings.Contains(lower, term) {
+			return "code"
+		}
 	}
 	return "general"
 }

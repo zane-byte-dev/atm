@@ -20,6 +20,8 @@ var (
 	dayPrivacyRetention                                     int
 	dayDeleteFrom, dayDeleteTo                              string
 	dayDeleteAll, dayDeleteYes, daySourceDeleteYes          bool
+	dayFeedbackClear                                        bool
+	dayPrivacyRetentionApply                                bool
 )
 
 func init() {
@@ -28,7 +30,7 @@ func init() {
 	dayFeedbackCmd.Flags().StringVar(&dayFeedbackVerdict, "verdict", "", "accurate, inaccurate, or corrected")
 	dayFeedbackCmd.Flags().StringVar(&dayFeedbackBadge, "badge", "", "replacement badge id for corrected feedback")
 	dayFeedbackCmd.Flags().StringVar(&dayFeedbackLabels, "labels", "", "comma-separated replacement semantic labels")
-	dayFeedbackCmd.MarkFlagRequired("verdict")
+	dayFeedbackCmd.Flags().BoolVar(&dayFeedbackClear, "clear", false, "remove existing feedback for this day and restore the computed result")
 	daySourcesPauseCmd.Flags().BoolVar(&daySourceSemantic, "semantic", true, "also pause semantic classification (kept for explicit contract)")
 	daySourcesDeleteCmd.Flags().BoolVar(&daySourceDeleteYes, "yes", false, "confirm deletion of this source's AI Day derived events")
 	dayPrivacySetCmd.Flags().StringVar(&dayPrivacySemantic, "semantic", "", "set global semantic classification: on or off")
@@ -53,7 +55,7 @@ var dayDashboardCmd = &cobra.Command{
 				return err
 			}
 			today := time.Now().In(config.Loc)
-			summary, err := aiday.Rebuild(cmd.Context(), db, today.AddDate(0, 0, -30), today, config.Loc)
+			summary, err := aiday.Refresh(cmd.Context(), db, time.Now(), config.Loc, 30)
 			if err != nil {
 				return err
 			}
@@ -133,20 +135,50 @@ var dayBadgeCmd = &cobra.Command{Use: "badge <id>", Short: "Show badge progress 
 			output.JSON(b)
 			return nil
 		}
-		fmt.Printf("%s · L%d · %d qualified days\n%s\n", b.Name, b.Level, b.QualifiedDays, b.Description)
+		fmt.Printf("%s · L%d · 累计 %d 天\n%s\n", b.Name, b.Level, b.QualifiedDays, b.Description)
+		if b.NextLevelDays > b.QualifiedDays {
+			fmt.Printf("距 L%d 还差 %d 天（%d/%d）\n", b.Level+1, b.NextLevelDays-b.QualifiedDays, b.QualifiedDays, b.NextLevelDays)
+		}
+		if b.CooldownUntil != "" {
+			fmt.Printf("即时徽章冷却至 %s\n", b.CooldownUntil)
+		}
+		for _, evidence := range b.Evidence {
+			fmt.Printf("  · %s %s\n", formatEvidenceValue(evidence), dayEvidenceLabel(evidence.Metric))
+		}
+		if len(b.QualifiedDates) > 0 {
+			shown := b.QualifiedDates
+			if len(shown) > 8 {
+				shown = shown[:8]
+			}
+			fmt.Printf("最近达成：%s\n", strings.Join(shown, "  "))
+		}
 		return nil
 	})
 }}
-var dayFeedbackCmd = &cobra.Command{Use: "feedback <YYYY-MM-DD>", Short: "Confirm or correct a daily result", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+var dayFeedbackCmd = &cobra.Command{Use: "feedback <YYYY-MM-DD>", Short: "Confirm, correct, or clear feedback on a daily result", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 	day, err := parseLocalDay(args[0])
 	if err != nil {
 		return err
 	}
+	if dayFeedbackClear && dayFeedbackVerdict != "" {
+		return fmt.Errorf("--clear cannot be combined with --verdict")
+	}
+	if !dayFeedbackClear && dayFeedbackVerdict == "" {
+		return fmt.Errorf("--verdict is required (accurate, inaccurate, corrected) unless --clear is passed")
+	}
 	labels := splitCSV(dayFeedbackLabels)
 	return withDB(false, func(db *sql.DB) error {
-		f := aiday.Feedback{Day: args[0], Verdict: dayFeedbackVerdict, CorrectedBadge: dayFeedbackBadge, SemanticLabels: labels}
-		if err := aiday.SaveFeedback(cmd.Context(), db, f); err != nil {
-			return err
+		// Clearing is what makes the correction reversible: without it a mis-tap in
+		// the app permanently overrode the engine for that day.
+		if dayFeedbackClear {
+			if err := aiday.ClearFeedback(cmd.Context(), db, args[0]); err != nil {
+				return err
+			}
+		} else {
+			f := aiday.Feedback{Day: args[0], Verdict: dayFeedbackVerdict, CorrectedBadge: dayFeedbackBadge, SemanticLabels: labels}
+			if err := aiday.SaveFeedback(cmd.Context(), db, f); err != nil {
+				return err
+			}
 		}
 		r, err := aiday.RebuildDay(cmd.Context(), db, day, config.Loc)
 		if err != nil {

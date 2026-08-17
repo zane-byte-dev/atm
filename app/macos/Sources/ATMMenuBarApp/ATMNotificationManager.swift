@@ -148,7 +148,7 @@ struct ATMCollectionNotificationPayload: Equatable {
         // act on, and the day's digest is there whenever they go looking.
         guard created + appended + failed > 0 else { return nil }
         let subtitle = failed > 0 ? "自动收集需要处理" : "自动收集完成"
-        let body = "新增 \(created) · 补充 \(appended) · 沉淀 \(insight) · 失败 \(failed)"
+        let body = "新增 \(created) · 补充 \(appended) · 结论 \(insight) · 失败 \(failed)"
         return ATMCollectionNotificationPayload(subtitle: subtitle, body: body)
     }
 }
