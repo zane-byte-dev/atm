@@ -51,6 +51,17 @@ enum ATMAgentSessionLaunchRoute: Equatable {
             return .application(bundleIdentifier: "com.qoder.work")
         }
 
+        // Antigravity is a VS Code fork, so it has to be matched before the
+        // VS Code branch below. There is no exact conversation deep link, but the
+        // summary index records the workspace folder, which reopens the window the
+        // conversation belongs to.
+        if tool.contains("antigravity") || client.contains("antigravity") {
+            if let cwd = nonEmpty(session.cwd) {
+                return .workspace(bundleIdentifier: "com.google.antigravity", path: cwd)
+            }
+            return .application(bundleIdentifier: "com.google.antigravity")
+        }
+
         if client.contains("vs code") || client.contains("vscode") {
             if let cwd = nonEmpty(session.cwd) {
                 return .workspace(bundleIdentifier: "com.microsoft.VSCode", path: cwd)
@@ -202,6 +213,7 @@ enum ATMAgentSessionLaunchRoute: Equatable {
             "com.microsoft.VSCodeInsiders",
             "com.todesktop.230313mzl4w4u92",
             "com.qoder.work",
+            "com.google.antigravity",
             "com.apple.Terminal",
         ].contains(bundleIdentifier)
     }
@@ -215,6 +227,7 @@ enum ATMAgentSessionLaunchRoute: Equatable {
         case "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders": return "Visual Studio Code"
         case "com.todesktop.230313mzl4w4u92": return "Cursor"
         case "com.qoder.work": return "Qoder"
+        case "com.google.antigravity": return "Antigravity"
         default: return "来源 App"
         }
     }

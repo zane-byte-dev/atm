@@ -354,11 +354,18 @@ func AntigravityLiveSessions(maxAge time.Duration) []Session {
 	}
 	var recent []candidate
 	for _, path := range paths {
-		mtime, _, ok := AntigravitySourceVersion(path)
-		if !ok || mtime == 0 {
+		// The main database's mtime, deliberately not AntigravitySourceVersion.
+		// That fingerprint folds in -wal, which answers a different question:
+		// "has content changed since ATM last parsed this", where opening the
+		// database for a read is enough to move it — including ATM's own read a
+		// moment ago. Liveness asks "when did Antigravity last write this
+		// conversation", and using the fingerprint made every conversation on disk
+		// report as active with the same age right after a sync.
+		info, err := os.Stat(path)
+		if err != nil {
 			continue
 		}
-		modified := time.Unix(mtime, 0)
+		modified := info.ModTime()
 		if modified.Before(cutoff) {
 			continue
 		}

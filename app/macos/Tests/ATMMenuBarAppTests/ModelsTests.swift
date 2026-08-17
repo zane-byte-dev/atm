@@ -2479,6 +2479,48 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMAgentDisplay.clientName(missing), "QoderCLI")
     }
 
+    /// Antigravity reports no TTY and no process, so before this route it fell
+    /// through to "unavailable". It is a workspace editor whose summary index
+    /// records the conversation's folder, which is enough to reopen the window —
+    /// the same soft landing Qoder Work gets. It must be matched before the
+    /// VS Code branch, since Antigravity is a VS Code fork.
+    func testAgentSessionLaunchRouteOpensAntigravityAtItsWorkspace() {
+        let session = ATMLiveSession(
+            tool: "antigravity",
+            sessionID: "9d5b8fb4-4502-45f1-ab70-8bf612c731b2",
+            project: "atm",
+            client: "Antigravity",
+            cwd: "/Users/tester/mox/atm",
+            ageSeconds: 12
+        )
+
+        let route = ATMAgentSessionLaunchRoute.resolve(for: session)
+        XCTAssertEqual(
+            route,
+            .workspace(bundleIdentifier: "com.google.antigravity", path: "/Users/tester/mox/atm")
+        )
+        XCTAssertTrue(route.isAvailable)
+        // Not exact: this reopens the workspace, not the conversation.
+        XCTAssertFalse(route.isExact)
+        XCTAssertTrue(route.destinationLabel.contains("Antigravity"))
+    }
+
+    /// Without a folder there is still something better than nothing: bring the
+    /// editor forward rather than report the session unreachable.
+    func testAgentSessionLaunchRouteFallsBackToAntigravityApplication() {
+        let session = ATMLiveSession(
+            tool: "antigravity",
+            sessionID: "4eef93d9-80fc-4180-82ae-d9005ece9450",
+            project: "",
+            client: "Antigravity",
+            ageSeconds: 40
+        )
+
+        let route = ATMAgentSessionLaunchRoute.resolve(for: session)
+        XCTAssertEqual(route, .application(bundleIdentifier: "com.google.antigravity"))
+        XCTAssertTrue(route.isAvailable)
+    }
+
     func testAgentSessionLaunchRouteUsesExactTTYWhenAvailable() {
         let session = ATMLiveSession(
             tool: "Claude Code",

@@ -340,6 +340,19 @@ func TestAntigravityLiveSessions(t *testing.T) {
 	if got := AntigravityLiveSessions(time.Hour); len(got) != 0 {
 		t.Fatalf("stale conversation still live: %#v", got)
 	}
+
+	// A fresh -wal must not resurrect it. Reading a WAL database is enough to
+	// move that file's mtime, ATM's own sync included, so counting it as activity
+	// reported every conversation on disk as live with the same age.
+	if err := os.WriteFile(path+"-wal", nil, 0644); err != nil {
+		t.Fatalf("write -wal: %v", err)
+	}
+	if err := os.WriteFile(path+"-shm", make([]byte, 32768), 0644); err != nil {
+		t.Fatalf("write -shm: %v", err)
+	}
+	if got := AntigravityLiveSessions(time.Hour); len(got) != 0 {
+		t.Fatalf("a touched -wal resurrected a stale conversation: %#v", got)
+	}
 }
 
 // CapabilitiesFor and the parser have to agree, or doctor reports the upstream's
