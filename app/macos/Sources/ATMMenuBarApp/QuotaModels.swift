@@ -487,6 +487,7 @@ enum ATMAgentDisplay {
         case "qodercli": return "QoderCLI"
         case "qoderwork": return "QoderWork"
         case "grokbuild": return "Grok"
+        case "antigravity": return "Antigravity"
         case "": return "未知客户端"
         default:
             // Preserve multi-word IDs like "MyAgent" when we have no mapping.
@@ -518,6 +519,7 @@ enum ATMAgentDisplay {
         case "cursor": return "Cu"
         case "qoder", "qodercli", "qoderwork": return "Q"
         case "grokbuild": return "G"
+        case "antigravity": return "Ag"
         case "": return "?"
         default:
             let label = name(agent)
@@ -551,6 +553,7 @@ enum ATMAgentDisplay {
         case "cursor": return "cursorarrow.click.2"
         case "qoder", "qodercli", "qoderwork": return "q.circle.fill"
         case "grokbuild": return "bolt.fill"
+        case "antigravity": return "paperplane.fill"
         case "": return "questionmark.circle"
         default: return "cpu"
         }

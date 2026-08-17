@@ -1525,6 +1525,8 @@ func AgentDisplayName(agent string) string {
 		return "QoderWork"
 	case "grokbuild":
 		return "Grok Build"
+	case "antigravity":
+		return "Antigravity"
 	}
 	return agent
 }

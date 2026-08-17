@@ -23,7 +23,7 @@ atm session export --days 7 --format json
 atm session review <session-id> --outcome none|memory|knowledge|mixed --note "<result>" --json
 ```
 
-`--agent` 可过滤 `claude`、`codex`、`pi`、`copilot`、`qoder`、`qodercli`、`qoderwork`。
+`--agent` 可过滤 `claude`、`codex`、`pi`、`copilot`、`qoder`、`qodercli`、`qoderwork`、`grokbuild`、`antigravity`。
 `session status` 的 `activity_state`、`binding_state` 和 `todo.status` 分属实时观测、显式关系和
 工作生命周期。顶层 `bindings` 包含没有实时活动的有效或异常 binding；不要用项目名或
 `in_progress` Todo 猜测 Session 绑定。`session current --json` 的 `state` 可能是
@@ -247,9 +247,12 @@ atm stats --session <session-id> --by request --json
 # 速度：上表按模型给 tok/s（模型自身生成，不含工具执行），下表按 agent 给轮次等待
 # grokbuild 用它自己上报的 apiDurationMs；其余 agent 从日志时间戳推导，测不到的会单独列条数
 atm stats --days 7 --by speed --json
-atm quota --json                          # Codex/Grok 配额
+atm quota --json                          # Codex/Grok/Antigravity 配额
 atm quota --agent claude --json
 atm quota --agent grokbuild --json
+# Antigravity 只报「剩余比例 + 重置时间」，上游不发布绝对配额；读数取自本机
+# language_server 的 loopback RPC，只覆盖 Gemini 模型组
+atm quota --agent antigravity --json
 atm doctor --json
 atm sync status --json
 atm report today

@@ -29,6 +29,7 @@ const (
 var TodoCreatorVocabulary = []string{
 	TodoCreatorMe, TodoCreatorCollect,
 	"claude", "codex", "pi", "copilot", "qoder", "qodercli", "qoderwork", "grokbuild",
+	"antigravity",
 }
 
 // NormalizeTodoCreator resolves one creator to its stored token. An empty value

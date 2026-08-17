@@ -364,6 +364,57 @@ func TestCoverageFlagsASourceThatWentQuiet(t *testing.T) {
 	}
 }
 
+// TestPausedSourceIsNotReportedMissing keeps a deliberate choice from being
+// reported as a data problem. Pausing stops ingestion going forward but leaves
+// already-derived events in place, so a paused source still has events in the
+// trailing week and was flagged missing every day until they aged out.
+func TestPausedSourceIsNotReportedMissing(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	loc := time.FixedZone("CST", 8*60*60)
+	seedWeek(t, db, loc, mustDay(t, "2026-08-08", loc), 5)
+
+	// Day six: codex only, exactly as in TestCoverageFlagsASourceThatWentQuiet.
+	day := mustDay(t, "2026-08-13", loc)
+	mustExec(t, db, `INSERT INTO sessions(id,short_id,agent,project,file_path,created_ts,last_ts) VALUES ('c6','c6','codex','atm','/tmp/c6',?,?)`,
+		day.Add(9*time.Hour).Unix(), day.Add(12*time.Hour).Unix())
+	mustExec(t, db, `INSERT INTO messages(session_id,seq,role,content,ts) VALUES ('c6',0,'user','继续实现',?)`, day.Add(9*time.Hour).Unix())
+	mustExec(t, db, `INSERT INTO usage_events(session_id,ts,input_tokens,output_tokens,duration_ms) VALUES ('c6',?,3000,400,20000)`, day.Add(10*time.Hour).Unix())
+	for d := 0; d < 6; d++ {
+		if _, err := aiday.RebuildDay(ctx, db, mustDay(t, "2026-08-08", loc).AddDate(0, 0, d), loc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Baseline: claude is missing and correctly reported.
+	before, err := aiday.Load(ctx, db, day.Format(time.DateOnly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Coverage == nil || before.Coverage.Complete {
+		t.Fatalf("expected claude to be reported missing before pausing: %+v", before.Coverage)
+	}
+
+	// The user pauses claude on purpose. Its past events are still in the window.
+	if err := aiday.SetSource(ctx, db, "claude", false, false); err != nil {
+		t.Fatal(err)
+	}
+	after, err := aiday.Load(ctx, db, day.Format(time.DateOnly))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Coverage == nil {
+		t.Fatal("no coverage reported")
+	}
+	for _, source := range after.Coverage.MissingSources {
+		if source == "claude" {
+			t.Fatalf("paused source still reported missing: %+v", after.Coverage)
+		}
+	}
+	if !after.Coverage.Complete {
+		t.Fatalf("coverage still incomplete after the only gap was paused: %+v", after.Coverage)
+	}
+}
+
 // TestBackfillDoesNotUnlockTheWholeAtlas keeps the collection worth collecting:
 // a first run derives a month of baseline, and that used to unlock all twelve
 // badges (six at L2) before the user had seen a single daily card.

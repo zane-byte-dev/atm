@@ -28,24 +28,7 @@ struct DesktopAIDayView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("AI Day").font(.system(size: 22, weight: .bold))
-                    Text("每天一个概念、一枚徽章、一组可验证证据")
-                        .font(.caption).foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer()
-                if store.isLoading { ProgressView().controlSize(.small) }
-                Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .buttonStyle(.plain).help("刷新 AI Day")
-            }
-            .padding(.horizontal, 24).padding(.vertical, 16)
-
-            Picker("", selection: $tab) {
-                ForEach(ATMAIDayTab.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 520).padding(.bottom, 14)
-
+            header
             Divider()
             Group {
                 switch tab {
@@ -56,6 +39,7 @@ struct DesktopAIDayView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .atmAnimatedSwap(tab, style: .tab)
         }
         .background(ATMTheme.canvas)
         .task { if store.today == nil { store.refresh() } }
@@ -107,6 +91,58 @@ struct DesktopAIDayView: View {
         }
     }
 
+    /// 跟用量页同构：标题 + 副标题在左，分页和操作在右，窄窗时操作换到下一行。此前是裸的
+    /// 22pt bold 加一个居中的 `.pickerStyle(.segmented)`，不响应窗宽——窄窗下四个中文标签
+    /// 会被挤成省略号。
+    private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .bottom, spacing: 14) {
+                title
+                Spacer(minLength: 8)
+                tabs
+                refreshButton
+            }
+            VStack(alignment: .leading, spacing: 12) {
+                title
+                HStack {
+                    tabs
+                    Spacer()
+                    refreshButton
+                }
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 22)
+        .padding(.bottom, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var title: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("AI Day").font(ATMFont.font(.title1, weight: .semibold))
+            Text("每天一个概念、一枚徽章、一组可验证证据")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+        }
+    }
+
+    /// 四个标签长度不一（「今日」两字、「数据与隐私」五字），正是 `ATMCapsuleTabs` 的用例；
+    /// 等宽的 `ATMCompactSegmentedTabs` 会把「数据与隐私」压出格子。
+    private var tabs: some View {
+        ATMCapsuleTabs(
+            selection: $tab,
+            items: ATMAIDayTab.allCases.map { (value: $0, title: $0.rawValue) }
+        )
+    }
+
+    private var refreshButton: some View {
+        HStack(spacing: 8) {
+            if store.isLoading { ProgressView().controlSize(.small) }
+            Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                .buttonStyle(.plain).help("刷新 AI Day")
+        }
+    }
+
     @ViewBuilder private var todayView: some View {
         if let result = store.today {
             ScrollView {
@@ -115,44 +151,9 @@ struct DesktopAIDayView: View {
                         ATMAIDayEmptyCard(day: result.day)
                     } else if let badge = result.badge, let concept = result.concept {
                         ATMAIDayStatusStrip(result: result, lastRefreshed: store.lastRefreshed)
-                        HStack(alignment: .top, spacing: 30) {
-                            ATMAIDayBadgeVisual(badge: badge, size: 230)
-                            VStack(alignment: .leading, spacing: 12) {
-                                Text("AI DAY  /  \(result.day)")
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .tracking(1.8)
-                                    .foregroundStyle(.white.opacity(0.46))
-                                Text(concept.title).font(.system(size: 30, weight: .semibold)).foregroundStyle(.white)
-                                Text(concept.explanation).font(.system(size: 15)).foregroundStyle(.white.opacity(0.64))
-                                if concept.isUserCorrected, let computed = concept.computedTitle, !computed.isEmpty {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "hand.raised.fill").font(.system(size: 9))
-                                        Text("由你修正 · 引擎原判断「\(computed)」")
-                                    }
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundStyle(Color(red: 1.0, green: 0.83, blue: 0.53))
-                                    .padding(.horizontal, 9).padding(.vertical, 4)
-                                    .background(Color(red: 1.0, green: 0.83, blue: 0.53).opacity(0.12), in: Capsule())
-                                }
-                                HStack {
-                                    Text(badge.level > 0 ? "FORM / 0\(badge.level)" : "FORM / SEED")
-                                    Text("证据强度 \(Int(concept.strength * 100))%")
-                                    Text("可信度 \(Int(concept.confidence * 100))%")
-                                    Text("基线 \(result.baselineDays) 天")
-                                }
-                                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.48))
-                                .help("证据强度是今天这枚徽章的信号强弱；可信度综合了基线长度、证据强度和来源覆盖度。用户纠正不会提高可信度。")
-                                ProgressView(value: badge.progress).tint(Color(red: 0.60, green: 0.86, blue: 1.0)).frame(maxWidth: 320)
-                                if badge.nextLevelDays > badge.qualifiedDays {
-                                    Text("距 L\(badge.level + 1) 还差 \(badge.nextLevelDays - badge.qualifiedDays) 天")
-                                        .font(.system(size: 11, design: .monospaced))
-                                        .foregroundStyle(.white.opacity(0.38))
-                                }
-                            }.frame(maxWidth: 460, alignment: .leading)
-                        }
-                        .padding(28)
-                        .background { ATMAIDayFieldBackground(cornerRadius: 22) }
+                        ATMAIDayResultCard(result: result, badge: badge, concept: concept, style: .today)
+                            .padding(24)
+                            .atmWorkspaceCard()
 
                         evidenceCard(result)
                         feedbackBar(result)
@@ -207,29 +208,10 @@ struct DesktopAIDayView: View {
                         .font(.caption).foregroundStyle(ATMTheme.secondary)
                 }
             }
-            ForEach(result.concept?.evidence ?? []) { evidence in
-                HStack {
-                    Image(systemName: "checkmark.seal.fill").foregroundStyle(ATMTheme.accent)
-                    Text(evidenceLabel(evidence.metric))
-                    Spacer()
-                    Text(metricValue(evidence)).monospacedDigit().fontWeight(.semibold)
-                    if let comparison = evidence.comparison, !comparison.isEmpty {
-                        Text(comparison.replacingOccurrences(of: "recent_p", with: "近 30 日 P"))
-                            .font(.caption).foregroundStyle(ATMTheme.secondary)
-                    }
-                }
-            }
+            ATMAIDayEvidenceList(evidence: result.concept?.evidence ?? [], spacing: 14)
             Divider()
-            HStack(spacing: 22) {
-                metric("会话", "\(result.features.sessionCount)")
-                metric("轮次", "\(result.features.turnCount)")
-                metric("工具", "\(result.features.toolCalls)")
-                // Cache reads are shown as a footnote rather than folded into the
-                // headline: they track context size, not work, and dwarf the rest.
-                metric("有效 Token", ATMAIDayFormat.tokens(result.features.workTokens))
-                metric("含缓存", ATMAIDayFormat.tokens(result.features.totalTokens))
-            }
-        }.padding(20).background(ATMTheme.elevated).clipShape(RoundedRectangle(cornerRadius: 16))
+            ATMAIDayFeatureStats(features: result.features)
+        }.padding(20).atmWorkspaceCard()
     }
 
     @ViewBuilder private var atlasView: some View {
@@ -237,32 +219,32 @@ struct DesktopAIDayView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack {
-                        Text("徽章星图").font(.title2.bold())
+                        Text("徽章星图").font(ATMFont.font(.title2, weight: .semibold))
                         Picker("", selection: $showAtlasMap) { Text("星图").tag(true); Text("列表").tag(false) }.pickerStyle(.segmented).frame(width: 150)
                         Spacer()
                         Text("已解锁 \(atlas.unlocked) / \(atlas.total)").foregroundStyle(ATMTheme.secondary)
                     }
                     ATMAIDayAtlasGuide(badges: atlas.badges)
                     if showAtlasMap {
-                        ATMAIDayStarMap(badges: atlas.badges) { selectedBadge = $0 }.frame(height: 620)
+                        ATMAIDayStarMap(badges: atlas.badges) { selectedBadge = $0 }
+                            .frame(height: 620)
+                            .atmWorkspaceCard()
                     } else {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 16)], spacing: 16) {
                             ForEach(atlas.badges) { badge in
                                 Button { selectedBadge = badge } label: {
                                     VStack(spacing: 12) {
                                         ATMAIDayBadgeVisual(badge: badge, size: 108)
-                                        Text(badge.name).font(.headline).foregroundStyle(.white)
+                                        Text(badge.name).font(ATMFont.font(.body, weight: .semibold)).foregroundStyle(ATMTheme.primary)
                                         Text(badge.unlocked ? "L\(badge.level) · \(badge.qualifiedDays) 天" : "尚未解锁")
-                                            .font(.caption).foregroundStyle(.white.opacity(0.46))
-                                        ProgressView(value: badge.progress).tint(Color(red: 0.60, green: 0.86, blue: 1.0))
+                                            .font(ATMFont.caption).foregroundStyle(ATMTheme.secondary)
                                         // "距下一级还差几天" is the part that gives a
                                         // fully-unlocked atlas somewhere left to go.
-                                        Text(ATMAIDayAtlasGuide.nextStep(badge))
-                                            .font(.caption2).foregroundStyle(.white.opacity(0.34))
+                                        ATMAIDayProgressLine(badge: badge, style: .atlasTile)
                                     }
                                     .padding(18)
                                     .frame(maxWidth: .infinity)
-                                    .background { ATMAIDayFieldBackground(cornerRadius: 16) }
+                                    .atmWorkspaceCard()
                                 }.buttonStyle(.plain)
                             }
                         }
@@ -278,7 +260,7 @@ struct DesktopAIDayView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack {
-                        Text("历史").font(.title2.bold())
+                        Text("历史").font(ATMFont.font(.title2, weight: .semibold))
                         Picker("", selection: $historyFilter) {
                             Text("全部徽章").tag(String?.none)
                             ForEach(store.atlas?.badges ?? []) { badge in
@@ -298,7 +280,7 @@ struct DesktopAIDayView: View {
                                     HStack(spacing: 4) {
                                         Text(result.day).font(.caption).foregroundStyle(ATMTheme.secondary)
                                         if result.concept?.isUserCorrected == true {
-                                            Image(systemName: "hand.raised.fill").font(.system(size: 8)).foregroundStyle(ATMTheme.secondary)
+                                            Image(systemName: "hand.raised.fill").font(ATMFont.micro).foregroundStyle(ATMTheme.secondary)
                                         }
                                     }
                                     if let badge = result.badge {
@@ -314,7 +296,7 @@ struct DesktopAIDayView: View {
                                     }
                                 }
                                 .padding(14).frame(maxWidth: .infinity, minHeight: 152, alignment: .topLeading)
-                                .background(ATMTheme.elevated).clipShape(RoundedRectangle(cornerRadius: 14))
+                                .atmWorkspaceCard()
                             }.buttonStyle(.plain)
                         }
                     }
@@ -336,7 +318,7 @@ struct DesktopAIDayView: View {
         if let privacy = store.privacy {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    Text("数据与隐私").font(.title2.bold())
+                    Text("数据与隐私").font(ATMFont.font(.title2, weight: .semibold))
                     VStack(alignment: .leading, spacing: 14) {
                         // Turning this off is not a pause: it wipes the labels already
                         // stored and drops the derived projections, and turning it back
@@ -371,7 +353,7 @@ struct DesktopAIDayView: View {
                                 }.buttonStyle(.borderedProminent)
                             }
                         }
-                    }.padding(18).background(ATMTheme.elevated).clipShape(RoundedRectangle(cornerRadius: 14))
+                    }.padding(18).atmWorkspaceCard()
 
                     Text("来源权限").font(.headline)
                     ForEach(privacy.sources) { source in
@@ -380,7 +362,7 @@ struct DesktopAIDayView: View {
                             Spacer()
                             Toggle("", isOn: Binding(get: { source.enabled }, set: { store.setSource(source, enabled: $0) })).labelsHidden()
                             Button { sourceToDelete = source } label: { Image(systemName: "trash") }.buttonStyle(.plain).foregroundStyle(ATMTheme.danger).help("删除此来源的 AI Day 衍生数据")
-                        }.padding(14).background(ATMTheme.elevated).clipShape(RoundedRectangle(cornerRadius: 12))
+                        }.padding(14).atmWorkspaceCard()
                     }
                     HStack {
                         Button("导出全部 JSON") { exportJSON() }
@@ -399,7 +381,7 @@ struct DesktopAIDayView: View {
         let current = store.today?.concept?.id
         let qualified = Set((store.today?.candidates ?? []).map(\.id))
         return VStack(alignment: .leading, spacing: 14) {
-            Text("今天更像哪枚徽章？").font(.title2.bold())
+            Text("今天更像哪枚徽章？").font(ATMFont.font(.title2, weight: .semibold))
             Text("带 ✦ 的徽章今天本来就达标；其他徽章会作为你的判断记录下来，不会改变下面的实测证据。")
                 .font(.caption).foregroundStyle(ATMTheme.secondary)
             ScrollView {
@@ -465,9 +447,6 @@ struct DesktopAIDayView: View {
         }
     }
 
-    private func metric(_ title: String, _ value: String) -> some View { VStack(alignment: .leading) { Text(value).font(.headline).monospacedDigit(); Text(title).font(.caption).foregroundStyle(ATMTheme.secondary) } }
-    private func evidenceLabel(_ metric: String) -> String { ["source_count":"AI 来源","session_count":"会话","turn_count":"对话轮次","tool_calls":"工具调用","total_tokens":"Token","code_events":"代码事件","visual_events":"视觉事件","quality_loops":"质检循环","refinements":"细化","detail_turns":"细节追问","modality_count":"任务模态","corrections":"纠正","acceptances":"直接确认","consecutive_days":"连续使用","user_correction":"用户纠正"][metric] ?? metric }
-    private func metricValue(_ evidence: ATMAIDayEvidence) -> String { let value = evidence.value.rounded() == evidence.value ? String(Int(evidence.value)) : String(format: "%.1f", evidence.value); return evidence.unit.map { "\(value) \($0)" } ?? value }
 }
 
 /// Explains what the star map is showing and what to aim at next. The map read as
@@ -498,8 +477,8 @@ struct ATMAIDayAtlasGuide: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 18) {
-                legend(color: Color(red: 0.60, green: 0.86, blue: 1.0), text: "连线按获得顺序串起你的徽章轨迹")
-                legend(color: .white.opacity(0.30), text: "暗色为尚未解锁")
+                legend(color: ATMAIDayPalette.cold, text: "连线按获得顺序串起你的徽章轨迹")
+                legend(color: ATMTheme.secondary.opacity(0.45), text: "暗色为尚未解锁")
                 Spacer()
             }
             if !closest.isEmpty {
@@ -517,8 +496,7 @@ struct ATMAIDayAtlasGuide: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .atmWorkspaceCard()
     }
 
     private func legend(color: Color, text: String) -> some View {
@@ -540,14 +518,14 @@ private struct ATMAIDayStarMap: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                ATMAIDayFieldBackground(cornerRadius: 20)
                 Canvas { context, size in
-                    let grid = Color.white.opacity(0.035)
+                    // 网格和连线原来是写死的白色（0.035 / 0.28）——只在深底上成立。改成主题色
+                    // 之后，浅色模式下它们是淡灰蓝而不是「什么都没有」。
                     for fraction in stride(from: 0.12, through: 0.9, by: 0.13) {
                         var vertical = Path()
                         vertical.move(to: CGPoint(x: size.width * fraction, y: 0))
                         vertical.addLine(to: CGPoint(x: size.width * fraction, y: size.height))
-                        context.stroke(vertical, with: .color(grid), lineWidth: 0.5)
+                        context.stroke(vertical, with: .color(ATMTheme.chartGrid.opacity(0.55)), lineWidth: 0.5)
                     }
                     var path = Path()
                     for index in 1..<min(positions.count, badges.count) {
@@ -559,9 +537,9 @@ private struct ATMAIDayStarMap: View {
                         path,
                         with: .linearGradient(
                             Gradient(colors: [
-                                Color(red: 0.58, green: 0.84, blue: 1.0).opacity(0.08),
-                                Color.white.opacity(0.28),
-                                Color(red: 0.58, green: 0.84, blue: 1.0).opacity(0.08),
+                                ATMTheme.accent.opacity(0.20),
+                                ATMTheme.accent.opacity(0.70),
+                                ATMTheme.accent.opacity(0.20),
                             ]),
                             startPoint: .zero,
                             endPoint: CGPoint(x: size.width, y: size.height)
@@ -575,13 +553,13 @@ private struct ATMAIDayStarMap: View {
                         VStack(spacing: 3) {
                             ATMAIDayBadgeVisual(badge: badge, size: 94)
                             Text(badge.name)
-                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .font(ATMFont.mono(.micro, .medium))
                                 .tracking(0.5)
-                                .foregroundStyle(.white.opacity(badge.unlocked ? 0.72 : 0.30))
+                                .foregroundStyle(badge.unlocked ? ATMTheme.primary : ATMTheme.secondary)
                                 .lineLimit(1)
                             Text(badge.unlocked ? "L\(badge.level)" : "—")
-                                .font(.system(size: 9, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.34))
+                                .font(ATMFont.mono(.micro))
+                                .foregroundStyle(ATMTheme.secondary)
                         }
                     }.buttonStyle(.plain)
                         // Hovering says what the node is without opening the sheet.
@@ -590,26 +568,6 @@ private struct ATMAIDayStarMap: View {
                 }
             }
         }
-    }
-}
-
-enum ATMAIDayFormat {
-    /// "17.2M" rather than "17,214,880" — the exact digit count of a token total
-    /// carries no meaning to a reader and crowds out what does.
-    static func tokens(_ value: Int64) -> String {
-        let double = Double(value)
-        switch value {
-        case 1_000_000...: return String(format: "%.1fM", double / 1_000_000)
-        case 1_000...: return String(format: "%.1fK", double / 1_000)
-        default: return "\(value)"
-        }
-    }
-
-    static func clock(_ date: Date?) -> String {
-        guard let date else { return "未知" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm"
-        return formatter.string(from: date)
     }
 }
 
@@ -624,15 +582,15 @@ private struct ATMAIDayStatusStrip: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
                 if result.isProvisional {
-                    label("今天还没结束，结论会随数据到达变化", icon: "hourglass", tint: Color(red: 0.62, green: 0.80, blue: 1.0))
+                    label("今天还没结束，结论会随数据到达变化", icon: "hourglass", tint: ATMTheme.accent)
                 }
                 Text("数据截至 \(ATMAIDayFormat.clock(result.coverage?.dataThroughDate)) · 更新于 \(ATMAIDayFormat.clock(lastRefreshed ?? result.generatedAtDate))")
-                    .font(.system(size: 11, design: .monospaced))
+                    .font(ATMFont.mono(.caption))
                     .foregroundStyle(ATMTheme.secondary)
                 Spacer()
             }
             if let coverage = result.coverage, !coverage.complete, let missing = coverage.missingSources, !missing.isEmpty {
-                label("数据可能不完整：近 7 天活跃的 \(missing.joined(separator: "、")) 今天还没有事件", icon: "exclamationmark.triangle.fill", tint: Color(red: 1.0, green: 0.78, blue: 0.45))
+                label("数据可能不完整：近 7 天活跃的 \(missing.joined(separator: "、")) 今天还没有事件", icon: "exclamationmark.triangle.fill", tint: ATMTheme.warning)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -640,44 +598,13 @@ private struct ATMAIDayStatusStrip: View {
 
     private func label(_ text: String, icon: String, tint: Color) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: icon).font(.system(size: 10))
+            Image(systemName: icon).font(ATMFont.micro)
             Text(text)
         }
-        .font(.system(size: 11, weight: .medium))
+        .font(ATMFont.font(.caption, weight: .medium))
         .foregroundStyle(tint)
         .padding(.horizontal, 10).padding(.vertical, 5)
         .background(tint.opacity(0.12), in: Capsule())
-    }
-}
-
-private struct ATMAIDayFieldBackground: View {
-    let cornerRadius: CGFloat
-
-    var body: some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(Color(red: 0.018, green: 0.026, blue: 0.038))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(
-                        RadialGradient(
-                            colors: [Color(red: 0.31, green: 0.67, blue: 0.90).opacity(0.13), .clear],
-                            center: UnitPoint(x: 0.25, y: 0.12),
-                            startRadius: 0,
-                            endRadius: 430
-                        )
-                    )
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [.white.opacity(0.16), .white.opacity(0.025)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.75
-                    )
-            }
     }
 }
 
@@ -688,11 +615,10 @@ private struct ATMAIDayBadgeDetail: View {
         VStack(spacing: 16) {
             HStack { Spacer(); Button { dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(.plain) }
             ATMAIDayBadgeVisual(badge: badge, size: 150)
-            Text(badge.name).font(.title.bold())
+            Text(badge.name).font(ATMFont.font(.title1, weight: .semibold))
             Text(badge.description).foregroundStyle(ATMTheme.secondary).multilineTextAlignment(.center)
             Text(badge.unlocked ? "等级 L\(badge.level) · 累计 \(badge.qualifiedDays) 天" : "尚未解锁")
-            ProgressView(value: badge.progress).frame(width: 260)
-            Text(ATMAIDayAtlasGuide.nextStep(badge)).font(.caption).foregroundStyle(ATMTheme.accent)
+            ATMAIDayProgressLine(badge: badge, style: .badgeSheet)
             if let cooldown = badge.cooldownUntil, !cooldown.isEmpty {
                 Text("即时徽章冷却至 \(cooldown)").font(.caption).foregroundStyle(ATMTheme.secondary)
             }
@@ -719,7 +645,19 @@ private struct ATMAIDayBadgeDetail: View {
     }
 }
 
-private struct ATMAIDayEmptyCard: View { let day:String; var body: some View { VStack(spacing:12){Image(systemName:"moon.stars.fill").font(.system(size:48)).foregroundStyle(ATMTheme.secondary);Text("\(day)没有可用的 AI 活动").font(.title3.bold());Text("AI Day 不会为缺失数据编造概念或徽章。").foregroundStyle(ATMTheme.secondary)}.padding(40) } }
+/// 空态走全 App 那一份。此前是自己写的一行：48pt 图标、`.title3.bold()` 标题、40pt 内边距，
+/// 跟其他页的空态没有一处对得上。
+private struct ATMAIDayEmptyCard: View {
+    let day: String
+
+    var body: some View {
+        ATMEmptyState(
+            icon: "moon.stars.fill",
+            title: "\(day)没有可用的 AI 活动",
+            detail: "AI Day 不会为缺失数据编造概念或徽章。"
+        )
+    }
+}
 
 /// The full result for one past day: what history cards now open into, so a date
 /// and a badge name are no longer the whole story.
@@ -731,7 +669,7 @@ private struct ATMAIDayDetailSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(result.day).font(.system(size: 13, weight: .medium, design: .monospaced)).foregroundStyle(ATMTheme.secondary)
+                Text(result.day).font(ATMFont.mono(.body, .medium)).foregroundStyle(ATMTheme.secondary)
                 Spacer()
                 Button { dismiss() } label: { Image(systemName: "xmark") }.buttonStyle(.plain)
             }.padding(20)
@@ -739,48 +677,13 @@ private struct ATMAIDayDetailSheet: View {
             ScrollView {
                 if let badge = result.badge, let concept = result.concept {
                     VStack(alignment: .leading, spacing: 18) {
-                        HStack(alignment: .top, spacing: 22) {
-                            ATMAIDayBadgeVisual(badge: badge, size: 150)
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(concept.title).font(.system(size: 24, weight: .semibold))
-                                Text(concept.explanation).foregroundStyle(ATMTheme.secondary)
-                                if concept.isUserCorrected, let computed = concept.computedTitle, !computed.isEmpty {
-                                    Text("由你修正 · 引擎原判断「\(computed)」")
-                                        .font(.caption).foregroundStyle(Color(red: 1.0, green: 0.83, blue: 0.53))
-                                }
-                                HStack(spacing: 14) {
-                                    Text("L\(badge.level)")
-                                    Text("证据 \(Int(concept.strength * 100))%")
-                                    Text("可信度 \(Int(concept.confidence * 100))%")
-                                    Text("基线 \(result.baselineDays) 天")
-                                }
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(ATMTheme.secondary)
-                            }
-                        }
+                        ATMAIDayResultCard(result: result, badge: badge, concept: concept, style: .sheet)
                         VStack(alignment: .leading, spacing: 10) {
                             Text("证据").font(.headline)
-                            ForEach(concept.evidence) { evidence in
-                                HStack {
-                                    Image(systemName: "checkmark.seal.fill").foregroundStyle(ATMTheme.accent)
-                                    Text(ATMAIDayLabels.evidence(evidence.metric))
-                                    Spacer()
-                                    Text(ATMAIDayLabels.value(evidence)).monospacedDigit().fontWeight(.semibold)
-                                    if let comparison = evidence.comparison, !comparison.isEmpty {
-                                        Text(comparison.replacingOccurrences(of: "recent_p", with: "近 30 日 P"))
-                                            .font(.caption).foregroundStyle(ATMTheme.secondary)
-                                    }
-                                }
-                            }
+                            ATMAIDayEvidenceList(evidence: concept.evidence, spacing: 10)
                             Divider()
-                            HStack(spacing: 22) {
-                                stat("会话", "\(result.features.sessionCount)")
-                                stat("轮次", "\(result.features.turnCount)")
-                                stat("工具", "\(result.features.toolCalls)")
-                                stat("有效 Token", ATMAIDayFormat.tokens(result.features.workTokens))
-                                stat("含缓存", ATMAIDayFormat.tokens(result.features.totalTokens))
-                            }
-                        }.padding(18).background(ATMTheme.elevated).clipShape(RoundedRectangle(cornerRadius: 14))
+                            ATMAIDayFeatureStats(features: result.features)
+                        }.padding(18).atmWorkspaceCard()
                         if !result.candidates.isNilOrEmpty {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("当天其他达标徽章").font(.headline)
@@ -794,7 +697,7 @@ private struct ATMAIDayDetailSheet: View {
                                         }
                                     }
                                 }
-                            }.padding(18).background(ATMTheme.elevated).clipShape(RoundedRectangle(cornerRadius: 14))
+                            }.padding(18).atmWorkspaceCard()
                         }
                         Button { showingShare = true } label: { Label("生成分享卡", systemImage: "square.and.arrow.up") }
                             .buttonStyle(.borderedProminent)
@@ -808,39 +711,10 @@ private struct ATMAIDayDetailSheet: View {
         .sheet(isPresented: $showingShare) { ATMAIDayShareSheet(result: result) }
     }
 
-    private func stat(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading) {
-            Text(value).font(.headline).monospacedDigit()
-            Text(title).font(.caption).foregroundStyle(ATMTheme.secondary)
-        }
-    }
 }
 
 extension Optional where Wrapped == [ATMAIDayBadge] {
     var isNilOrEmpty: Bool { self?.isEmpty ?? true }
-}
-
-enum ATMAIDayLabels {
-    static func evidence(_ metric: String) -> String {
-        [
-            "source_count": "AI 来源", "session_count": "会话", "turn_count": "对话轮次",
-            "tool_calls": "工具调用", "total_tokens": "Token", "work_tokens": "有效 Token",
-            "generation_seconds": "生成秒数", "code_events": "代码事件", "visual_events": "视觉事件",
-            "quality_loops": "质检循环", "refinements": "细化", "detail_turns": "细节追问",
-            "modality_count": "任务模态", "corrections": "纠正", "acceptances": "直接确认",
-            "consecutive_days": "连续使用", "modality_share": "模态占比", "loop_share": "质检占比",
-            "detail_share": "追问占比", "correction_share": "纠正占比", "acceptance_share": "确认占比",
-        ][metric] ?? metric
-    }
-
-    static func value(_ evidence: ATMAIDayEvidence) -> String {
-        if evidence.metric.hasSuffix("_tokens") { return ATMAIDayFormat.tokens(Int64(evidence.value)) }
-        let number = evidence.value.rounded() == evidence.value
-            ? String(Int(evidence.value))
-            : String(format: "%.1f", evidence.value)
-        guard let unit = evidence.unit, !unit.isEmpty else { return number }
-        return unit == "%" ? "\(number)%" : "\(number) \(unit)"
-    }
 }
 
 /// A month-by-month count of days with a result, so history has some shape
@@ -876,8 +750,7 @@ private struct ATMAIDayMonthlyTrend: View {
                 Spacer()
             }
             .padding(16)
-            .background(ATMTheme.elevated)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .atmWorkspaceCard()
         }
     }
 }
@@ -891,7 +764,7 @@ private struct ATMAIDayShareSheet: View {
     var body: some View {
         HStack(spacing: 24) {
             ATMAIDayShareCard(result: result, includeEvidence: includeEvidence, includeStats: includeStats, includeDate: includeDate).frame(width: 360, height: 450).clipShape(RoundedRectangle(cornerRadius: 12)).shadow(radius: 8)
-            VStack(alignment: .leading, spacing: 14) { Text("4:5 分享卡").font(.title2.bold()); Toggle("日期",isOn:$includeDate);Toggle("证据",isOn:$includeEvidence);Toggle("使用统计",isOn:$includeStats);Spacer();Button("导出 1080 × 1350 PNG") { exportPNG() }.buttonStyle(.borderedProminent);Button("取消") { dismiss() } }
+            VStack(alignment: .leading, spacing: 14) { Text("4:5 分享卡").font(ATMFont.font(.title2, weight: .semibold)); Toggle("日期",isOn:$includeDate);Toggle("证据",isOn:$includeEvidence);Toggle("使用统计",isOn:$includeStats);Spacer();Button("导出 1080 × 1350 PNG") { exportPNG() }.buttonStyle(.borderedProminent);Button("取消") { dismiss() } }
         }.padding(28).frame(width: 690, height: 520)
     }
     @MainActor private func exportPNG() {
@@ -903,6 +776,12 @@ private struct ATMAIDayShareSheet: View {
     }
 }
 
+/// 分享卡是这一页唯一一块**故意**不跟随系统外观的东西，也是唯一一块该用裸字号的地方。
+///
+/// 它导出成 1080 × 1350 的 PNG 发出去，得在别人的设备上长成同一个样，所以底色固定深色，
+/// 跟本机是浅色还是深色无关。字号全部写成 `N * unit`（`unit = width / 1080`），因为同一个
+/// 视图既要在 360pt 的预览里显示、又要在 1080px 的画布上渲染，只有按宽度换算两者才一致——
+/// 换成 `ATMFont` 的固定档位会让预览和导出图的排版不一样。别把这里「统一」掉。
 private struct ATMAIDayShareCard: View {
     let result: ATMAIDayResult;let includeEvidence:Bool;let includeStats:Bool;let includeDate:Bool
     var body: some View {
@@ -941,7 +820,7 @@ private struct ATMAIDayShareCard: View {
 
                     Spacer(minLength: 12 * unit)
                     if let badge = result.badge {
-                        ATMAIDayBadgeVisual(badge: badge, size: width * 0.47)
+                        ATMAIDayBadgeVisual(badge: badge, size: width * 0.47, plate: false)
                     }
                     Spacer(minLength: 18 * unit)
 
@@ -965,11 +844,11 @@ private struct ATMAIDayShareCard: View {
                         HStack(alignment: .top, spacing: 0) {
                             ForEach(Array((result.concept?.evidence ?? []).prefix(3))) { evidence in
                                 VStack(spacing: 10 * unit) {
-                                    Text(shareEvidenceValue(evidence))
+                                    Text(ATMAIDayLabels.compactValue(evidence))
                                         .font(.system(size: 46 * unit, weight: .medium, design: .monospaced))
                                         .foregroundStyle(.white.opacity(0.92))
                                         .lineLimit(1).minimumScaleFactor(0.5)
-                                    Text(shareEvidenceLabel(evidence.metric).uppercased())
+                                    Text(ATMAIDayLabels.compact(evidence.metric).uppercased())
                                         .font(.system(size: 16 * unit, weight: .medium, design: .monospaced))
                                         .tracking(1.6 * unit)
                                         .foregroundStyle(.white.opacity(0.46))
@@ -991,7 +870,7 @@ private struct ATMAIDayShareCard: View {
                                 .foregroundStyle(.white.opacity(0.60))
                             Capsule().fill(.white.opacity(0.14)).frame(width: width * 0.24, height: 4 * unit)
                                 .overlay(alignment: .leading) {
-                                    Capsule().fill(Color(red: 0.60, green: 0.86, blue: 1.0).opacity(0.85))
+                                    Capsule().fill(ATMAIDayPalette.cold.opacity(0.85))
                                         .frame(width: width * 0.24 * max(0.02, badge.progress), height: 4 * unit)
                                 }
                             Text("\(badge.qualifiedDays)/\(badge.nextLevelDays) 天")
@@ -1023,16 +902,5 @@ private struct ATMAIDayShareCard: View {
             }
         }
         .aspectRatio(4/5, contentMode: .fit)
-    }
-
-    private func shareEvidenceLabel(_ metric: String) -> String {
-        ["source_count": "sources", "session_count": "sessions", "turn_count": "turns", "tool_calls": "tools", "total_tokens": "tokens", "work_tokens": "tokens", "generation_seconds": "seconds", "code_events": "code", "visual_events": "visual", "quality_loops": "quality", "refinements": "refine", "detail_turns": "detail", "modality_count": "modalities", "corrections": "corrections", "acceptances": "accepted", "consecutive_days": "streak", "modality_share": "share", "loop_share": "share", "detail_share": "share", "correction_share": "share", "acceptance_share": "share"][metric] ?? metric
-    }
-
-    /// Token counts get the friendly form; percentages keep their sign.
-    private func shareEvidenceValue(_ evidence: ATMAIDayEvidence) -> String {
-        if evidence.metric.hasSuffix("_tokens") { return ATMAIDayFormat.tokens(Int64(evidence.value)) }
-        if evidence.unit == "%" { return "\(Int(evidence.value))%" }
-        return String(Int(evidence.value))
     }
 }

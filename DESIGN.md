@@ -85,8 +85,18 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
   token 字段。两者的提取逻辑保留着，上游一旦开始写入，把
   [`parser.CapabilitiesFor`](internal/parser/capabilities.go) 改回 `Usage: true` 即可恢复统计。
   Qoder 本体（IDE）提供 token，不在此列。
-- Qoder 与 QoderWork 依赖本地 SQLite 表结构，Qoder CLI 依赖 JSONL transcript；若上游客户端变更
-  schema，需要更新 parser
+- Antigravity 只提供用量，不提供会话正文（2026-08-17 核验）：token 记账在 `gen_metadata` 表里，
+  逐次调用都带模型、时间戳和「命中/未命中缓存」拆分，所以 spend、会话和项目归属都是完整的；
+  但对话本身是 `steps` 表里按 step 类型各不相同的 protobuf，schema 不公开，本期没有反解。同一条
+  规矩：[`parser.CapabilitiesFor`](internal/parser/capabilities.go) 里它标的是 `Messages: false`，
+  哪天开始解正文再改回来。只覆盖 IDE（`~/.gemini/antigravity`），CLI 的 `antigravity-cli` 不在内。
+- Antigravity 的额度只有「剩余比例 + 重置时间」，上游不发布绝对配额上限也不给已用绝对值，所以
+  ATM 只能显示百分比，做不到「还剩多少 token」。读数来自本机 language_server 的 loopback
+  Connect-RPC（`RetrieveUserQuotaSummary`），只覆盖 Gemini 模型组：账号的另一组（Claude/GPT）是
+  独立额度池，而 `QuotaInfo` 只有两个带窗口的槽位、`quota_history` 又按 `(agent, window_minutes)`
+  做键，第二组无处安放且会与第一组的周窗口撞键。要完整显示需要一个支持多池的额度模型。
+- Qoder、QoderWork 与 Antigravity 依赖本地 SQLite 表结构，Qoder CLI 依赖 JSONL transcript；若上游
+  客户端变更 schema，需要更新 parser
 
 ## 待办
 

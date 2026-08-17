@@ -181,8 +181,21 @@ final class ATMAIDayStore: ObservableObject {
     /// pane refreshes on its own instead of showing whatever was true when it was
     /// first opened. Long enough not to rebuild constantly, short enough that the
     /// numbers do not visibly lag.
-    private static let autoRefreshInterval: TimeInterval = 420
+    nonisolated static let autoRefreshInterval: TimeInterval = 420
+    /// The timer ticks far more often than data is considered stale, and every tick
+    /// re-checks the elapsed time. Ticking at exactly `autoRefreshInterval` looks
+    /// equivalent but is not: `lastRefreshed` is stamped when the *first* load
+    /// finishes, seconds after the timer starts, so the tick at 420s is always a
+    /// few seconds short of the threshold, skips, and pushes the first automatic
+    /// refresh out to ~14 minutes. Decoupling the two bounds lateness by one tick.
+    nonisolated static let refreshCheckInterval: TimeInterval = 60
     private var timer: Timer?
+
+    /// Pure decision so the cadence is testable without a run loop.
+    nonisolated static func shouldRefresh(lastRefreshed: Date?, now: Date) -> Bool {
+        guard let lastRefreshed else { return true }
+        return now.timeIntervalSince(lastRefreshed) >= autoRefreshInterval
+    }
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -212,16 +225,12 @@ final class ATMAIDayStore: ObservableObject {
     /// Refreshes only when the data is old enough to be worth rebuilding for,
     /// so returning to the tab or reactivating the app is cheap.
     func refreshIfStale() {
-        guard let lastRefreshed else {
-            refresh()
-            return
-        }
-        if Date().timeIntervalSince(lastRefreshed) >= Self.autoRefreshInterval { refresh() }
+        if Self.shouldRefresh(lastRefreshed: lastRefreshed, now: Date()) { refresh() }
     }
 
     func startAutoRefresh() {
         guard timer == nil else { return }
-        let timer = Timer(timeInterval: Self.autoRefreshInterval, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: Self.refreshCheckInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshIfStale() }
         }
         RunLoop.main.add(timer, forMode: .common)

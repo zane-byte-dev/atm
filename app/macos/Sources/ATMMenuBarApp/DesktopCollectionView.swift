@@ -585,6 +585,7 @@ struct DesktopCollectionView: View {
 
     private func openTodo(_ item: ATMCollectionItem) {
         guard let todoID = item.todoID else { return }
+        navigation.taskListMode = item.todoArchived == true ? .trash : .active
         navigation.selectedTodoID = todoID
         navigation.section = .tasks
     }

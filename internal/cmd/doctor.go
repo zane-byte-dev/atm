@@ -202,7 +202,8 @@ func runDoctorReport(db *sql.DB) error {
 }
 
 func buildDoctorReport(db *sql.DB) (doctorReport, error) {
-	paths := map[string]string{"claude": config.ClaudeProjects, "codex": config.CodexSessions, "pi": config.PiSessions, "copilot": config.CopilotWorkspaces, "qoder": config.QoderDB, "qodercli": config.QoderCLIProjects, "qoderwork": config.QoderWorkDB, "grokbuild": config.GrokSessions}
+	paths := map[string]string{"claude": config.ClaudeProjects, "codex": config.CodexSessions, "pi": config.PiSessions, "copilot": config.CopilotWorkspaces, "qoder": config.QoderDB, "qodercli": config.QoderCLIProjects, "qoderwork": config.QoderWorkDB, "grokbuild": config.GrokSessions,
+		"antigravity": config.AntigravityConversations()}
 	coverage := []store.Coverage{}
 	retained := map[string]int{}
 	if db != nil {
@@ -308,11 +309,11 @@ func printDoctorReport(report doctorReport) {
 	fmt.Println(strings.Repeat("=", 72))
 	fmt.Println("\nData sources")
 	for _, s := range report.Sources {
-		fmt.Printf("  %-9s %-29s files=%-5d indexed=%-5d retained=%-5d %s\n", s.Agent, s.Status, s.Files, s.IndexedSessions, s.RetainedSessions, s.Path)
+		fmt.Printf("  %-11s %-29s files=%-5d indexed=%-5d retained=%-5d %s\n", s.Agent, s.Status, s.Files, s.IndexedSessions, s.RetainedSessions, s.Path)
 	}
 	fmt.Println("\nRequest detail coverage")
 	for _, c := range report.Coverage {
-		fmt.Printf("  %-9s %-12s sessions=%-5d detailed=%-6d reported=%-6d coverage=%6.1f%% unknown_model=%-4d timed=%6.1f%%\n", c.Agent, c.CoverageStatus, c.Sessions, c.DetailedRequests, c.ReportedRequests, c.CoveragePercent, c.UnknownModels, c.TimedPercent)
+		fmt.Printf("  %-11s %-12s sessions=%-5d detailed=%-6d reported=%-6d coverage=%6.1f%% unknown_model=%-4d timed=%6.1f%%\n", c.Agent, c.CoverageStatus, c.Sessions, c.DetailedRequests, c.ReportedRequests, c.CoveragePercent, c.UnknownModels, c.TimedPercent)
 	}
 	fmt.Println("  timed = share of requests whose speed could be measured from the transcript")
 	if len(report.ModelPricing) > 0 {

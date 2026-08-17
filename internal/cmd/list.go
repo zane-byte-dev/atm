@@ -179,7 +179,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			if desc == "" {
 				desc = truncLine(cleanMsg(r.FirstQ), 200)
 			}
-			fmt.Printf("  %-10s %-12s %-8s %-20s  Q:%-3d  %s\n", r.ShortID, r.CreatedAt, r.Agent, r.Project, r.QCount, desc)
+			fmt.Printf("  %-10s %-12s %-11s %-20s  Q:%-3d  %s\n", r.ShortID, r.CreatedAt, r.Agent, r.Project, r.QCount, desc)
 		}
 		return nil
 	})

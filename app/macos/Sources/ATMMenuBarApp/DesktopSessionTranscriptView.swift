@@ -15,12 +15,20 @@ struct DesktopSessionTranscriptView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                ATMCapsuleTabs(
-                    selection: $mode,
-                    items: ATMSessionReadMode.allCases.map { (value: $0, title: $0.title) }
-                )
-                .help(mode.help)
                 Spacer(minLength: 0)
+                Text("阅读方式")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+                Picker("阅读方式", selection: $mode) {
+                    ForEach(ATMSessionReadMode.allCases) { readMode in
+                        Text(readMode.title).tag(readMode)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .controlSize(.small)
+                .fixedSize(horizontal: true, vertical: false)
+                .help(mode.help)
                 Button {
                     store.loadSessionRead(sessionID, mode: mode, reload: true)
                 } label: {

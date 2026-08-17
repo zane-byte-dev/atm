@@ -133,7 +133,7 @@ func runSessionBind(cmd *cobra.Command, args []string) error {
 	}
 	agent := normalizeBindingAgent(sessionBindAgentFlag)
 	if sessionBindAgentFlag != "" && agent == "" {
-		return fmt.Errorf("unknown binding agent: %s (use claude, codex, pi, copilot, qoder, qodercli, qoderwork, or grokbuild)", sessionBindAgentFlag)
+		return fmt.Errorf("unknown binding agent: %s (use claude, codex, pi, copilot, qoder, qodercli, qoderwork, grokbuild, or antigravity)", sessionBindAgentFlag)
 	}
 
 	var todo store.Todo

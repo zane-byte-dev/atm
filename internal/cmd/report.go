@@ -65,7 +65,7 @@ func runReport(cmd *cobra.Command, args []string) error {
 			grouped[r.Agent] = append(grouped[r.Agent], r)
 		}
 
-		agentOrder := []string{"pi", "codex", "claude", "copilot", "qoder", "qodercli", "qoderwork", "grokbuild"}
+		agentOrder := []string{"pi", "codex", "claude", "copilot", "qoder", "qodercli", "qoderwork", "grokbuild", "antigravity"}
 		for _, a := range agentOrder {
 			sessions := grouped[a]
 			if len(sessions) == 0 {

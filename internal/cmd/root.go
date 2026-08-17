@@ -29,7 +29,7 @@ var rootCmd = &cobra.Command{
 	Short: "ATM — AI Team Manager",
 	Long: `ATM monitors and manages AI coding assistants in a unified view.
 
-Supported agents: claude, codex, pi, copilot, qoder, qodercli, qoderwork, grokbuild
+Supported agents: claude, codex, pi, copilot, qoder, qodercli, qoderwork, grokbuild, antigravity
 
 Quick start:
   atm session status             Show what AI tools are currently doing
@@ -92,7 +92,7 @@ var versionCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&agentFlag, "agent", "", "filter by agent: claude, codex, pi, copilot, qoder, qodercli, qoderwork, grokbuild")
+	rootCmd.PersistentFlags().StringVar(&agentFlag, "agent", "", "filter by agent: claude, codex, pi, copilot, qoder, qodercli, qoderwork, grokbuild, antigravity")
 	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false, "output in JSON format")
 	rootCmd.PersistentFlags().BoolVar(&syncBeforeRead, "sync", false, "sync session sources before a read command")
 	rootCmd.PersistentFlags().StringVar(&sessionIDFlag, "agent-session", "", "current agent session ID (defaults to ATM_SESSION_ID or agent environment)")
@@ -109,7 +109,7 @@ func resolveAgent() (string, error) {
 	}
 	a := config.NormalizeAgent(agentFlag)
 	if a == "" {
-		return "", fmt.Errorf("unknown agent: %s (use claude, codex, pi, copilot, qoder, qodercli, qoderwork, or grokbuild)", agentFlag)
+		return "", fmt.Errorf("unknown agent: %s (use claude, codex, pi, copilot, qoder, qodercli, qoderwork, grokbuild, or antigravity)", agentFlag)
 	}
 	return a, nil
 }

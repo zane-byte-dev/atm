@@ -90,6 +90,160 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMAIDayFormat.tokens(860), "860")
     }
 
+    /// The timer must tick faster than the staleness threshold. Ticking at exactly
+    /// the threshold looks equivalent but always misses: `lastRefreshed` is stamped
+    /// when the first load finishes, seconds after the timer starts, so the tick at
+    /// 420s is a few seconds short, skips, and the first automatic refresh lands at
+    /// roughly 14 minutes instead of 7.
+    func testAutoRefreshTickIsShorterThanTheStalenessThreshold() {
+        XCTAssertLessThan(ATMAIDayStore.refreshCheckInterval, ATMAIDayStore.autoRefreshInterval)
+        let loaded = Date()
+        // The moment a tick would fire if the two were equal.
+        let atThreshold = loaded.addingTimeInterval(ATMAIDayStore.autoRefreshInterval - 5)
+        XCTAssertFalse(ATMAIDayStore.shouldRefresh(lastRefreshed: loaded, now: atThreshold))
+        // With a shorter tick, the next check after that is still well inside one
+        // threshold period, so the refresh is at most one tick late.
+        let nextTick = atThreshold.addingTimeInterval(ATMAIDayStore.refreshCheckInterval)
+        XCTAssertTrue(ATMAIDayStore.shouldRefresh(lastRefreshed: loaded, now: nextTick))
+        XCTAssertLessThan(
+            nextTick.timeIntervalSince(loaded),
+            ATMAIDayStore.autoRefreshInterval * 2,
+            "the first automatic refresh must not slip to two full periods"
+        )
+        XCTAssertTrue(ATMAIDayStore.shouldRefresh(lastRefreshed: nil, now: loaded))
+    }
+
+    /// A metric with no label falls through to its raw internal name. Both maps
+    /// are pinned: the share card used to keep its own English copy, so a metric
+    /// added to the engine could be readable in the app and raw on the card.
+    func testEveryEngineMetricHasALabel() {
+        for metric in ATMAIDayLabels.knownMetrics {
+            XCTAssertTrue(
+                ATMAIDayLabels.hasLabels(for: metric),
+                "metric \(metric) is missing a label in the app or on the share card, and would be shown raw"
+            )
+        }
+        XCTAssertEqual(ATMAIDayLabels.evidence("generation_seconds"), "生成秒数")
+        XCTAssertEqual(ATMAIDayLabels.evidence("work_tokens"), "有效 Token")
+        XCTAssertEqual(ATMAIDayLabels.compact("generation_seconds"), "seconds")
+        XCTAssertEqual(ATMAIDayLabels.compact("work_tokens"), "tokens")
+    }
+
+    func testEvidenceValuesFormatTokensAndPercentages() {
+        let tokens = ATMAIDayEvidence(metric: "work_tokens", value: 2_412_000, unit: "tokens", comparison: nil)
+        XCTAssertEqual(ATMAIDayLabels.value(tokens), "2.4M")
+        let share = ATMAIDayEvidence(metric: "acceptance_share", value: 25, unit: "%", comparison: nil)
+        XCTAssertEqual(ATMAIDayLabels.value(share), "25%")
+        let plain = ATMAIDayEvidence(metric: "turn_count", value: 41, unit: "turns", comparison: nil)
+        XCTAssertEqual(ATMAIDayLabels.value(plain), "41 turns")
+    }
+
+    /// 分享卡上单位由下面那行标签说，数字本身不带单位；百分号必须留着。
+    func testCompactEvidenceValuesDropUnitsButKeepPercentSign() {
+        let tokens = ATMAIDayEvidence(metric: "work_tokens", value: 2_412_000, unit: "tokens", comparison: nil)
+        XCTAssertEqual(ATMAIDayLabels.compactValue(tokens), "2.4M")
+        let share = ATMAIDayEvidence(metric: "acceptance_share", value: 25, unit: "%", comparison: nil)
+        XCTAssertEqual(ATMAIDayLabels.compactValue(share), "25%")
+        let plain = ATMAIDayEvidence(metric: "turn_count", value: 41, unit: "turns", comparison: nil)
+        XCTAssertEqual(ATMAIDayLabels.compactValue(plain), "41")
+    }
+
+    func testComparisonSpellsOutThePercentileWindow() {
+        XCTAssertEqual(ATMAIDayLabels.comparison("recent_p75"), "近 30 日 P75")
+        XCTAssertEqual(ATMAIDayLabels.comparison("baseline"), "baseline")
+    }
+
+    func testGlyphNormalizationGivesEveryAssetTheSameOpticalSizeAndCenter() {
+        // 占画布 50%、偏左上的图形。
+        let small = ATMAIDayGlyphMetrics(center: CGPoint(x: 0.40, y: 0.30), extent: 0.50)
+        // 占画布 80%、几乎居中的图形。
+        let large = ATMAIDayGlyphMetrics(center: CGPoint(x: 0.51, y: 0.55), extent: 0.80)
+        let size: CGFloat = 200
+        let target: CGFloat = 0.64
+
+        // 画布放大到让图形长边正好占 target：小图形要放得更大。
+        XCTAssertEqual(small.canvasSide(in: size, target: target), 256, accuracy: 0.01)
+        XCTAssertEqual(large.canvasSide(in: size, target: target), 160, accuracy: 0.01)
+
+        // 归一化后两者的图形长边都是 128pt = 200 × 0.64。
+        for metrics in [small, large] {
+            let rendered = metrics.extent * metrics.canvasSide(in: size, target: target)
+            XCTAssertEqual(rendered, size * target, accuracy: 0.01)
+        }
+
+        // 位移把图形光学中心搬到正中：偏左上的往右下推，几乎居中的几乎不动。
+        let smallShift = small.canvasOffset(in: size, target: target)
+        XCTAssertEqual(smallShift.width, 25.6, accuracy: 0.01)
+        XCTAssertEqual(smallShift.height, 51.2, accuracy: 0.01)
+        let largeShift = large.canvasOffset(in: size, target: target)
+        XCTAssertEqual(largeShift.width, -1.6, accuracy: 0.01)
+        XCTAssertEqual(largeShift.height, -8.0, accuracy: 0.01)
+    }
+
+    func testGlyphNormalizationFallsBackOnAnEmptyCanvas() {
+        // 几乎全透明的图会把缩放推到无穷大，宁可原样画。
+        let blank = ATMAIDayGlyphMetrics(center: CGPoint(x: 0.5, y: 0.5), extent: 0)
+        XCTAssertEqual(blank.canvasSide(in: 120, target: 0.64), 120, accuracy: 0.01)
+        XCTAssertEqual(ATMAIDayGlyphMetrics.untrimmed.canvasSide(in: 120, target: 1), 120, accuracy: 0.01)
+    }
+
+    /// 拴住测量的 y 方向。位图上下文的行序搞反不会「少校正一点」——它会把偏移量加倍，
+    /// 而只比较「校正后各图是否一致」的测试发现不了，因为量和校正都在同一个翻转空间里。
+    /// 所以这里对的是外部独立量出的包围盒（PIL，alpha > 8，362×362 画布）。
+    func testBadgeGlyphMetricsMatchAnIndependentMeasurement() throws {
+        // first_draft_accepted 的图形明显靠上：包围盒 (67, 2, 270, 204)，从顶边算起。
+        let high = try XCTUnwrap(ATMAIDayBadgeAssets.asset(named: "first_draft_accepted")).metrics
+        XCTAssertEqual(high.center.y, 0.284, accuracy: 0.02, "图形靠上，光学中心必须在 0.5 以上方")
+        XCTAssertEqual(high.center.x, 0.466, accuracy: 0.02)
+        XCTAssertEqual(high.extent, 0.561, accuracy: 0.02)
+
+        // deep_collaboration 反过来，明显靠下：包围盒 (56, 158, 337, 302)。
+        let low = try XCTUnwrap(ATMAIDayBadgeAssets.asset(named: "deep_collaboration")).metrics
+        XCTAssertEqual(low.center.y, 0.635, accuracy: 0.02, "图形靠下，光学中心必须在 0.5 以下方")
+        XCTAssertEqual(low.extent, 0.776, accuracy: 0.02)
+
+        XCTAssertLessThan(high.center.y, low.center.y, "两枚徽章的垂直方向不能被量反")
+    }
+
+    /// 这一组图原本的光学大小从占画布 49% 到 80%（差 1.6 倍），垂直中心跨了近三分之一个
+    /// 底座高。归一化之后必须全部对齐——这就是「图标看起来都居中却又都差一点」的修复。
+    func testEveryBadgeAssetNormalizesToTheSameRenderedGlyph() throws {
+        let ids = [
+            "autopilot", "deep_collaboration", "model_conductor", "visual_director",
+            "code_architect", "quality_inspector", "follow_up", "detail_microscope",
+            "generalist", "hard_to_fool", "first_draft_accepted", "streak",
+        ]
+        let size: CGFloat = 200
+        let target: CGFloat = 0.64
+        var rawExtents: [CGFloat] = []
+
+        for id in ids {
+            let metrics = try XCTUnwrap(ATMAIDayBadgeAssets.asset(named: id), "缺少徽章资源 \(id)").metrics
+            rawExtents.append(metrics.extent)
+
+            // 归一化后的图形长边处处相等。
+            let rendered = metrics.extent * metrics.canvasSide(in: size, target: target)
+            XCTAssertEqual(rendered, size * target, accuracy: 0.5, "\(id) 的光学大小没有对齐")
+
+            // 图形极点落在圆内：半径 0.5，包围盒角最远 target/2 × √2。
+            let halfDiagonal = target / 2 * 2.0.squareRoot()
+            XCTAssertLessThan(halfDiagonal, 0.5, "图形会伸出圆形底座")
+
+            // 校正后的光学中心就是底座正中。
+            let shift = metrics.canvasOffset(in: size, target: target)
+            let side = metrics.canvasSide(in: size, target: target)
+            let centeredX = (metrics.center.x - 0.5) * side + shift.width
+            let centeredY = (metrics.center.y - 0.5) * side + shift.height
+            XCTAssertEqual(centeredX, 0, accuracy: 0.01, "\(id) 水平没居中")
+            XCTAssertEqual(centeredY, 0, accuracy: 0.01, "\(id) 垂直没居中")
+        }
+
+        // 顺带证明这些资源确实是不齐的——哪天资源重新导出成统一留白，这条会失败，
+        // 那时候归一化就成了纯粹的多余，可以删。
+        let spread = try XCTUnwrap(rawExtents.max()) - XCTUnwrap(rawExtents.min())
+        XCTAssertGreaterThan(spread, 0.2, "资源的原始留白已经统一了，归一化可以去掉")
+    }
+
     func testAtlasGuideReportsDistanceToNextLevel() {
         let badge = ATMAIDayBadge(
             id: "code_architect", name: "代码架构师", description: "", family: "grid", kind: "growth",

@@ -17,6 +17,16 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **认识本地 Antigravity 了：用量进统计，额度进 `atm quota`。** 它是本机第二活跃的 client，之前
+  `atm stats` / `atm session list` / `atm quota` 里完全看不到。用量来自
+  `~/.gemini/antigravity/conversations/*.db` 的 `gen_metadata`——逐次模型调用，带时间戳、模型、
+  耗时和「命中/未命中缓存」的输入拆分，所以请求级明细和吞吐速度都是完整的；标题与项目归属来自
+  `agyhub_summaries_proto.pb`。会话正文不解：它是 `steps` 表里按 step 类型各异的 protobuf，
+  capabilities 里如实标成 `Messages: false`，和 Qoder 同一种形状。额度走本机 language_server 的
+  loopback Connect-RPC，因为 Antigravity 不把额度写在任何地方——只有「剩余比例 + 重置时间」，
+  没有绝对配额，且只覆盖 Gemini 模型组（原因见 DESIGN.md 的已知限制）。这是唯一一个在 `atm sync`
+  的无人值守路径上发 HTTP 的额度源：对端是本机已在运行的进程、答案来自它自己的缓存，和读另一个
+  客户端的日志同级；不在这条路上采就永远算不出趋势。
 - **收集分类和日报也走内置文本模型了，`grok`/`codex` 的 CLI 调用整条删除。** 分类和 refine 本来就是
   同一种活儿——一次 schema 约束的纯文本调用，不读代码库、不用工具、不需要 Agent 循环。现在三者共用
   `internal/textmodel`：同一份 `~/.atm/credentials.json`、同一个 `text_model_name`/`text_model_base_url`，

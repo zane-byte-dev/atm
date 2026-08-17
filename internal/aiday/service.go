@@ -142,12 +142,19 @@ func isProvisional(dayStartLocal, now time.Time, loc *time.Location) bool {
 // "not synced yet" rather than "you used no tools".
 func dayCoverage(ctx context.Context, db *sql.DB, start, end time.Time) (*Coverage, error) {
 	weekStart := start.AddDate(0, 0, -7).Unix()
+	// Paused sources are excluded. Pausing stops ingestion going forward but
+	// leaves already-derived events in place, so a source the user switched off
+	// still has events in the trailing week and would be reported missing every
+	// day until those events aged out — turning a deliberate choice into a
+	// standing warning that the data is incomplete.
 	rows, err := db.QueryContext(ctx, `
-		SELECT source,
-		       MAX(CASE WHEN occurred_at >= ? AND occurred_at < ? THEN 1 ELSE 0 END) AS present
-		FROM ai_day_events
-		WHERE occurred_at >= ? AND occurred_at < ?
-		GROUP BY source ORDER BY source`, start.Unix(), end.Unix(), weekStart, end.Unix())
+		SELECT e.source,
+		       MAX(CASE WHEN e.occurred_at >= ? AND e.occurred_at < ? THEN 1 ELSE 0 END) AS present
+		FROM ai_day_events e
+		LEFT JOIN ai_day_sources s ON s.source = e.source
+		WHERE e.occurred_at >= ? AND e.occurred_at < ?
+		  AND COALESCE(s.enabled, 1) = 1
+		GROUP BY e.source ORDER BY e.source`, start.Unix(), end.Unix(), weekStart, end.Unix())
 	if err != nil {
 		return nil, err
 	}

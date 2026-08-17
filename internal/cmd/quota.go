@@ -264,6 +264,13 @@ func loadAndReportQuotaProviders(ctx context.Context, stderr io.Writer) map[stri
 // only local sources — never the opt-in Grok live billing endpoint — because sync
 // runs unattended on a timer and must not make network calls the user did not ask
 // for on that path.
+//
+// Antigravity is included even though its reading arrives over HTTP, because the
+// peer is loopback: a process already running on this machine, answering from its
+// own cache, with nothing leaving the host. That is the same category as reading
+// another client's log file, not the same category as the Grok billing API. It has
+// to be sampled here or not at all — Antigravity persists no quota anywhere, so
+// skipping this path would mean the trend can never be computed.
 func recordQuotaSamples(db *sql.DB, now time.Time) error {
 	var samples []store.QuotaSample
 	add := func(agent string, q *parser.QuotaInfo) {
@@ -289,6 +296,7 @@ func recordQuotaSamples(db *sql.DB, now time.Time) error {
 	}
 	add("codex", parser.CodexQuota())
 	add("grokbuild", parser.GrokQuota())
+	add("antigravity", parser.AntigravityQuota())
 	return store.RecordQuotaSamples(db, samples, now)
 }
 
@@ -370,7 +378,7 @@ func runQuota(cmd *cobra.Command, args []string) error {
 	want := func(name string) bool { return agent == "" || agent == name }
 	providerCards := loadAndReportQuotaProviders(cmd.Context(), cmd.ErrOrStderr())
 
-	var codex, grok *parser.QuotaInfo
+	var codex, grok, antigravity *parser.QuotaInfo
 	if want("codex") {
 		codex = parser.CodexQuota()
 	}
@@ -379,9 +387,13 @@ func runQuota(cmd *cobra.Command, args []string) error {
 		// a local log read with no network traffic.
 		grok = parser.GrokQuotaAuto(config.GrokLiveQuota)
 	}
+	if want("antigravity") {
+		antigravity = parser.AntigravityQuota()
+	}
 
 	codexTrends := loadQuotaTrends("codex", codex, now)
 	grokTrends := loadQuotaTrends("grokbuild", grok, now)
+	antigravityTrends := loadQuotaTrends("antigravity", antigravity, now)
 
 	if jsonOutput {
 		out := map[string]any{}
@@ -390,6 +402,9 @@ func runQuota(cmd *cobra.Command, args []string) error {
 		}
 		if want("grokbuild") {
 			out["grokbuild"] = quotaAgentJSON(grok, now, grokTrends)
+		}
+		if want("antigravity") {
+			out["antigravity"] = quotaAgentJSON(antigravity, now, antigravityTrends)
 		}
 		mergeQuotaProviderCards(out, providerCards, want)
 		output.JSON(out)
@@ -405,6 +420,13 @@ func runQuota(cmd *cobra.Command, args []string) error {
 		printQuotaAgent("Grok Build", grok, now, grokTrends)
 		printed = true
 	}
+	if want("antigravity") && antigravity != nil {
+		// The scope is in the header because the reading is one of the account's
+		// two model groups; see antigravityQuotaFromJSON for why the other cannot
+		// be reported alongside it.
+		printQuotaAgent("Antigravity (Gemini models)", antigravity, now, antigravityTrends)
+		printed = true
+	}
 	if printQuotaProviderCards(providerCards, want) {
 		printed = true
 	}
@@ -412,7 +434,7 @@ func runQuota(cmd *cobra.Command, args []string) error {
 		if agent != "" {
 			fmt.Printf("No quota data found for %s.\n", agent)
 		} else {
-			fmt.Println("No quota data found. (Codex rate_limits or Grok billing log not present)")
+			fmt.Println("No quota data found. (Codex rate_limits, Grok billing log or a running Antigravity not present)")
 		}
 	}
 	return nil

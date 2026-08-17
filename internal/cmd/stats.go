@@ -121,16 +121,16 @@ func runStats(cmd *cobra.Command, args []string) error {
 			return sectionErr
 		}
 
-		fmt.Printf("\n  %-20s %-10s %8s %8s %8s %10s %10s %8s\n",
+		fmt.Printf("\n  %-20s %-11s %8s %8s %8s %10s %10s %8s\n",
 			"Project", "Agent", "Sessions", "Queries", "Tools", "In", "Out", "Cost($)")
-		statsSep := output.Dashes(20, 10, 8, 8, 8, 10, 10, 8)
-		fmt.Printf("  %-20s %-10s %8s %8s %8s %10s %10s %8s\n", statsSep...)
+		statsSep := output.Dashes(20, 11, 8, 8, 8, 10, 10, 8)
+		fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %8s\n", statsSep...)
 
 		var totalSessions, totalQueries, totalTools int
 		var totalIn, totalOut int64
 		var totalCost float64
 		for _, r := range results {
-			fmt.Printf("  %-20s %-10s %8d %8d %8d %10s %10s %8.2f\n",
+			fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %8.2f\n",
 				r.Project, r.Agent, r.Sessions, r.Queries, r.ToolCalls,
 				fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), r.CostUSD)
 			totalSessions += r.Sessions
@@ -140,8 +140,8 @@ func runStats(cmd *cobra.Command, args []string) error {
 			totalOut += r.OutputTokens
 			totalCost += r.CostUSD
 		}
-		fmt.Printf("  %-20s %-10s %8s %8s %8s %10s %10s %8s\n", statsSep...)
-		fmt.Printf("  %-20s %-10s %8d %8d %8d %10s %10s %8.2f\n",
+		fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %8s\n", statsSep...)
+		fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %8.2f\n",
 			"Total", "", totalSessions, totalQueries, totalTools, fmtTokens(totalIn), fmtTokens(totalOut), totalCost)
 
 		printSubscriptionSummary(totalCost, days)
@@ -170,7 +170,7 @@ func runRequestStats(db *sql.DB, startTS, endTS int64, agent, session, label str
 	}
 	// Req shows model-call multiplicity (×N when a row aggregates several calls,
 	// as Grok turn_completed does). Tokens/cost on the row are the full total.
-	fmt.Printf("\n  %-16s %-8s %-12s %-24s %5s %8s %8s %8s %8s\n", "Time", "Agent", "Session", "Model", "Req", "In", "Out", "Cache", "Cost($)")
+	fmt.Printf("\n  %-16s %-11s %-12s %-24s %5s %8s %8s %8s %8s\n", "Time", "Agent", "Session", "Model", "Req", "In", "Out", "Cache", "Cost($)")
 	var totalCalls int
 	for _, r := range results {
 		model := r.Model
@@ -182,7 +182,7 @@ func runRequestStats(db *sql.DB, startTS, endTS int64, agent, session, label str
 			calls = 1
 		}
 		totalCalls += calls
-		fmt.Printf("  %-16s %-8s %-12s %-24s %5s %8s %8s %8s %8.4f\n",
+		fmt.Printf("  %-16s %-11s %-12s %-24s %5s %8s %8s %8s %8.4f\n",
 			time.Unix(r.TS, 0).In(config.Loc).Format("01-02 15:04:05"),
 			r.Agent, r.SessionID, model, fmtRequestCount(calls),
 			fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), fmtTokens(r.CacheTokens), r.CostUSD)

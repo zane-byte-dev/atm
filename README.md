@@ -117,7 +117,7 @@ atm collect item save <item-id>          # 确认后把收集结论保存为知�
 
 全局 flag：
 
-- `--agent` — 按 agent 过滤：`claude`、`codex`、`pi`、`copilot`、`qoder`、`qodercli`、`qoderwork`、`grokbuild`
+- `--agent` — 按 agent 过滤：`claude`、`codex`、`pi`、`copilot`、`qoder`、`qodercli`、`qoderwork`、`grokbuild`、`antigravity`
 - `--json` — JSON 输出（list、search、status、show、stats 等均支持）
 - `--sync` — 查询前显式同步会话源；查询默认只读，不会修改数据库
 

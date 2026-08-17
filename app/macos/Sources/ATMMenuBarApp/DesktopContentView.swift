@@ -41,13 +41,18 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
 /// section makes history useful for detail-to-detail links, not just for moving
 /// between the six sidebar tabs.
 enum ATMDesktopLocation: Equatable {
-    case tasks(todoID: String?)
+    case tasks(todoID: String?, listMode: ATMTaskListMode)
     case collection(sourceID: String?, itemID: String?)
     case agents(sessionID: String?, runTodoID: String?)
     case knowledge(libraryID: String?, documentID: String?)
     case usage
     case aiDay
     case settings
+}
+
+enum ATMTaskListMode: Equatable {
+    case active
+    case trash
 }
 
 /// Status color / icon / label used by the task list and detail header.
@@ -229,6 +234,15 @@ enum ATMTaskQuery {
         return todos.filter { $0.status != "dropped" }
     }
 
+    static func shouldRevealDropped(
+        selectedID: String?,
+        in todos: [ATMTodo],
+        showsDropped: Bool
+    ) -> Bool {
+        guard !showsDropped, let selectedID else { return false }
+        return todos.first(where: { $0.id == selectedID })?.status == "dropped"
+    }
+
     /// Newest first within a status group. `created` is YYYY-MM-DD; id breaks ties.
     static func sortedByCreatedDescending(_ todos: [ATMTodo]) -> [ATMTodo] {
         todos.sorted { left, right in
@@ -358,6 +372,11 @@ final class ATMDesktopNavigation: ObservableObject {
     @Published var selectedTodoID: String? {
         didSet { if section == .tasks { navigationDidChange() } }
     }
+    /// Which task collection owns selectedTodoID. Direct links to trashed Todos
+    /// switch this before the task view validates the selection.
+    @Published var taskListMode: ATMTaskListMode = .active {
+        didSet { if section == .tasks { navigationDidChange() } }
+    }
     @Published var selectedCollectionSourceID: String? {
         didSet { if section == .collection { navigationDidChange() } }
     }
@@ -401,7 +420,7 @@ final class ATMDesktopNavigation: ObservableObject {
 
     private var backStack: [ATMDesktopLocation] = []
     private var forwardStack: [ATMDesktopLocation] = []
-    private var recordedLocation: ATMDesktopLocation = .tasks(todoID: nil)
+    private var recordedLocation: ATMDesktopLocation = .tasks(todoID: nil, listMode: .active)
     private var isRestoringLocation = false
     private let maximumHistoryCount = 100
 
@@ -421,7 +440,7 @@ final class ATMDesktopNavigation: ObservableObject {
     private var currentLocation: ATMDesktopLocation {
         switch section {
         case .tasks:
-            return .tasks(todoID: selectedTodoID)
+            return .tasks(todoID: selectedTodoID, listMode: taskListMode)
         case .collection:
             return .collection(
                 sourceID: selectedCollectionSourceID,
@@ -460,8 +479,9 @@ final class ATMDesktopNavigation: ObservableObject {
     private func restore(_ location: ATMDesktopLocation) {
         isRestoringLocation = true
         switch location {
-        case .tasks(let todoID):
+        case .tasks(let todoID, let listMode):
             selectedTodoID = todoID
+            taskListMode = listMode
             section = .tasks
         case .collection(let sourceID, let itemID):
             selectedCollectionSourceID = sourceID
@@ -1051,7 +1071,6 @@ private struct DesktopTasksView: View {
     @ObservedObject var navigation: ATMDesktopNavigation
 
     @State private var deleteCandidate: ATMTodo?
-    @State private var showingTrash = false
     @AppStorage("ATMCollapsedTaskGroups")
     private var collapsedGroupsRaw = "done,deferred,dropped,history"
     @AppStorage("ATMDidApplyDefaultCollapsedTaskGroups") private var didApplyDefaultCollapsedGroups = false
@@ -1061,6 +1080,10 @@ private struct DesktopTasksView: View {
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private var showingTrash: Bool {
+        navigation.taskListMode == .trash
     }
 
     private func expandedBinding(for group: ATMTaskGroup) -> Binding<Bool> {
@@ -1178,6 +1201,7 @@ private struct DesktopTasksView: View {
         }
         .onAppear {
             applyDefaultCollapsedGroupsIfNeeded()
+            revealSelectedTodoIfFiltered()
             // First paint may pre-select from a notification or keep a prior ID
             // before this view subscribed to selection changes — reveal once.
             selectFirstIfNeeded()
@@ -1188,8 +1212,12 @@ private struct DesktopTasksView: View {
         // reveal stays on selection change / first appear.
         .onChange(of: todos.map(\.id)) { _ in selectFirstIfNeeded() }
         .onChange(of: showsDropped) { _ in selectFirstIfNeeded() }
-        .onChange(of: showingTrash) { _ in selectFirstIfNeeded() }
-        .onChange(of: navigation.selectedTodoID) { _ in revealSelectedGroup() }
+        .onChange(of: navigation.taskListMode) { _ in selectFirstIfNeeded() }
+        .onChange(of: navigation.selectedTodoID) { _ in
+            revealSelectedTodoIfFiltered()
+            selectFirstIfNeeded()
+            revealSelectedGroup()
+        }
     }
 
     private var taskList: some View {
@@ -1197,7 +1225,7 @@ private struct DesktopTasksView: View {
             ATMDrawerHeader(title: showingTrash ? "回收站" : "任务", count: visibleTodos.count) {
                 if showingTrash {
                     Button {
-                        showingTrash = false
+                        navigation.taskListMode = .active
                     } label: {
                         Label("返回任务", systemImage: "chevron.left")
                     }
@@ -1213,7 +1241,7 @@ private struct DesktopTasksView: View {
                         side: 30,
                         iconTier: .bodyLarge
                     ) {
-                        showingTrash = true
+                        navigation.taskListMode = .trash
                     }
 
                     Button {
@@ -1325,6 +1353,19 @@ private struct DesktopTasksView: View {
             return
         }
         navigation.selectedTodoID = ATMTaskQuery.preferredDefault(in: visibleTodos)?.id
+    }
+
+    /// A collection record can point at a dropped Todo. Reveal the dropped group
+    /// before validating that direct selection; otherwise selectFirstIfNeeded
+    /// silently replaces it with an unrelated first row.
+    private func revealSelectedTodoIfFiltered() {
+        guard !showingTrash,
+              ATMTaskQuery.shouldRevealDropped(
+                selectedID: navigation.selectedTodoID,
+                in: store.allTodos,
+                showsDropped: showsDropped
+              ) else { return }
+        showsDropped = true
     }
 
     private func applyDefaultCollapsedGroupsIfNeeded() {
@@ -2319,6 +2360,7 @@ struct DesktopTodoDetail: View {
         switch id {
         case "codex": return "Codex"
         case "grokbuild": return "Grok Build"
+        case "antigravity": return "Antigravity"
         case "pi": return "Pi"
         default: return "Agent"
         }
@@ -3125,8 +3167,9 @@ private struct DesktopUsageContent: View, Equatable {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 22) {
+            LazyVStack(alignment: .leading, spacing: 20) {
                 usageModuleChrome
+                usageFilterToolbar
 
                 // Quota is a pinned top-level summary, independent of the
                 // overview / today-sessions tab and usage filters below.
@@ -3136,12 +3179,19 @@ private struct DesktopUsageContent: View, Equatable {
 
                 usageModule
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 22)
-            .padding(.bottom, 30)
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
+            .padding(.bottom, 36)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(ATMTheme.canvas)
+        .background(
+            LinearGradient(
+                colors: [ATMTheme.accent.opacity(0.025), ATMTheme.canvas, ATMTheme.canvas],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .ignoresSafeArea()
+        )
         .onAppear {
             normalizeFilters()
         }
@@ -3216,26 +3266,21 @@ private struct DesktopUsageContent: View, Equatable {
     /// so their right edges stay aligned.
     private var usageModule: some View {
         LazyVStack(alignment: .leading, spacing: 14) {
-            usageFilterToolbar
-
             if pageTab == .overview {
                 let metrics = snapshot.usageMetrics(for: range, filters: filters)
                 let featuredMetrics = metrics.filter(isFeaturedMetric)
                 let supportingMetrics = metrics.filter { !isFeaturedMetric($0) }
+                let trendStats = snapshot.filteredLineTrendStats(for: range, filters: filters)
                 VStack(alignment: .leading, spacing: 10) {
                     Text("关键指标")
                         .font(ATMFont.font(.title3, weight: .semibold))
                     LazyVGrid(columns: Self.featuredMetricColumns, spacing: 10) {
                         ForEach(Array(featuredMetrics.enumerated()), id: \.offset) { _, metric in
-                            metricCard(metric)
+                            metricCard(metric, trendValues: metricTrendValues(metric, from: trendStats))
                         }
                     }
                     if !supportingMetrics.isEmpty {
-                        LazyVGrid(columns: Self.supportingMetricColumns, spacing: 8) {
-                            ForEach(Array(supportingMetrics.enumerated()), id: \.offset) { _, metric in
-                                metricCard(metric, compact: true)
-                            }
-                        }
+                        supportingMetricsStrip(supportingMetrics)
                     }
                 }
 
@@ -3261,13 +3306,21 @@ private struct DesktopUsageContent: View, Equatable {
     /// Narrow: keep the page switch beside the title and move health below.
     private var usageModuleChrome: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(alignment: .bottom, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .center, spacing: 16) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text("用量")
-                        .font(ATMFont.font(.title1, weight: .semibold))
+                        .font(ATMFont.font(.title1, weight: .bold))
                     Text("额度、成本与模型效率")
                         .font(ATMFont.footnote)
                         .foregroundStyle(ATMTheme.secondary)
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(ATMTheme.success)
+                            .frame(width: 7, height: 7)
+                        Text(usageScopeLabel)
+                    }
+                    .font(ATMFont.font(.caption, weight: .medium))
+                    .foregroundStyle(ATMTheme.secondary)
                 }
                 Spacer(minLength: 8)
                 usagePagePicker
@@ -3276,12 +3329,20 @@ private struct DesktopUsageContent: View, Equatable {
             .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 5) {
                     Text("用量")
-                        .font(ATMFont.font(.title1, weight: .semibold))
+                        .font(ATMFont.font(.title1, weight: .bold))
                     Text("额度、成本与模型效率")
                         .font(ATMFont.footnote)
                         .foregroundStyle(ATMTheme.secondary)
+                    HStack(spacing: 6) {
+                        Circle()
+                            .fill(ATMTheme.success)
+                            .frame(width: 7, height: 7)
+                        Text(usageScopeLabel)
+                    }
+                    .font(ATMFont.font(.caption, weight: .medium))
+                    .foregroundStyle(ATMTheme.secondary)
                 }
                 HStack {
                     usagePagePicker
@@ -3316,23 +3377,28 @@ private struct DesktopUsageContent: View, Equatable {
                     .frame(height: 20)
                 usageFilterControls
                 Spacer(minLength: 0)
+                Image(systemName: "slider.horizontal.3")
+                    .font(ATMFont.font(.body, weight: .medium))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .help("模型、客户端和项目筛选")
             }
             VStack(alignment: .leading, spacing: 8) {
                 usageRangeOrRefreshControl
                 usageFilterControls
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             ATMTheme.elevated,
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(ATMTheme.border.opacity(0.7))
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(ATMTheme.border.opacity(0.75))
         )
+        .shadow(color: Color.black.opacity(0.025), radius: 6, y: 2)
     }
 
     private func isFeaturedMetric(_ metric: ATMUsageMetric) -> Bool {
@@ -3460,15 +3526,27 @@ private struct DesktopUsageContent: View, Equatable {
             ? speedStats.map { ATMTrendPoint(from: $0, value: $0.tokensPerSecond ?? 0) }
             : seriesStats.map { ATMTrendPoint(from: $0, value: Double($0.totalTokens)) }
         let bucketDates = points.map(\.date)
+        let peakIDs = Set(
+            points
+                .filter { $0.value > 0 }
+                .sorted { $0.value > $1.value }
+                .prefix(2)
+                .map(\.id)
+        )
         // Hour or day comes from the buckets themselves, not from the window: every
         // single-day window is drawn in hours when the snapshot carries them, and in
         // one day bucket when it does not.
         let hourlyAxis = ATMUsageDateAxis.isHourly(bucketDates)
         return VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text(range.tokenTrendTitle)
-                    .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                    .foregroundStyle(ATMTheme.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(range.tokenTrendTitle)
+                        .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                        .foregroundStyle(ATMTheme.primary)
+                    Text(trendMetric == .tokens ? "Token" : "每秒输出 Token")
+                        .font(ATMFont.mono(.caption, .medium))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
                 Spacer(minLength: 12)
                 Picker("", selection: $trendMetric) {
                     ForEach(ATMUsageTrendMetric.allCases) { item in Text(item.title).tag(item) }
@@ -3482,13 +3560,13 @@ private struct DesktopUsageContent: View, Equatable {
             if points.isEmpty {
                 usageEmptyState(trendMetric.emptyStateTitle, icon: "chart.xyaxis.line")
             } else {
-                let visibleSeries = Set(points.map(\.series))
-                let singleSeriesColor = seriesChartColors(
-                    for: Array(visibleSeries),
+                let dominantSeries = seriesNames.first
+                let dominantSeriesColor = seriesChartColors(
+                    for: dominantSeries.map { [$0] } ?? [],
                     available: availableSeries
                 ).first ?? ATMTheme.accent
                 Chart(points) { point in
-                    if visibleSeries.count == 1 {
+                    if point.series == dominantSeries {
                         AreaMark(
                             x: .value("日期", point.day),
                             y: .value(trendMetric.axisTitle, point.value)
@@ -3496,8 +3574,8 @@ private struct DesktopUsageContent: View, Equatable {
                         .foregroundStyle(
                             LinearGradient(
                                 colors: [
-                                    singleSeriesColor.opacity(0.16),
-                                    singleSeriesColor.opacity(0.01),
+                                    dominantSeriesColor.opacity(0.16),
+                                    dominantSeriesColor.opacity(0.01),
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
@@ -3521,6 +3599,24 @@ private struct DesktopUsageContent: View, Equatable {
                         .foregroundStyle(by: .value(seriesLabel, point.series))
                         .symbol(by: .value(seriesLabel, point.series))
                         .symbolSize(pinSeries ? 34 : 22)
+                    }
+                    if peakIDs.contains(point.id) {
+                        RuleMark(x: .value("峰值日期", point.day))
+                            .foregroundStyle(ATMTheme.secondary.opacity(0.24))
+                            .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+                            .annotation(position: .top, spacing: 4) {
+                                VStack(spacing: 1) {
+                                    Text(point.day, format: hourlyAxis
+                                        ? .dateTime.hour().minute()
+                                        : .dateTime.month(.defaultDigits).day())
+                                    Text(trendMetric == .speed
+                                        ? String(format: "%.0f", point.value)
+                                        : NumberFormat.compact(Int(point.value)))
+                                        .fontWeight(.semibold)
+                                }
+                                .font(ATMFont.mono(.micro))
+                                .foregroundStyle(ATMTheme.secondary)
+                            }
                     }
                 }
                 .chartForegroundStyleScale(
@@ -3569,17 +3665,23 @@ private struct DesktopUsageContent: View, Equatable {
                 )
                 .chartPlotStyle { plotArea in
                     plotArea
-                        .background(ATMTheme.chartPlotFill)
+                        .background(
+                            LinearGradient(
+                                colors: [ATMTheme.accent.opacity(0.025), ATMTheme.chartPlotFill],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                .frame(height: 240)
+                .frame(height: 270)
             }
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
-        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
+        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(ATMTheme.border))
+        .shadow(color: Color.black.opacity(0.045), radius: 10, y: 3)
     }
 
     private var todaySessionsCard: some View {
@@ -3820,9 +3922,26 @@ private struct DesktopUsageContent: View, Equatable {
             let skills = Array(snapshot.skillStats(for: range).prefix(8))
             let total = max(snapshot.skillCallTotal(for: range), 1)
             if skills.isEmpty {
-                usageEmptyState("所选范围暂无 Skill 调用", icon: "sparkles")
+                VStack(spacing: 9) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(ATMTheme.accent.opacity(0.07))
+                        Image(systemName: "sparkles")
+                            .font(ATMFont.font(.title2, weight: .medium))
+                            .foregroundStyle(ATMTheme.accent)
+                    }
+                    .frame(width: 48, height: 48)
+                    Text("暂无 Skill 调用")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("在对话或自动化任务中使用 Skill 后，调用分布会显示在这里。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 320)
+                }
+                .frame(maxWidth: .infinity, minHeight: 180)
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 9) {
                     ForEach(Array(skills.enumerated()), id: \.element.id) { index, skill in
                         VStack(alignment: .leading, spacing: 5) {
                             HStack {
@@ -3854,7 +3973,7 @@ private struct DesktopUsageContent: View, Equatable {
             if rows.isEmpty {
                 usageEmptyState("所选筛选暂无\(result.dimension.title)用量", icon: "chart.bar")
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 9) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         breakdownRow(row, dimension: result.dimension, index: index, total: total)
                     }
@@ -3888,6 +4007,9 @@ private struct DesktopUsageContent: View, Equatable {
         } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .center, spacing: 8) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(ATMTheme.palette[index % ATMTheme.palette.count])
+                        .frame(width: 3, height: 24)
                     if dimension == .client {
                         ATMAgentMark(agent: row.series, size: 16)
                     }
@@ -3954,7 +4076,8 @@ private struct DesktopUsageContent: View, Equatable {
     private func quotaCard(_ card: ATMQuotaCard) -> some View {
         let window = card.window
         let percent = window.displayPercent
-        let color = ATMTheme.quotaColor(ATMQuotaLevel.level(forPercent: percent))
+        let level = ATMQuotaLevel.level(forPercent: percent)
+        let color = ATMTheme.quotaColor(level)
         let label = ATMAgentDisplay.name(card.agent)
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 5) {
@@ -3989,21 +4112,39 @@ private struct DesktopUsageContent: View, Equatable {
             .frame(height: 20)
             .foregroundStyle(ATMTheme.secondary)
 
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(String(format: "%.0f", percent))
-                    .font(ATMFont.mono(.metric, .bold))
-                    .foregroundStyle(color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                Text("% 已用")
-                    .font(ATMFont.footnote)
+            HStack(spacing: 14) {
+                ZStack {
+                    Circle()
+                        .stroke(ATMTheme.controlFill, lineWidth: 5)
+                    Circle()
+                        .trim(from: 0, to: max(0, min(1, percent / 100)))
+                        .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    HStack(alignment: .firstTextBaseline, spacing: 1) {
+                        Text(String(format: "%.0f", percent))
+                            .font(ATMFont.mono(.title2, .bold))
+                        Text("%")
+                            .font(ATMFont.mono(.micro, .semibold))
+                    }
+                    .foregroundStyle(ATMTheme.primary)
+                }
+                .frame(width: 62, height: 62)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("已用")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(color)
+                            .frame(width: 6, height: 6)
+                        Text(quotaStatusLabel(level))
+                    }
+                    .font(ATMFont.caption)
                     .foregroundStyle(ATMTheme.secondary)
-                    .fixedSize()
-                // The rate turns the number into something to act on. Absent until
-                // history exists, so a fresh install shows the percentage alone
-                // rather than an empty trend.
-                if let trend = window.trend {
-                    Spacer(minLength: 4)
+
+                    // The rate turns the number into something to act on. Absent
+                    // until history exists, so a fresh install stays quiet.
+                    if let trend = window.trend {
                     HStack(spacing: 2) {
                         if let arrow = trend.arrow {
                             Text(arrow)
@@ -4017,6 +4158,8 @@ private struct DesktopUsageContent: View, Equatable {
                     .fixedSize()
                     .help(quotaTrendHelp(trend, window: window))
                 }
+                }
+                Spacer(minLength: 0)
             }
 
             // With per-product data the bar itself carries the split: stacked
@@ -4096,11 +4239,29 @@ private struct DesktopUsageContent: View, Equatable {
         .padding(16)
         // One fixed height for every card: tall enough for the product-split
         // variant, and the Spacer above absorbs the slack in plain cards.
-        .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
-        .shadow(color: Color.black.opacity(0.04), radius: 7, y: 2)
+        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
+        .background(
+            LinearGradient(
+                colors: [color.opacity(0.055), ATMTheme.elevated, ATMTheme.elevated],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(color.opacity(0.16))
+        )
+        .shadow(color: Color.black.opacity(0.04), radius: 9, y: 3)
         .help("\(label) \(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)")
+    }
+
+    private func quotaStatusLabel(_ level: ATMQuotaLevel) -> String {
+        switch level {
+        case .healthy: return "额度充足"
+        case .warning: return "注意用量"
+        case .critical: return "接近上限"
+        }
     }
 
     /// A card whose provider named the page behind the reading is a way in to it:
@@ -4188,13 +4349,20 @@ private struct DesktopUsageContent: View, Equatable {
             .foregroundStyle(ATMTheme.secondary)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
+        .background(
+            LinearGradient(
+                colors: [ATMTheme.warning.opacity(0.045), ATMTheme.elevated, ATMTheme.elevated],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+        )
         .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .stroke(isHovered ? ATMTheme.accent : ATMTheme.border)
         )
-        .shadow(color: Color.black.opacity(isHovered ? 0.08 : 0.04), radius: 7, y: 2)
+        .shadow(color: Color.black.opacity(isHovered ? 0.08 : 0.04), radius: 9, y: 3)
         // The card's own padding is part of the hit area, not a dead margin.
         .contentShape(RoundedRectangle(cornerRadius: 12))
         .help(
@@ -4261,13 +4429,19 @@ private struct DesktopUsageContent: View, Equatable {
     }
 
     @ViewBuilder
-    private func metricCard(_ metric: ATMUsageMetric, compact: Bool = false) -> some View {
+    private func metricCard(
+        _ metric: ATMUsageMetric,
+        trendValues: [Double] = [],
+        compact: Bool = false
+    ) -> some View {
         switch metric {
         case let .seriesCount(count, title):
             metricCard(
                 "\(title)数",
                 .plain("\(count)"),
                 "square.stack.3d.up",
+                valueColor: ATMTheme.palette[2],
+                trendValues: trendValues,
                 compact: compact
             )
         case let .tokens(value):
@@ -4275,19 +4449,26 @@ private struct DesktopUsageContent: View, Equatable {
                 "总 Token",
                 .compact(value),
                 "number.circle.fill",
-                emphasized: true,
                 valueColor: ATMTheme.accent,
+                trendValues: trendValues,
                 compact: compact
             )
         case let .output(value):
-            metricCard("输出", .compact(value), "arrow.up.right.circle", compact: compact)
+            metricCard(
+                "输出",
+                .compact(value),
+                "arrow.up.right.circle",
+                valueColor: ATMTheme.palette[3],
+                trendValues: trendValues,
+                compact: compact
+            )
         case let .cacheHitRate(rate):
             metricCard(
                 "缓存命中率",
                 .percent(rate),
                 "bolt.shield.fill",
-                emphasized: true,
                 valueColor: ATMTheme.cacheHitColor(rate),
+                trendValues: trendValues,
                 compact: compact
             )
         case let .sessions(count):
@@ -4295,24 +4476,47 @@ private struct DesktopUsageContent: View, Equatable {
                 "会话",
                 .plain("\(count)"),
                 "bubble.left.and.bubble.right",
+                valueColor: ATMTheme.palette[1],
+                trendValues: trendValues,
                 compact: compact
             )
         case let .queries(count):
-            metricCard("提问", .plain("\(count)"), "text.bubble", compact: compact)
+            metricCard(
+                "提问",
+                .plain("\(count)"),
+                "text.bubble",
+                valueColor: ATMTheme.palette[4],
+                trendValues: trendValues,
+                compact: compact
+            )
         case let .cost(value):
             metricCard(
                 "估算费用",
                 .plain(NumberFormat.currency(value)),
                 "dollarsign.circle.fill",
-                emphasized: true,
                 valueColor: ATMTheme.accent,
+                trendValues: trendValues,
                 compact: compact
             )
         case let .throughput(value):
-            metricCard("输出速度", .throughput(value), "speedometer", compact: compact)
+            metricCard(
+                "输出速度",
+                .throughput(value),
+                "speedometer",
+                valueColor: ATMTheme.palette[5],
+                trendValues: trendValues,
+                compact: compact
+            )
                 .help("模型自身的生成速度，不含工具执行时间；由日志时间戳推导，只统计可测的请求")
         case let .turnWait(seconds):
-            metricCard("等待中位数", .duration(seconds), "hourglass", compact: compact)
+            metricCard(
+                "等待中位数",
+                .duration(seconds),
+                "hourglass",
+                valueColor: ATMTheme.warning,
+                trendValues: trendValues,
+                compact: compact
+            )
                 .help("从你发出消息到模型给出最后一句回复，含工具执行与该轮内部的每次请求")
         }
     }
@@ -4321,14 +4525,17 @@ private struct DesktopUsageContent: View, Equatable {
         _ title: String,
         _ value: ATMMetricDisplayValue,
         _ icon: String,
-        emphasized: Bool = false,
         valueColor: Color = ATMTheme.primary,
+        trendValues: [Double] = [],
         compact: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 9) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .foregroundStyle(emphasized ? valueColor : ATMTheme.secondary)
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(valueColor)
+                    .frame(width: 22, height: 22)
+                    .background(valueColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 6))
                 Text(title)
                     .foregroundStyle(ATMTheme.secondary)
                 Spacer(minLength: 0)
@@ -4336,37 +4543,195 @@ private struct DesktopUsageContent: View, Equatable {
                 .font(ATMFont.font(.footnote, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(value.main)
-                    .font(ATMFont.rounded(.metric, .bold))
-                    .foregroundStyle(valueColor)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                if !value.unit.isEmpty {
-                    Text(value.unit)
-                        .font(ATMFont.rounded(.body, .semibold))
-                        .foregroundStyle(ATMTheme.secondary)
+            HStack(alignment: .bottom, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(value.main)
+                        .font(ATMFont.rounded(.metric, .bold))
+                        .foregroundStyle(valueColor)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    if !value.unit.isEmpty {
+                        Text(value.unit)
+                            .font(ATMFont.rounded(.body, .semibold))
+                            .foregroundStyle(ATMTheme.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                if !compact, trendValues.count > 1 {
+                    metricSparkline(trendValues, color: valueColor)
+                        .frame(width: 82, height: 32)
                 }
             }
         }
         .padding(compact ? 12 : 16)
         .frame(maxWidth: .infinity, minHeight: compact ? 72 : 92, alignment: .leading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous)
-                .stroke(ATMTheme.border)
+        .background(
+            LinearGradient(
+                colors: [valueColor.opacity(compact ? 0.025 : 0.045), ATMTheme.elevated],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: compact ? 9 : 12, style: .continuous)
         )
-        .shadow(color: compact ? .clear : Color.black.opacity(0.04), radius: 7, y: 2)
-        .overlay(alignment: .topLeading) {
-            if emphasized {
-                Capsule()
-                    .fill(valueColor)
-                    .frame(width: 28, height: 3)
-                    .padding(.leading, 16)
-                    .padding(.top, 8)
+        .overlay(
+            RoundedRectangle(cornerRadius: compact ? 9 : 12, style: .continuous)
+                .stroke(valueColor.opacity(compact ? 0.09 : 0.13))
+        )
+        .shadow(color: compact ? .clear : Color.black.opacity(0.035), radius: 8, y: 3)
+    }
+
+    private func metricSparkline(_ values: [Double], color: Color) -> some View {
+        Chart(Array(values.enumerated()), id: \.offset) { item in
+            AreaMark(
+                x: .value("序号", item.offset),
+                y: .value("值", item.element)
+            )
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [color.opacity(0.18), color.opacity(0.01)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .interpolationMethod(.catmullRom)
+            LineMark(
+                x: .value("序号", item.offset),
+                y: .value("值", item.element)
+            )
+            .foregroundStyle(color)
+            .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            .interpolationMethod(.catmullRom)
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        .accessibilityHidden(true)
+    }
+
+    /// KPI sparklines use the same filtered buckets as the main chart. They are
+    /// not decorative sample curves: each metric chooses an honest aggregate
+    /// that can be derived from the bucket payload.
+    private func metricTrendValues(
+        _ metric: ATMUsageMetric,
+        from points: [ATMUsageSeriesPoint]
+    ) -> [Double] {
+        var dates: [String] = []
+        for point in points where !dates.contains(point.date) {
+            dates.append(point.date)
+        }
+        return dates.compactMap { date in
+            let bucket = points.filter { $0.date == date }
+            switch metric {
+            case .tokens:
+                return Double(bucket.reduce(0) { $0 + $1.totalTokens })
+            case .cacheHitRate:
+                let input = bucket.reduce(0) { $0 + $1.inputTokens }
+                guard input > 0 else { return nil }
+                return min(
+                    Double(bucket.reduce(0) { $0 + $1.cacheReadTokens }) / Double(input),
+                    1
+                )
+            case .cost:
+                return bucket.reduce(0) { $0 + $1.costUSD }
+            case .throughput:
+                let duration = bucket.reduce(0) { $0 + $1.measuredDurationMS }
+                let output = bucket.reduce(0) { $0 + $1.measuredOutputTokens }
+                guard duration > 0, output > 0 else { return nil }
+                return Double(output) / (Double(duration) / 1000)
+            default:
+                return nil
             }
         }
+    }
+
+    @ViewBuilder
+    private func supportingMetricsStrip(_ metrics: [ATMUsageMetric]) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { index, metric in
+                    compactMetricCell(metric)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if index < metrics.count - 1 {
+                        Divider()
+                            .padding(.vertical, 4)
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+            .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(ATMTheme.border.opacity(0.8))
+            )
+            .shadow(color: Color.black.opacity(0.025), radius: 6, y: 2)
+
+            LazyVGrid(columns: Self.supportingMetricColumns, spacing: 8) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
+                    metricCard(metric, compact: true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func compactMetricCell(_ metric: ATMUsageMetric) -> some View {
+        switch metric {
+        case let .seriesCount(count, title):
+            compactMetricCell("\(title)数", .plain("\(count)"), "square.stack.3d.up", ATMTheme.palette[2])
+        case let .tokens(value):
+            compactMetricCell("总 Token", .compact(value), "number.circle.fill", ATMTheme.accent)
+        case let .output(value):
+            compactMetricCell("输出", .compact(value), "arrow.up.right.circle", ATMTheme.palette[3])
+        case let .cacheHitRate(rate):
+            compactMetricCell("缓存命中率", .percent(rate), "bolt.shield.fill", ATMTheme.cacheHitColor(rate))
+        case let .sessions(count):
+            compactMetricCell("会话", .plain("\(count)"), "bubble.left.and.bubble.right", ATMTheme.palette[1])
+        case let .queries(count):
+            compactMetricCell("提问", .plain("\(count)"), "text.bubble", ATMTheme.palette[4])
+        case let .cost(value):
+            compactMetricCell("估算费用", .plain(NumberFormat.currency(value)), "dollarsign.circle.fill", ATMTheme.accent)
+        case let .throughput(value):
+            compactMetricCell("输出速度", .throughput(value), "speedometer", ATMTheme.palette[5])
+        case let .turnWait(seconds):
+            compactMetricCell("等待中位数", .duration(seconds), "hourglass", ATMTheme.warning)
+        }
+    }
+
+    private func compactMetricCell(
+        _ title: String,
+        _ value: ATMMetricDisplayValue,
+        _ icon: String,
+        _ color: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                Text(title)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(ATMFont.font(.caption, weight: .semibold))
+            .foregroundStyle(ATMTheme.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value.main)
+                    .font(ATMFont.rounded(.title3, .bold))
+                    .foregroundStyle(ATMTheme.primary)
+                if !value.unit.isEmpty {
+                    Text(value.unit)
+                        .font(ATMFont.rounded(.caption, .semibold))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+    }
+
+    private var usageScopeLabel: String {
+        let scope = pageTab == .todaySessions ? "今天" : range.pickerTitle
+        return "\(scope) · 本地统计"
     }
 
     private func usageCard<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
@@ -4376,11 +4741,11 @@ private struct DesktopUsageContent: View, Equatable {
                 .foregroundStyle(ATMTheme.primary)
             content()
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
-        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
+        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(ATMTheme.border))
+        .shadow(color: Color.black.opacity(0.04), radius: 10, y: 3)
     }
 
     /// 图表卡片里的占位。用量页的空态一律落在卡片内部，所以固定走 `.inline` 那一档，

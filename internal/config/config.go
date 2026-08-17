@@ -22,10 +22,21 @@ var (
 	QoderCLIProjects  = filepath.Join(Home, ".qoder", "projects")
 	QoderWorkDB       = defaultQoderWorkDB()
 	GrokSessions      = filepath.Join(Home, ".grok", "sessions")
-	AtmDir            = filepath.Join(Home, ".atm")
-	AtmDB             = filepath.Join(Home, ".atm", "atm.db")
-	Loc               = time.FixedZone("CST", 8*3600)
-	ConfigPath        = filepath.Join(Home, ".atm", "config.json")
+	// AntigravityDir is the Antigravity IDE's own data directory, which is not
+	// beside its Electron profile: the app stores chrome state under
+	// ~/Library/Application Support/Antigravity but every transcript, summary and
+	// artifact under ~/.gemini/antigravity.
+	//
+	// Only the IDE is covered. ~/.gemini/antigravity-cli holds the CLI's
+	// conversations in the same format, but on a real install it accounts for a
+	// handful of model calls against the IDE's hundreds, and it keeps a live -wal
+	// that the immutable read below cannot see. A second agent for that is more
+	// surface than the numbers justify.
+	AntigravityDir = filepath.Join(Home, ".gemini", "antigravity")
+	AtmDir         = filepath.Join(Home, ".atm")
+	AtmDB          = filepath.Join(Home, ".atm", "atm.db")
+	Loc            = time.FixedZone("CST", 8*3600)
+	ConfigPath     = filepath.Join(Home, ".atm", "config.json")
 )
 
 func defaultCopilotWorkspaces() string {
@@ -47,6 +58,20 @@ func defaultQoderWorkDB() string {
 		return filepath.Join(Home, ".config", "QoderWork", "data", "agents.db")
 	}
 	return filepath.Join(Home, "Library", "Application Support", "QoderWork", "data", "agents.db")
+}
+
+// AntigravityConversations is where one SQLite database per conversation lives.
+// It is derived rather than stored so that overriding AntigravityDir moves both
+// this and the summary index together.
+func AntigravityConversations() string {
+	return filepath.Join(AntigravityDir, "conversations")
+}
+
+// AntigravitySummaries is the index that maps a conversation id to its title and
+// workspace folder. The conversation databases themselves carry neither, so
+// without this file a session has no name and no project.
+func AntigravitySummaries() string {
+	return filepath.Join(AntigravityDir, "agyhub_summaries_proto.pb")
 }
 
 var (
@@ -161,6 +186,7 @@ type FileConfig struct {
 	QoderCLIProjects  string `json:"qodercli_projects,omitempty"`
 	QoderWorkDB       string `json:"qoderwork_db,omitempty"`
 	GrokSessions      string `json:"grok_sessions,omitempty"`
+	AntigravityDir    string `json:"antigravity_dir,omitempty"`
 	// Pointer so "absent" (keep default) is distinct from an explicit false.
 	GrokLiveQuota             *bool `json:"grok_live_quota,omitempty"`
 	CollectionEnabled         *bool `json:"collection_enabled,omitempty"`
@@ -229,6 +255,9 @@ func loadConfigFile() {
 	}
 	if cfg.GrokSessions != "" {
 		GrokSessions = expandHome(cfg.GrokSessions)
+	}
+	if cfg.AntigravityDir != "" {
+		AntigravityDir = expandHome(cfg.AntigravityDir)
 	}
 	if cfg.GrokLiveQuota != nil {
 		GrokLiveQuota = *cfg.GrokLiveQuota
@@ -343,6 +372,7 @@ func ShowConfig() string {
 		QoderCLIProjects:               QoderCLIProjects,
 		QoderWorkDB:                    QoderWorkDB,
 		GrokSessions:                   GrokSessions,
+		AntigravityDir:                 AntigravityDir,
 		GrokLiveQuota:                  &GrokLiveQuota,
 		CollectionEnabled:              &CollectionEnabled,
 		CollectionIntervalMinutes:      CollectionIntervalMinutes,
@@ -384,6 +414,7 @@ func InitConfig() error {
 		QoderCLIProjects:               "~/.qoder/projects",
 		QoderWorkDB:                    shortenHome(defaultQoderWorkDB()),
 		GrokSessions:                   "~/.grok/sessions",
+		AntigravityDir:                 "~/.gemini/antigravity",
 		CollectionEnabled:              &CollectionEnabled,
 		CollectionIntervalMinutes:      CollectionIntervalMinutes,
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
@@ -761,6 +792,8 @@ func NormalizeAgent(s string) string {
 		return "qoderwork"
 	case "grok", "grokbuild", "grok-build", "grok-cli":
 		return "grokbuild"
+	case "antigravity", "agy", "anti-gravity":
+		return "antigravity"
 	// ATM 自己：它是内置文本模型的 client，用量记在 `store.BuiltinAgent` 名下。这里
 	// 认它是为了 `--agent atm` 能过校验；它没有 parser adapter，所以不参与 sync，
 	// 也不会出现在活跃面板里。

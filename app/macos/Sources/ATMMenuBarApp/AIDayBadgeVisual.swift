@@ -7,27 +7,61 @@ import SwiftUI
 struct ATMAIDayBadgeVisual: View {
     let badge: ATMAIDayBadge
     let size: CGFloat
+    /// 徽章自带的深色底座。
+    ///
+    /// 不是装饰，是徽章能不能出现在这里的前提。上面那三样——烟熏玻璃、冷光、一点暖核——都
+    /// 是按深色底调的，浅底上冷光和玻璃全失效；角上那两行 `FORM / 01` 和 `AI–05` 更直接，
+    /// 它们是写死的白字 38%，浅色 sheet 上根本看不见（`size >= 140` 才画，而两个详情 sheet
+    /// 正好都用 150——这个 bug 就是这么来的）。
+    ///
+    /// 底座跟着徽章走之后，徽章在哪儿都是同一枚：浅色卡片上、系统 sheet 里、列表行里。
+    /// 只有已经画在固定深色上的地方（分享卡）传 `false`，否则会多出一个方框。
+    var plate: Bool = true
+
+    /// 图形长边占底座直径的比例。
+    ///
+    /// 圆形底座的内接正方形是直径的 0.707，所以这个值得留在它以下，否则包围盒的角会伸出
+    /// 圆外。0.64 是留了余量的：图形极点落在离圆心 0.45 的地方，圆半径 0.5。
+    private static let glyphDiameter: CGFloat = 0.64
 
     private var active: Bool { badge.unlocked || badge.score != nil }
     private var displayLevel: Int { active ? max(1, badge.level) : 0 }
-    private var asset: NSImage? { ATMAIDayBadgeAssets.image(named: badge.id) }
+    private var asset: ATMAIDayBadgeAsset? { ATMAIDayBadgeAssets.asset(named: badge.id) }
+
+    /// 未解锁的徽章画小一档，跟降饱和、压亮度一起表示「还没被发现」。
+    ///
+    /// 此前这件事由 `formScale` 做，它按等级给 0.93 / 1.07 / 1.09 / 1.11 四档——L1 到 L3
+    /// 之间差 3.7%，看不出来，只是给本来就不齐的一组图再加一层抖动；而 PNG 一枚徽章只有一张，
+    /// 等级根本没有对应的图形变化。现在只保留锁定与否这一个真实区别。
+    private var glyphTarget: CGFloat {
+        active ? Self.glyphDiameter : Self.glyphDiameter * 0.93
+    }
 
     var body: some View {
         ZStack {
+            // 接触阴影要压在图形底边之下。图形归一化成直径的 64% 之后底边在 0.82，原来那组
+            // 数（0.62 宽、偏移 0.34）是按「画布铺满底座」调的，现在会糊到图形中间去；同时
+            // 加上模糊也不能溢出圆外——`drawingGroup` 只按方形 frame 裁剪，圆外的污迹会露在
+            // 卡片底色上。
             Ellipse()
                 .fill(Color.black.opacity(active ? 0.25 : 0.10))
-                .frame(width: size * 0.62, height: size * 0.16)
-                .blur(radius: size * 0.055)
-                .offset(y: size * 0.34)
+                .frame(width: size * 0.44, height: size * 0.12)
+                .blur(radius: size * 0.05)
+                .offset(y: size * 0.31)
 
             if let asset {
-                Image(nsImage: asset)
+                // 画布按图形包围盒放大并平移，而不是铺满底座——这样每枚徽章的光学大小和
+                // 光学中心才一致。放大后画布本身可能超出底座，但超出的部分全是透明边，
+                // 图形始终在 `glyphTarget` 之内。
+                let side = asset.metrics.canvasSide(in: size, target: glyphTarget)
+                let shift = asset.metrics.canvasOffset(in: size, target: glyphTarget)
+                Image(nsImage: asset.image)
                     .resizable()
                     .interpolation(.high)
                     .antialiased(true)
                     .scaledToFit()
-                    .padding(size * 0.012)
-                    .scaleEffect(formScale)
+                    .frame(width: side, height: side)
+                    .offset(x: shift.width, y: shift.height)
                     .saturation(active ? 0.88 : 0)
                     .contrast(active ? 1.04 : 0.82)
                     .brightness(active ? -0.015 : -0.28)
@@ -38,30 +72,31 @@ struct ATMAIDayBadgeVisual: View {
                     )
                     .shadow(color: Color.black.opacity(0.42), radius: size * 0.035, y: size * 0.025)
             } else {
+                // 兜底路径的手写几何画在 0…1 的方形空间里，得收进圆的内接正方形。
                 ATMAIDayComputationalObject(
                     id: badge.id,
                     level: displayLevel,
                     active: active
                 )
-                .padding(size * 0.055)
+                .padding(size * 0.16)
             }
 
             if size >= 140 {
-                VStack {
-                    HStack {
-                        Text(ordinal)
-                        Spacer()
-                        Text(displayLevel > 0 ? "FORM / 0\(displayLevel)" : "UNDISCOVERED")
-                    }
-                    Spacer()
-                }
-                .font(.system(size: size * 0.047, weight: .medium, design: .monospaced))
-                .tracking(size * 0.004)
-                .foregroundStyle(active ? Color.white.opacity(0.38) : Color.white.opacity(0.14))
-                .padding(size * 0.095)
+                // 标本号排在圆内底部。此前它和 `FORM / 0N` 一起挂在左上、右上角——圆形底座
+                // 没有角，而 `FORM / 0N` 在三个够大的调用点旁边本来就都写着（今日卡的元数据
+                // 行、徽章 sheet 的「等级 L1 · 累计 N 天」、日详情的 `L1`），去掉不丢信息。
+                Text(ordinal)
+                    .font(.system(size: size * 0.042, weight: .medium, design: .monospaced))
+                    .tracking(size * 0.004)
+                    .foregroundStyle(active ? Color.white.opacity(0.34) : Color.white.opacity(0.13))
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, size * 0.10)
             }
         }
         .frame(width: size, height: size)
+        // 底座在 `drawingGroup` 之内：那层离屏光栅化本来就按 frame 裁剪，徽章的投影和辉光
+        // 一直是落在这个方框里的，底座正好接住它们。
+        .background { if plate { ATMAIDayBadgePlate(size: size) } }
         .drawingGroup(opaque: false, colorMode: .extendedLinear)
         .accessibilityLabel("\(badge.name)，形态等级 \(displayLevel)")
     }
@@ -74,27 +109,118 @@ struct ATMAIDayBadgeVisual: View {
         ]
         return String(format: "AI–%02d", (ids.firstIndex(of: badge.id) ?? 0) + 1)
     }
+}
 
-    private var formScale: CGFloat {
-        switch displayLevel {
-        case 0: return 0.93
-        case 1: return 1.07
-        case 2: return 1.09
-        default: return 1.11
-        }
+/// 一张徽章图里**图形本身**在画布中的位置和大小。
+///
+/// 这是「所有图标看起来都居中」那个问题的答案。此前渲染是
+/// `Image(...).scaledToFit().padding(size * 0.012)`——`scaledToFit` 对齐的是整张 362×362
+/// 画布，不是画布里的图形，而那点 padding 在 94pt 上只有 1.1pt。于是每枚徽章的留白完全由
+/// 它自己 PNG 带的透明边决定，实测跨度极大：`model_conductor` 的图形占画布宽 80%，
+/// `streak` 只占 49%（光学大小差 1.6 倍），垂直光学中心从 −0.215 到 +0.135，跨了将近三分之
+/// 一个底座高。看的人先认出「一组居中图标」，再发现每个都偏一点，读起来就是不齐。
+///
+/// 量出图形的实际包围盒之后，渲染改成按包围盒对齐：统一的光学直径、统一的光学中心。
+struct ATMAIDayGlyphMetrics: Equatable {
+    /// 图形包围盒中心，归一化到画布，**y 向下**（跟 SwiftUI 的 offset 同向）。
+    let center: CGPoint
+    /// 图形包围盒的长边占画布的比例。
+    let extent: CGFloat
+
+    /// 量不出来时的退路：当作图形铺满整张画布且居中，等价于归一化前的行为。
+    static let untrimmed = ATMAIDayGlyphMetrics(center: CGPoint(x: 0.5, y: 0.5), extent: 1)
+
+    /// 为了让图形的长边正好占 `target`，整张画布该画多大。
+    func canvasSide(in size: CGFloat, target: CGFloat) -> CGFloat {
+        // 一张几乎全透明的图会让缩放炸到无穷大，宁可原样画出来。
+        guard extent > 0.01 else { return size }
+        return size * target / extent
+    }
+
+    /// 把图形的光学中心搬到底座正中，画布需要的位移。
+    func canvasOffset(in size: CGFloat, target: CGFloat) -> CGSize {
+        let side = canvasSide(in: size, target: target)
+        return CGSize(width: (0.5 - center.x) * side, height: (0.5 - center.y) * side)
     }
 }
 
-private enum ATMAIDayBadgeAssets {
-    private static let cache = NSCache<NSString, NSImage>()
+/// 徽章图与它的图形度量。度量要扫一遍 alpha（362×362），所以跟图片一起缓存，
+/// 每个 id 只算一次。
+final class ATMAIDayBadgeAsset {
+    let image: NSImage
+    let metrics: ATMAIDayGlyphMetrics
 
-    static func image(named name: String) -> NSImage? {
-        if let cached = cache.object(forKey: name as NSString) { return cached }
+    init(image: NSImage, metrics: ATMAIDayGlyphMetrics) {
+        self.image = image
+        self.metrics = metrics
+    }
+}
+
+enum ATMAIDayBadgeAssets {
+    /// 有界（12 枚徽章）且重算不便宜，所以不用会被回收的 `NSCache`：一次驱逐就要重新
+    /// 扫一遍 alpha，正好卡在滚动或切页的那一帧上。
+    private static var cache: [String: ATMAIDayBadgeAsset] = [:]
+    private static let lock = NSLock()
+
+    static func asset(named name: String) -> ATMAIDayBadgeAsset? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let cached = cache[name] { return cached }
         let url = Bundle.module.url(forResource: name, withExtension: "png", subdirectory: "AIDayBadges")
             ?? Bundle.module.url(forResource: name, withExtension: "png")
         guard let url, let image = NSImage(contentsOf: url) else { return nil }
-        cache.setObject(image, forKey: name as NSString)
-        return image
+        let asset = ATMAIDayBadgeAsset(image: image, metrics: glyphMetrics(of: image) ?? .untrimmed)
+        cache[name] = asset
+        return asset
+    }
+
+    /// 图形包围盒 = alpha 高于阈值的最小矩形。
+    ///
+    /// 自己开一个 RGBA8 premultipliedLast 的位图上下文来量，而不是读 `NSBitmapImageRep`
+    /// 的原始字节：后者的分量顺序和 alpha 位置随 `bitmapFormat` 变，按固定偏移读会在某些
+    /// 图上量到颜色通道。位图上下文的第一行对应图像顶行，所以这里得到的 y 是向下的——
+    /// `testBadgeGlyphMetricsMatchAnIndependentMeasurement` 用外部量的数拴住这个方向，
+    /// 搞反了不会「少校正一点」，而是把偏移量加倍。
+    static func glyphMetrics(of image: NSImage, alphaThreshold: UInt8 = 8) -> ATMAIDayGlyphMetrics? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        let width = cgImage.width, height = cgImage.height
+        guard width > 0, height > 0 else { return nil }
+        let bytesPerRow = width * 4
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: bytesPerRow,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let data = context.data else { return nil }
+        let bytes = data.assumingMemoryBound(to: UInt8.self)
+
+        var minX = width, minY = height, maxX = -1, maxY = -1
+        for y in 0..<height {
+            let row = y * bytesPerRow
+            for x in 0..<width where bytes[row + x * 4 + 3] > alphaThreshold {
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
+        }
+        guard maxX >= minX, maxY >= minY else { return nil }
+
+        let canvasWidth = CGFloat(width), canvasHeight = CGFloat(height)
+        let boxWidth = CGFloat(maxX - minX + 1) / canvasWidth
+        let boxHeight = CGFloat(maxY - minY + 1) / canvasHeight
+        return ATMAIDayGlyphMetrics(
+            center: CGPoint(
+                x: (CGFloat(minX) + CGFloat(maxX) + 1) / 2 / canvasWidth,
+                y: (CGFloat(minY) + CGFloat(maxY) + 1) / 2 / canvasHeight
+            ),
+            extent: max(boxWidth, boxHeight)
+        )
     }
 }
 
