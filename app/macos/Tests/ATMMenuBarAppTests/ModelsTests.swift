@@ -56,6 +56,7 @@ final class ModelsTests: XCTestCase {
                          {"id":"cs2","connector":"example","kind":"bot",
                           "external_id":"bot-1","name":"发布通知",
                           "strategy":"tasks","decision_unit":"message","interval_minutes":15,
+                          "auto_dispatch":true,
                           "priority":"P2","enabled":true,"created_at":12,"updated_at":13}],
               "runs":[{"id":"cr1","connector":"example","source_id":"cs1",
                        "status":"succeeded","started_at":100,"finished_at":110,
@@ -67,6 +68,7 @@ final class ModelsTests: XCTestCase {
                         "action":"create","title":"实现自动收集","item_type":"requirement",
                         "project":"atm","priority":"P1","reason":"明确需求","confidence":0.95,
                         "todo_id":"t1","todo_status":"open",
+                        "dispatch_status":"dispatched",
                         "status":"processed","created_at":100,"updated_at":101},
                        {"id":"ci2","source_id":"cs1","connector":"example",
                         "conversation_id":"channel-1","fingerprint":"fp2","message_ids":["m2"],
@@ -84,6 +86,7 @@ final class ModelsTests: XCTestCase {
         let overview = try JSONDecoder().decode(ATMCollectionOverview.self, from: data)
         XCTAssertTrue(overview.enabled)
         XCTAssertEqual(overview.summary.createdToday, 1)
+        XCTAssertEqual(overview.items.first?.id, "ci1")
         XCTAssertEqual(overview.sources.first?.externalID, "channel-1")
         XCTAssertEqual(overview.sources.first?.excludePattern, "机器人通知")
         XCTAssertEqual(overview.sources.first?.effectiveStrategy, "observe")
@@ -91,12 +94,17 @@ final class ModelsTests: XCTestCase {
         // behaviour it actually had; a notification feed carries its own.
         XCTAssertEqual(overview.sources.first?.effectiveDecisionUnit, "window")
         XCTAssertEqual(overview.sources.last?.effectiveDecisionUnit, "message")
+        XCTAssertEqual(overview.sources.last?.automaticallyDispatches, true)
         XCTAssertEqual(overview.sources.last?.symbolName, "cpu")
         XCTAssertEqual(overview.sources.first?.effectiveIntervalMinutes, 60)
         XCTAssertEqual(overview.latestRun?.id, "cr1")
+        XCTAssertEqual(overview.latestRun(for: "cs1")?.id, "cr1")
+        XCTAssertEqual(overview.latestSuccessfulRun(for: "cs1")?.id, "cr1")
+        XCTAssertNil(overview.latestRun(for: "cs2"))
         XCTAssertEqual(overview.connectorHealth.first?.status, "ready")
         XCTAssertEqual(overview.items.first?.todoID, "t1")
         XCTAssertEqual(overview.items.first?.messageIDs, ["m1"])
+        XCTAssertEqual(overview.items.first?.dispatchStatus, "dispatched")
         // A record is only settled once the Todo it filed is: the open one stays in
         // the main list, the finished one folds away with the insights and noise.
         XCTAssertEqual(overview.items.first?.todoClosed, false)
@@ -110,9 +118,145 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.items[2].shouldCollapseInCollection, false)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "run"]), 300)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "item", "reprocess", "ci1"]), 180)
+        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["todo", "refine", "t1", "--json"]), 180)
+        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["config", "test-text-model", "--json"]), 45)
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)
         XCTAssertEqual(notification?.subtitle, "自动收集完成")
         XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 沉淀 0 · 失败 0")
+    }
+
+    func testCollectionManualRunIsScopedToOneSource() {
+        XCTAssertEqual(
+            ATMCollectionRunCommand.arguments(sourceID: "cs-example"),
+            ["collect", "run", "--source", "cs-example", "--json"]
+        )
+    }
+
+    func testTaskRunDecodesExecutionEvidence() throws {
+        let run = try JSONDecoder().decode(
+            ATMTaskRun.self,
+            from: Data(
+                """
+                {"id":"r1","todo_id":"t1","agent":"codex","project":"atm",
+                 "work_dir":"/tmp/atm","policy":"guarded","log_path":"/tmp/r1.log",
+                 "status":"failed","pid":42,"start_ts":100,"end_ts":110,
+                 "exit_code":7,"message":"agent exited with code 7"}
+                """.utf8
+            )
+        )
+        XCTAssertEqual(run.todoID, "t1")
+        XCTAssertEqual(run.exitCode, 7)
+        XCTAssertFalse(run.isActive)
+    }
+
+    /// Codex reads a non-UUID id as a thread *name* and silently starts a brand
+    /// new session when no such thread exists, so “继续修改” must apply exactly the
+    /// same test as `atm todo run --continue` rather than only checking for a
+    /// non-empty session id.
+    func testResumableThreadIDMatchesWhatCodexCanActuallyResume() {
+        let threadID = "019fea8d-a0c4-7130-a984-2c8128705934"
+        XCTAssertEqual(ATMTaskRunSessionRouting.resumableThreadID(threadID), threadID)
+        XCTAssertEqual(
+            ATMTaskRunSessionRouting.resumableThreadID("rollout-2026-08-10T15-19-46-\(threadID)"),
+            threadID
+        )
+        XCTAssertEqual(
+            ATMTaskRunSessionRouting.resumableThreadID(threadID.uppercased()),
+            threadID
+        )
+        XCTAssertNil(ATMTaskRunSessionRouting.resumableThreadID("codex-desktop-session"))
+        XCTAssertNil(ATMTaskRunSessionRouting.resumableThreadID("2c812870"))
+        XCTAssertNil(ATMTaskRunSessionRouting.resumableThreadID("   "))
+        XCTAssertNil(ATMTaskRunSessionRouting.resumableThreadID(nil))
+    }
+
+    func testCollectionWorkspaceNoticeOnlyShowsUnattributedFailures() {
+        XCTAssertEqual(
+            ATMCollectionWorkspaceNotice.message(shared: "删除来源失败", sourceErrors: [:]),
+            "删除来源失败"
+        )
+        // 采集失败已经显示在那个来源的“采集状态”卡片里，横幅不再重复一遍。
+        XCTAssertNil(
+            ATMCollectionWorkspaceNotice.message(
+                shared: "连接器不可用",
+                sourceErrors: ["cs1": "连接器不可用"]
+            )
+        )
+        XCTAssertNil(ATMCollectionWorkspaceNotice.message(shared: "   ", sourceErrors: [:]))
+        XCTAssertNil(ATMCollectionWorkspaceNotice.message(shared: nil, sourceErrors: [:]))
+    }
+
+    func testTaskRunLogPolicyRequestsABoundedTailForTheFullLogTab() {
+        XCTAssertEqual(ATMTaskRunLogPolicy.maximumBytes, 1_048_576)
+        XCTAssertEqual(
+            ATMTaskRunLogPolicy.arguments(todoID: "t242"),
+            ["todo", "tail", "t242", "--bytes", "1048576"]
+        )
+    }
+
+    func testTaskRunContinuationPassesFollowUpWithoutShellEncoding() {
+        XCTAssertEqual(
+            ATMCommandBuilder.continueTaskRun(
+                id: "t253",
+                agent: "codex",
+                policy: "guarded",
+                instructions: "调整按钮文案\n并补测试"
+            ),
+            ["todo", "run", "t253", "--agent", "codex", "--policy", "guarded", "--continue", "调整按钮文案\n并补测试", "--json"]
+        )
+    }
+
+    func testTaskRunInterruptUsesStructuredCLIArguments() {
+        XCTAssertEqual(
+            ATMCommandBuilder.interruptTaskRun(id: "t255"),
+            ["todo", "interrupt", "t255", "--json"]
+        )
+    }
+
+    func testTaskRunRoutingPrefersTheTodoBindingAndMatchesCodexIdentities() throws {
+        let run = try JSONDecoder().decode(
+            ATMTaskRun.self,
+            from: Data(
+                """
+                {"id":"r1","todo_id":"t249","agent":"codex","project":"atm",
+                 "work_dir":"/tmp/atm","policy":"guarded","log_path":"/tmp/r1.log",
+                 "status":"running","start_ts":100,
+                 "session_id":"rollout-2026-08-10-019fea8a-b32c-7c40-8824-618a3df50973"}
+                """.utf8
+            )
+        )
+        let correct = try JSONDecoder().decode(
+            ATMLiveSession.self,
+            from: Data(
+                """
+                {"tool":"Codex","session_id":"2c812870",
+                 "resume_id":"019fea8d-a0c4-7130-a984-2c8128705934",
+                 "project":"atm","age_seconds":2,"activity_state":"active","binding_state":"bound",
+                 "binding":{"session_id":"019fea8d-a0c4-7130-a984-2c8128705934","todo_id":"t249"}}
+                """.utf8
+            )
+        )
+        let staleHeuristicLink = try JSONDecoder().decode(
+            ATMLiveSession.self,
+            from: Data(
+                """
+                {"tool":"Codex","session_id":"618a3df5",
+                 "resume_id":"019fea8a-b32c-7c40-8824-618a3df50973",
+                 "project":"atm","age_seconds":20,"activity_state":"active","binding_state":"bound",
+                 "binding":{"session_id":"019fea8a-b32c-7c40-8824-618a3df50973","todo_id":"t247"}}
+                """.utf8
+            )
+        )
+
+        XCTAssertEqual(
+            ATMTaskRunSessionRouting.session(
+                for: run,
+                todoID: "t249",
+                in: [staleHeuristicLink, correct]
+            )?.id,
+            correct.id
+        )
+        XCTAssertTrue(ATMTaskRunSessionRouting.identifiersMatch(run.sessionID, staleHeuristicLink))
     }
 
     func testCollectionItemTypesExplainClassifierVocabulary() {
@@ -527,6 +671,65 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.rangeData[.yesterday]?.startDate, "2026-07-23")
     }
 
+    /// The launch fast path asks for `--sections work`, so the envelope arrives
+    /// with every statistics key empty. It has to decode into a usable task list
+    /// rather than fail, because failing here means the window stays blank for
+    /// the second the full snapshot takes.
+    func testWorkOnlyDashboardEnvelopeDecodesWithoutStatistics() throws {
+        let data = Data(
+            """
+            {
+              "schema_version":6,
+              "generated_at":"2026-07-24T15:00:00+08:00",
+              "work":{
+                "generated_at":"2026-07-24T15:00:00+08:00",
+                "open":[{"id":"t1","title":"Paint before the charts","priority":"P1","status":"open","created":"2026-07-24"}],
+                "working":[],"waiting":[],"review":[],"blocked":[],"due":[],
+                "summary":{"open":1}
+              },
+              "todos":[{"id":"t1","title":"Paint before the charts","priority":"P1","status":"open","created":"2026-07-24"}],
+              "day_stats":[],"hour_stats":[],"model_day_stats":[],"model_hour_stats":[],
+              "project_day_stats":[],"project_hour_stats":[],
+              "ranges":{},
+              "live_status":{"sessions":[],"bindings":[],"time":"15:00:00"},
+              "index_health":{
+                "generated_at":"2026-07-24T07:00:00Z",
+                "index":{"path":"/tmp/atm.db","exists":true,"schema_version":12,"indexed_sessions":0},
+                "sync":{"scope":"all","status":"fresh","run_status":"succeeded","last_attempt_at":null,"last_success_at":null,"age_seconds":null,"stale_after_seconds":600,"last_error":"","last_synced_files":0}
+              }
+            }
+            """.utf8
+        )
+        let envelope = try JSONDecoder().decode(ATMDashboardEnvelope.self, from: data)
+        // Same schema version as the full snapshot: one section of one contract,
+        // not a second format the mismatch guard would have to learn.
+        XCTAssertEqual(envelope.schemaVersion, ATMDashboardContract.supportedSchemaVersion)
+        let snapshot = envelope.makeSnapshot(refreshedAt: .distantPast)
+        XCTAssertEqual(snapshot.work.summary.open, 1)
+        XCTAssertEqual(envelope.todos.first?.id, "t1")
+        XCTAssertEqual(snapshot.indexHealth?.index.schemaVersion, 12)
+        // An absent `ranges` still yields every key, so a statistics view reads an
+        // empty window instead of finding nothing there at all.
+        XCTAssertEqual(Set(snapshot.rangeData.keys), Set(ATMMetricsRange.allCases))
+        XCTAssertEqual(snapshot.rangeData[.last30Days]?.sessions.count, 0)
+        XCTAssertTrue(snapshot.dayStats.isEmpty)
+        XCTAssertTrue(snapshot.projectDayStats.isEmpty)
+    }
+
+    func testDashboardCommandRequestsOnlyTheSectionsItNeeds() {
+        XCTAssertEqual(ATMCommandBuilder.dashboard(), ["dashboard", "--json"])
+        XCTAssertEqual(
+            ATMCommandBuilder.dashboard(sections: ["work"]),
+            ["dashboard", "--json", "--sections", "work"]
+        )
+        XCTAssertEqual(
+            ATMCommandBuilder.dashboard(sections: ["work"], sessionID: "s9"),
+            ["dashboard", "--json", "--sections", "work", "--agent-session", "s9"]
+        )
+        // An empty session ID must not become a bare flag with no value.
+        XCTAssertEqual(ATMCommandBuilder.dashboard(sessionID: ""), ["dashboard", "--json"])
+    }
+
     func testTodaySessionsDecodeAndFilterIndependentlyFromDashboard() throws {
         let data = Data(
             """
@@ -642,9 +845,15 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMAgentDisplay.monogram("codex"), "X")
         XCTAssertEqual(ATMAgentDisplay.monogram("pi"), "π")
         XCTAssertEqual(ATMAgentDisplay.monogram("grokbuild"), "G")
+        XCTAssertEqual(ATMAgentDisplay.iconResourceName("claude"), "agent-claude")
+        XCTAssertEqual(ATMAgentDisplay.iconResourceName("Claude Code"), "agent-claude")
+        XCTAssertEqual(ATMAgentDisplay.iconResourceName("QoderCLI"), "agent-qoder")
+        XCTAssertEqual(ATMAgentDisplay.iconResourceName("Grok"), "agent-grok")
+        XCTAssertNil(ATMAgentDisplay.iconResourceName("custom-agent"))
         XCTAssertEqual(ATMAgentDisplay.systemImage("claude"), "text.bubble.fill")
         XCTAssertEqual(ATMAgentDisplay.systemImage("codex"), "chevron.left.forwardslash.chevron.right")
         XCTAssertEqual(ATMAgentDisplay.key("QoderCLI"), "qodercli")
+        XCTAssertEqual(ATMAgentDisplay.key("Claude Code"), "claude")
         // Flattened cards must keep unique ids so LazyVGrid can show every agent.
         XCTAssertEqual(quota.cards.map(\.agent), ["codex", "codex", "grokbuild"])
         XCTAssertEqual(Set(quota.cards.map(\.id)).count, 3)
@@ -680,6 +889,17 @@ final class ModelsTests: XCTestCase {
         let card = try XCTUnwrap(quota.cards.first)
         XCTAssertEqual(card.sourceLabel, "实时")
         XCTAssertEqual(card.products.count, 3)
+    }
+
+    @MainActor
+    func testBundledAgentIconResourcesLoad() {
+        let names = [
+            "agent-claude", "agent-codex", "agent-pi", "agent-copilot",
+            "agent-cursor", "agent-qoder", "agent-grok",
+        ]
+        for name in names {
+            XCTAssertNotNil(ATMBrandAssets.agentIconImage(resourceName: name), "未加载 \(name)")
+        }
     }
 
     func testQuotaDecodesExternalProviderCards() throws {
@@ -928,14 +1148,20 @@ final class ModelsTests: XCTestCase {
               !executable.isEmpty else {
             throw XCTSkip("ATM_CONTRACT_EXECUTABLE is set by the release contract check")
         }
-        let home = FileManager.default.temporaryDirectory
+        // The fixture's Todo belongs to project atm and `session bind` now
+        // refuses a working directory that resolves to a different project, so
+        // the run directory has to be named after the project rather than after
+        // the temp fixture. The unique parent keeps concurrent runs apart.
+        let fixtureRoot = FileManager.default.temporaryDirectory
             .appendingPathComponent("atm-cli-contract-\(UUID().uuidString)", isDirectory: true)
+        let home = fixtureRoot.appendingPathComponent("atm", isDirectory: true)
         let atmDirectory = home.appendingPathComponent(".atm", isDirectory: true)
         try FileManager.default.createDirectory(at: atmDirectory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: home) }
+        defer { try? FileManager.default.removeItem(at: fixtureRoot) }
 
         // The database is the only source of work state, so the fixture is built
-        // by the same commands a user runs.
+        // by the same commands a user runs — including a bind that needs no
+        // `--force`, which is what a user in the right directory gets.
         for arguments in [
             ["todo", "add", "Contract task", "--project", "atm"],
             ["todo", "start", "t1"],
@@ -1371,6 +1597,98 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(selectedLine.last?.totalTokens, 22)
     }
 
+    /// Yesterday is a single day and is labelled "昨日分时用量", so it has to be drawn
+    /// in the same hour buckets today is. The hours are selected by the window's own
+    /// dates: taking them wholesale would draw today's shape under yesterday's label.
+    func testYesterdayTrendUsesItsOwnHourBuckets() {
+        let dashboard = ATMDashboardSnapshot(
+            work: .empty,
+            dayStats: [
+                ATMDayStats(date: "2026-07-07", sessions: 2, queries: 4, inputTokens: 400, outputTokens: 40, costUSD: 4),
+                ATMDayStats(date: "2026-07-08", sessions: 1, queries: 2, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            hourStats: [
+                ATMDayStats(date: "2026-07-07 09:00", sessions: 1, queries: 2, inputTokens: 100, outputTokens: 10, costUSD: 1),
+                ATMDayStats(date: "2026-07-07 10:00", sessions: 1, queries: 1, inputTokens: 300, outputTokens: 30, costUSD: 3),
+                ATMDayStats(date: "2026-07-08 11:00", sessions: 1, queries: 2, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            modelDayStats: [
+                ATMModelDayStats(date: "2026-07-07", model: "large", sessions: 2, inputTokens: 400, outputTokens: 40, cacheReadTokens: 0, costUSD: 4),
+            ],
+            modelHourStats: [
+                ATMModelDayStats(date: "2026-07-07 09:00", model: "large", sessions: 1, inputTokens: 100, outputTokens: 10, cacheReadTokens: 0, costUSD: 1),
+                ATMModelDayStats(date: "2026-07-07 10:00", model: "large", sessions: 1, inputTokens: 300, outputTokens: 30, cacheReadTokens: 0, costUSD: 3),
+                ATMModelDayStats(date: "2026-07-08 11:00", model: "small", sessions: 1, inputTokens: 200, outputTokens: 20, cacheReadTokens: 0, costUSD: 2),
+            ],
+            projectDayStats: [
+                ATMProjectDayStats(date: "2026-07-07", project: "atm", sessions: 2, inputTokens: 400, outputTokens: 40, costUSD: 4),
+            ],
+            projectHourStats: [
+                ATMProjectDayStats(date: "2026-07-07 09:00", project: "atm", sessions: 1, inputTokens: 100, outputTokens: 10, costUSD: 1),
+                ATMProjectDayStats(date: "2026-07-08 11:00", project: "wanda", sessions: 1, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            rangeData: [
+                .today: ATMRangeData(startDate: "2026-07-08", endDate: "2026-07-08", modelStats: [], sessions: []),
+                .yesterday: ATMRangeData(startDate: "2026-07-07", endDate: "2026-07-07", modelStats: [], sessions: []),
+                .thisWeek: ATMRangeData(startDate: "2026-07-06", endDate: "2026-07-08", modelStats: [], sessions: []),
+            ],
+            liveStatus: .empty,
+            currentSession: nil,
+            refreshedAt: Date()
+        )
+
+        XCTAssertEqual(dashboard.trendStats(for: .yesterday).map(\.date), ["2026-07-07 09:00", "2026-07-07 10:00"])
+        XCTAssertEqual(dashboard.trendStats(for: .today).map(\.date), ["2026-07-08 11:00"])
+        // A period keeps day buckets even though hours are in the snapshot.
+        XCTAssertEqual(dashboard.trendStats(for: .thisWeek).map(\.date), ["2026-07-07", "2026-07-08"])
+        // The chart's own totals: yesterday's day bucket held 440 tokens, and its two
+        // hour buckets have to add up to the same number rather than to today's.
+        let modelLine = dashboard.lineTrendStats(for: .yesterday, dimension: .model)
+        XCTAssertEqual(modelLine.map(\.date), ["2026-07-07 09:00", "2026-07-07 10:00"])
+        XCTAssertEqual(modelLine.reduce(0) { $0 + $1.totalTokens }, 440)
+        XCTAssertEqual(dashboard.seriesNames(for: .yesterday, dimension: .model), ["large"])
+        // Projects read their own hour rows, so yesterday's project line cannot pick
+        // up today's project.
+        XCTAssertEqual(dashboard.seriesNames(for: .yesterday, dimension: .project), ["atm"])
+    }
+
+    /// A single day the snapshot has no hours for -- the app is reading a window the
+    /// CLI stopped sending hourly rows that far back -- falls back to its one day
+    /// bucket instead of borrowing the hours of a day it can see.
+    func testSingleDayWithoutHourBucketsFallsBackToDayBucket() {
+        let dashboard = ATMDashboardSnapshot(
+            work: .empty,
+            dayStats: [
+                ATMDayStats(date: "2026-07-07", sessions: 2, queries: 4, inputTokens: 400, outputTokens: 40, costUSD: 4),
+                ATMDayStats(date: "2026-07-08", sessions: 1, queries: 2, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            hourStats: [
+                ATMDayStats(date: "2026-07-08 11:00", sessions: 1, queries: 2, inputTokens: 200, outputTokens: 20, costUSD: 2),
+            ],
+            modelDayStats: [
+                ATMModelDayStats(date: "2026-07-07", model: "large", sessions: 2, inputTokens: 400, outputTokens: 40, cacheReadTokens: 0, costUSD: 4),
+            ],
+            modelHourStats: [
+                ATMModelDayStats(date: "2026-07-08 11:00", model: "small", sessions: 1, inputTokens: 200, outputTokens: 20, cacheReadTokens: 0, costUSD: 2),
+            ],
+            rangeData: [
+                .today: ATMRangeData(startDate: "2026-07-08", endDate: "2026-07-08", modelStats: [], sessions: []),
+                .yesterday: ATMRangeData(startDate: "2026-07-07", endDate: "2026-07-07", modelStats: [], sessions: []),
+            ],
+            liveStatus: .empty,
+            currentSession: nil,
+            refreshedAt: Date()
+        )
+
+        XCTAssertEqual(dashboard.trendStats(for: .yesterday).map(\.date), ["2026-07-07"])
+        let modelLine = dashboard.lineTrendStats(for: .yesterday, dimension: .model)
+        XCTAssertEqual(modelLine.map(\.date), ["2026-07-07"])
+        XCTAssertEqual(modelLine.reduce(0) { $0 + $1.totalTokens }, 440)
+        // And the axis reads the buckets, so that one tick is dated rather than 00:00.
+        XCTAssertFalse(ATMUsageDateAxis.isHourly(modelLine.map(\.date)))
+        XCTAssertTrue(ATMUsageDateAxis.isHourly(dashboard.trendStats(for: .today).map(\.date)))
+    }
+
     func testUsageSeriesSwitchesBetweenModelClientAndProject() {
         let dayStats = (1...2).map { day in
             ATMDayStats(
@@ -1672,9 +1990,99 @@ final class ModelsTests: XCTestCase {
         // rendered both would print the same sentence twice.
         XCTAssertEqual(session.presenceTitle, "Rework the notch state badges")
         XCTAssertNil(session.latestUserInputBelowTitle)
-        // The trackers in ATMAgentNotch and ATMAgentSound diff this to tell one
-        // turn from the next, so suppressing the card must not blank it out.
+        // `ATMAgentSoundTransitionTracker` diffs this to tell one turn from the
+        // next, so suppressing the card must not blank it out.
         XCTAssertEqual(session.latestUserInputText, "Rework the notch state badges")
+    }
+
+    func testActiveAgentPresenceOrderDoesNotChangeWhenActivityAgesRefresh() {
+        func active(_ id: String, age: Int) -> ATMLiveSession {
+            ATMLiveSession(
+                tool: "Codex",
+                sessionID: id,
+                project: "atm",
+                ageSeconds: age,
+                activityState: "active"
+            )
+        }
+
+        let firstPoll = ATMAgentPresenceOrdering.sorted([
+            active("session-b", age: 2),
+            active("session-a", age: 40),
+        ])
+        let nextPoll = ATMAgentPresenceOrdering.sorted([
+            active("session-a", age: 1),
+            active("session-b", age: 41),
+        ])
+
+        XCTAssertEqual(firstPoll.map(\.sessionID), ["session-a", "session-b"])
+        XCTAssertEqual(nextPoll.map(\.sessionID), firstPoll.map(\.sessionID))
+    }
+
+    func testATMTaskRunUsesTodoTitleInsteadOfControllerPrompt() throws {
+        let prompt = """
+        You are the unattended Agent run for ATM Todo t252: 增加前进后退导航.
+
+        First run `atm todo doc t252` to load the current requirements.
+        """
+        let boundData = try JSONSerialization.data(withJSONObject: [
+            "tool": "Codex",
+            "session_id": "bound-task-run",
+            "project": "atm",
+            "summary": "You are the unattended Agent run for ATM Todo t252",
+            "age_seconds": 3,
+            "first_q": prompt,
+            "last_q": prompt,
+            "binding": [
+                "session_id": "bound-task-run",
+                "todo_id": "t252",
+                "agent": "codex",
+                "project": "atm",
+                "bound_at": 1,
+            ],
+            "todo": [
+                "id": "t252",
+                "title": "我需要一个前进/后退功能",
+                "project": "atm",
+                "status": "in_progress",
+            ],
+        ])
+        let bound = try JSONDecoder().decode(
+            ATMLiveSession.self,
+            from: boundData
+        )
+
+        XCTAssertEqual(bound.presenceTitle, "我需要一个前进/后退功能")
+        XCTAssertEqual(bound.displayTitle, "我需要一个前进/后退功能")
+        XCTAssertNil(bound.latestUserInputBelowTitle)
+
+        let notYetBound = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "unbound-task-run",
+            project: "atm",
+            summary: "You are the unattended Agent run for ATM Todo t252",
+            ageSeconds: 3,
+            firstQuestion: prompt,
+            lastQuestion: prompt
+        )
+        XCTAssertEqual(notYetBound.presenceTitle, "增加前进后退导航")
+        XCTAssertNil(notYetBound.latestUserInputBelowTitle)
+
+        let currentPrompt = """
+        增加前进后退导航 (ATM Todo t252)
+
+        This is an unattended Codex task run managed by ATM.
+        """
+        let current = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "current-task-run",
+            project: "atm",
+            ageSeconds: 3,
+            firstQuestion: currentPrompt,
+            lastQuestion: currentPrompt
+        )
+        XCTAssertEqual(current.presenceTitle, "增加前进后退导航")
+        XCTAssertNil(current.latestUserInputBelowTitle)
     }
 
     func testLiveSessionDecodesAgentActivityAndBuildsDisplayState() throws {
@@ -1709,6 +2117,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(session.latestReplyText, "Inspecting the live session fields and updating the UI.")
         XCTAssertEqual(session.latestResultText, "The Agent workspace is ready.\n\n- Open the source session")
         XCTAssertEqual(session.visibleUpdates, ["Inspecting the live session fields."])
+        XCTAssertEqual(session.latestVisibleUpdate, "Inspecting the live session fields.")
         XCTAssertEqual(session.recentTools, ["rg", "apply_patch"])
         XCTAssertEqual(session.topics, ["ATM UI", "Agent status"])
         XCTAssertEqual(session.pid, "54007")
@@ -1730,6 +2139,24 @@ final class ModelsTests: XCTestCase {
             lastAnswer: "Updating the Agent workspace"
         )
         XCTAssertNil(duplicate.latestReplyText)
+    }
+
+    func testLiveSessionLatestVisibleUpdatePicksNewestDistinctStage() {
+        let session = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "latest-update",
+            project: "atm",
+            ageSeconds: 1,
+            latestResult: "Implementation complete.",
+            updates: [
+                "Inspecting the Agent detail.",
+                "Adding the overview activity card.",
+                "Adding the overview activity card.",
+                "Implementation complete.",
+            ]
+        )
+
+        XCTAssertEqual(session.latestVisibleUpdate, "Adding the overview activity card.")
     }
 
     /// The Agent list hides a row's origin when it matches the column's dominant
@@ -2315,6 +2742,16 @@ final class ModelsTests: XCTestCase {
             ),
             ["todo", "add", "New task", "--priority", "P1", "--desc", "Why it matters", "--json"]
         )
+        XCTAssertEqual(
+            ATMCommandBuilder.refineTodo(id: "t142"),
+            ["todo", "refine", "t142", "--json"]
+        )
+        // Handoff carries no policy and no agent: it opens Codex and stops, so
+        // there is nothing for the App to choose on the user's behalf.
+        XCTAssertEqual(
+            ATMCommandBuilder.handoffTodo(id: "t142"),
+            ["todo", "handoff", "t142", "--json"]
+        )
 
         // Desktop selects the new todo after create; accept JSON or plain id stdout.
         XCTAssertEqual(
@@ -2732,6 +3169,47 @@ final class ModelsTests: XCTestCase {
         XCTAssertFalse(ATMComposerPlaceholderPolicy.shouldShow(stringIsEmpty: false, hasMarkedText: true))
     }
 
+    func testComposerSingleLineFoldsPastedNewlines() {
+        // Nothing to fold: the common case must come back untouched, including the
+        // spaces the user typed themselves.
+        XCTAssertEqual(ATMComposerText.singleLine("标题栏的编辑框只有一行"), "标题栏的编辑框只有一行")
+        XCTAssertEqual(ATMComposerText.singleLine(""), "")
+        // Pasting a paragraph into a title lands as one line.
+        XCTAssertEqual(ATMComposerText.singleLine("第一行\n第二行"), "第一行 第二行")
+        XCTAssertEqual(ATMComposerText.singleLine("a\r\nb"), "a b")
+        // A blank line is one separator, not a run of spaces.
+        XCTAssertEqual(ATMComposerText.singleLine("a\n\n\nb"), "a b")
+        // Leading and trailing breaks leave no stray space behind.
+        XCTAssertEqual(ATMComposerText.singleLine("\nabc\n"), "abc")
+        XCTAssertEqual(ATMComposerText.singleLine("\n\n"), "")
+    }
+
+    func testGrowingComposerHeightClampsBetweenMinAndMaxLines() {
+        let line: CGFloat = 16
+        let inset: CGFloat = 6
+        func height(_ content: CGFloat, minLines: Int = 1, maxLines: Int = 6) -> CGFloat {
+            ATMComposerHeight.clamped(
+                contentHeight: content,
+                lineHeight: line,
+                minLines: minLines,
+                maxLines: maxLines,
+                verticalInset: inset
+            )
+        }
+        // Empty (nothing measured yet) still reserves one line plus the insets.
+        XCTAssertEqual(height(0), line + inset * 2)
+        // Three wrapped lines: the box grows to fit them.
+        XCTAssertEqual(height(line * 3), line * 3 + inset * 2)
+        // Past the cap it stops growing and scrolls instead.
+        XCTAssertEqual(height(line * 20), line * 6 + inset * 2)
+        // A two-line floor never collapses to one.
+        XCTAssertEqual(height(0, minLines: 2), line * 2 + inset * 2)
+        // A max below the min is the min, not an inverted range.
+        XCTAssertEqual(height(line * 20, minLines: 3, maxLines: 1), line * 3 + inset * 2)
+        // Fractional layout heights round up rather than clipping the last line.
+        XCTAssertEqual(height(line * 2 + 0.4), (line * 2 + 0.4 + inset * 2).rounded(.up))
+    }
+
     func testIconButtonChromeHoverFill() {
         XCTAssertEqual(
             ATMIconButtonChrome.background(isHovered: false, isEnabled: true, chrome: .chip),
@@ -2874,241 +3352,60 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(replaced.refreshedAt, .distantPast)
     }
 
-    func testAgentNotchDetectsPhysicalCutoutAndCentersWindowAtScreenTop() {
-        let screen = CGRect(x: 100, y: 40, width: 1_512, height: 982)
-        let metrics = ATMAgentNotchMetrics.detect(
-            screenFrame: screen,
-            safeAreaTop: 32,
-            auxiliaryTopLeftWidth: 654,
-            auxiliaryTopRightWidth: 654
-        )
-
-        XCTAssertTrue(metrics.hasPhysicalNotch)
-        XCTAssertEqual(metrics.notchSize, CGSize(width: 208, height: 32))
-        // Flush with the cutout, so the strip never hangs below the menu bar.
-        XCTAssertEqual(metrics.compactSize, CGSize(width: 332, height: 32))
-        XCTAssertEqual(
-            metrics.windowFrame(screenFrame: screen, presentation: .compact, sessionCount: 1),
-            CGRect(x: 690, y: 990, width: 332, height: 32)
-        )
-        // A hover peeks at one session however many are live; only the pinned
-        // list pays for the other three.
-        XCTAssertEqual(
-            metrics.windowFrame(screenFrame: screen, presentation: .hoverExpanded, sessionCount: 4),
-            CGRect(x: 556, y: 868, width: 600, height: 154)
-        )
-        XCTAssertEqual(
-            metrics.windowFrame(screenFrame: screen, presentation: .sessionList, sessionCount: 4),
-            CGRect(x: 556, y: 672, width: 600, height: 350)
-        )
-    }
-
-    func testAgentNotchFallsBackToCompactTopBarWithoutPhysicalCutout() {
-        let screen = CGRect(x: 0, y: 0, width: 1_512, height: 982)
-        let metrics = ATMAgentNotchMetrics.detect(
-            screenFrame: screen,
-            safeAreaTop: 0,
-            auxiliaryTopLeftWidth: nil,
-            auxiliaryTopRightWidth: nil
-        )
-
-        XCTAssertFalse(metrics.hasPhysicalNotch)
-        XCTAssertEqual(metrics.compactSize, CGSize(width: 286, height: 38))
-        XCTAssertEqual(
-            metrics.windowFrame(screenFrame: screen, presentation: .compact, sessionCount: 1),
-            CGRect(x: 613, y: 944, width: 286, height: 38)
-        )
-        XCTAssertEqual(
-            metrics.windowFrame(screenFrame: screen, presentation: .hoverExpanded, sessionCount: 4),
-            CGRect(x: 456, y: 828, width: 600, height: 154)
-        )
-        XCTAssertEqual(
-            metrics.windowFrame(screenFrame: screen, presentation: .sessionList, sessionCount: 4),
-            CGRect(x: 456, y: 632, width: 600, height: 350)
-        )
-    }
-
-    func testAgentNotchExpandedHeightMatchesRenderedContentHeight() {
-        let screen = CGRect(x: 0, y: 0, width: 1_512, height: 982)
-        let metrics = ATMAgentNotchMetrics.detect(
-            screenFrame: screen,
-            safeAreaTop: 32,
-            auxiliaryTopLeftWidth: 654,
-            auxiliaryTopRightWidth: 654
-        )
-
-        func expandedHeight(_ sessionCount: Int) -> CGFloat {
-            metrics.expandedSize(
-                screenFrame: screen,
-                presentation: .sessionList,
-                sessionCount: sessionCount
-            ).height
-        }
-
-        /// What the SwiftUI list actually draws below the compact header.
-        func renderedHeight(_ sessionCount: Int) -> CGFloat {
-            ATMAgentNotchLayout.listHeight(sessionCount: sessionCount)
-        }
-
-        // No dead black space under the last row at any row count.
-        for sessionCount in 1...5 {
-            XCTAssertEqual(expandedHeight(sessionCount), renderedHeight(sessionCount))
-        }
-
-        // Each additional visible card costs its height plus the Ping-style gap;
-        // further sessions stay behind the fixed-height footer.
-        XCTAssertEqual(
-            expandedHeight(2) - expandedHeight(1),
-            ATMAgentNotchLayout.sessionRowHeight + ATMAgentNotchLayout.sessionRowSpacing
-        )
-        XCTAssertEqual(
-            expandedHeight(3) - expandedHeight(2),
-            ATMAgentNotchLayout.sessionRowHeight + ATMAgentNotchLayout.sessionRowSpacing
-        )
-        XCTAssertEqual(expandedHeight(4), expandedHeight(3))
-        XCTAssertEqual(expandedHeight(5), expandedHeight(4))
-
-        let singleCardHeight = ATMAgentNotchLayout.expandedToolbarHeight
-            + ATMAgentNotchLayout.sessionRowHeight
-            + ATMAgentNotchLayout.listBottomInset
-        XCTAssertEqual(
-            metrics.expandedSize(
-                screenFrame: screen,
-                presentation: .notification,
-                sessionCount: 1
-            ).height,
-            singleCardHeight
-        )
-        // A hover draws one card and a "还有 N 个" line inside the same bottom
-        // inset, so it stays one card tall no matter how many sessions are live.
-        for sessionCount in 1...5 {
-            XCTAssertEqual(
-                metrics.expandedSize(
-                    screenFrame: screen,
-                    presentation: .hoverExpanded,
-                    sessionCount: sessionCount
-                ).height,
-                singleCardHeight
+    func testDashboardRefreshKeepsTheAttentionOverlayWhicheverStatusWins() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func status(_ time: String) -> ATMLiveStatus {
+            ATMLiveStatus(
+                sessions: [ATMLiveSession(
+                    tool: "Codex",
+                    sessionID: "waiting",
+                    project: "atm",
+                    ageSeconds: 1
+                )],
+                time: time
             )
         }
-    }
+        let signals = ["waiting": ATMAgentAttentionSignal(
+            reason: "permission_prompt",
+            tool: "shell",
+            text: nil,
+            source: "codex",
+            receivedAt: now
+        )]
 
-    func testAgentNotchPresentationSeparatesAutoCollapseFromPersistentSessionList() {
-        XCTAssertFalse(ATMAgentNotchPresentation.compact.isExpanded)
-        XCTAssertTrue(ATMAgentNotchPresentation.hoverExpanded.isExpanded)
-        XCTAssertFalse(ATMAgentNotchPresentation.hoverExpanded.isPersistent)
-        XCTAssertTrue(ATMAgentNotchPresentation.sessionList.isExpanded)
-        XCTAssertTrue(ATMAgentNotchPresentation.sessionList.isPersistent)
-        XCTAssertFalse(ATMAgentNotchPresentation.notification.isPersistent)
-    }
+        // The dashboard's own live_status has never seen a hook event. Landing it
+        // raw is what retired a banner and then raised it again a poll later.
+        let fromDashboard = ATMLiveStatusRefreshPolicy.mergedLiveStatus(
+            dashboard: status("12:00:00"),
+            fast: status("12:00:03"),
+            preserveFast: false,
+            signals: signals,
+            now: now
+        )
+        XCTAssertEqual(fromDashboard.time, "12:00:00")
+        XCTAssertEqual(fromDashboard.sessions.first?.attentionSignal?.reason, "permission_prompt")
+        XCTAssertTrue(fromDashboard.sessions.allSatisfy(\.needsHookAttention))
 
-    func testAgentNotchKeepsRecentSessionsWithoutCallingThemActive() {
-        let retention = ATMAgentNotchRetention.minutes30.seconds
-        let recent = ATMLiveSession(
-            tool: "Codex",
-            sessionID: "recent",
-            project: "atm",
-            ageSeconds: 300,
-            activityState: "idle"
+        let fromFastPoll = ATMLiveStatusRefreshPolicy.mergedLiveStatus(
+            dashboard: status("12:00:00"),
+            fast: status("12:00:03"),
+            preserveFast: true,
+            signals: signals,
+            now: now
         )
-        XCTAssertEqual(recent.presenceState, .recent)
-        XCTAssertTrue(recent.isVisibleInAgentNotch(recentSeconds: retention))
+        XCTAssertEqual(fromFastPoll.time, "12:00:03")
+        XCTAssertEqual(fromFastPoll.sessions.first?.attentionSignal?.reason, "permission_prompt")
 
-        let stale = ATMLiveSession(
-            tool: "Codex",
-            sessionID: "stale",
-            project: "atm",
-            ageSeconds: retention,
-            activityState: "idle"
+        // An expired signal is dropped by the same join, so nothing has to wait
+        // for the next poll to stop claiming an agent is blocked.
+        let expired = ATMLiveStatusRefreshPolicy.mergedLiveStatus(
+            dashboard: status("12:00:00"),
+            fast: status("12:00:03"),
+            preserveFast: false,
+            signals: signals,
+            now: now.addingTimeInterval(ATMAgentAttentionSignal.timeToLive + 1)
         )
-        XCTAssertFalse(stale.isVisibleInAgentNotch(recentSeconds: retention))
-
-        let attention = ATMLiveSession(
-            tool: "Codex",
-            sessionID: "attention",
-            project: "atm",
-            ageSeconds: 900,
-            lastAnswer: "需要你确认后再继续",
-            activityState: "idle"
-        )
-        XCTAssertEqual(attention.presenceState, .attention)
-        XCTAssertTrue(attention.isVisibleInAgentNotch(recentSeconds: retention))
-    }
-
-    func testAgentNotchRetentionControlsVisibilityWindow() {
-        let session = ATMLiveSession(
-            tool: "Codex",
-            sessionID: "s",
-            project: "atm",
-            ageSeconds: 25 * 60,
-            activityState: "idle"
-        )
-        // 25 分钟的会话：15 分钟窗口外、30/60 分钟窗口内。
-        XCTAssertFalse(session.isVisibleInAgentNotch(recentSeconds: ATMAgentNotchRetention.minutes15.seconds))
-        XCTAssertTrue(session.isVisibleInAgentNotch(recentSeconds: ATMAgentNotchRetention.minutes30.seconds))
-        XCTAssertTrue(session.isVisibleInAgentNotch(recentSeconds: ATMAgentNotchRetention.minutes60.seconds))
-        // “一直保留”永不因年龄隐藏。
-        XCTAssertTrue(session.isVisibleInAgentNotch(recentSeconds: ATMAgentNotchRetention.always.seconds))
-    }
-
-    func testAgentNotchNotificationDwellManualHasNoTimer() {
-        XCTAssertEqual(ATMAgentNotchNotificationDwell.seconds8.seconds, 8)
-        XCTAssertNil(ATMAgentNotchNotificationDwell.manual.seconds)
-    }
-
-    func testAgentNotchScreenSelectionRoundTrips() {
-        XCTAssertEqual(ATMAgentNotchScreenSelection.automatic.rawValue, "auto")
-        XCTAssertEqual(ATMAgentNotchScreenSelection.main.rawValue, "main")
-        XCTAssertEqual(ATMAgentNotchScreenSelection.display(42).rawValue, "display:42")
-        XCTAssertEqual(ATMAgentNotchScreenSelection(rawValue: "auto"), .automatic)
-        XCTAssertEqual(ATMAgentNotchScreenSelection(rawValue: "main"), .main)
-        XCTAssertEqual(ATMAgentNotchScreenSelection(rawValue: "display:42"), .display(42))
-        XCTAssertNil(ATMAgentNotchScreenSelection(rawValue: "display:notanumber"))
-        XCTAssertNil(ATMAgentNotchScreenSelection(rawValue: "garbage"))
-    }
-
-    func testAgentNotchStripAlignmentMovesOnlyCompactStripOnNotchlessScreen() {
-        let metrics = ATMAgentNotchMetrics(notchSize: .zero, hasPhysicalNotch: false)
-        let screen = CGRect(x: 0, y: 0, width: 1_600, height: 1_000)
-        let compactWidth = metrics.compactSize.width
-
-        let center = metrics.windowFrame(
-            screenFrame: screen, presentation: .compact, sessionCount: 1, alignment: .center
-        )
-        let leading = metrics.windowFrame(
-            screenFrame: screen, presentation: .compact, sessionCount: 1, alignment: .leading
-        )
-        let trailing = metrics.windowFrame(
-            screenFrame: screen, presentation: .compact, sessionCount: 1, alignment: .trailing
-        )
-        XCTAssertEqual(center.midX, screen.midX, accuracy: 0.5)
-        XCTAssertLessThan(leading.minX, center.minX)
-        XCTAssertGreaterThan(trailing.maxX, center.maxX)
-        XCTAssertGreaterThanOrEqual(leading.minX, screen.minX)
-        XCTAssertLessThanOrEqual(trailing.maxX, screen.maxX)
-
-        // The wide expanded panel stays centered regardless of alignment, so it
-        // never spills off the edge it would be pinned to.
-        let expandedLeading = metrics.windowFrame(
-            screenFrame: screen, presentation: .sessionList, sessionCount: 3, alignment: .leading
-        )
-        XCTAssertGreaterThan(expandedLeading.width, compactWidth)
-        XCTAssertEqual(expandedLeading.midX, screen.midX, accuracy: 0.5)
-    }
-
-    func testAgentNotchStripAlignmentIgnoredOnPhysicalNotch() {
-        let metrics = ATMAgentNotchMetrics(
-            notchSize: CGSize(width: 200, height: 32), hasPhysicalNotch: true
-        )
-        let screen = CGRect(x: 0, y: 0, width: 1_600, height: 1_000)
-        let center = metrics.windowFrame(
-            screenFrame: screen, presentation: .compact, sessionCount: 1, alignment: .center
-        )
-        let leading = metrics.windowFrame(
-            screenFrame: screen, presentation: .compact, sessionCount: 1, alignment: .leading
-        )
-        XCTAssertEqual(center.minX, leading.minX, accuracy: 0.5)
-        XCTAssertEqual(leading.midX, screen.midX, accuracy: 0.5)
+        XCTAssertNil(expired.sessions.first?.attentionSignal)
     }
 
     func testAgentSoundTransitionTrackerPrimesSilentlyAndDeduplicatesSnapshots() {
@@ -3257,6 +3554,20 @@ final class ModelsTests: XCTestCase {
     func testErrorTextCollapsesWhitespaceAndTruncates() {
         XCTAssertEqual(ATMErrorText.compact(" first\n  second\tthird "), "first second third")
         XCTAssertEqual(ATMErrorText.compact("123456", limit: 5), "12345…")
+    }
+
+    func testErrorPresentationTurnsNetworkPayloadIntoActionableCopy() {
+        let presentation = ATMErrorPresentation.resolve(
+            "[NETWORK_UNREACHABLE] Cannot connect to MCP server: dial tcp: i/o timeout",
+            fallbackTitle: "收集失败"
+        )
+        XCTAssertEqual(presentation.title, "网络连接失败")
+        XCTAssertEqual(presentation.message, "无法连接到服务。请检查网络、代理或 DNS 设置后重试。")
+    }
+
+    func testErrorPresentationKeepsConciseUnknownError() {
+        let presentation = ATMErrorPresentation.resolve("配置文件不存在", fallbackTitle: "加载失败")
+        XCTAssertEqual(presentation, ATMErrorPresentation(title: "加载失败", message: "配置文件不存在"))
     }
 
     func testKnowledgeCatalogDecodesOptionalRoutingFields() throws {

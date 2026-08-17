@@ -23,6 +23,16 @@ ATM stores structured data in `~/.atm/atm.db` by default. Configuration is kept
 in `~/.atm/config.json`; knowledge and related local files are kept under the
 ATM data directory. The data directory can be changed in configuration.
 
+The one secret ATM stores itself — the credential for the built-in DeepSeek text
+service — is kept out of ordinary configuration. It lives alone in
+`~/.atm/credentials.json` as mode `0600` inside a `0700` data directory, and ATM
+refuses to read it when the permissions are wider. Config output, `atm backup`
+archives and `atm diagnose` bundles all leave the file out, so a routine backup
+or a support bundle cannot carry a live key. Manage it with `atm config
+credential status | set | delete` — `set` reads stdin, so the key never reaches a
+command line or shell history — or in ATM.app under 设置 → 模型.
+`DEEPSEEK_API_KEY` overrides the file for one command without writing to disk.
+
 Indexed agent sessions can outlive their upstream transcript files. Use
 `atm session forget` after the source transcript has been removed and the index
 has been synchronized. Connector messages are retained for 90 days by default;
@@ -39,6 +49,11 @@ limited to features the user invokes or enables, including:
 - `atm config update-pricing`, which downloads public model pricing from
   OpenRouter;
 - opt-in live Grok quota lookup, which uses the locally stored Grok credential;
+- `atm todo refine`, which sends one task's fields and a Markdown-card excerpt to
+  the configured DeepSeek endpoint — automatically after a desktop capture unless
+  `todo_refine_on_add` is off — and `atm config test-text-model`, which reaches
+  the same endpoint with a fixed prompt and no task content. Neither sends
+  anything before a credential is set;
 - explicitly configured message connectors and model commands;
 - release installation and update commands that download from GitHub.
 

@@ -16,9 +16,6 @@ struct ATMDrawerHeader<Trailing: View>: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
-                Text("工作台")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(title)
                         .font(ATMFont.font(.title2, weight: .semibold))
@@ -77,6 +74,109 @@ struct ATMDrawerDisclosureLabel: View {
     }
 }
 
+/// 中栏标题区的双态 / 多态切换。视觉跟 macOS 的紧凑 segmented control 一致：
+/// 一块安静的底板承载所有选项，当前项用轻微抬升的实心表面表示，不再用网页式下划线。
+/// 固定等宽，只适合「文章 / 知识库」这类短标签；详情页长标签用 `ATMCapsuleTabs`。
+struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var selection: Selection
+    let items: [(value: Selection, title: String)]
+
+    private let segmentWidth: CGFloat = 56
+    private let segmentHeight: CGFloat = 24
+
+    private var selectedIndex: Int {
+        items.firstIndex { $0.value == selection } ?? 0
+    }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            // 始终是同一个实体视图，只改变横向位置。相比在两个 Button 中条件创建背景，
+            // 这在 macOS 上不会被当成一次无动画的视图替换。
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(ATMTheme.elevated)
+                .frame(width: segmentWidth, height: segmentHeight)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(ATMTheme.border.opacity(0.75))
+                }
+                .shadow(color: .black.opacity(0.07), radius: 2, y: 1)
+                .offset(x: CGFloat(selectedIndex) * segmentWidth)
+                .allowsHitTesting(false)
+
+            HStack(spacing: 0) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    let isSelected = selection == item.value
+                    Button {
+                        withAnimation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion)) {
+                            selection = item.value
+                        }
+                    } label: {
+                        Text(item.title)
+                            // 选中前后保持相同字重，否则文字度量变化会让整个控件横向跳动。
+                            .font(ATMFont.font(.footnote, weight: .medium))
+                            .foregroundStyle(isSelected ? ATMTheme.primary : ATMTheme.secondary)
+                            .frame(width: segmentWidth, height: segmentHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                }
+            }
+        }
+        .padding(2)
+        .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: selectedIndex)
+    }
+}
+
+/// 详情页分页：iOS 式可变宽度胶囊分段。
+///
+/// 浅灰整条胶囊作底板，选中项是浮在上面的白胶囊（软阴影、无描边），未选中只剩灰色文案。
+/// 标签随文案伸缩，适合「执行动态」「Agent Sessions 3」这类长度不一的标题；
+/// 中栏短标签仍用固定等宽的 `ATMCompactSegmentedTabs`。
+struct ATMCapsuleTabs<Selection: Hashable>: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var selection: Selection
+    let items: [(value: Selection, title: String)]
+
+    private let segmentHeight: CGFloat = 28
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                let isSelected = selection == item.value
+                Button {
+                    withAnimation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion)) {
+                        selection = item.value
+                    }
+                } label: {
+                    Text(item.title)
+                        // 选中前后保持相同字重，避免胶囊宽度跟着字重跳。
+                        .font(ATMFont.font(.footnote, weight: .medium))
+                        .foregroundStyle(isSelected ? ATMTheme.primary : ATMTheme.secondary)
+                        .padding(.horizontal, 14)
+                        .frame(height: segmentHeight)
+                        .background {
+                            if isSelected {
+                                Capsule()
+                                    .fill(ATMTheme.elevated)
+                                    .shadow(color: .black.opacity(0.10), radius: 3, y: 1)
+                                    .shadow(color: .black.opacity(0.04), radius: 0.5, y: 0)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(isSelected ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .background(ATMTheme.controlFill, in: Capsule())
+        .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: selection)
+    }
+}
+
 /// 列表行与导航行的选中/悬停表面。
 ///
 /// 选中态**只用填充**：不描边，也不在选中时切字重。两者都会让行内文字重排——描边挤掉
@@ -132,7 +232,30 @@ enum ATMRowSurface {
     }
 }
 
+/// 中栏内容条目的公共排版度量。
+///
+/// `ATMRowSurface` 负责卡片里面的 padding 和选中表面；这里负责卡片在中栏里的外边距，
+/// 以及有前导图标时的文字起点。两层都集中后，`List` 与 `LazyVStack` 才不会各自长出
+/// 一套看起来相近、实际相差几 pt 的布局。
+enum ATMContentRowLayout {
+    static let outerHorizontalPadding: CGFloat = 8
+    static let outerVerticalPadding: CGFloat = 2
+    static let leadingVisualSize: CGFloat = 24
+    static let leadingSpacing: CGFloat = 9
+    static let contentSpacing: CGFloat = 5
+
+    static var listInsets: EdgeInsets {
+        EdgeInsets(
+            top: outerVerticalPadding,
+            leading: outerHorizontalPadding,
+            bottom: outerVerticalPadding,
+            trailing: outerHorizontalPadding
+        )
+    }
+}
+
 private struct ATMRowSurfaceModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let surface: ATMRowSurface
     let isSelected: Bool
 
@@ -155,6 +278,8 @@ private struct ATMRowSurfaceModifier: ViewModifier {
             .shadow(color: selectionShadow, radius: 9, y: 3)
             .contentShape(Rectangle())
             .onHover { isHovered = $0 }
+            .animation(ATMMotion.resolved(ATMMotion.hover, reduceMotion: reduceMotion), value: isHovered)
+            .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: isSelected)
             .accessibilityValue(isSelected ? "已选择" : "")
             .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
@@ -183,5 +308,17 @@ extension View {
     /// 套上统一的行表面：内边距、圆角、选中填充、hover 填充、命中区域与选中态无障碍标注。
     func atmRowSurface(_ surface: ATMRowSurface = .content, isSelected: Bool) -> some View {
         modifier(ATMRowSurfaceModifier(surface: surface, isSelected: isSelected))
+    }
+
+    /// `List` 中栏条目的统一外边距与透明行底色。
+    func atmContentListRow() -> some View {
+        listRowInsets(ATMContentRowLayout.listInsets)
+            .listRowBackground(Color.clear)
+    }
+
+    /// `ScrollView` / `LazyVStack` 中栏条目的统一纵向外边距。
+    /// 水平 8pt 由滚动容器统一提供，知识库条目还会叠加有语义的层级缩进。
+    func atmContentStackRow() -> some View {
+        padding(.vertical, ATMContentRowLayout.outerVerticalPadding)
     }
 }

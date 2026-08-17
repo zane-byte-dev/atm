@@ -17,6 +17,42 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **`atm todo handoff <id>` 把任务交给 Codex 桌面端，而不是替你跑。** 它在任务的工作目录里打开
+  一个新会话、把 `todo prompt` 那行指针填进输入框，然后停下——**不按回车**。ATM 不启动 Agent、
+  不占 `task_runs`、不改 Todo 状态；对话、审批和那一下回车都归 Codex，这也正是 ATM 一直写着的
+  「不代为启动会话」。无人在场时才用 `todo run`。
+  用的深链是 `codex://new?path=…&prompt=…`，两个参数名都是试出来的：`codex://threads/new?cwd=…`
+  会被**接受然后忽略**，会话开在 app 上次用的工作区里——实测把一个 atm 的任务在 `~/work/wanda`
+  里跑了一整轮；`q=` 同样被忽略，输入框是空的。两种失败都不报错，所以它们被写进了测试。
+
+- **`atm session bind` 会拒绝把任务绑到别的项目的工作目录**（`--force` 越过）。上面那次跑错仓库
+  没有任何后续证据能解释，而绑定是所有交接路径的唯一汇合点。比较按项目而不是按路径，所以
+  `git worktree` 照样能绑：`ProjectFromPath` 解析到 git root 的 origin，worktree 和主仓库共享它。
+
+- **Adding a task can now polish itself.** A messy capture line is not a
+  requirement. `atm todo refine [id]` runs one schema-constrained call through
+  ATM's built-in DeepSeek client, without launching an Agent or falling back to
+  `collection_model_command`, and rewrites the title plus the 需求 section.
+  The default is `deepseek-v4-flash` in non-thinking JSON mode; it reads
+  `DEEPSEEK_API_KEY` from the environment. ATM.app also has a dedicated 模型
+  settings tab that stores the key in `~/.atm/credentials.json` with mode 0600;
+  the Go client reads it directly, while `DEEPSEEK_API_KEY` remains an ephemeral
+  override. Credentials stay out of normal config output, backups, diagnostic
+  bundles, argv, and logs, without Keychain prompts in re-signed dev builds.
+  Model and endpoint overrides live behind Advanced Settings. Its 测试连接
+  action uses the current drafts in a minimal schema request without saving or
+  touching a Todo; CLI users can run `atm config test-text-model`. Complex work gets
+  a plan in 分析; independently trackable pieces become child todos the parent
+  waits on.
+  This is not an Agent loop and it never dispatches work. `in_progress` cards
+  are polished but not split, so an active session is not unbound. Re-running
+  refine will not mint a second set of children. CLI `todo add` stays instant
+  unless you pass `--refine` — agents already write structured cards, and a
+  90s model call would break `id=$(atm todo add ...)`. The App runs refine
+  automatically after a human files a todo; turn that off with
+  `atm config set todo_refine_on_add false` or 设置 → Todo. The row menu and
+  the detail overflow still offer 优化任务.
+
 - **Todo deletion is now recoverable.** The App's 删除 action moves a task
   straight to 回收站 without interrupting with a confirmation dialog. The task
   keeps its lifecycle state, Markdown, progress, dependencies, and history, and
@@ -114,6 +150,37 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Removed
 
+- **委派只剩 Codex。** `todo run` 不再支持 `--agent claude|grokbuild|pi`，三个 builder 连同
+  各自的策略特例一起删掉（约 420 行）。理由是能力不对称：Codex 的 `workspace-write` sandbox 是
+  ATM 能强制的边界，线程 id 也能从它自己的事件流里找回；Claude Code 没有可强制的文件系统
+  sandbox，Pi 两者都没有（只能 trusted），Grok 的 guarded 在无头下会被第一条审批请求取消整轮，
+  还要 ATM 解析终局事件才能识破「退出 0 但什么都没干」。一个执行器可以把这些特例全部换成一条
+  沙箱保证。全局 `--agent` 回到它本来的职责——读过滤器；传给 `todo run` 会报错，而不是静默换掉
+  执行器。`task_runs` 里旧 Agent 的行作为履历保留，但 `--continue` 只认 Codex 会话：它们的
+  session id 是 ATM 生成的，Codex 会把认不出的 id 当成线程名，静默新开一轮而不是报错。
+  App 的委派面板相应从「选择执行 Agent」的单选列表收成一次确认。
+
+- **刘海整块删掉，换成一套通知机制。** 屏幕顶部那条常驻带（Ping Island 式的 compact strip +
+  hover 展开 + 通知卡片）连同它的 5 个偏好项（显示屏、无刘海屏位置、最近会话保留、通知停留、
+  对齐）一起消失，共 1935 行。它常驻的唯一理由是要把 agent 的「正在跑」画出来，而那恰好是最不
+  重要的信息：真正需要打断人的只有一件事——**某个 agent 被挡住了，在等你**。为这一件事付一个
+  永久占屏、跨所有 Space、贴在菜单栏上方的窗口，是明显的错价。现在这件事走系统通知：点击直接
+  跳到该 agent 所在的终端（不是跳 ATM——等授权是终端里有个提示等着按键，ATM 按不了），agent
+  继续往下走之后通知自动撤回，重复上报是替换而不是堆叠。免打扰、专注模式、通知历史与分组全部
+  由通知中心免费提供，不再由 ATM 自己发明一套。菜单栏标题在有人等你时前置「需要你 N」，不看
+  通知也能一眼扫到。
+  **通知只认 hook 报出确切原因的真信号。** `presenceState == .attention` 另外两个来源不再有
+  资格打断人：关键词启发式只要 agent 回复里出现「请确认」就命中，是误报；`bindingState` 异常
+  是数据不一致，不是「agent 在等你」。两者继续计入菜单栏计数和 Agent 页，只是不弹通知——误报
+  在一行灰字里无所谓，变成横幅就是一次真打扰。跑完一轮（`completed`）也不进通知中心，只响提示
+  音：它每轮都触发，进通知会比刘海更吵。
+  提示音、hook 装配和事件通道一个没动，只是从刘海里搬进一个不带 UI 的 controller；顺带它接过了
+  live 轮询的生命周期——原先是刘海在持有，桌面窗口一关（菜单栏应用的常态）就没人轮询了。设置
+  里的「刘海」页改名为「通知」，留下 hook 与提示音两张卡片，加上通知总开关。socket 和 hook 文件
+  沿用 `notch` 这个名字：改名会让已经装好的 hook 全部失效。
+- **`ATMAgentCompletionTransitionTracker` 一并删掉。** 它唯一的用途是驱动刘海的「已完成」卡片，
+  而 `completed` 现在只响声音，声音走 `ATMAgentSoundTransitionTracker`——那个 tracker 独立覆盖
+  同样的细节（hooked 会话不从文本推断完成、丢失 hook 覆盖后不回放积压的转换），并有平行的测试。
 - **Todo 不再有「工作 / 个人」领域（lane）。** 它从来没有驱动任何行为：没有分组、没有排序、
   没有默认值，唯一的读者是 `atm todo list --lane` 和 `atm now --lane` 两个可选过滤，而 1787
   行 shell history 里 `--lane` 只出现过一次。值也不是人选的——App 填的是「同项目里占多数的那
@@ -132,6 +199,13 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Changed
 
+- **`~/.atm` 不再对同机其他用户可读。** 目录建为 `0700`，`config.json` 写为 `0600`，旧安装的
+  `0755`/`0644` 在下一次写配置时被收紧。这个目录一直放着会话正文、Todo 和记忆，现在还多了一把
+  API Key：`credentials.json` 同样是 `0600`，权限比它宽时 ATM 拒绝读取并提示 `chmod`——照用一把
+  可能已被别人看过的 Key 比报错更糟。它由 `atm config credential status | set | delete` 管理，
+  `set` 从 stdin 读，Key 因此不进 argv 也不进 shell 历史，`status` 只回答「配了没有」；
+  `atm backup` 和 `atm diagnose --bundle` 都整个跳过这个文件，而且备份不把它算作「未备份」的
+  遗漏项——归档和报障包都是要拷来拷去的东西，不该顺手带走一份活着的凭据。
 - **一段讨论里的同一件事只留一条 Todo。** 收集每 5 分钟判定一批消息，而一个群会在几十分钟
   里反复回到同一个话题，每次回来都是新的一批。此前分类器被明确要求「相关也只能新建」，于是
   钉钉里一次技能激活的排查，从 09:52 到 10:11 连着建了 t210、t211、t212、t213 四条——四条都
@@ -170,6 +244,30 @@ a database from a much older version. `atm backup` exists for exactly that case.
   destroys every record that has nowhere to rebuild from.
 
 ### Fixed
+
+- **「Agent 执行」页只在真有执行记录时出现。** 默认的交接路径不产生 `task_runs`——会话由 Codex
+  自己拥有，ATM 通过 `session bind` 认识它——所以这一页在默认路径上永远是空的，空态还在指路一个
+  已经不存在的动作：「选择一个 Agent 后，这里会显示执行状态」，而委派面板早已收成单目标确认。
+  现在有执行记录才显示，和 Agent 页「全部日志」同一条规矩，无人值守跑批时该有的东西一个不少。
+  顺带修掉一个一直存在的毛病：被藏起来的页（回收站早就会藏掉三个）仍可能是 `selectedTab` 的值，
+  于是内容区落到兜底分支、一个胶囊都不高亮；现在会拉回「任务描述」。
+
+- **活跃 Agent 的行不再自己跳动。** 活跃段按活动时长排序，而 Agent 每输出一行就把这个时长归零，
+  于是一次轮询就能让几行互换位置——正在读的那行跑掉了。活跃段现在按会话身份排序，内容照常刷新；
+  `需要你` 和 `最近` 段仍按时长排，那里时长才是人要比较的东西。
+
+- **昨日的「分时用量」不再是一根柱子。** 昨日和今日在日面板里都是单日窗口、都以「分时用量」为标题，
+  但小时桶只回溯一天，昨日因此拿不到小时数据、退化成一个日桶画成单根柱子。回溯改成两天，并且由桶
+  自身的日期决定按小时还是按天渲染，而不是从窗口长度推断。
+
+- **「等待授权」不再刷屏。** 三个缺陷叠在一起：一个 Agent 的授权请求会点亮同目录**所有**会话
+  （信号同时按 session id 和 cwd 记录，而 join 允许任意会话用自己的 cwd 命中，于是 Grok 的
+  permission_prompt 弹出三条「Claude Code 等待授权」，连进程已经结束的会话也弹）；同一条信号还
+  会每分钟重弹一次（一分钟一次的 `atm dashboard` 全量刷新把自己那份没有 hook overlay 的
+  `live_status` 原样落进快照，通知被撤回，几秒后 fast poll 又 merge 回来，于是发出一条新横幅）；
+  而进程被杀掉的会话会一直挂着信号到 10 分钟安全 TTL。现在带 session id 的事件不再建目录别名，
+  cwd 兜底只对同一个 Agent 生效，清理事件同样不会跨 Agent 误清；overlay 成为快照的固有属性而不是
+  某条写路径的责任；run controller 与 `todo interrupt` 在子进程真的没了之后各发一条 `session_end`。
 
 - **快速面板「需处理」不再把项目名印两遍。** 每行的说明文字渲染成「待验收 · atm · atm」：
   `attentionCaption` 返回的是「状态 · 项目」，而行本身又在后面追加了一次项目。说明文字现在

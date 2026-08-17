@@ -3,10 +3,12 @@ package cmd
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/logging"
 )
 
 func withQuotaProviders(t *testing.T, providers map[string]config.QuotaProviderConfig) {
@@ -158,6 +160,34 @@ func TestQuotaProviderCacheRoundTripsAndPrunes(t *testing.T) {
 	// that nothing can ever refresh.
 	if !pruneQuotaProviderCache(&cache, []string{"other"}) || len(cache.Providers) != 0 {
 		t.Fatalf("pruned cache = %#v", cache)
+	}
+}
+
+// TestSaveQuotaProviderCacheLogsAWriteFailure covers the failure the atomic write
+// deliberately hides from its caller: `atm quota` still has a reading to print,
+// so a cache that could not be replaced has to reach the log instead of nowhere.
+func TestSaveQuotaProviderCacheLogsAWriteFailure(t *testing.T) {
+	withTempAtmDir(t)
+	// A rename cannot replace a directory, so the write fails at the last step,
+	// with the temporary file already written.
+	if err := os.Mkdir(quotaProviderCachePath(), 0o755); err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+
+	saveQuotaProviderCache(quotaProviderCacheFixture(time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)))
+
+	lines, err := logging.Tail(logging.Path(), 0)
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	logged := false
+	for _, line := range lines {
+		if strings.Contains(line, "quota_provider_cache_not_saved") {
+			logged = true
+		}
+	}
+	if !logged {
+		t.Fatalf("write failure never reached the log: %v", lines)
 	}
 }
 

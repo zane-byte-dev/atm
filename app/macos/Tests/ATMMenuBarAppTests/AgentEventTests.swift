@@ -110,14 +110,39 @@ final class AgentEventTests: XCTestCase {
         XCTAssertEqual(matched?.source, "codex")
     }
 
-    func testCwdIsTheLastResort() {
-        let signals = ["/Users/tester/mox/atm": signal(reason: "idle_prompt")]
+    func testCwdIsTheLastResortForTheAgentThatRaisedIt() {
+        let signals = ["/Users/tester/mox/atm": signal(reason: "idle_prompt", source: "claude")]
         let matched = ATMAgentAttentionJoin.signal(
             for: session(sessionID: "unrelated", cwd: "/Users/tester/mox/atm"),
             in: signals,
             now: now
         )
         XCTAssertEqual(matched?.reason, "idle_prompt")
+    }
+
+    func testCwdSignalDoesNotLeakOntoAnotherAgentInTheSameRepository() {
+        // One repository routinely holds a Codex session, a Claude Code session
+        // and an unattended run at once. A Grok permission prompt used to raise
+        // 「Claude Code 等待授权」 on every one of them.
+        let signals = ["/Users/tester/mox/atm": signal(reason: "permission_prompt", source: "grokbuild")]
+        XCTAssertNil(ATMAgentAttentionJoin.signal(
+            for: session(tool: "Claude Code", sessionID: "claude-1", cwd: "/Users/tester/mox/atm"),
+            in: signals,
+            now: now
+        ))
+        XCTAssertNil(ATMAgentAttentionJoin.signal(
+            for: session(tool: "Codex", sessionID: "codex-1", cwd: "/Users/tester/mox/atm"),
+            in: signals,
+            now: now
+        ))
+        XCTAssertEqual(
+            ATMAgentAttentionJoin.signal(
+                for: session(tool: "Grok Build", sessionID: "grok-1", cwd: "/Users/tester/mox/atm"),
+                in: signals,
+                now: now
+            )?.reason,
+            "permission_prompt"
+        )
     }
 
     func testSessionIDWinsOverCwdWhenBothMatch() {
@@ -241,15 +266,50 @@ final class AgentEventTests: XCTestCase {
         )
         XCTAssertTrue(bus.apply(attention, now: now))
         XCTAssertNotNil(bus.signals["abc"])
-        // Recorded under cwd too, so an agent whose hook session id does not
-        // match the parser's can still be joined.
-        XCTAssertNotNil(bus.signals["/w"])
+        // No `cwd` alias: the sender named its session, and a directory key would
+        // be claimed by every other agent working in the same repository.
+        XCTAssertNil(bus.signals["/w"])
 
         let started = ATMAgentEvent(
             version: 1, source: "claude", event: .started, sessionID: "abc",
             cwd: "/w", tool: nil, reason: nil, text: nil, at: nil
         )
         XCTAssertTrue(bus.apply(started, now: now))
+        XCTAssertTrue(bus.signals.isEmpty)
+    }
+
+    @MainActor
+    func testSessionlessAttentionStillFallsBackToTheDirectory() {
+        // `Envelope.Validate` accepts an event with only a cwd, and it is the one
+        // case where a directory key is the sender's whole identity.
+        let bus = ATMAgentEventBus()
+        XCTAssertTrue(bus.apply(ATMAgentEvent(
+            version: 1, source: "qoder", event: .attention, sessionID: nil,
+            cwd: "/w", tool: nil, reason: "permission_prompt", text: nil, at: nil
+        ), now: now))
+        XCTAssertEqual(bus.signals["/w"]?.source, "qoder")
+    }
+
+    @MainActor
+    func testClearingDoesNotRetireAnotherAgentsDirectorySignal() {
+        let bus = ATMAgentEventBus()
+        bus.apply(ATMAgentEvent(
+            version: 1, source: "qoder", event: .attention, sessionID: nil,
+            cwd: "/w", tool: nil, reason: "permission_prompt", text: nil, at: nil
+        ), now: now)
+        // A different agent in the same repository finishing its turn says nothing
+        // about whether Qoder is still waiting on you.
+        bus.apply(ATMAgentEvent(
+            version: 1, source: "claude", event: .completed, sessionID: "abc",
+            cwd: "/w", tool: nil, reason: nil, text: nil, at: nil
+        ), now: now)
+        XCTAssertNotNil(bus.signals["/w"])
+
+        // Its own turn ending does retire it.
+        bus.apply(ATMAgentEvent(
+            version: 1, source: "qoder", event: .completed, sessionID: nil,
+            cwd: "/w", tool: nil, reason: nil, text: nil, at: nil
+        ), now: now)
         XCTAssertTrue(bus.signals.isEmpty)
     }
 
@@ -615,241 +675,6 @@ final class AgentEventTests: XCTestCase {
         XCTAssertNil(tracker.nextEvent(for: [progressed], hookBacked: hooked))
     }
 
-    func testHookedSessionsNeverCompleteFromSnapshotDiffing() {
-        // The bug this guards: Codex writes `commentary` while it works, so its
-        // latest reply changes several times inside one turn. Read as a result,
-        // every one of those looked like a finished turn — while the `Stop` hook
-        // that actually ends the turn had not fired yet.
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let hooked: (ATMLiveSession) -> Bool = { $0.sessionID == "hooked" }
-
-        let baseline = soundSession(
-            sessionID: "hooked",
-            input: "一个长任务",
-            result: "我先定位对应的组件",
-            answer: "我先定位对应的组件"
-        )
-        XCTAssertNil(tracker.nextCompletedSession(in: [baseline], hookBacked: hooked))
-        XCTAssertTrue(tracker.completedSessionIDs.isEmpty)
-
-        let stillWorking = soundSession(
-            sessionID: "hooked",
-            input: "一个长任务",
-            result: "样式已经改完，接下来跑测试",
-            answer: "样式已经改完，接下来跑测试"
-        )
-        XCTAssertNil(tracker.nextCompletedSession(in: [stillWorking], hookBacked: hooked))
-        XCTAssertTrue(tracker.newlyCompletedSessionIDs.isEmpty)
-        XCTAssertTrue(tracker.completedSessionIDs.isEmpty)
-    }
-
-    func testUnhookedSessionsStillCompleteFromSnapshotDiffing() {
-        // Same directory as a hooked session, no hooks of its own: the heuristic
-        // is all it has, so it must keep working.
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let hooked: (ATMLiveSession) -> Bool = { $0.sessionID == "hooked" }
-
-        let baseline = soundSession(
-            sessionID: "plain",
-            input: "one",
-            result: "old",
-            answer: "old",
-            tool: "Copilot",
-            cwd: "/Users/tester/mox/atm"
-        )
-        XCTAssertNil(tracker.nextCompletedSession(in: [baseline], hookBacked: hooked))
-
-        let completed = soundSession(
-            sessionID: "plain",
-            input: "one",
-            result: "new result",
-            answer: "new result",
-            tool: "Copilot",
-            cwd: "/Users/tester/mox/atm"
-        )
-        XCTAssertEqual(
-            tracker.nextCompletedSession(in: [completed], hookBacked: hooked)?.id,
-            completed.id
-        )
-        XCTAssertTrue(tracker.completedSessionIDs.contains(completed.id))
-    }
-
-    func testHookedSessionIsNotSeededAsCompletedWhilePriming() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let existing = soundSession(
-            sessionID: "hooked",
-            input: "one",
-            result: "already done",
-            answer: "already done"
-        )
-        XCTAssertNil(
-            tracker.nextCompletedSession(in: [existing], hookBacked: { _ in true })
-        )
-        XCTAssertTrue(tracker.isPrimed)
-        XCTAssertTrue(tracker.completedSessionIDs.isEmpty)
-    }
-
-    func testLosingHookCoverageDoesNotReplayASuppressedCompletion() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        nonisolated(unsafe) var isHooked = true
-        let hooked: (ATMLiveSession) -> Bool = { _ in isHooked }
-
-        let baseline = soundSession(sessionID: "abc", input: "one", result: "old", answer: "old")
-        XCTAssertNil(tracker.nextCompletedSession(in: [baseline], hookBacked: hooked))
-
-        let completed = soundSession(sessionID: "abc", input: "one", result: "new", answer: "new")
-        XCTAssertNil(tracker.nextCompletedSession(in: [completed], hookBacked: hooked))
-
-        isHooked = false
-        XCTAssertNil(tracker.nextCompletedSession(in: [completed], hookBacked: hooked))
-    }
-
-    func testCompletionReminderPrimesSilentlyThenReturnsTheFinishedSession() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let baseline = soundSession(sessionID: "abc", input: "one", result: "old")
-        XCTAssertNil(tracker.nextCompletedSession(in: [baseline]))
-
-        let completed = soundSession(sessionID: "abc", input: "one", result: "new result")
-        XCTAssertEqual(tracker.nextCompletedSession(in: [completed])?.id, completed.id)
-        XCTAssertNil(tracker.nextCompletedSession(in: [completed]))
-    }
-
-    func testEmptyPlaceholderDoesNotPrimeOrReplayHistoricalCompletions() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        XCTAssertNil(tracker.nextCompletedSession(in: []))
-        XCTAssertFalse(tracker.isPrimed)
-
-        let existing = soundSession(
-            sessionID: "abc",
-            input: "one",
-            result: "already done",
-            answer: "already done"
-        )
-        XCTAssertNil(tracker.nextCompletedSession(in: [existing]))
-        XCTAssertTrue(tracker.isPrimed)
-        XCTAssertEqual(tracker.completedSessionIDs, [existing.id])
-        XCTAssertTrue(tracker.newlyCompletedSessionIDs.isEmpty)
-    }
-
-    func testInitialSnapshotDoesNotTreatPreviousResultAsCurrentCompletion() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let working = soundSession(
-            sessionID: "abc",
-            input: "new request",
-            result: "previous final answer",
-            answer: "正在处理新一轮请求"
-        )
-
-        XCTAssertNil(tracker.nextCompletedSession(in: [working]))
-        XCTAssertFalse(tracker.completedSessionIDs.contains(working.id))
-        XCTAssertEqual(
-            ATMAgentNotchSessionState.resolve(
-                session: working,
-                completedSessionIDs: tracker.completedSessionIDs
-            ),
-            .working
-        )
-    }
-
-    func testRepeatedInputStillClearsAStaleCompletion() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let completed = soundSession(
-            sessionID: "abc",
-            input: "same request",
-            result: "finished",
-            answer: "finished"
-        )
-        XCTAssertNil(tracker.nextCompletedSession(in: [completed]))
-        XCTAssertTrue(tracker.completedSessionIDs.contains(completed.id))
-
-        let working = soundSession(
-            sessionID: "abc",
-            input: "same request",
-            result: "finished",
-            answer: "正在重新处理"
-        )
-        XCTAssertNil(tracker.nextCompletedSession(in: [working]))
-        XCTAssertTrue(tracker.startedSessionIDs.contains(working.id))
-        XCTAssertFalse(tracker.completedSessionIDs.contains(working.id))
-    }
-
-    func testCompletionReminderDoesNotReplayAResultAfterSessionTemporarilyDisappears() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let baseline = soundSession(sessionID: "abc", input: "one", result: "old")
-        XCTAssertNil(tracker.nextCompletedSession(in: [baseline]))
-
-        let completed = soundSession(sessionID: "abc", input: "one", result: "new result")
-        XCTAssertEqual(tracker.nextCompletedSession(in: [completed])?.id, completed.id)
-        XCTAssertNil(tracker.nextCompletedSession(in: []))
-        XCTAssertNil(tracker.nextCompletedSession(in: [completed]))
-    }
-
-    func testCompletionReminderIgnoresUnobservedBindings() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let baseline = soundSession(sessionID: "abc", input: "one", result: "old")
-        XCTAssertNil(tracker.nextCompletedSession(in: [baseline]))
-
-        let unobserved = ATMLiveSession(
-            tool: "Claude Code",
-            sessionID: "abc",
-            project: "atm",
-            ageSeconds: 1,
-            lastQuestion: "one",
-            latestResult: "new result",
-            activityState: "unobserved"
-        )
-        XCTAssertNil(tracker.nextCompletedSession(in: [unobserved]))
-    }
-
-    func testNewInputMovesACompletedSessionBackToWorking() {
-        var tracker = ATMAgentCompletionTransitionTracker()
-        let completed = soundSession(
-            sessionID: "abc",
-            input: "one",
-            result: "old",
-            answer: "old"
-        )
-        XCTAssertNil(tracker.nextCompletedSession(in: [completed]))
-        XCTAssertTrue(tracker.completedSessionIDs.contains(completed.id))
-        XCTAssertEqual(
-            ATMAgentNotchSessionState.resolve(
-                session: completed,
-                completedSessionIDs: tracker.completedSessionIDs
-            ),
-            .completed
-        )
-
-        let working = soundSession(sessionID: "abc", input: "two", result: "old")
-        XCTAssertNil(tracker.nextCompletedSession(in: [working]))
-        XCTAssertTrue(tracker.startedSessionIDs.contains(working.id))
-        XCTAssertFalse(tracker.completedSessionIDs.contains(working.id))
-        XCTAssertEqual(
-            ATMAgentNotchSessionState.resolve(
-                session: working,
-                completedSessionIDs: tracker.completedSessionIDs
-            ),
-            .working
-        )
-    }
-
-    func testAttentionStateOutranksCompletedState() {
-        var attention = soundSession(sessionID: "abc", input: "one", result: "done")
-        attention.attentionSignal = ATMAgentAttentionSignal(
-            reason: "idle_prompt",
-            tool: nil,
-            text: nil,
-            source: "codex",
-            receivedAt: now
-        )
-        XCTAssertEqual(
-            ATMAgentNotchSessionState.resolve(
-                session: attention,
-                completedSessionIDs: [attention.id]
-            ),
-            .attention
-        )
-    }
-
     @MainActor
     func testBusRemembersWhichSessionsAreHookBacked() {
         let bus = ATMAgentEventBus()
@@ -947,159 +772,6 @@ final class AgentEventTests: XCTestCase {
             ),
             fast
         )
-    }
-
-    // MARK: - Hover
-
-    /// Geometry matching a 14" notched Mac: the compact strip sits at the top
-    /// centre, and the expanded panel is wider and taller around the same centre.
-    private var compactStrip: CGRect { CGRect(x: 590, y: 988, width: 332, height: 34) }
-    private var expandedPanel: CGRect { CGRect(x: 456, y: 672, width: 600, height: 350) }
-
-    func testHoverRegionWhileCompactIsTheStripPulledInFromItsEdges() {
-        let region = ATMAgentNotchHover.region(
-            presentation: .compact,
-            compactFrame: compactStrip,
-            panelFrame: compactStrip
-        )
-        // Where the expanded panel *would* be must not trigger anything: the
-        // cursor is over the user's own windows there.
-        XCTAssertFalse(region.contains(CGPoint(x: 756, y: 800)))
-        // The middle of the strip triggers.
-        XCTAssertTrue(region.contains(CGPoint(x: compactStrip.midX, y: compactStrip.midY)))
-        // The outer edges do not: that is where the menu bar's own items live, and
-        // reaching for one of those should not open the panel.
-        XCTAssertFalse(region.contains(CGPoint(x: compactStrip.minX + 2, y: compactStrip.midY)))
-        XCTAssertFalse(region.contains(CGPoint(x: compactStrip.maxX - 2, y: compactStrip.midY)))
-        // Full height is kept: the strip is only 34pt tall, so there is nothing to
-        // give away vertically.
-        XCTAssertEqual(region.height, compactStrip.height)
-        XCTAssertEqual(
-            region.width,
-            compactStrip.width - 2 * ATMAgentNotchHover.horizontalTriggerInset
-        )
-    }
-
-    func testTriggerInsetNeverCollapsesANarrowStrip() {
-        // The fallback strip on a screen with no notch is much narrower; insetting
-        // by a fixed amount must not leave an empty or inverted rect.
-        let narrow = CGRect(x: 0, y: 0, width: 100, height: 38)
-        let region = ATMAgentNotchHover.triggerFrame(compactFrame: narrow)
-        XCTAssertGreaterThanOrEqual(region.width, 80)
-        XCTAssertTrue(region.contains(CGPoint(x: narrow.midX, y: narrow.midY)))
-    }
-
-    func testExpandedRegionUsesTheFullStripSoTheEdgesStopBeingACliff() {
-        // Once open, the inset is dropped: sliding along the strip towards the edge
-        // must not read as leaving.
-        let region = ATMAgentNotchHover.region(
-            presentation: .hoverExpanded,
-            compactFrame: compactStrip,
-            panelFrame: expandedPanel
-        )
-        XCTAssertTrue(region.contains(CGPoint(x: compactStrip.minX + 2, y: compactStrip.midY)))
-    }
-
-    func testHoverRegionWhileExpandedCoversTheWholePanel() {
-        let region = ATMAgentNotchHover.region(
-            presentation: .hoverExpanded,
-            compactFrame: compactStrip,
-            panelFrame: expandedPanel
-        )
-        // Moving down into the session list has to keep it open.
-        XCTAssertTrue(region.contains(CGPoint(x: 756, y: 800)))
-        // And the strip itself stays inside the region even though the panel
-        // frame alone would already cover it.
-        XCTAssertTrue(region.contains(CGPoint(x: 600, y: 1_000)))
-    }
-
-    func testCompactRegionIsAlwaysContainedInTheExpandedRegion() {
-        // If it were not, expanding could drop the cursor outside the new region
-        // and collapse immediately — an oscillation by construction.
-        let expandedRegion = ATMAgentNotchHover.region(
-            presentation: .hoverExpanded,
-            compactFrame: compactStrip,
-            panelFrame: expandedPanel
-        )
-        XCTAssertTrue(expandedRegion.contains(compactStrip))
-    }
-
-    func testOpensOnlyFromCompactAndOnlyWithTheCursorPresent() {
-        XCTAssertTrue(ATMAgentNotchHover.shouldOpen(presentation: .compact, cursorIsInRegion: true))
-        // The dwell elapsed but the cursor already left: a fast pass across the
-        // strip must not leave a panel open behind it.
-        XCTAssertFalse(ATMAgentNotchHover.shouldOpen(presentation: .compact, cursorIsInRegion: false))
-        // Already open, or pinned: nothing to do.
-        for presentation in [
-            ATMAgentNotchPresentation.hoverExpanded, .sessionList, .notification,
-        ] {
-            XCTAssertFalse(
-                ATMAgentNotchHover.shouldOpen(presentation: presentation, cursorIsInRegion: true),
-                "\(presentation) should not re-open"
-            )
-        }
-    }
-
-    func testTheCursorActuallyBeingInsideVetoesEveryClose() {
-        // This is the check that makes the open/collapse flapping impossible: the
-        // window resize used to report a false hover exit while the cursor had not
-        // moved at all, and acting on it collapsed the panel right back onto the
-        // cursor, which re-opened it.
-        for presentation in ATMAgentNotchPresentation.allCases {
-            XCTAssertFalse(
-                ATMAgentNotchHover.shouldClose(
-                    presentation: presentation,
-                    cursorIsInRegion: true,
-                    dismissesNotificationOnExit: true
-                ),
-                "\(presentation) must not close while the cursor is inside"
-            )
-        }
-    }
-
-    func testClosesHoverExpandedOnceTheCursorIsGone() {
-        XCTAssertTrue(ATMAgentNotchHover.shouldClose(
-            presentation: .hoverExpanded,
-            cursorIsInRegion: false,
-            dismissesNotificationOnExit: false
-        ))
-    }
-
-    func testAPinnedSessionListNeverClosesFromHover() {
-        // It was opened by a click, so only an explicit dismissal or an outside
-        // click should close it.
-        XCTAssertFalse(ATMAgentNotchHover.shouldClose(
-            presentation: .sessionList,
-            cursorIsInRegion: false,
-            dismissesNotificationOnExit: true
-        ))
-    }
-
-    func testNotificationClosesOnExitOnlyAfterItsTimerElapsed() {
-        // Still counting down: leaving must not cut the notification short.
-        XCTAssertFalse(ATMAgentNotchHover.shouldClose(
-            presentation: .notification,
-            cursorIsInRegion: false,
-            dismissesNotificationOnExit: false
-        ))
-        // Timer already fired while the cursor was inside, so it was held open
-        // for reading; now that the cursor left it may go.
-        XCTAssertTrue(ATMAgentNotchHover.shouldClose(
-            presentation: .notification,
-            cursorIsInRegion: false,
-            dismissesNotificationOnExit: true
-        ))
-    }
-
-    func testHoverDelaysGiveTransitAChanceToPassAndJitterAChanceToReturn() {
-        XCTAssertGreaterThan(ATMAgentNotchHover.openDelay, 0)
-        XCTAssertGreaterThan(ATMAgentNotchHover.closeDelay, 0)
-        // The close grace must outlast the resize animation's own settling, or a
-        // spurious exit mid-animation could still win.
-        XCTAssertGreaterThanOrEqual(ATMAgentNotchHover.closeDelay, ATMAgentNotchHover.openDelay)
-        // Both short enough to feel immediate rather than laggy.
-        XCTAssertLessThan(ATMAgentNotchHover.openDelay, 0.4)
-        XCTAssertLessThan(ATMAgentNotchHover.closeDelay, 0.4)
     }
 
     // MARK: - Socket path

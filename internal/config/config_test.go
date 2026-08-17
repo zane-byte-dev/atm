@@ -25,9 +25,11 @@ func withTempConfigHome(t *testing.T) string {
 	oldCollectionInterval := CollectionIntervalMinutes
 	oldCollectionLookback := CollectionLookbackMinutes
 	oldCollectionModel := CollectionModelCommand
+	oldTextModelBaseURL, oldTextModelName := TextModelBaseURL, TextModelName
 	oldCollectionModelRunners := CollectionModelRunners
 	oldCollectionConnectors := CollectionConnectors
 	oldQuotaProviders := QuotaProviders
+	oldTodoRefineOnAdd := TodoRefineOnAdd
 
 	home := t.TempDir()
 	Home = home
@@ -50,9 +52,12 @@ func withTempConfigHome(t *testing.T) string {
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
 	CollectionModelCommand = "codex"
+	TextModelBaseURL = "https://api.deepseek.com"
+	TextModelName = "deepseek-v4-flash"
 	CollectionModelRunners = nil
 	CollectionConnectors = nil
 	QuotaProviders = nil
+	TodoRefineOnAdd = true
 
 	t.Cleanup(func() {
 		Home = oldHome
@@ -70,9 +75,11 @@ func withTempConfigHome(t *testing.T) string {
 		CollectionIntervalMinutes = oldCollectionInterval
 		CollectionLookbackMinutes = oldCollectionLookback
 		CollectionModelCommand = oldCollectionModel
+		TextModelBaseURL, TextModelName = oldTextModelBaseURL, oldTextModelName
 		CollectionModelRunners = oldCollectionModelRunners
 		CollectionConnectors = oldCollectionConnectors
 		QuotaProviders = oldQuotaProviders
+		TodoRefineOnAdd = oldTodoRefineOnAdd
 	})
 	return home
 }
@@ -84,6 +91,12 @@ func TestInitAndLoadConfig(t *testing.T) {
 	}
 	if _, err := os.Stat(ConfigPath); err != nil {
 		t.Fatalf("config file missing: %v", err)
+	}
+	if info, err := os.Stat(AtmDir); err != nil || info.Mode().Perm() != 0700 {
+		t.Fatalf("ATM data directory mode = %v, %v", info.Mode().Perm(), err)
+	}
+	if info, err := os.Stat(ConfigPath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("config file mode = %v, %v", info.Mode().Perm(), err)
 	}
 	if err := InitConfig(); err == nil {
 		t.Fatal("InitConfig should fail when config already exists")
@@ -102,6 +115,8 @@ func TestInitAndLoadConfig(t *testing.T) {
   "collection_interval_minutes": 7,
   "collection_lookback_minutes": 90,
   "collection_model_command": "rule",
+  "text_model_base_url": "https://deepseek.example.test/v1/",
+  "text_model_name": "deepseek-test",
   "collection_model_runners": {"house": {"command": "~/bin/house-cli", "args": ["--schema", "{{schema_path}}"], "output_field": "result", "timeout_seconds": 60}},
   "collection_connectors": {"slack": {"command": "~/bin/atm-connector-slack", "args": ["--workspace", "example"], "timeout_seconds": 30}},
   "quota_providers": {"example": {"command": "~/bin/atm-quota-example", "args": ["--profile", "work"], "timeout_seconds": 8, "visible_metrics": ["amount"]}},
@@ -140,6 +155,9 @@ func TestInitAndLoadConfig(t *testing.T) {
 		t.Fatalf("collection config = enabled:%v interval:%d lookback:%d model:%s",
 			CollectionEnabled, CollectionIntervalMinutes, CollectionLookbackMinutes,
 			CollectionModelCommand)
+	}
+	if TextModelBaseURL != "https://deepseek.example.test/v1" || TextModelName != "deepseek-test" {
+		t.Fatalf("text model config = base:%s model:%s", TextModelBaseURL, TextModelName)
 	}
 	if runner := CollectionModelRunners["house"]; runner.Command != "~/bin/house-cli" ||
 		len(runner.Args) != 2 || runner.OutputField != "result" || runner.TimeoutSeconds != 60 {
@@ -208,6 +226,9 @@ func TestSetConfigValueWritesAndPreservesUnknownFields(t *testing.T) {
 			t.Fatalf("config after set is missing %q:\n%s", want, data)
 		}
 	}
+	if info, err := os.Stat(ConfigPath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("updated config mode = %v, %v", info.Mode().Perm(), err)
+	}
 
 	// Flipping back to false must overwrite, not append.
 	if err := SetConfigValue("grok_live_quota", false); err != nil {
@@ -260,6 +281,28 @@ func TestGrokLiveQuotaEnvOverridesConfig(t *testing.T) {
 	LoadConfig()
 	if GrokLiveQuota {
 		t.Fatal("unrecognized env value must fall back to config (false)")
+	}
+}
+
+func TestTodoRefineOnAddDefaultsOnAndCanBeDisabled(t *testing.T) {
+	withTempConfigHome(t)
+	if !TodoRefineOnAdd {
+		t.Fatal("todo refine after add is on unless configured off")
+	}
+	if err := os.MkdirAll(AtmDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ConfigPath, []byte(`{"todo_refine_on_add":false}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+	LoadConfig()
+	if TodoRefineOnAdd {
+		t.Fatal("explicit false must turn desktop auto-refine off")
+	}
+	t.Setenv("ATM_TODO_REFINE_ON_ADD", "1")
+	LoadConfig()
+	if !TodoRefineOnAdd {
+		t.Fatal("env must force auto-refine on")
 	}
 }
 

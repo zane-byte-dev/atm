@@ -156,6 +156,24 @@ func expandModelCommandPath(command string) string {
 	return command
 }
 
+// RunSchemaModel walks the configured candidate chain (or the one the caller
+// passed) and returns the first schema-constrained JSON answer. Collection
+// classification, daily digests and todo refine all use this so a new CLI is
+// taught to ATM once. `rule` is not a model — callers that want a keyword
+// fallback implement it themselves; refine has none, because a keyword cannot
+// polish a title.
+func RunSchemaModel(ctx context.Context, commandLine string, timeout time.Duration,
+	schemaName, schema, prompt string) ([]byte, error) {
+	if strings.TrimSpace(commandLine) == "" {
+		commandLine = config.CollectionModelCommand
+	}
+	models, _ := splitModelCandidates(commandLine)
+	if len(models) == 0 {
+		return nil, fmt.Errorf("no model CLI configured (collection_model_command is %q)", strings.TrimSpace(commandLine))
+	}
+	return runCollectionModel(ctx, models, timeout, schemaName, schema, prompt)
+}
+
 // runCollectionModel walks the candidate chain and returns the first answer it
 // gets. Falling through covers exactly the ways a CLI can be unusable through
 // no fault of the prompt: not installed, rate limited, crashed, timed out, or

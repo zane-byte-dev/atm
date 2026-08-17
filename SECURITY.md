@@ -40,3 +40,8 @@ data directory can read the indexed content. Commands configured as Todo
 completion hooks and external model or connector commands run with the current
 user's privileges. Review those commands before enabling them.
 
+The data directory is created as `0700`, and `config.json` and the DeepSeek
+credential file are written as `0600`; ATM refuses to read the credential file
+when its permissions are wider. That keeps the secret from other OS users, not
+from code running as you.
+

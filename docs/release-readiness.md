@@ -45,7 +45,7 @@ ATM 已于 2026-08-04 在 `zane-byte-dev/atm` 公开发布，当前适合早期�
 | token/cost 汇总 | yes | yes | yes | no | yes | basic | basic | yes |
 | 逐请求 usage_events | yes | yes | yes | no | no | basic | basic | yes |
 | quota | no | yes | no | no | no | no | no | yes |
-| 刘海 hook 推送 | yes | yes | yes (扩展) | no | no | no | no | yes |
+| Agent hook 推送 | yes | yes | yes (扩展) | no | no | no | no | yes |
 
 说明：
 

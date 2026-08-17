@@ -4,11 +4,9 @@ import SwiftUI
 /// Width bookkeeping for the workspace two-column layout, kept free of SwiftUI so
 /// the clamping rules can be tested without a window.
 enum ATMSplitColumnWidth {
-    /// The visible hairline between the columns.
+    /// The layout slot between columns. It stays transparent until hover or drag.
     static let dividerWidth: CGFloat = 1
-    /// The invisible drag target around it. A 1pt grab zone is not hittable, and
-    /// widening the *visible* line to match would put a grey band between every
-    /// two columns.
+    /// The invisible drag target around it. A 1pt grab zone is not hittable.
     static let handleWidth: CGFloat = 10
 
     static func defaultsKey(_ id: String) -> String { "ATMSplitColumnWidth.\(id)" }
@@ -92,7 +90,7 @@ struct ATMSplitColumn<Sidebar: View, Detail: View>: View {
                 sidebar
                     .frame(width: width)
                 divider(available: available, current: width)
-                    // The grab area overhangs the hairline into both panes, and
+                    // The grab area overhangs the transparent slot into both panes, and
                     // SwiftUI hit-tests later siblings first — without this the
                     // detail pane would swallow the right half of it.
                     .zIndex(1)
@@ -113,9 +111,14 @@ struct ATMSplitColumn<Sidebar: View, Detail: View>: View {
     }
 
     private func divider(available: CGFloat, current: CGFloat) -> some View {
-        Rectangle()
-            .fill(ATMTheme.border)
+        Color.clear
             .frame(width: ATMSplitColumnWidth.dividerWidth)
+            .overlay {
+                Capsule()
+                    .fill(ATMTheme.accent.opacity(isHoveringDivider || isDragging ? 0.62 : 0))
+                    .frame(width: 2, height: 36)
+                    .animation(ATMMotion.hover, value: isHoveringDivider || isDragging)
+            }
             .overlay {
                 Color.clear
                     .frame(width: ATMSplitColumnWidth.handleWidth)

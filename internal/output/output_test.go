@@ -1,6 +1,7 @@
 package output
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -57,6 +58,34 @@ func TestJSONNormalizesNilSlices(t *testing.T) {
 	})
 	if strings.TrimSpace(out) != "[]" {
 		t.Fatalf("JSON output = %q", out)
+	}
+}
+
+func TestDashesFillsOneCellPerWidth(t *testing.T) {
+	cells := Dashes(3, 1, 0)
+	if len(cells) != 3 {
+		t.Fatalf("Dashes(3, 1, 0) = %v, want 3 cells", cells)
+	}
+	for i, want := range []string{"---", "-", ""} {
+		got, ok := cells[i].(string)
+		if !ok || got != want {
+			t.Fatalf("cell %d = %v, want %q", i, cells[i], want)
+		}
+	}
+	if cells := Dashes(); len(cells) != 0 {
+		t.Fatalf("Dashes() = %v, want no cells", cells)
+	}
+}
+
+// TestDashesSpreadsIntoRowFormat covers the reason Dashes returns []any: the
+// separator has to reach Printf as one argument per column, so a caller can pass
+// the header's own format string instead of hand-writing a second one.
+func TestDashesSpreadsIntoRowFormat(t *testing.T) {
+	out := captureOutput(t, &os.Stdout, func() {
+		fmt.Printf("%-4s %2s\n", Dashes(4, 2)...)
+	})
+	if out != "---- --\n" {
+		t.Fatalf("separator row = %q", out)
 	}
 }
 

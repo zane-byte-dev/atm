@@ -6,6 +6,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -24,7 +27,70 @@ type Service struct {
 	Fetcher    Fetcher
 	Extractor  Extractor
 	Summarizer Summarizer
+	Dispatcher TodoDispatcher
 	Now        func() time.Time
+}
+
+// TodoDispatcher is the narrow boundary between collection and execution. The
+// production implementation re-enters the ATM CLI so there remains one claim,
+// policy and controller path for App, CLI and collector dispatches alike.
+type TodoDispatcher interface {
+	Dispatch(context.Context, string, string) error
+}
+
+type CommandTodoDispatcher struct {
+	Executable string
+}
+
+func (dispatcher CommandTodoDispatcher) Dispatch(ctx context.Context, todoID, project string) error {
+	if strings.TrimSpace(dispatcher.Executable) == "" {
+		return fmt.Errorf("ATM executable is unavailable for automatic dispatch")
+	}
+	workDir, err := collectionProjectWorkDir(project)
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, dispatcher.Executable,
+		"todo", "run", todoID, "--cwd", workDir, "--json")
+	command.Env = append(os.Environ(), "ATM_SKIP_LOCAL_NOTIFICATION=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			return fmt.Errorf("dispatch todo %s: %w", todoID, err)
+		}
+		return fmt.Errorf("dispatch todo %s: %w: %s", todoID, err, detail)
+	}
+	return nil
+}
+
+func collectionProjectWorkDir(project string) (string, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return "", fmt.Errorf("automatic dispatch requires a Todo project")
+	}
+	candidates := []string{}
+	if filepath.IsAbs(project) {
+		candidates = append(candidates, project)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, "mox", project),
+			filepath.Join(home, "work", project),
+			filepath.Join(home, project),
+		)
+	}
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && info.IsDir() {
+			absolute, err := filepath.Abs(candidate)
+			if err != nil {
+				return "", err
+			}
+			return absolute, nil
+		}
+	}
+	return "", fmt.Errorf("cannot resolve project directory for %q", project)
 }
 
 type RunReport struct {
@@ -33,10 +99,12 @@ type RunReport struct {
 
 func DefaultService() Service {
 	registry, registryErr := DefaultRegistry()
+	executable, _ := os.Executable()
 	return Service{
 		Connectors: registry, RegistryError: registryErr,
 		Extractor:  AutomaticExtractor{ModelCommand: config.CollectionModelCommand},
 		Summarizer: AutomaticSummarizer{ModelCommand: config.CollectionModelCommand},
+		Dispatcher: CommandTodoDispatcher{Executable: executable},
 		Now:        func() time.Time { return time.Now().In(config.Loc) },
 	}
 }
@@ -181,6 +249,7 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 	}
 	batches := groupMessagesWithContext(source, messages, handledMessageIDs)
 	batchFailed := false
+	dispatchFailed := false
 	for _, batch := range batches {
 		if ctx.Err() != nil {
 			run.FailedCount++
@@ -247,6 +316,16 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			run.FailedCount++
 			run.Error = err.Error()
 			batchFailed = true
+			continue
+		}
+		if item.DispatchStatus == "pending" {
+			if err := service.dispatchItem(ctx, db, &item, source.Project); err != nil {
+				run.FailedCount++
+				if run.Error == "" {
+					run.Error = compactError(err)
+				}
+				dispatchFailed = true
+			}
 		}
 	}
 	if batchFailed {
@@ -261,8 +340,52 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			run.Status, run.Error, run.FailedCount = "failed", err.Error(), run.FailedCount+1
 		}
 	}
+	if dispatchFailed && run.Status == "running" {
+		run.Status = "failed"
+	}
 	finish(&run)
 	return run
+}
+
+func (service Service) dispatchItem(
+	ctx context.Context,
+	db *sql.DB,
+	item *store.CollectionItem,
+	trustedProject string,
+) error {
+	if item.TodoID == "" {
+		return fmt.Errorf("collection item %s has no Todo to dispatch", item.ID)
+	}
+	// A task run is the durable claim. It also closes the crash window where the
+	// child successfully created the run but the collection item was not updated.
+	runs, err := store.ListTaskRuns(db, item.TodoID)
+	if err != nil {
+		return err
+	}
+	if len(runs) > 0 {
+		item.DispatchStatus, item.DispatchError = "dispatched", ""
+		return store.UpdateCollectionItem(db, *item)
+	}
+	if service.Dispatcher == nil {
+		err = fmt.Errorf("automatic dispatch is not configured")
+	} else {
+		err = service.Dispatcher.Dispatch(ctx, item.TodoID, trustedProject)
+	}
+	if err != nil {
+		// The command may have launched the controller and then lost its output.
+		// Prefer the durable run over the transport error in that case.
+		if current, readErr := store.ListTaskRuns(db, item.TodoID); readErr == nil && len(current) > 0 {
+			item.DispatchStatus, item.DispatchError = "dispatched", ""
+			return store.UpdateCollectionItem(db, *item)
+		}
+		item.DispatchStatus, item.DispatchError = "failed", compactError(err)
+		if updateErr := store.UpdateCollectionItem(db, *item); updateErr != nil {
+			return fmt.Errorf("%v; record dispatch failure: %w", err, updateErr)
+		}
+		return err
+	}
+	item.DispatchStatus, item.DispatchError = "dispatched", ""
+	return store.UpdateCollectionItem(db, *item)
 }
 
 func (service Service) fetcherFor(source store.CollectionSource) (Fetcher, error) {
@@ -404,7 +527,14 @@ func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Dec
 	if err != nil {
 		return Decision{}, err
 	}
-	return clampToStrategy(normalizeDecision(decision, batch.Source), batch.Source), nil
+	decision = clampToStrategy(normalizeDecision(decision, batch.Source), batch.Source)
+	// Project becomes an execution boundary when auto-dispatch is enabled. Only
+	// the source configuration is trusted to choose a local repository; connector
+	// messages and classifier output cannot redirect Codex elsewhere.
+	if batch.Source.AutoDispatch {
+		decision.Project = batch.Source.Project
+	}
+	return decision, nil
 }
 
 func collectionExclusion(source store.CollectionSource, context string) (string, bool) {
@@ -464,6 +594,9 @@ func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decis
 		item.TodoID, item.Status = todoID, "processed"
 	default:
 		return item, fmt.Errorf("unsupported collection decision: %s", decision.Action)
+	}
+	if item.Action == "create" && batch.Source.AutoDispatch {
+		item.DispatchStatus, item.DispatchError = "pending", ""
 	}
 	return item, nil
 }

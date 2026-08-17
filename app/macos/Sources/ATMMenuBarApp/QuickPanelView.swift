@@ -4,7 +4,6 @@ struct QuickPanelView: View {
     @ObservedObject var store: ATMDataStore
     let close: () -> Void
     let openDesktop: (ATMTodo?) -> Void
-    let addTodo: () -> Void
 
     @State private var metricsRange: ATMMetricsRange = .today
 
@@ -29,9 +28,11 @@ struct QuickPanelView: View {
                 .padding(.top, 10)
                 .padding(.bottom, 8)
             }
-            actionBar
         }
-        .background(ATMTheme.canvas.opacity(0.96))
+        // The panel already owns a behind-window `.popover` material. Keep the
+        // SwiftUI content transparent so workspace list colours cannot cover or
+        // otherwise change the Menubar panel's translucency.
+        .background(Color.clear)
         .ignoresSafeArea()
         .frame(minWidth: 360, minHeight: 320)
         .atmHidesScrollBars()
@@ -112,9 +113,9 @@ struct QuickPanelView: View {
             } else {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Text(NumberFormat.compact(usage.totalTokens))
-                        .font(ATMFont.rounded(.metric, .black))
+                        .font(ATMFont.font(.metric, weight: .bold))
                         .foregroundStyle(ATMTheme.primary)
-                    Text("tokens")
+                    Text("Token")
                         .font(ATMFont.font(.caption, weight: .medium))
                         .foregroundStyle(ATMTheme.secondary)
                     Spacer()
@@ -252,14 +253,14 @@ struct QuickPanelView: View {
     private var workingSection: some View {
         quickCard(
             "工作中",
-            icon: "hammer",
+            indicatorColor: ATMTheme.accent,
             badge: store.snapshot.work.working.isEmpty ? nil : "\(store.snapshot.work.working.count)"
         ) {
             if store.snapshot.work.working.isEmpty {
                 empty("当前没有工作中的任务")
             } else {
                 ForEach(store.snapshot.work.working) { todo in
-                    quickTodoRow(todo, caption: "工作中")
+                    quickTodoRow(todo)
                 }
             }
         }
@@ -268,9 +269,8 @@ struct QuickPanelView: View {
     private var attentionSection: some View {
         quickCard(
             "需处理",
-            icon: "exclamationmark.circle.fill",
-            badge: "\(store.snapshot.work.needsAction.count)",
-            iconColor: ATMTheme.warning
+            indicatorColor: ATMTheme.warning,
+            badge: "\(store.snapshot.work.needsAction.count)"
         ) {
             ForEach(store.snapshot.work.needsAction) { todo in
                 quickTodoRow(todo, caption: attentionCaption(todo), showsActions: false)
@@ -278,53 +278,30 @@ struct QuickPanelView: View {
         }
     }
 
-    /// Capturing a task is the one write the panel offers, so it sits next to the
-    /// only other action rather than inside the glance content. The composer itself is
-    /// the desktop window's — the compact panel has no room for the project/priority
-    /// chips, and two composers would drift apart.
-    private var actionBar: some View {
-        HStack(spacing: 4) {
-            ATMHoverLabelButton(
-                title: "添加任务",
-                systemImage: "plus",
-                help: "添加任务 (⌘N)，在主窗口填写",
-                height: 34,
-                tier: .footnote,
-                action: addTodo
-            )
-            // ⌘N 归主菜单「文件 → 新建任务」，面板不再自己声明一遍：菜单键等价先被
-            // 匹配，两个声明里这一个永远不会触发，只会看着像还有人管。
-
-            ATMHoverLabelButton(
-                title: "主窗口",
-                systemImage: "macwindow",
-                trailingSystemImage: "arrow.up.right",
-                help: "打开 ATM 主窗口",
-                height: 34,
-                tier: .footnote
-            ) {
-                openDesktop(nil)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(.regularMaterial)
-        .overlay(alignment: .top) { Divider().opacity(0.45) }
-    }
-
-    private func quickTodoRow(_ todo: ATMTodo, caption: String, showsActions: Bool = true) -> some View {
+    private func quickTodoRow(
+        _ todo: ATMTodo,
+        caption: String? = nil,
+        showsActions: Bool = true
+    ) -> some View {
         HStack(spacing: 7) {
             Button {
                 openDesktop(todo)
             } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("\(todo.id) · \(todo.title)")
-                        .font(ATMFont.font(.body, weight: .semibold))
-                        .foregroundStyle(ATMTheme.primary)
-                        .lineLimit(2)
-                    Text("\(caption) · \(todo.project ?? "未分项目")")
-                        .font(ATMFont.mono(.micro))
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(todo.id.uppercased())
+                            .font(ATMFont.mono(.caption, .medium))
+                            .foregroundStyle(ATMTodoPriorityStyle.color(for: todo.priority))
+                            .help(ATMTodoPriorityStyle.label(todo.priority))
+                        Text(todo.title)
+                            .font(ATMFont.font(.body, weight: .medium))
+                            .foregroundStyle(ATMTheme.primary)
+                            .lineLimit(2)
+                    }
+                    Text(rowMetadata(todo, caption: caption))
+                        .font(ATMFont.mono(.caption, .medium))
                         .foregroundStyle(ATMTheme.secondary)
+                        .lineLimit(1)
                 }
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                 .contentShape(Rectangle())
@@ -377,16 +354,35 @@ struct QuickPanelView: View {
         return status
     }
 
+    private func rowMetadata(_ todo: ATMTodo, caption: String?) -> String {
+        var parts: [String] = []
+        if let caption = caption?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !caption.isEmpty {
+            parts.append(caption)
+        }
+        if let project = todo.project?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !project.isEmpty {
+            parts.append(project)
+        } else {
+            parts.append("未分项目")
+        }
+        return parts.joined(separator: " · ")
+    }
+
     private func quickCard<Content: View>(
         _ title: String,
-        icon: String,
+        indicatorColor: Color,
         badge: String? = nil,
-        iconColor: Color = ATMTheme.secondary,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
-                sectionTitle(title, icon: icon, color: iconColor)
+                Circle()
+                    .fill(indicatorColor)
+                    .frame(width: 6, height: 6)
+                Text(title)
+                    .font(ATMFont.font(.body, weight: .semibold))
+                    .foregroundStyle(ATMTheme.primary)
                 Spacer(minLength: 8)
                 if let badge {
                     Text(badge)

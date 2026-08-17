@@ -36,9 +36,25 @@ final class ATMMainMenuTests: XCTestCase {
 
     func testMainMenuHasAppAndWindowSections() {
         let main = ATMMainMenu.make(appName: "ATM Dev")
-        XCTAssertEqual(main.items.map(\.title), ["ATM Dev", "文件", "编辑", "窗口"])
+        XCTAssertEqual(main.items.map(\.title), ["ATM Dev", "文件", "编辑", "前往", "窗口"])
         XCTAssertEqual(main.item(withTitle: "ATM Dev")?.submenu?.item(withTitle: "退出 ATM Dev")?.keyEquivalent, "q")
         XCTAssertEqual(main.item(withTitle: "窗口")?.submenu?.item(withTitle: "关闭")?.keyEquivalent, "w")
+    }
+
+    func testNavigationMenuUsesBrowserStyleHistoryShortcuts() throws {
+        let menu = try XCTUnwrap(ATMMainMenu.make(appName: "ATM").item(withTitle: "前往")?.submenu)
+        let back = try XCTUnwrap(menu.item(withTitle: "后退"))
+        let forward = try XCTUnwrap(menu.item(withTitle: "前进"))
+
+        XCTAssertEqual(back.keyEquivalent, "[")
+        XCTAssertEqual(back.keyEquivalentModifierMask, .command)
+        XCTAssertEqual(back.action, #selector(AppDelegate.navigateBackFromMenu(_:)))
+        XCTAssertNil(back.target)
+
+        XCTAssertEqual(forward.keyEquivalent, "]")
+        XCTAssertEqual(forward.keyEquivalentModifierMask, .command)
+        XCTAssertEqual(forward.action, #selector(AppDelegate.navigateForwardFromMenu(_:)))
+        XCTAssertNil(forward.target)
     }
 
     /// ⌘S saves knowledge and ⌘K opens search: both belong to something that is on

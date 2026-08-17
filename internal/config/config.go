@@ -98,6 +98,19 @@ var (
 	// a code change. Keys are the names used in CollectionModelCommand; a key
 	// that matches a built-in profile overrides it.
 	CollectionModelRunners map[string]ModelRunnerConfig
+	// TextModelBaseURL and TextModelName configure ATM's narrow built-in text
+	// service. Credentials deliberately stay out of config.json: the CLI reads
+	// ~/.atm/credentials.json, with DEEPSEEK_API_KEY as an ephemeral override.
+	TextModelBaseURL = "https://api.deepseek.com"
+	TextModelName    = "deepseek-v4-flash"
+	// TodoRefineOnAdd is the desktop default after a human files a todo: run
+	// one schema-constrained model pass to polish the card and, when the work
+	// is independently trackable, split it. CLI `todo add` never does this
+	// unless `--refine` is passed — agents already write structured cards and
+	// a network model call would break `id=$(atm todo add ...)`. Default on
+	// because that is the whole point of the feature; turn it off to keep
+	// messy capture text as typed.
+	TodoRefineOnAdd = true
 )
 
 // CollectionModelWorkdirPrefix names the scratch directory every model run gets.
@@ -180,12 +193,16 @@ type FileConfig struct {
 	CollectionMessageRetentionDays *int                                 `json:"collection_message_retention_days,omitempty"`
 	CollectionModelCommand         string                               `json:"collection_model_command,omitempty"`
 	CollectionModelRunners         map[string]ModelRunnerConfig         `json:"collection_model_runners,omitempty"`
+	TextModelBaseURL               string                               `json:"text_model_base_url,omitempty"`
+	TextModelName                  string                               `json:"text_model_name,omitempty"`
 	CollectionConnectors           map[string]CollectionConnectorConfig `json:"collection_connectors,omitempty"`
-	QuotaProviders                 map[string]QuotaProviderConfig       `json:"quota_providers,omitempty"`
-	DataDir                        string                               `json:"data_dir,omitempty"`
-	Pricing                        map[string][4]float64                `json:"pricing,omitempty"`
-	Subscriptions                  map[string]float64                   `json:"subscriptions,omitempty"`
-	ProjectAliases                 map[string]string                    `json:"project_aliases,omitempty"`
+	// Pointer so "absent" (keep the on-by-default) is distinct from false.
+	TodoRefineOnAdd *bool                          `json:"todo_refine_on_add,omitempty"`
+	QuotaProviders  map[string]QuotaProviderConfig `json:"quota_providers,omitempty"`
+	DataDir         string                         `json:"data_dir,omitempty"`
+	Pricing         map[string][4]float64          `json:"pricing,omitempty"`
+	Subscriptions   map[string]float64             `json:"subscriptions,omitempty"`
+	ProjectAliases  map[string]string              `json:"project_aliases,omitempty"`
 }
 
 func LoadConfig() {
@@ -253,6 +270,15 @@ func loadConfigFile() {
 	if cfg.CollectionModelCommand != "" {
 		CollectionModelCommand = cfg.CollectionModelCommand
 	}
+	if strings.TrimSpace(cfg.TextModelBaseURL) != "" {
+		TextModelBaseURL = strings.TrimRight(strings.TrimSpace(cfg.TextModelBaseURL), "/")
+	}
+	if strings.TrimSpace(cfg.TextModelName) != "" {
+		TextModelName = strings.TrimSpace(cfg.TextModelName)
+	}
+	if cfg.TodoRefineOnAdd != nil {
+		TodoRefineOnAdd = *cfg.TodoRefineOnAdd
+	}
 	CollectionModelRunners = cfg.CollectionModelRunners
 	CollectionConnectors = cfg.CollectionConnectors
 	QuotaProviders = cfg.QuotaProviders
@@ -281,6 +307,12 @@ func applyEnvOverrides() {
 	case "0", "false", "off", "no":
 		CollectionEnabled = false
 	}
+	switch strings.ToLower(os.Getenv("ATM_TODO_REFINE_ON_ADD")) {
+	case "1", "true", "on", "yes":
+		TodoRefineOnAdd = true
+	case "0", "false", "off", "no":
+		TodoRefineOnAdd = false
+	}
 }
 
 // SetConfigValue rewrites one key in ~/.atm/config.json, preserving every
@@ -294,7 +326,10 @@ func SetConfigValue(key string, value any) error {
 		}
 	}
 	raw[key] = value
-	if err := os.MkdirAll(AtmDir, 0755); err != nil {
+	if err := os.MkdirAll(AtmDir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(AtmDir, 0700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(raw, "", "  ")
@@ -302,7 +337,10 @@ func SetConfigValue(key string, value any) error {
 		return err
 	}
 	b = append(b, '\n')
-	return os.WriteFile(ConfigPath, b, 0644)
+	if err := os.WriteFile(ConfigPath, b, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(ConfigPath, 0600)
 }
 
 func expandHome(p string) string {
@@ -331,7 +369,10 @@ func ShowConfig() string {
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
 		CollectionModelCommand:         CollectionModelCommand,
 		CollectionModelRunners:         CollectionModelRunners,
+		TextModelBaseURL:               TextModelBaseURL,
+		TextModelName:                  TextModelName,
 		CollectionConnectors:           CollectionConnectors,
+		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		QuotaProviders:                 QuotaProviders,
 		DataDir:                        AtmDir,
 		Pricing:                        Pricing,
@@ -346,7 +387,10 @@ func InitConfig() error {
 	if _, err := os.Stat(ConfigPath); err == nil {
 		return fmt.Errorf("config file already exists: %s", ConfigPath)
 	}
-	if err := os.MkdirAll(AtmDir, 0755); err != nil {
+	if err := os.MkdirAll(AtmDir, 0700); err != nil {
+		return err
+	}
+	if err := os.Chmod(AtmDir, 0700); err != nil {
 		return err
 	}
 	cfg := FileConfig{
@@ -364,11 +408,17 @@ func InitConfig() error {
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
 		CollectionModelCommand:         CollectionModelCommand,
+		TextModelBaseURL:               TextModelBaseURL,
+		TextModelName:                  TextModelName,
+		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		DataDir:                        "~/.atm",
 	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	b = append(b, '\n')
-	return os.WriteFile(ConfigPath, b, 0644)
+	if err := os.WriteFile(ConfigPath, b, 0600); err != nil {
+		return err
+	}
+	return os.Chmod(ConfigPath, 0600)
 }
 
 func shortenHome(p string) string {

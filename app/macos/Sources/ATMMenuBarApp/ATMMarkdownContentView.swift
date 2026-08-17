@@ -11,7 +11,14 @@ struct ATMMarkdownContentView: View {
     }
 
     let source: String
-    var sizing: Sizing = .content
+    var sizing: Sizing
+    private let blocks: [ATMMarkdownBlock]
+
+    init(source: String, sizing: Sizing = .content) {
+        self.source = source
+        self.sizing = sizing
+        blocks = ATMMarkdown.blocks(source)
+    }
 
     @ObservedObject private var appearance = ATMAppearance.shared
 
@@ -23,8 +30,8 @@ struct ATMMarkdownContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(ATMMarkdown.blocks(source).enumerated()), id: \.offset) { _, block in
+        LazyVStack(alignment: .leading, spacing: 10) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .heading(let level, let text):
                     Text(ATMMarkdown.render(text))

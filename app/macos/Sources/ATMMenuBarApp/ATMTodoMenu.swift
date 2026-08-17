@@ -61,6 +61,11 @@ enum ATMTodoMenu {
             }
 
             ATMMenuSeparator()
+            if !ATMTodoStatusActions.isClosed(todo) {
+                ATMMenuItem("优化任务", systemImage: "wand.and.stars") {
+                    store.refineTodo(id: todo.id)
+                }
+            }
             if let onEdit {
                 ATMMenuItem("编辑任务…", systemImage: "pencil") { onEdit() }
             }
