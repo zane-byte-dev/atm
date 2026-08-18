@@ -574,3 +574,32 @@ func guardSocketRecorder(t *testing.T) (string, func() []string) {
 		return append([]string{}, lines...)
 	}
 }
+
+// The gate records where it installed a shim, which means `guard install` writes
+// config. A test whose config path is not redirected therefore writes the *user's*
+// config — and did: it left the real file pointing at a t.TempDir() that ceased to
+// exist with the test, after which the gate reported itself off for a tool it was
+// in fact guarding. This pins the isolation rather than the symptom.
+func TestInstallingInATestNeverWritesTheRealConfig(t *testing.T) {
+	realConfig := config.ConfigPath
+	guardTestEnv(t)
+	if config.ConfigPath == realConfig {
+		t.Fatal("guardTestEnv did not redirect ConfigPath; installing would write the user's own config")
+	}
+	if _, err := os.Stat(config.ConfigPath); !os.IsNotExist(err) {
+		t.Fatalf("test config already exists at %s", config.ConfigPath)
+	}
+
+	bin, _ := installFakeShim(t, "dws")
+	if bin == "" {
+		t.Fatal("no shim installed")
+	}
+	// The install must have recorded its path somewhere — just not in the real file.
+	data, err := os.ReadFile(config.ConfigPath)
+	if err != nil {
+		t.Fatalf("install recorded nothing: %v", err)
+	}
+	if !strings.Contains(string(data), "dws-atm-real") && !strings.Contains(string(data), "\"bin\"") {
+		t.Fatalf("install did not record where it went:\n%s", data)
+	}
+}

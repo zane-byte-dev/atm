@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/guard"
 	"github.com/zane-byte-dev/atm/internal/output"
 )
@@ -61,8 +62,8 @@ func runGuardShim(cmd *cobra.Command, args []string, mode string) error {
 	}
 	tools := args
 	if len(tools) == 0 {
-		for tool, config := range guard.Tools() {
-			if len(config.Rules) > 0 {
+		for tool, toolConfig := range guard.Tools() {
+			if len(toolConfig.Rules) > 0 {
 				tools = append(tools, tool)
 			}
 		}
@@ -110,6 +111,17 @@ func runGuardShim(cmd *cobra.Command, args []string, mode string) error {
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", tool, err))
 			continue
+		}
+		if mode == "install" && state.Installed {
+			// Remember where it went, or a tool that is not on PATH becomes invisible
+			// to status and doctor the moment this process exits — and with it the
+			// checks for a shim that was overwritten or is being walked around.
+			if err := config.SaveGuardToolBin(tool, binPath); err != nil {
+				failures = append(failures, fmt.Sprintf(
+					"%s: 闸门装好了，但没能把安装位置写进 %s（%v）；"+
+						"status 和 doctor 之后看不到它，请手工补 guard.tools.%s.bin",
+					tool, config.ConfigPath, err, tool))
+			}
 		}
 		states = append(states, state)
 	}

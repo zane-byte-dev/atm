@@ -1,6 +1,8 @@
 package guard
 
 import (
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
@@ -84,30 +86,110 @@ func Tools() map[string]config.GuardToolConfig {
 	return merged
 }
 
+// mergeRules applies user rules over the built-ins.
+//
+// A user rule that states a matcher replaces the built-in of that id outright. One
+// that does not is a *patch*: it carries only an id plus what to change, which is
+// how switching a built-in off works without restating its matcher — restating it
+// would let the copy drift from the real one and silently stop gating.
 func mergeRules(base, override []config.GuardRule) []config.GuardRule {
 	merged := make([]config.GuardRule, len(base))
 	copy(merged, base)
 	for _, rule := range override {
-		replaced := false
-		for index := range merged {
-			if merged[index].ID == rule.ID {
-				merged[index] = rule
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
+		index := indexOfRule(merged, rule.ID)
+		if index < 0 {
 			merged = append(merged, rule)
+			continue
+		}
+		if rule.HasMatcher() {
+			merged[index] = rule
+			continue
+		}
+		if rule.Enabled != nil {
+			merged[index].Enabled = rule.Enabled
+		}
+		if strings.TrimSpace(rule.Label) != "" {
+			merged[index].Label = rule.Label
 		}
 	}
 	return merged
 }
 
-// Rules returns the effective rules for one tool. An unknown tool has none, and
-// therefore gates nothing — installing a shim for a tool with no rules turns
-// every one of its invocations into a plain pass-through.
+func indexOfRule(rules []config.GuardRule, id string) int {
+	for index := range rules {
+		if rules[index].ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+// Rules returns the rules that actually gate, for one tool: the effective set
+// minus anything switched off. An unknown tool has none, and therefore gates
+// nothing — installing a shim for a tool with no rules turns every one of its
+// invocations into a plain pass-through.
+//
+// Disabled rules are filtered here rather than skipped during matching, so a rule
+// that is off is never evaluated at all and cannot report a matcher problem.
 func Rules(tool string) []config.GuardRule {
-	return Tools()[tool].Rules
+	all := Tools()[tool].Rules
+	active := make([]config.GuardRule, 0, len(all))
+	for _, rule := range all {
+		if rule.IsEnabled() {
+			active = append(active, rule)
+		}
+	}
+	return active
+}
+
+// RuleView is one rule as the settings UI needs to see it: what it is, whether it
+// is on, and where it came from. Provenance matters because switching a built-in
+// off and deleting a rule you wrote are different actions with different undo.
+type RuleView struct {
+	Tool        string   `json:"tool"`
+	ID          string   `json:"id"`
+	Label       string   `json:"label,omitempty"`
+	Path        []string `json:"path,omitempty"`
+	ArgvPattern string   `json:"argv_pattern,omitempty"`
+	TargetFlags []string `json:"target_flags,omitempty"`
+	BodyFlags   []string `json:"body_flags,omitempty"`
+	Enabled     bool     `json:"enabled"`
+	// Builtin means ATM ships this rule; it can be switched off but not deleted.
+	Builtin bool `json:"builtin"`
+	// Overridden means the config replaced or patched it.
+	Overridden bool `json:"overridden"`
+}
+
+// RuleViews lists every rule for a tool, including the ones switched off.
+func RuleViews(tool string) []RuleView {
+	builtin := DefaultTools()[tool].Rules
+	overrides := config.Guard.Tools[tool].Rules
+	views := []RuleView{}
+	for _, rule := range Tools()[tool].Rules {
+		views = append(views, RuleView{
+			Tool:        tool,
+			ID:          rule.ID,
+			Label:       rule.Label,
+			Path:        rule.Path,
+			ArgvPattern: rule.ArgvPattern,
+			TargetFlags: rule.Target.Flags,
+			BodyFlags:   rule.Body.Flags,
+			Enabled:     rule.IsEnabled(),
+			Builtin:     indexOfRule(builtin, rule.ID) >= 0,
+			Overridden:  indexOfRule(overrides, rule.ID) >= 0,
+		})
+	}
+	return views
+}
+
+// ToolNames lists every tool ATM knows about, built-in or registered.
+func ToolNames() []string {
+	names := make([]string, 0, len(Tools()))
+	for tool := range Tools() {
+		names = append(names, tool)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Wait is how long a gate process waits for a decision before handing the

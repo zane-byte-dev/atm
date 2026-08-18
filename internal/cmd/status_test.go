@@ -62,12 +62,12 @@ func TestMatchingAIProcessSkipsDesktopAndUsesClosestTerminal(t *testing.T) {
 
 func TestIsGrokProcessCommand(t *testing.T) {
 	tests := map[string]bool{
-		"grok": true,
+		"grok":                         true,
 		"/Users/tester/.grok/bin/grok": true,
 		"/Users/tester/.grok/downloads/grok-0.2.118-macos-aarch64": true,
-		"rg -i grok": false,
+		"rg -i grok":        false,
 		"echo grok is cool": false,
-		"": false,
+		"":                  false,
 	}
 	for command, want := range tests {
 		if got := isGrokProcessCommand(command); got != want {

@@ -25,6 +25,16 @@ a database from a much older version. `atm backup` exists for exactly that case.
   钉钉发消息、催 MR 评审人、ATA 群推送。命令、取舍与拦不到什么见
   [docs/internals.md](docs/internals.md#外发动作闸门)。
 
+  决定它有两个地方：**通知自带「批准并发送 / 拒绝」两个按钮**（顺带修好了一件事——App 此前从未注册过任何
+  `UNNotificationCategory`，那些设了 `categoryIdentifier` 的通知其实一个按钮都长不出来），以及快速面板
+  顶部的待授权区，带正文和同样两个按钮。没有为它新开桌面工作区：这是扫一眼就做个动作的场合。
+
+  注册和管理走**「设置 → 外发闸门」**：每个 CLI 一张卡片，直说它是否真的拦住了——「被 PATH 绕过」和
+  「被覆盖」是分开报的两种病，因为它们的修法不同，而且两者都不会让任何命令失败，只会让你以为外发在被
+  审核。不在 PATH 上的 CLI 可以填路径或用文件选择器挑。规则有开关和删除，还有个表单加新规则。
+  内置规则可以关不能删（删 override 的效果是它回来，那不是「不想再拦」的意思），关的写法是只给 id 加
+  `enabled: false`，不重述 matcher —— 重述的副本会跟真的那条漂移然后悄悄不拦。
+
   刻意**没有**做的几件事。没做成某个 Agent 的 permission hook：调这些 CLI 的有三个 Agent，闸门必须
   与 Agent 无关；而且 ATM 已经承诺过它装的 hook 只上报、不改授权决定。没做新的 daemon 或定时清理：
   过期用 SQL 现算，任何清理路径都不执行任何东西。没有让 `running` 的请求被重试——闸门在执行途中死掉
@@ -302,6 +312,18 @@ a database from a much older version. `atm backup` exists for exactly that case.
   destroys every record that has nowhere to rebuild from.
 
 ### Fixed
+
+- **连接器偶发失败不再被当成「坏了」。** 钉钉这类 API 会偶尔返回一次 business error，五分钟后自己就好
+  了——实测某个源今天 21 次成功、2 次瞬时失败。但连接器健康度只看**最近一条** run 定性，所以一次抖动就
+  报 `dingtalk: error`；App 那边更糟，`latestRun` 是**跨所有源**的最新一条，一个源抖一下就在整个收集
+  工作区顶上挂一张要手动点掉的「操作失败」卡片，而那张卡片比它描述的状况活得长。
+
+  现在按**连续失败**判定，不按「失败过」：连续 0 次是 `ready`（顺带说一句「最近 N 次里失败过 M 次，
+  已恢复」，不隐瞒也不报警），有一次但前面刚成功过是新的 `flaky` 状态——中性颜色、显示失败频率而不是最新
+  那条报错、**不弹卡片**，因为它已经在自动重试了，没有任何人需要做什么。连续 2 次以上才是 `error`。
+  例外是能分类的失败（登录失效、缺权限）：那种不会自愈，**第一次就报**，等第二个样本只是白白晚 5 分钟。
+  卡片现在也只由「真的需要人处理」触发，不再由 `collect run --due` 的退出码触发——那个命令只要有一个源
+  失败就返回非零，是诚实的，但不该被读成「整个收集坏了」。
 
 - **「Agent 执行」页只在真有执行记录时出现。** 默认的交接路径不产生 `task_runs`——会话由 Codex
   自己拥有，ATM 通过 `session bind` 认识它——所以这一页在默认路径上永远是空的，空态还在指路一个

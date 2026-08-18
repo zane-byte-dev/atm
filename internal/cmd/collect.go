@@ -211,11 +211,7 @@ var collectStatusCmd = &cobra.Command{
 				fmt.Printf("Unread collection results: %d · atm collect item read --all\n", value.Summary.Unread)
 			}
 			for _, health := range value.ConnectorHealth {
-				detail := ""
-				if health.Error != "" {
-					detail = " · " + health.Error
-				}
-				fmt.Printf("%s: %s%s\n", health.Connector, health.Status, detail)
+				fmt.Printf("%s: %s\n", health.Connector, collectionHealthLine(health))
 			}
 			return nil
 		})
@@ -265,6 +261,13 @@ type collectionConnectorHealth struct {
 	Status    string `json:"status"`
 	Error     string `json:"error,omitempty"`
 	CheckedAt int64  `json:"checked_at,omitempty"`
+	// ConsecutiveFailures counts the unbroken run of failures ending at the most
+	// recent attempt. This, rather than the last run alone, is what says whether a
+	// connector is broken: these APIs return the occasional business error, and one
+	// of those between successes is noise that fixes itself in five minutes.
+	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
+	RecentRuns          int `json:"recent_runs,omitempty"`
+	RecentFailures      int `json:"recent_failures,omitempty"`
 }
 
 func collectionHealth(overview store.CollectionOverview) []collectionConnectorHealth {
@@ -284,18 +287,44 @@ func collectionHealth(overview store.CollectionOverview) []collectionConnectorHe
 	for id := range connectorIDs {
 		healthByID[id] = collectionConnectorHealth{Connector: id, Status: "not_checked"}
 	}
+	// Runs arrive newest first. Walk all of them so a connector is judged by a
+	// streak instead of by whichever single attempt happened to be last.
+	streakOpen := map[string]bool{}
+	for id := range healthByID {
+		streakOpen[id] = true
+	}
 	for _, run := range overview.Runs {
 		health, ok := healthByID[run.Connector]
-		if !ok || health.CheckedAt != 0 || run.Status == "running" {
+		if !ok || run.Status == "running" {
 			continue
 		}
-		health.CheckedAt = run.FinishedAt
-		if run.Status == "succeeded" {
-			health.Status = "ready"
-		} else {
-			health.Status, health.Error = collectionFailureStatus(run.Error), run.Error
+		health.RecentRuns++
+		failed := run.Status != "succeeded"
+		if failed {
+			health.RecentFailures++
+		}
+		if health.CheckedAt == 0 {
+			// The most recent attempt still supplies the timestamp and the message a
+			// human would act on.
+			health.CheckedAt = run.FinishedAt
+			if failed {
+				health.Error = run.Error
+			}
+		}
+		if streakOpen[run.Connector] {
+			if failed {
+				health.ConsecutiveFailures++
+			} else {
+				streakOpen[run.Connector] = false
+			}
 		}
 		healthByID[run.Connector] = health
+	}
+	for id, health := range healthByID {
+		if health.RecentRuns == 0 {
+			continue
+		}
+		healthByID[id] = collectionResolveHealth(health)
 	}
 	ids := make([]string, 0, len(healthByID))
 	for id := range healthByID {
@@ -306,6 +335,73 @@ func collectionHealth(overview store.CollectionOverview) []collectionConnectorHe
 	for _, id := range ids {
 		health = append(health, healthByID[id])
 	}
+	return health
+}
+
+// collectionHealthLine is the human line for one connector. A flaky connector
+// gets its rate rather than its latest error, because the rate is the thing that
+// tells you whether to care.
+func collectionHealthLine(health collectionConnectorHealth) string {
+	switch health.Status {
+	case "flaky":
+		return fmt.Sprintf("偶发失败 · 最近 %d 次里失败 %d 次，最近一次 %s，之后会自动重试",
+			health.RecentRuns, health.RecentFailures, collectionHealthWhen(health.CheckedAt))
+	case "ready":
+		if health.RecentFailures > 0 {
+			return fmt.Sprintf("ready · 最近 %d 次里失败过 %d 次，已恢复",
+				health.RecentRuns, health.RecentFailures)
+		}
+		return "ready"
+	case "not_checked":
+		return "not_checked"
+	default:
+		line := health.Status
+		if health.ConsecutiveFailures > 1 {
+			line += fmt.Sprintf(" · 连续失败 %d 次", health.ConsecutiveFailures)
+		}
+		if health.Error != "" {
+			line += " · " + health.Error
+		}
+		return line
+	}
+}
+
+func collectionHealthWhen(ts int64) string {
+	if ts <= 0 {
+		return "时间未知"
+	}
+	elapsed := time.Since(time.Unix(ts, 0))
+	if elapsed < time.Minute {
+		return "刚刚"
+	}
+	return formatShortDuration(int64(elapsed.Seconds())) + "前"
+}
+
+// collectionResolveHealth turns the counts into the one word a human reads.
+//
+// A classified failure — login expired, permission missing — is reported the
+// moment it happens: it will not fix itself, and waiting for a second sample only
+// delays telling the user by one interval. An unclassified failure with a recent
+// success behind it is reported as `flaky`, which says "nothing to do" without
+// pretending nothing happened.
+func collectionResolveHealth(health collectionConnectorHealth) collectionConnectorHealth {
+	if health.ConsecutiveFailures == 0 {
+		health.Status = "ready"
+		// Keep no message: the connector is working, and a stale error line beside
+		// "ready" is exactly what made one hiccup look like a breakage.
+		health.Error = ""
+		return health
+	}
+	classified := collectionFailureStatus(health.Error)
+	if classified != "error" {
+		health.Status = classified
+		return health
+	}
+	if health.ConsecutiveFailures == 1 && health.RecentRuns > 1 {
+		health.Status = "flaky"
+		return health
+	}
+	health.Status = "error"
 	return health
 }
 

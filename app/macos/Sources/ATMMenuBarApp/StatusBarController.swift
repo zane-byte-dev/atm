@@ -10,6 +10,8 @@ final class StatusBarController {
     private let panel: FloatingPanel
     private var desktopWindow: NSWindow?
     private var agentAttentionNotifier: ATMAgentAttentionNotifier?
+    private var approvalPresenter: ATMApprovalPresenter?
+    private var approvalArrivalCancellable: AnyCancellable?
     private var outsideClickMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
@@ -20,11 +22,24 @@ final class StatusBarController {
         bindAppearance()
         configurePanel()
         bindStore()
-        ATMNotificationManager.shared.start { [weak self] route in
-            Task { @MainActor in self?.handleNotificationRoute(route) }
-        }
+        ATMNotificationManager.shared.start(
+            onOpen: { [weak self] route in
+                Task { @MainActor in self?.handleNotificationRoute(route) }
+            },
+            onGuardDecision: { [weak self] approvalID, approve in
+                // A banner button is the decision itself. Routed to the store rather
+                // than opening anything, so approving from the banner never requires
+                // the window.
+                Task { @MainActor in self?.store.decideApproval(id: approvalID, approve: approve) }
+            }
+        )
         store.start()
         agentAttentionNotifier = ATMAgentAttentionNotifier(store: store)
+        approvalPresenter = ATMApprovalPresenter(store: store)
+        approvalArrivalCancellable = store.approvalArrivals
+            .sink { [weak self] arrivals in
+                self?.approvalPresenter?.present(arrived: arrivals.arrived, pending: arrivals.pending)
+            }
         if ProcessInfo.processInfo.environment["ATM_OPEN_PANEL"] == "1" {
             DispatchQueue.main.async { [weak self] in self?.openPanel() }
         }
@@ -203,6 +218,10 @@ final class StatusBarController {
                 return
             }
             openDesktop(todo: todo)
+        case .guardApproval:
+            // Clicking the banner opens the window that can actually hold the
+            // decision, not the transient menu-bar panel.
+            approvalPresenter?.openManually()
         case .collection:
             openDesktop(section: .collection)
         case .app:

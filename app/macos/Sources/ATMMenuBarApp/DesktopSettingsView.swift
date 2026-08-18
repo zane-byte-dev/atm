@@ -11,6 +11,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
     case shortcuts
     case voice
     case notify
+    case guardGate
     case todo
     case model
 
@@ -22,6 +23,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .shortcuts: return "快捷键"
         case .voice: return "语音"
         case .notify: return "通知"
+        case .guardGate: return "外发闸门"
         case .todo: return "Todo"
         case .model: return "模型"
         }
@@ -33,6 +35,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .shortcuts: return "keyboard"
         case .voice: return "waveform"
         case .notify: return "bell"
+        case .guardGate: return "hand.raised"
         case .todo: return "checklist"
         case .model: return "sparkles"
         }
@@ -44,6 +47,7 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .shortcuts: return "查看全部快捷键并改绑"
         case .voice: return "识别、文本与权限"
         case .notify: return "通知、Hook 与声音反馈"
+        case .guardGate: return "注册要拦的 CLI 与规则"
         case .todo: return "任务列表与默认行为"
         case .model: return "DeepSeek 文本服务"
         }
@@ -246,6 +250,8 @@ struct DesktopSettingsView: View {
                     voiceSettings
                 case .notify:
                     notifySettings
+                case .guardGate:
+                    DesktopGuardSettingsView(store: store)
                 case .todo:
                     todoSettings
                 case .model:

@@ -218,6 +218,22 @@ type GuardRule struct {
 	Target      GuardExtractor `json:"target,omitzero"`
 	Title       GuardExtractor `json:"title,omitzero"`
 	Body        GuardExtractor `json:"body,omitzero"`
+	// Enabled is a pointer so "absent" (on, the default) is distinct from an
+	// explicit false. Switching a built-in rule off is the only way to stop gating
+	// one action of a tool without giving up the gate on that tool entirely.
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// IsEnabled resolves the pointer. A rule with nothing said about it is on: the
+// built-ins exist because those actions are worth stopping.
+func (r GuardRule) IsEnabled() bool { return r.Enabled == nil || *r.Enabled }
+
+// HasMatcher reports whether the rule says which commands it is about. A rule
+// without one is a patch onto a built-in of the same id, not a rule in its own
+// right — that is how "switch this built-in off" is expressed without having to
+// restate its matcher and risk drifting from it.
+func (r GuardRule) HasMatcher() bool {
+	return len(r.Path) > 0 || strings.TrimSpace(r.ArgvPattern) != ""
 }
 
 type GuardToolConfig struct {
@@ -396,13 +412,193 @@ func applyEnvOverrides() {
 // other field (including ones this build does not know about). Used by
 // `atm config set` so GUI toggles have a stable write path.
 func SetConfigValue(key string, value any) error {
+	raw, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	raw[key] = value
+	return saveRawConfig(raw)
+}
+
+// SaveGuardToolBin records where a tool's gate was installed.
+//
+// Without this the gate loses track of its own installation: a tool that is not
+// on PATH — which is the normal case for one only ever invoked by absolute path —
+// could be gated successfully and then be invisible to `guard status` and
+// `atm doctor`, so the checks for a shim that was overwritten or walked around
+// would never run for it. That is precisely the tool most worth checking.
+//
+// Uninstall deliberately leaves the path recorded: "not enabled, at this path" is
+// a more useful answer than "not found", and it means a reinstall does not need
+// --bin again.
+func SaveGuardToolBin(tool, bin string) error {
+	raw, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	guardRaw, _ := raw["guard"].(map[string]any)
+	if guardRaw == nil {
+		guardRaw = map[string]any{}
+	}
+	toolsRaw, _ := guardRaw["tools"].(map[string]any)
+	if toolsRaw == nil {
+		toolsRaw = map[string]any{}
+	}
+	toolRaw, _ := toolsRaw[tool].(map[string]any)
+	if toolRaw == nil {
+		toolRaw = map[string]any{}
+	}
+	toolRaw["bin"] = bin
+	toolsRaw[tool] = toolRaw
+	guardRaw["tools"] = toolsRaw
+	raw["guard"] = guardRaw
+	if err := saveRawConfig(raw); err != nil {
+		return err
+	}
+	ReloadGuard()
+	return nil
+}
+
+// SaveGuardRule upserts one rule by id under a tool, creating the tool entry if
+// this is the first thing said about it. Registering a CLI is this plus an
+// install: the rule is what makes the gate mean anything, since a gated tool with
+// no rules passes every invocation straight through.
+func SaveGuardRule(tool string, rule GuardRule) error {
+	tool = strings.TrimSpace(tool)
+	rule.ID = strings.TrimSpace(rule.ID)
+	if tool == "" || rule.ID == "" {
+		return fmt.Errorf("tool and rule id are required")
+	}
+	encoded, err := json.Marshal(rule)
+	if err != nil {
+		return err
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal(encoded, &asMap); err != nil {
+		return err
+	}
+	return mutateGuardTool(tool, func(toolRaw map[string]any) {
+		rules, _ := toolRaw["rules"].([]any)
+		replaced := false
+		for index, existing := range rules {
+			if entry, ok := existing.(map[string]any); ok && entry["id"] == rule.ID {
+				rules[index] = asMap
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			rules = append(rules, asMap)
+		}
+		toolRaw["rules"] = rules
+	})
+}
+
+// RemoveGuardRule drops a user rule. A built-in of the same id comes back, which
+// is the honest outcome: removing an override is not the same as switching the
+// action off, and the latter is what `enabled: false` is for.
+func RemoveGuardRule(tool, ruleID string) error {
+	return mutateGuardTool(tool, func(toolRaw map[string]any) {
+		rules, _ := toolRaw["rules"].([]any)
+		kept := make([]any, 0, len(rules))
+		for _, existing := range rules {
+			if entry, ok := existing.(map[string]any); ok && entry["id"] == ruleID {
+				continue
+			}
+			kept = append(kept, existing)
+		}
+		toolRaw["rules"] = kept
+	})
+}
+
+// RemoveGuardTool forgets a tool entirely: its rules and its recorded install
+// path. It deliberately does not touch the filesystem — a shim has to be removed
+// by `atm guard uninstall`, and silently leaving one in place while forgetting
+// where it is would be the worst of both.
+func RemoveGuardTool(tool string) error {
+	raw, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	guardRaw, _ := raw["guard"].(map[string]any)
+	if guardRaw == nil {
+		return nil
+	}
+	toolsRaw, _ := guardRaw["tools"].(map[string]any)
+	if toolsRaw == nil {
+		return nil
+	}
+	delete(toolsRaw, tool)
+	guardRaw["tools"] = toolsRaw
+	raw["guard"] = guardRaw
+	if err := saveRawConfig(raw); err != nil {
+		return err
+	}
+	ReloadGuard()
+	return nil
+}
+
+// mutateGuardTool applies a change to one tool's entry, leaving every other
+// field in the file — including ones this build does not know about — untouched.
+func mutateGuardTool(tool string, apply func(toolRaw map[string]any)) error {
+	raw, err := loadRawConfig()
+	if err != nil {
+		return err
+	}
+	guardRaw, _ := raw["guard"].(map[string]any)
+	if guardRaw == nil {
+		guardRaw = map[string]any{}
+	}
+	toolsRaw, _ := guardRaw["tools"].(map[string]any)
+	if toolsRaw == nil {
+		toolsRaw = map[string]any{}
+	}
+	toolRaw, _ := toolsRaw[tool].(map[string]any)
+	if toolRaw == nil {
+		toolRaw = map[string]any{}
+	}
+	apply(toolRaw)
+	toolsRaw[tool] = toolRaw
+	guardRaw["tools"] = toolsRaw
+	raw["guard"] = guardRaw
+	if err := saveRawConfig(raw); err != nil {
+		return err
+	}
+	ReloadGuard()
+	return nil
+}
+
+// ReloadGuard re-reads the guard section from disk.
+//
+// Called after every guard write so a command that reports what it just changed
+// reports the new state, not the one it started the process with. Narrow on
+// purpose: a full LoadConfig would also re-apply env overrides and reset the
+// refine prompt, none of which a rule edit has any business touching.
+func ReloadGuard() {
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return
+	}
+	var cfg FileConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+	Guard = cfg.Guard
+}
+
+// loadRawConfig reads the file as an untyped map so a write preserves every other
+// field, including ones this build does not know about.
+func loadRawConfig() (map[string]any, error) {
 	raw := map[string]any{}
 	if data, err := os.ReadFile(ConfigPath); err == nil {
 		if err := json.Unmarshal(data, &raw); err != nil {
-			return fmt.Errorf("config file %s is not valid JSON: %w", ConfigPath, err)
+			return nil, fmt.Errorf("config file %s is not valid JSON: %w", ConfigPath, err)
 		}
 	}
-	raw[key] = value
+	return raw, nil
+}
+
+func saveRawConfig(raw map[string]any) error {
 	if err := os.MkdirAll(AtmDir, 0700); err != nil {
 		return err
 	}

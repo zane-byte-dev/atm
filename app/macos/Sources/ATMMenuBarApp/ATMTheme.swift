@@ -123,6 +123,10 @@ enum ATMTheme {
         switch status {
         case "ready": return success
         case "auth_required", "permission_required", "error": return warning
+        // Not warning-coloured: a connector that hiccups and recovers needs nothing
+        // from anyone, and colouring it like a problem is what taught people to stop
+        // reading these.
+        case "flaky": return secondary
         default: return secondary
         }
     }

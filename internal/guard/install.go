@@ -43,6 +43,11 @@ type ShimState struct {
 	RealPath string `json:"real_path,omitempty"`
 	// Installed means a shim of ours currently occupies BinPath.
 	Installed bool `json:"installed"`
+	// BinExists distinguishes "not gated" from "the path we were told about is gone"
+	// — usually a CLI that moved or was uninstalled. Without it a stale recorded
+	// path reads as a plain "not enabled", and the only way to find out is to press
+	// the button and read an error.
+	BinExists bool `json:"bin_exists"`
 	// Clobbered means something else occupies BinPath while a displaced binary is
 	// still sitting beside it — almost always a tool that upgraded itself over the
 	// shim. Reported separately from "not installed" because it is not the same
@@ -83,10 +88,11 @@ func Resolve(tool, override string) (string, error) {
 // Status inspects one tool without changing anything.
 func Status(tool, binPath string) (ShimState, error) {
 	state := ShimState{
-		Tool:     tool,
-		BinPath:  binPath,
-		RealPath: RealBinPath(binPath),
-		Rules:    len(Rules(tool)),
+		Tool:      tool,
+		BinPath:   binPath,
+		RealPath:  RealBinPath(binPath),
+		Rules:     len(Rules(tool)),
+		BinExists: fileExists(binPath),
 	}
 	realExists := fileExists(state.RealPath)
 	shim, err := isOurShim(binPath)

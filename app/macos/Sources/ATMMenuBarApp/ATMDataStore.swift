@@ -35,6 +35,9 @@ enum ATMCommandPolicy {
         // One schema-constrained model call, same isolation as collect.
         if arguments.starts(with: ["todo", "refine"]) { return 180 }
         if arguments.starts(with: ["config", "test-text-model"]) { return 45 }
+        // Approving runs the gated command. The default 15s would terminate a slow
+        // send partway and report failure for a message that in fact went out.
+        if arguments.starts(with: ["guard", "approve"]) { return 90 }
         return 15
     }
 }
@@ -941,6 +944,48 @@ enum ATMCommandBuilder {
     static func collectionMarkAllRead() -> [String] {
         ["collect", "item", "read", "--all", "--json"]
     }
+
+    static func guardToolStatus() -> [String] {
+        ["guard", "status", "--json"]
+    }
+
+    static func guardInstall(tool: String, bin: String) -> [String] {
+        var argv = ["guard", "install", tool]
+        if !bin.isEmpty { argv += ["--bin", bin] }
+        return argv + ["--json"]
+    }
+
+    static func guardUninstall(tool: String) -> [String] {
+        ["guard", "uninstall", tool, "--json"]
+    }
+
+    static func guardRuleList() -> [String] {
+        ["guard", "rule", "list", "--json"]
+    }
+
+    /// The rule itself travels on stdin, not argv: it is a nested object, and argv
+    /// is the one place a value would end up in logs and process listings.
+    static func guardRuleSet(tool: String) -> [String] {
+        ["guard", "rule", "set", tool, "--json"]
+    }
+
+    static func guardRuleRemove(tool: String, ruleID: String) -> [String] {
+        ["guard", "rule", "remove", tool, ruleID, "--json"]
+    }
+
+    static func guardToolForget(tool: String) -> [String] {
+        ["guard", "forget", tool, "--json"]
+    }
+
+    static func guardList(status: String = "pending", limit: Int = 50) -> [String] {
+        ["guard", "list", "--status", status, "--limit", String(limit), "--json"]
+    }
+
+    /// `--by panel` records which surface decided, so the ledger can tell a
+    /// decision made here from one made in a terminal.
+    static func guardDecision(id: String, approve: Bool) -> [String] {
+        ["guard", approve ? "approve" : "deny", id, "--by", "panel", "--json"]
+    }
 }
 
 struct ATMTodaySessionsState: Equatable {
@@ -1135,6 +1180,25 @@ final class ATMDataStore: ObservableObject {
     private var pendingSync = false
     private var isCollectionRefreshing = false
     private var collectionReadUpdatesInFlight: Set<String> = []
+    /// Outbound actions waiting on a decision. Published because the quick panel
+    /// and the menu bar both count them.
+    @Published var pendingApprovals: [ATMGuardApproval] = []
+    @Published var approvalErrorMessage: String?
+    /// Per-request rather than one global flag: with a shared flag, deciding one
+    /// request would disable the buttons on every other row.
+    private var approvalDecisionsInFlight: Set<String> = []
+    /// nil until the first load, so launching with a pile of pending requests does
+    /// not produce a pile of banners.
+    private var notifiedApprovalIDs: Set<String>?
+    @Published var guardTools: [ATMGuardTool] = []
+    @Published var guardRules: [ATMGuardRule] = []
+    @Published var guardConfigErrorMessage: String?
+    /// Which tool the last failed change was about, so the error can be shown next
+    /// to it. A message at the top of the pane, far from the button that was
+    /// pressed, reads as "nothing happened".
+    @Published var guardConfigErrorTool: String?
+    @Published var isUpdatingGuardConfig = false
+    private var guardRequestCancellable: AnyCancellable?
     private var isLiveStatusLoading = false
     private var lastCollectionAttemptAt: Date?
     private var notifiedCollectionRunIDs: Set<String>?
@@ -1221,11 +1285,13 @@ final class ATMDataStore: ObservableObject {
         refresh()
         refresh(sync: true)
         refreshCollection(runIfDue: true)
+        refreshApprovals()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
                 self.refresh(sync: ATMSyncPolicy.shouldSync(lastAttemptAt: self.lastSyncAttemptAt))
                 self.refreshCollection(runIfDue: true)
+                self.refreshApprovals()
             }
         }
     }
@@ -1272,6 +1338,8 @@ final class ATMDataStore: ObservableObject {
                 guard event.event.mayChangeSnapshot else { return }
                 self?.scheduleAgentEventRefresh()
             }
+        guardRequestCancellable = agentEvents.didReceiveGuardRequest
+            .sink { [weak self] request in self?.applyGuardRequest(request) }
         agentEvents.start()
         // Not just for the settings pane: which agents have a `Stop` hook decides
         // whether a session already in flight at launch is allowed to have its
@@ -1697,18 +1765,22 @@ final class ATMDataStore: ObservableObject {
                 }
                 if let status {
                     collectionOverview = status
-                    collectionErrorMessage = status.latestRun?.status == "failed"
-                        ? status.latestRun?.error
-                        : nil
+                    collectionErrorMessage = ATMCollectionWorkspaceNotice.banner(for: status)
                 }
             } catch {
-                collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 240)
-                // Refresh status once more after a failed run so its durable
-                // audit row is still visible in the Collection workspace.
+                // Deliberately not bannering the exit code. `collect run --due` fails
+                // if any one source failed, and the latest run is the latest across
+                // *all* sources — so one source's hiccup used to raise a card over the
+                // whole workspace. The refreshed health below decides instead.
                 if let data = try? await runner.run(["collect", "status", "--limit", "200", "--json"]),
                    let recovered = try? JSONDecoder().decode(ATMCollectionOverview.self, from: data) {
                     collectionOverview = recovered
                     notifyCollectionRuns(recovered.runs)
+                    collectionErrorMessage = ATMCollectionWorkspaceNotice.banner(for: recovered)
+                } else {
+                    // Status itself is unreadable, which is a real problem and not a
+                    // connector's flakiness.
+                    collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 240)
                 }
             }
         }
@@ -1959,6 +2031,196 @@ final class ATMDataStore: ObservableObject {
                 collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
             }
         }
+    }
+
+    /// Reads the pending list and reconciles banners against it.
+    ///
+    /// The socket push is what makes a banner appear promptly; this is what makes
+    /// the list correct — including retiring a banner for a request that was
+    /// decided in a terminal or quietly expired, which nothing pushes.
+    func refreshApprovals() {
+        Task {
+            do {
+                let runner = try ATMCommandRunner()
+                let data = try await runner.run(ATMCommandBuilder.guardList())
+                let approvals = try JSONDecoder().decode([ATMGuardApproval].self, from: data)
+                pendingApprovals = approvals
+                approvalErrorMessage = nil
+                reconcileApprovalBanners(approvals)
+            } catch is CancellationError {
+                return
+            } catch {
+                // A gate that was never installed has no table to read, and that is
+                // not an error worth showing on every tick.
+                approvalErrorMessage = nil
+            }
+        }
+    }
+
+    private func reconcileApprovalBanners(_ approvals: [ATMGuardApproval]) {
+        let (diff, notified) = ATMGuardApprovalNotifyDiff.next(
+            notified: notifiedApprovalIDs, approvals: approvals)
+        notifiedApprovalIDs = notified
+        for approval in diff.post {
+            ATMNotificationManager.shared.sendGuardApproval(
+                ATMGuardApprovalPayload.make(approval: approval), approvalID: approval.id)
+        }
+        for id in diff.withdraw {
+            ATMNotificationManager.shared.withdrawGuardApproval(approvalID: id)
+        }
+        // The window is the decision surface; the banner is a record that survives
+        // dismissing it. Both are published so whoever presents the window can react
+        // without polling the store itself.
+        approvalArrivals.send((arrived: diff.post, pending: approvals.filter(\.isPending)))
+    }
+
+    /// Newly arrived and currently pending requests, for the presenter that owns the
+    /// approval window.
+    let approvalArrivals = PassthroughSubject<
+        (arrived: [ATMGuardApproval], pending: [ATMGuardApproval]), Never
+    >()
+
+    /// Raises a banner the moment the CLI reports a new request, instead of waiting
+    /// out the poll. The list is refreshed straight after so the panel agrees.
+    func applyGuardRequest(_ request: ATMGuardRequest) {
+        if notifiedApprovalIDs?.contains(request.id) != true {
+            ATMNotificationManager.shared.sendGuardApproval(
+                ATMGuardApprovalPayload.make(request: request), approvalID: request.id)
+            notifiedApprovalIDs = (notifiedApprovalIDs ?? []).union([request.id])
+        }
+        // The refresh that follows carries the full row, which is what the window
+        // renders; the push only tells us to look now instead of at the next tick.
+        refreshApprovals()
+    }
+
+    /// Approve runs the command for real. Deny records the refusal, which is also
+    /// what answers a retrying agent immediately instead of re-raising the request.
+    func decideApproval(_ approval: ATMGuardApproval, approve: Bool) {
+        decideApproval(id: approval.id, approve: approve)
+    }
+
+    func decideApproval(id: String, approve: Bool) {
+        guard !approvalDecisionsInFlight.contains(id) else { return }
+        approvalDecisionsInFlight.insert(id)
+        // Pull the banner immediately: its buttons are now answered, and leaving a
+        // live one up invites a second press that would fail confusingly.
+        ATMNotificationManager.shared.withdrawGuardApproval(approvalID: id)
+        Task {
+            defer { approvalDecisionsInFlight.remove(id) }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(ATMCommandBuilder.guardDecision(id: id, approve: approve))
+                approvalErrorMessage = nil
+            } catch {
+                // "Approved but the send failed" has to be visible: the CLI exits
+                // non-zero and says which, and swallowing that would report success
+                // for a message that never went out.
+                approvalErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 240)
+            }
+            refreshApprovals()
+        }
+    }
+
+    /// Reads which CLIs are gated and what rules they carry. Both come from the
+    /// CLI, so the settings pane and `atm guard status` can never disagree.
+    func loadGuardConfiguration() {
+        Task {
+            do {
+                let runner = try ATMCommandRunner()
+                async let toolsData = runner.run(ATMCommandBuilder.guardToolStatus())
+                async let rulesData = runner.run(ATMCommandBuilder.guardRuleList())
+                let decoder = JSONDecoder()
+                guardTools = try decoder.decode([ATMGuardTool].self, from: try await toolsData)
+                guardRules = try decoder.decode([ATMGuardRule].self, from: try await rulesData)
+                guardConfigErrorMessage = nil
+            } catch is CancellationError {
+                return
+            } catch {
+                guardConfigErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 240)
+            }
+        }
+    }
+
+    /// Installing moves the CLI's own binary aside, so it is a real change to the
+    /// machine and its outcome is always re-read rather than assumed.
+    func installGuardTool(_ tool: String, bin: String) {
+        runGuardConfigChange(ATMCommandBuilder.guardInstall(tool: tool, bin: bin), tool: tool)
+    }
+
+    func uninstallGuardTool(_ tool: String) {
+        runGuardConfigChange(ATMCommandBuilder.guardUninstall(tool: tool), tool: tool)
+    }
+
+    func saveGuardRule(_ draft: ATMGuardRuleDraft) {
+        do {
+            let tool = draft.tool.trimmingCharacters(in: .whitespaces)
+            runGuardConfigChange(
+                ATMCommandBuilder.guardRuleSet(tool: tool),
+                tool: tool,
+                standardInput: try draft.jsonPayload())
+        } catch {
+            guardConfigErrorMessage = error.localizedDescription
+        }
+    }
+
+    /// Switching a rule off sends only its id and the flag, so a built-in's matcher
+    /// is never restated — a restated copy could drift from the real one and quietly
+    /// stop gating.
+    func setGuardRuleEnabled(_ rule: ATMGuardRule, enabled: Bool) {
+        do {
+            runGuardConfigChange(
+                ATMCommandBuilder.guardRuleSet(tool: rule.tool),
+                tool: rule.tool,
+                standardInput: try ATMGuardRuleDraft.togglePayload(ruleID: rule.ruleID, enabled: enabled))
+        } catch {
+            guardConfigErrorMessage = error.localizedDescription
+        }
+    }
+
+    func removeGuardRule(_ rule: ATMGuardRule) {
+        runGuardConfigChange(
+            ATMCommandBuilder.guardRuleRemove(tool: rule.tool, ruleID: rule.ruleID), tool: rule.tool)
+    }
+
+    func forgetGuardTool(_ tool: String) {
+        runGuardConfigChange(ATMCommandBuilder.guardToolForget(tool: tool), tool: tool)
+    }
+
+    /// Which tool is mid-change, so its own card can show that something is
+    /// happening instead of a spinner elsewhere on the page.
+    @Published var guardToolInFlight: String?
+
+    private func runGuardConfigChange(
+        _ arguments: [String], tool: String? = nil, standardInput: Data? = nil
+    ) {
+        guard !isUpdatingGuardConfig else { return }
+        isUpdatingGuardConfig = true
+        guardToolInFlight = tool
+        guardConfigErrorMessage = nil
+        guardConfigErrorTool = nil
+        Task {
+            defer {
+                isUpdatingGuardConfig = false
+                guardToolInFlight = nil
+            }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(arguments, standardInput: standardInput)
+                guardConfigErrorMessage = nil
+                guardConfigErrorTool = nil
+            } catch {
+                guardConfigErrorTool = tool
+                // The CLI refuses several things on purpose — deleting a built-in,
+                // forgetting a tool whose shim is still installed — and its wording
+                // says what to do instead, so it is surfaced rather than summarised.
+                guardConfigErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 400)
+            }
+            loadGuardConfiguration()
+        }
+    }
+
+    func isDecidingApproval(_ id: String) -> Bool {
+        approvalDecisionsInFlight.contains(id)
     }
 
     func markAllCollectionItemsRead() {

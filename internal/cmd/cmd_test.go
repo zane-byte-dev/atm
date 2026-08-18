@@ -39,13 +39,23 @@ func captureStdout(t *testing.T, fn func()) string {
 
 func withTempAtmDir(t *testing.T) {
 	t.Helper()
-	oldDir, oldDB := config.AtmDir, config.AtmDB
+	oldDir, oldDB, oldConfig := config.AtmDir, config.AtmDB, config.ConfigPath
+	oldGuard := config.Guard
 	dir := t.TempDir()
 	config.AtmDir = dir
 	config.AtmDB = filepath.Join(dir, "atm.db")
+	// ConfigPath too, and not only for tidiness: a command that writes config would
+	// otherwise write the *real* one. `atm guard install` records where it put a
+	// shim, so without this a test installing a fake tool in a temp directory
+	// leaves the user's own config pointing at a path that ceases to exist when the
+	// test does — and the gate then reports itself off for a tool it is guarding.
+	config.ConfigPath = filepath.Join(dir, "config.json")
+	config.Guard = config.GuardConfig{}
 	t.Cleanup(func() {
 		config.AtmDir = oldDir
 		config.AtmDB = oldDB
+		config.ConfigPath = oldConfig
+		config.Guard = oldGuard
 	})
 }
 
@@ -60,13 +70,14 @@ func seedTodos(items ...store.Todo) error {
 
 func withIsolatedCommandEnv(t *testing.T) {
 	t.Helper()
-	oldDir, oldDB := config.AtmDir, config.AtmDB
+	oldDir, oldDB, oldConfigPath := config.AtmDir, config.AtmDB, config.ConfigPath
 	oldClaude, oldCodex, oldCopilot, oldPi := config.ClaudeProjects, config.CodexSessions, config.CopilotWorkspaces, config.PiSessions
 	oldQoder, oldQoderCLI, oldQoderWork := config.QoderDB, config.QoderCLIProjects, config.QoderWorkDB
 	oldGrok := config.GrokSessions
 	dir := t.TempDir()
 	config.AtmDir = filepath.Join(dir, "atm")
 	config.AtmDB = filepath.Join(config.AtmDir, "atm.db")
+	config.ConfigPath = filepath.Join(config.AtmDir, "config.json")
 	config.ClaudeProjects = filepath.Join(dir, "claude-projects")
 	config.CodexSessions = filepath.Join(dir, "codex-sessions")
 	config.CopilotWorkspaces = filepath.Join(dir, "copilot-workspaces")
@@ -83,6 +94,7 @@ func withIsolatedCommandEnv(t *testing.T) {
 	t.Cleanup(func() {
 		config.AtmDir = oldDir
 		config.AtmDB = oldDB
+		config.ConfigPath = oldConfigPath
 		config.ClaudeProjects = oldClaude
 		config.CodexSessions = oldCodex
 		config.CopilotWorkspaces = oldCopilot

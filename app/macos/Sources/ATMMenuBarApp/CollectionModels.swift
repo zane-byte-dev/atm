@@ -339,6 +339,24 @@ enum ATMCollectionRunCommand {
 /// 添加/删除来源、修正、撤销、生成知识文档 have no source to hang on and would
 /// otherwise fail silently in the very workspace that triggered them.
 enum ATMCollectionWorkspaceNotice {
+    /// What, if anything, deserves a banner over the Collection workspace.
+    ///
+    /// Only a connector that has stopped recovering, or one whose failure will not
+    /// fix itself (login expired, permission missing). A single business error
+    /// between successes is noise: it is already being retried, and a card that has
+    /// to be dismissed by hand outlives the condition it describes — which is how
+    /// one hiccup in twenty-three runs came to look like a broken connector.
+    static func banner(for overview: ATMCollectionOverview) -> String? {
+        let broken = overview.connectorHealth.filter(\.needsAttention)
+        guard !broken.isEmpty else { return nil }
+        return broken
+            .map { health -> String in
+                let detail = health.error?.isEmpty == false ? "：\(health.error!)" : ""
+                return "\(health.connector) \(health.statusLabel)\(detail)"
+            }
+            .joined(separator: "\n")
+    }
+
     static func message(shared: String?, sourceErrors: [String: String]) -> String? {
         guard let shared = shared?.trimmingCharacters(in: .whitespacesAndNewlines),
               !shared.isEmpty,
@@ -376,10 +394,43 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
     let status: String
     let error: String?
     let checkedAt: Int64?
+    /// The unbroken run of failures ending at the latest attempt. This, not the
+    /// latest attempt alone, is what says whether a connector is broken: these APIs
+    /// return the occasional business error, and one between successes fixes itself
+    /// at the next interval.
+    var consecutiveFailures: Int? = nil
+    var recentRuns: Int? = nil
+    var recentFailures: Int? = nil
 
     enum CodingKeys: String, CodingKey {
         case connector, status, error
         case checkedAt = "checked_at"
+        case consecutiveFailures = "consecutive_failures"
+        case recentRuns = "recent_runs"
+        case recentFailures = "recent_failures"
+    }
+
+    /// Whether this needs a person to do something. A `flaky` connector does not:
+    /// it is already retrying, and interrupting for it is what taught people to
+    /// dismiss the banner without reading it.
+    var needsAttention: Bool {
+        switch status {
+        case "error", "auth_required", "permission_required": return true
+        default: return false
+        }
+    }
+
+    /// A quiet note for a connector that hiccupped and recovered, or nil when there
+    /// is nothing worth saying.
+    var transientNote: String? {
+        guard status == "flaky" || (status == "ready" && (recentFailures ?? 0) > 0) else { return nil }
+        let total = recentRuns ?? 0
+        let failures = recentFailures ?? 0
+        guard total > 0, failures > 0 else { return nil }
+        if status == "flaky" {
+            return "最近 \(total) 次里失败 \(failures) 次，会自动重试"
+        }
+        return "最近 \(total) 次里失败过 \(failures) 次，已恢复"
     }
 
     /// 状态词。设置页和「添加来源」都读这一份，同一个连接器不会在两处叫两个名字。
@@ -389,6 +440,7 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
         case "auth_required": return "需要登录"
         case "permission_required": return "缺少消息权限/权益"
         case "error": return "连接异常"
+        case "flaky": return "偶发失败"
         default: return "尚未检测"
         }
     }
@@ -399,6 +451,8 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
         case "auth_required": return "person.crop.circle.badge.exclamationmark"
         case "permission_required": return "lock.trianglebadge.exclamationmark"
         case "error": return "exclamationmark.triangle.fill"
+        // Not a warning triangle: nothing is wrong that anyone has to act on.
+        case "flaky": return "arrow.triangle.2.circlepath"
         default: return "questionmark.circle"
         }
     }

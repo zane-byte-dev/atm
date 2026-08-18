@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,7 @@ func withTempConfigHome(t *testing.T) string {
 	oldCollectionConnectors := CollectionConnectors
 	oldQuotaProviders := QuotaProviders
 	oldTodoRefineOnAdd := TodoRefineOnAdd
+	oldGuard := Guard
 
 	home := t.TempDir()
 	Home = home
@@ -57,6 +59,7 @@ func withTempConfigHome(t *testing.T) string {
 	CollectionConnectors = nil
 	QuotaProviders = nil
 	TodoRefineOnAdd = true
+	Guard = GuardConfig{}
 
 	t.Cleanup(func() {
 		Home = oldHome
@@ -78,6 +81,7 @@ func withTempConfigHome(t *testing.T) string {
 		CollectionConnectors = oldCollectionConnectors
 		QuotaProviders = oldQuotaProviders
 		TodoRefineOnAdd = oldTodoRefineOnAdd
+		Guard = oldGuard
 	})
 	return home
 }
@@ -182,6 +186,65 @@ func TestIsCollectionModelWorkdirMatchesEncodedPaths(t *testing.T) {
 	}
 	if IsCollectionModelWorkdir("/Users/mj/mox/atm") {
 		t.Fatal("a real project must not look like a scratch directory")
+	}
+}
+
+// A tool that is not on PATH is only findable again through this record. Without
+// it, `atm guard install dws --bin ...` would succeed and then be invisible to
+// status and doctor — losing the checks for a shim that was overwritten or is
+// being bypassed, for exactly the tool most worth checking.
+func TestSaveGuardToolBinRemembersWhereAGateWentAndKeepsEverythingElse(t *testing.T) {
+	withTempConfigHome(t)
+	existing := `{"timezone":"UTC","future_setting":{"nested":true},` +
+		`"guard":{"wait_seconds":30,"tools":{"a1":{"rules":[{"id":"keep-me","path":["repo"]}]}}}}`
+	if err := os.MkdirAll(AtmDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ConfigPath, []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := SaveGuardToolBin("dws", "/Users/x/.qoderwork/bin/dws"); err != nil {
+		t.Fatalf("SaveGuardToolBin: %v", err)
+	}
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded FileConfig
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatalf("result is not valid config JSON: %v\n%s", err, data)
+	}
+	if got := reloaded.Guard.Tools["dws"].Bin; got != "/Users/x/.qoderwork/bin/dws" {
+		t.Fatalf("dws bin = %q", got)
+	}
+	// Another tool's rules, the guard's own tuning, and a field this build does not
+	// know about must all survive.
+	if len(reloaded.Guard.Tools["a1"].Rules) != 1 ||
+		reloaded.Guard.Tools["a1"].Rules[0].ID != "keep-me" {
+		t.Fatalf("a1 rules lost: %+v", reloaded.Guard.Tools["a1"])
+	}
+	if reloaded.Guard.WaitSeconds != 30 {
+		t.Fatalf("wait_seconds = %d, want 30", reloaded.Guard.WaitSeconds)
+	}
+	if !strings.Contains(string(data), `"future_setting"`) {
+		t.Fatalf("unknown field dropped:\n%s", data)
+	}
+
+	// Recording a second tool must not displace the first.
+	if err := SaveGuardToolBin("a1", "/Users/x/.local/bin/a1"); err != nil {
+		t.Fatalf("second save: %v", err)
+	}
+	data, _ = os.ReadFile(ConfigPath)
+	reloaded = FileConfig{}
+	if err := json.Unmarshal(data, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Guard.Tools["dws"].Bin == "" || reloaded.Guard.Tools["a1"].Bin == "" {
+		t.Fatalf("tools clobbered each other: %+v", reloaded.Guard.Tools)
+	}
+	if len(reloaded.Guard.Tools["a1"].Rules) != 1 {
+		t.Fatalf("recording a1's bin dropped its rules: %+v", reloaded.Guard.Tools["a1"])
 	}
 }
 

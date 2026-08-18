@@ -65,7 +65,9 @@ func init() {
 	guardStatusCmd.Flags().StringVar(&guardInstallBin, "bin", "",
 		"path to check (default: whatever PATH resolves the tool to)")
 
+	guardRuleCmd.AddCommand(guardRuleListCmd, guardRuleSetCmd, guardRuleRemoveCmd)
 	guardCmd.AddCommand(guardExecCmd, guardListCmd, guardShowCmd, guardApproveCmd,
-		guardDenyCmd, guardInstallCmd, guardUninstallCmd, guardStatusCmd)
+		guardDenyCmd, guardInstallCmd, guardUninstallCmd, guardStatusCmd,
+		guardRuleCmd, guardToolRemoveCmd)
 	rootCmd.AddCommand(guardCmd)
 }

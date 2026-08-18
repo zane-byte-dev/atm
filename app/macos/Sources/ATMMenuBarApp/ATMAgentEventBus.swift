@@ -39,14 +39,26 @@ final class ATMAgentEventBus: ObservableObject {
     /// rather than waiting out the poll interval.
     let didApplyEvent = PassthroughSubject<ATMAgentEvent, Never>()
 
+    /// Approval requests, passed straight through without touching any of the
+    /// session state above. They arrive on the same socket only because the socket
+    /// already exists and is already private to this user; an approval request is
+    /// not about a session and must not mark one.
+    let didReceiveGuardRequest = PassthroughSubject<ATMGuardRequest, Never>()
+
     init() {}
 
     func start(path: String = ATMAgentEventListener.defaultSocketPath()) {
         guard listener == nil else { return }
-        let listener = ATMAgentEventListener(path: path) { [weak self] event in
-            // Hop to the main actor: the listener delivers on its own queue.
-            Task { @MainActor in self?.apply(event, now: Date()) }
-        }
+        let listener = ATMAgentEventListener(
+            path: path,
+            onEvent: { [weak self] event in
+                // Hop to the main actor: the listener delivers on its own queue.
+                Task { @MainActor in self?.apply(event, now: Date()) }
+            },
+            onGuardRequest: { [weak self] request in
+                Task { @MainActor in self?.didReceiveGuardRequest.send(request) }
+            }
+        )
         do {
             try listener.start()
             self.listener = listener

@@ -260,6 +260,20 @@ atm guard status --json               # 哪些工具真的被拦住了
 `approve` / `deny` 是人的动作。**批准会真的把命令执行掉**（发出真实消息），所以除非用户明确要求你
 代他批准，不要自己调；`running` 的请求任何情况下都不要重跑——那意味着「不知道发出去没有」。
 
+注册和管理规则（用户要你帮忙配的时候）：
+
+```bash
+atm guard status --json               # 哪些 CLI 真的拦住了；shadowed/clobbered 分开报
+atm guard rule list --json            # 有哪些规则、哪些关着、哪些是内置
+echo '{"id":"doc-write","path":["doc","write"]}' | atm guard rule set <tool>
+echo '{"id":"chat-send","enabled":false}' | atm guard rule set dws   # 关掉内置规则
+```
+
+内置规则**只能关不能删**，关的写法就是上面这种只给 id 加 `enabled: false`——**不要重述它的
+`path`/`argv_pattern`**，重述的副本会跟真的那条漂移，然后某天悄悄不拦了。装闸门用
+`atm guard install <tool> [--bin <绝对路径>]`，装完**一定要跑一次 `atm guard status`**：同名 CLI
+在机器上常有两份，装错那份等于没装却显示成功。
+
 ## Artifact、统计与健康检查
 
 ```bash

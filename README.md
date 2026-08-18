@@ -128,7 +128,18 @@ atm guard show <id>                      # 一条请求的全文与执行结果
 atm guard approve <id>                   # 批准，并由 ATM 执行这条命令
 atm guard deny <id> --reason "内容不对"    # 拒绝
 atm guard uninstall dws                  # 撤掉，把工具的二进制放回原位
+
+atm guard rule list                      # 有哪些规则、哪些关着、哪些是内置的
+echo '{"id":"doc-write","label":"写钉钉文档","path":["doc","write"]}' \
+  | atm guard rule set dws               # 注册一条（规则走 stdin，因为它是嵌套对象）
+echo '{"id":"mr-remind","enabled":false}' | atm guard rule set a1   # 关掉一条内置规则
+atm guard rule remove dws doc-write      # 删掉自己加的
+atm guard forget mytool                  # 忘掉一个注册过的 CLI（先 uninstall）
 ```
+
+也可以在 App 的**「设置 → 外发闸门」**里做同样的事：每个 CLI 一张卡片，显示是否真的拦住了
+（被覆盖 / 被 PATH 绕过会明确标出来）、路径可以填或用文件选择器挑、规则有开关和删除，
+底下有个表单加新规则。不在 PATH 上的 CLI（比如 `dws`）只能在这里或用 `--bin` 给出绝对路径。
 
 拦的是「会被别人看到」的动作——发钉钉消息、催 MR 评审人、推 ATA 群——读操作完全不碰。装闸门之前
 先 `atm backup`，装完跑一次 `atm guard status`：**PATH 上有同名两份时装错那份等于没装**，`status`
@@ -173,6 +184,11 @@ atm agent hook uninstall          # 原样摘掉
 Qoder 装完要重启才生效；Pi 需要手动复制
 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 到 `~/.pi/agent/extensions/`。
 也可以在 App 的「设置 → 通知」里一键安装。
+
+[外发动作闸门](#命令)的通知是另一类：它**自带「批准并发送 / 拒绝」两个按钮**，可以直接在通知上做决定，
+不用打开窗口；快速面板顶部也会列出待授权的那几条，带正文和同样两个按钮。请求被决定或过期后通知自动撤回。
+这类通知不依赖 hook（闸门自己就是那条命令），但依赖系统通知权限——如果你之前拒过 ATM 的通知权限，
+就只剩快速面板这条路。
 
 ## Agent 集成
 

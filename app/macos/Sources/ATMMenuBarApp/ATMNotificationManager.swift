@@ -25,11 +25,17 @@ enum ATMAgentAttentionNotifyPreferences {
 enum ATMNotificationRoute: Equatable {
     case todo(String)
     case agentSession(String)
+    case guardApproval(String)
     case collection
     case app
 
     /// Rebuilds the route from a delivered notification's `userInfo`.
     static func from(userInfo: [AnyHashable: Any]) -> ATMNotificationRoute {
+        // Checked first: an approval banner is the only one that must not open the
+        // agent's terminal, and it is the only one whose decision surface is ATM.
+        if let approvalID = userInfo["approval_id"] as? String, !approvalID.isEmpty {
+            return .guardApproval(approvalID)
+        }
         if let sessionID = userInfo["session_id"] as? String, !sessionID.isEmpty {
             return .agentSession(sessionID)
         }
@@ -207,18 +213,49 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         ? UNUserNotificationCenter.current()
         : nil
     private var onOpen: ((ATMNotificationRoute) -> Void)?
+    private var onGuardDecision: ((String, Bool) -> Void)?
 
     private override init() {
         super.init()
     }
 
-    func start(onOpen: @escaping (ATMNotificationRoute) -> Void) {
+    func start(
+        onOpen: @escaping (ATMNotificationRoute) -> Void,
+        onGuardDecision: @escaping (String, Bool) -> Void = { _, _ in }
+    ) {
         self.onOpen = onOpen
+        self.onGuardDecision = onGuardDecision
         guard let center else {
             NSLog("ATMNotificationManager: 无 app bundle，通知功能已禁用（swift run 开发模式）")
             return
         }
         center.delegate = self
+        // Until this existed the app set categoryIdentifier on every notification
+        // without registering a single category, so those identifiers did nothing.
+        // The approval banner is the first one that needs buttons, and buttons only
+        // appear for a category the system knows about.
+        center.setNotificationCategories([
+            UNNotificationCategory(
+                identifier: ATMGuardApprovalActions.category,
+                actions: [
+                    UNNotificationAction(
+                        identifier: ATMGuardApprovalActions.approve,
+                        title: "批准并发送",
+                        // Foreground so the app is up to report a failure: approving
+                        // runs a real command, and "approved but it errored" has to
+                        // land somewhere the user will see.
+                        options: [.foreground]
+                    ),
+                    UNNotificationAction(
+                        identifier: ATMGuardApprovalActions.deny,
+                        title: "拒绝",
+                        options: []
+                    ),
+                ],
+                intentIdentifiers: [],
+                options: []
+            )
+        ])
         center.getNotificationSettings { [weak self] settings in
             guard settings.authorizationStatus == .notDetermined else { return }
             self?.center?.requestAuthorization(options: [.alert, .sound]) { _, _ in }
@@ -291,6 +328,45 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
     }
 
+    /// Stable per request, so a second look at the same request replaces its banner
+    /// instead of stacking, and so it can be pulled back once decided.
+    static func guardApprovalIdentifier(_ approvalID: String) -> String {
+        "atm-guard-approval-\(approvalID)"
+    }
+
+    func sendGuardApproval(_ payload: ATMGuardApprovalPayload, approvalID: String) {
+        guard let center else { return }
+        let content = UNMutableNotificationContent()
+        content.title = payload.title
+        content.subtitle = payload.subtitle
+        content.body = payload.body
+        // Silent: the approval *window* is the surface that asks, and it plays the
+        // sound. Letting both chime would be two sounds for one decision — the same
+        // mistake the agent-attention banner avoids just above. This banner's job is
+        // to be the record that survives dismissing the window.
+        content.sound = nil
+        content.categoryIdentifier = ATMGuardApprovalActions.category
+        content.userInfo = ["approval_id": approvalID, "event": "guard_approval"]
+
+        center.add(
+            UNNotificationRequest(
+                identifier: Self.guardApprovalIdentifier(approvalID),
+                content: content,
+                trigger: nil
+            )
+        )
+    }
+
+    /// Pulls a banner back once the request is no longer pending — decided here,
+    /// decided in a terminal, or expired. A stale 待授权 with live buttons is worse
+    /// than never having sent it, because pressing one would now fail confusingly.
+    func withdrawGuardApproval(approvalID: String) {
+        guard let center else { return }
+        let identifiers = [Self.guardApprovalIdentifier(approvalID)]
+        center.removeDeliveredNotifications(withIdentifiers: identifiers)
+        center.removePendingNotificationRequests(withIdentifiers: identifiers)
+    }
+
     func sendCollectionSummary(_ runs: [ATMCollectionRun]) {
         guard let center, let payload = ATMCollectionNotificationPayload.make(runs: runs) else { return }
         let content = UNMutableNotificationContent()
@@ -322,7 +398,21 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let route = ATMNotificationRoute.from(userInfo: response.notification.request.content.userInfo)
+        let userInfo = response.notification.request.content.userInfo
+        // A button press is a decision, not a request to open something. Until now
+        // actionIdentifier was discarded outright, so a tapped button behaved
+        // exactly like a tapped banner.
+        if let approvalID = userInfo["approval_id"] as? String, !approvalID.isEmpty,
+           response.actionIdentifier == ATMGuardApprovalActions.approve
+               || response.actionIdentifier == ATMGuardApprovalActions.deny {
+            let approve = response.actionIdentifier == ATMGuardApprovalActions.approve
+            DispatchQueue.main.async { [weak self] in
+                self?.onGuardDecision?(approvalID, approve)
+                completionHandler()
+            }
+            return
+        }
+        let route = ATMNotificationRoute.from(userInfo: userInfo)
         DispatchQueue.main.async { [weak self] in
             self?.onOpen?(route)
             completionHandler()

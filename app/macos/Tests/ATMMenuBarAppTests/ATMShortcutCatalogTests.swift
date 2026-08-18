@@ -5,7 +5,7 @@ final class ATMShortcutCatalogTests: XCTestCase {
     func testSettingsExposeDedicatedShortcutTab() {
         XCTAssertEqual(
             ATMSettingsTab.allCases,
-            [.general, .shortcuts, .voice, .notify, .todo, .model]
+            [.general, .shortcuts, .voice, .notify, .guardGate, .todo, .model]
         )
         XCTAssertEqual(ATMSettingsTab.shortcuts.title, "快捷键")
         XCTAssertEqual(ATMSettingsTab.shortcuts.systemImage, "keyboard")
@@ -13,6 +13,8 @@ final class ATMShortcutCatalogTests: XCTestCase {
         XCTAssertEqual(ATMSettingsTab.notify.systemImage, "bell")
         XCTAssertEqual(ATMSettingsTab.model.title, "模型")
         XCTAssertEqual(ATMSettingsTab.model.systemImage, "sparkles")
+        XCTAssertEqual(ATMSettingsTab.guardGate.title, "外发闸门")
+        XCTAssertEqual(ATMSettingsTab.guardGate.systemImage, "hand.raised")
     }
 
     func testCatalogListsEveryApplicationShortcutWithoutDuplicateIDs() throws {

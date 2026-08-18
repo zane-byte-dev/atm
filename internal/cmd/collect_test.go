@@ -347,3 +347,129 @@ func TestCollectionFailureStatusDistinguishesLoginAndPermission(t *testing.T) {
 		t.Fatalf("generic status = %q", got)
 	}
 }
+
+// run builds one audit row. Runs are consumed newest-first, which is how the
+// overview supplies them.
+func healthRun(connector, status, errorText string, finishedAt int64) store.CollectionRun {
+	return store.CollectionRun{
+		Connector: connector, Status: status, Error: errorText, FinishedAt: finishedAt,
+	}
+}
+
+// The whole point of judging by a streak: these connectors return the occasional
+// business error, and one of those between successes is noise that fixes itself at
+// the next interval. Reporting it as `error` made a working connector look broken,
+// and the workspace showed a card you had to dismiss by hand.
+func TestOneFailureBetweenSuccessesIsFlakyNotBroken(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "failed", "business error: success=false", 300),
+		healthRun("dingtalk", "succeeded", "", 200),
+		healthRun("dingtalk", "succeeded", "", 100),
+	}}
+	health := collectionHealth(overview)
+	if len(health) != 1 {
+		t.Fatalf("health = %+v", health)
+	}
+	got := health[0]
+	if got.Status != "flaky" {
+		t.Fatalf("status = %q, want flaky", got.Status)
+	}
+	if got.ConsecutiveFailures != 1 || got.RecentRuns != 3 || got.RecentFailures != 1 {
+		t.Fatalf("counts = %+v", got)
+	}
+	// The rate is what tells a human whether to care; the latest message alone does not.
+	line := collectionHealthLine(got)
+	if !strings.Contains(line, "最近 3 次里失败 1 次") {
+		t.Fatalf("line = %q", line)
+	}
+}
+
+func TestASucceedingConnectorIsReadyAndCarriesNoStaleError(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "succeeded", "", 300),
+		healthRun("dingtalk", "failed", "business error", 200),
+	}}
+	got := collectionHealth(overview)[0]
+	if got.Status != "ready" {
+		t.Fatalf("status = %q", got.Status)
+	}
+	// A stale message beside "ready" is what made one hiccup read as a breakage.
+	if got.Error != "" {
+		t.Fatalf("error = %q, want empty once it is working again", got.Error)
+	}
+	if line := collectionHealthLine(got); !strings.Contains(line, "已恢复") {
+		t.Fatalf("line = %q, want the recovery noted rather than hidden", line)
+	}
+}
+
+func TestRepeatedFailuresAreReportedAsBroken(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "failed", "business error", 400),
+		healthRun("dingtalk", "failed", "business error", 300),
+		healthRun("dingtalk", "succeeded", "", 200),
+	}}
+	got := collectionHealth(overview)[0]
+	if got.Status != "error" {
+		t.Fatalf("status = %q, want error once it stops recovering", got.Status)
+	}
+	if got.ConsecutiveFailures != 2 {
+		t.Fatalf("streak = %d", got.ConsecutiveFailures)
+	}
+	if line := collectionHealthLine(got); !strings.Contains(line, "连续失败 2 次") {
+		t.Fatalf("line = %q", line)
+	}
+}
+
+// A login that expired will not fix itself, so waiting for a second sample only
+// delays telling the user by one interval.
+func TestAClassifiedFailureIsReportedOnTheFirstOccurrence(t *testing.T) {
+	for _, test := range []struct {
+		message string
+		want    string
+	}{
+		{"dws: not_authenticated, run auth login", "auth_required"},
+		{"forbidden: 没有权限", "permission_required"},
+	} {
+		overview := store.CollectionOverview{Runs: []store.CollectionRun{
+			healthRun("dingtalk", "failed", test.message, 300),
+			healthRun("dingtalk", "succeeded", "", 200),
+		}}
+		got := collectionHealth(overview)[0]
+		if got.Status != test.want {
+			t.Errorf("%q → %q, want %q", test.message, got.Status, test.want)
+		}
+	}
+}
+
+// A single failure with nothing behind it has no recovery to point at, so it is
+// not called flaky — there is no evidence it recovers.
+func TestTheVeryFirstRunFailingIsNotCalledFlaky(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "failed", "business error", 100),
+	}}
+	got := collectionHealth(overview)[0]
+	if got.Status != "error" {
+		t.Fatalf("status = %q, want error", got.Status)
+	}
+}
+
+// One source hiccupping must not condemn a connector that other sources are using
+// successfully, and a running attempt is not evidence either way.
+func TestRunningAttemptsAreIgnoredAndConnectorsStaySeparate(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "running", "", 0),
+		healthRun("dingtalk", "succeeded", "", 300),
+		healthRun("slack", "failed", "business error", 290),
+		healthRun("slack", "failed", "business error", 280),
+	}}
+	byConnector := map[string]collectionConnectorHealth{}
+	for _, health := range collectionHealth(overview) {
+		byConnector[health.Connector] = health
+	}
+	if byConnector["dingtalk"].Status != "ready" {
+		t.Fatalf("dingtalk = %+v", byConnector["dingtalk"])
+	}
+	if byConnector["slack"].Status != "error" {
+		t.Fatalf("slack = %+v", byConnector["slack"])
+	}
+}

@@ -1113,7 +1113,12 @@ private struct CollectionConnectorHealthSummary: View {
                     .font(ATMFont.caption)
                     .foregroundStyle(ATMTheme.secondary)
             }
-            if let error = health.error, !error.isEmpty {
+            if let note = health.transientNote {
+                Text(note)
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if let error = health.error, !error.isEmpty {
                 Text(error)
                     .font(ATMFont.caption)
                     .foregroundStyle(ATMTheme.secondary)
@@ -2127,6 +2132,12 @@ private struct CollectionSourceEditor: View {
             if health.isUnverified {
                 Text("· 运行一次收集后才能确认")
                     .foregroundStyle(ATMTheme.secondary)
+            } else if let note = health.transientNote {
+                // The rate, not the latest message: the rate is what says whether to
+                // care, and this connector is already retrying.
+                Text("· \(note)")
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
             } else if let error = health.error, !error.isEmpty {
                 Text("· \(error)")
                     .foregroundStyle(ATMTheme.secondary)

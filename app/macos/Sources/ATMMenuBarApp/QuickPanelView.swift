@@ -16,6 +16,12 @@ struct QuickPanelView: View {
                             .padding(.bottom, 8)
                     }
                     indexHealthBanner
+                    // Above everything: it is the only thing here with a deadline,
+                    // and the only one where not looking has an outward effect.
+                    if !pendingApprovals.isEmpty || store.approvalErrorMessage != nil {
+                        approvalsSection
+                        sectionDivider
+                    }
                     usageSection
                     sectionDivider
                     if !store.snapshot.work.needsAction.isEmpty {
@@ -264,6 +270,70 @@ struct QuickPanelView: View {
                 }
             }
         }
+    }
+
+    /// Requests still awaiting a decision. A request that is executing with an
+    /// unknown outcome is deliberately excluded — nothing can be decided about it.
+    private var pendingApprovals: [ATMGuardApproval] {
+        store.pendingApprovals.filter(\.isPending)
+    }
+
+    private var approvalsSection: some View {
+        quickCard(
+            "待授权外发",
+            indicatorColor: ATMTheme.danger,
+            badge: pendingApprovals.isEmpty ? nil : "\(pendingApprovals.count)"
+        ) {
+            if let error = store.approvalErrorMessage {
+                banner(error, icon: "exclamationmark.triangle.fill", color: ATMTheme.danger)
+            }
+            ForEach(pendingApprovals) { approval in
+                approvalRow(approval)
+            }
+        }
+    }
+
+    private func approvalRow(_ approval: ATMGuardApproval) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(approval.actionLine)
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(ATMTheme.primary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            // The message body, because approving sends it: a row that hides what
+            // goes out is asking for a decision the user cannot actually make.
+            if let body = approval.previewBody?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !body.isEmpty {
+                Text(body)
+                    .font(ATMFont.font(.caption))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 6) {
+                Button("批准并发送") { store.decideApproval(approval, approve: true) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                Button("拒绝") { store.decideApproval(approval, approve: false) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Spacer(minLength: 0)
+                if let source = approval.envAgent, !source.isEmpty {
+                    Text(source)
+                        .font(ATMFont.mono(.micro))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+            }
+            // Per-row, so deciding one request does not freeze the others.
+            .disabled(store.isDecidingApproval(approval.id))
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.dangerFill, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(ATMTheme.danger.opacity(0.20), lineWidth: 0.8)
+        )
     }
 
     private var attentionSection: some View {

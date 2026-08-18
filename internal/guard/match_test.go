@@ -1,6 +1,7 @@
 package guard
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -238,5 +239,79 @@ func TestDurationsFallBackToDefaults(t *testing.T) {
 	// killed gate never delivers its instructions.
 	if DefaultWait >= 60*1e9 {
 		t.Fatalf("default wait %v is long enough for an agent to kill the gate first", DefaultWait)
+	}
+}
+
+// Switching a built-in off is expressed by an override with only an id, so its
+// matcher is never restated and cannot drift from the real one.
+func TestABuiltinCanBeSwitchedOffWithoutRestatingItsMatcher(t *testing.T) {
+	original := config.Guard
+	t.Cleanup(func() { config.Guard = original })
+
+	off := false
+	config.Guard = config.GuardConfig{Tools: map[string]config.GuardToolConfig{
+		"dws": {Rules: []config.GuardRule{{ID: "chat-send", Enabled: &off}}},
+	}}
+
+	if match := find(t, "dws", "chat", "message", "send", "--group", "g", "--text", "x"); match != nil {
+		t.Fatal("a switched-off rule still gates")
+	}
+	// The rule is still listed, so the UI can show it as off rather than missing,
+	// and its matcher is intact underneath.
+	views := RuleViews("dws")
+	if len(views) != 1 {
+		t.Fatalf("views = %d, want the built-in still listed", len(views))
+	}
+	if views[0].Enabled {
+		t.Fatal("view reports enabled")
+	}
+	if len(views[0].Path) != 3 {
+		t.Fatalf("patch dropped the built-in's matcher: %+v", views[0])
+	}
+	if !views[0].Builtin || !views[0].Overridden {
+		t.Fatalf("provenance wrong: %+v", views[0])
+	}
+
+	// Switching it back on restores gating without the matcher ever being restated.
+	on := true
+	config.Guard.Tools["dws"] = config.GuardToolConfig{
+		Rules: []config.GuardRule{{ID: "chat-send", Enabled: &on}},
+	}
+	if match := find(t, "dws", "chat", "message", "send", "--group", "g"); match == nil {
+		t.Fatal("re-enabling did not restore gating")
+	}
+}
+
+// A patch carries no matcher, so it must not be evaluated as a rule in its own
+// right — that would report "matches nothing" and fail every call closed.
+func TestAPatchForAnUnknownIDDoesNotBreakTheTool(t *testing.T) {
+	original := config.Guard
+	t.Cleanup(func() { config.Guard = original })
+
+	off := false
+	config.Guard = config.GuardConfig{Tools: map[string]config.GuardToolConfig{
+		"dws": {Rules: []config.GuardRule{{ID: "chat-send", Enabled: &off}}},
+	}}
+	// Only the disabled patch is present, and disabled rules are filtered before
+	// matching, so nothing can raise a matcher error.
+	if _, err := Find([]string{"chat", "message", "list"}, Rules("dws")); err != nil {
+		t.Fatalf("a disabled patch made an unrelated read fail: %v", err)
+	}
+}
+
+func TestRuleViewsListAToolWithNoBuiltins(t *testing.T) {
+	original := config.Guard
+	t.Cleanup(func() { config.Guard = original })
+
+	config.Guard = config.GuardConfig{Tools: map[string]config.GuardToolConfig{
+		"mytool": {Rules: []config.GuardRule{{ID: "doc-write", Path: []string{"doc", "write"}}}},
+	}}
+	views := RuleViews("mytool")
+	if len(views) != 1 || views[0].Builtin || !views[0].Overridden || !views[0].Enabled {
+		t.Fatalf("views = %+v", views)
+	}
+	names := ToolNames()
+	if !slices.Contains(names, "mytool") || !slices.Contains(names, "dws") {
+		t.Fatalf("tool names = %v, want registered and built-in tools both listed", names)
 	}
 }
