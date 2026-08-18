@@ -26,7 +26,7 @@ enum ATMNotificationRoute: Equatable {
     case todo(String)
     case agentSession(String)
     case guardApproval(String)
-    case collection
+    case collection(itemID: String?)
     case app
 
     /// Rebuilds the route from a delivered notification's `userInfo`.
@@ -43,7 +43,10 @@ enum ATMNotificationRoute: Equatable {
             return .todo(todoID)
         }
         if userInfo["event"] as? String == "collection" {
-            return .collection
+            let itemID = (userInfo["collection_item_id"] as? String).flatMap {
+                $0.isEmpty ? nil : $0
+            }
+            return .collection(itemID: itemID)
         }
         return .app
     }
@@ -146,8 +149,10 @@ struct ATMNotificationPayload: Equatable {
 }
 
 struct ATMCollectionNotificationPayload: Equatable {
+    let identifier: String
     let subtitle: String
     let body: String
+    let itemID: String?
 
     /// `sources` is what decides whose results may interrupt: a muted source is
     /// left out of the counts entirely, so a run that only touched muted sources
@@ -175,7 +180,118 @@ struct ATMCollectionNotificationPayload: Equatable {
         guard created + appended + insight + failed > 0 else { return nil }
         let subtitle = failed > 0 ? "收集有结果需要处理" : "有新的收集待查看"
         let body = "新增 \(created) · 补充 \(appended) · 结论 \(insight) · 失败 \(failed)"
-        return ATMCollectionNotificationPayload(subtitle: subtitle, body: body)
+        return ATMCollectionNotificationPayload(
+            identifier: "atm-collection-\(UUID().uuidString)",
+            subtitle: subtitle,
+            body: body,
+            itemID: nil
+        )
+    }
+
+    /// Turns new collection runs into notifications that say what actually
+    /// arrived. A run is still the reliable "new since last refresh" cursor; its
+    /// source and time window identify the processing records it produced.
+    static func makeResults(
+        runs: [ATMCollectionRun],
+        items: [ATMCollectionItem],
+        sources: [ATMCollectionSource] = []
+    ) -> [ATMCollectionNotificationPayload] {
+        let sourcesByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
+        let audibleRuns = runs.filter { run in
+            guard let sourceID = run.sourceID, let source = sourcesByID[sourceID] else {
+                return true
+            }
+            return source.notifiesDesktop
+        }
+        guard !audibleRuns.isEmpty else { return [] }
+
+        var seenItemIDs = Set<String>()
+        let matchingItems = items
+            .filter { item in
+                guard isNotifiable(item), seenItemIDs.insert(item.id).inserted else { return false }
+                return audibleRuns.contains { run in
+                    guard run.sourceID == nil || run.sourceID == item.sourceID else { return false }
+                    let finishedAt = run.finishedAt ?? Int64.max
+                    return item.updatedAt >= run.startedAt && item.updatedAt <= finishedAt
+                }
+            }
+            .sorted {
+                $0.updatedAt == $1.updatedAt ? $0.id < $1.id : $0.updatedAt < $1.updatedAt
+            }
+
+        var payloads = matchingItems.map { item in
+            let sourceName = sourcesByID[item.sourceID]?.displayName ?? item.connector
+            let destinationID = displayItemID(for: item, in: items)
+            return ATMCollectionNotificationPayload(
+                identifier: "atm-collection-item-\(item.id)",
+                subtitle: "\(sourceName) · \(actionLabel(for: item))",
+                body: contentText(for: item),
+                itemID: destinationID
+            )
+        }
+
+        // A connector can fail before it creates a processing record. Preserve a
+        // useful notification for that case, but name the source and its actual
+        // error instead of falling back to the four opaque counters.
+        let failedItemSourceIDs = Set(matchingItems.filter {
+            $0.status == "failed" || nonempty($0.error) != nil
+        }.map(\.sourceID))
+        for run in audibleRuns where run.failedCount > 0 && !failedItemSourceIDs.contains(run.sourceID ?? "") {
+            let sourceName = run.sourceID.flatMap { sourcesByID[$0]?.displayName } ?? run.connector
+            payloads.append(
+                ATMCollectionNotificationPayload(
+                    identifier: "atm-collection-run-\(run.id)",
+                    subtitle: "\(sourceName) · 收集失败",
+                    body: nonempty(run.error) ?? "这次收集没有完成，请打开收集查看详情。",
+                    itemID: nil
+                )
+            )
+        }
+
+        // Compatibility fallback for older CLI snapshots that have run counts
+        // but no item timestamps capable of tying the result back to a record.
+        if payloads.isEmpty, let summary = make(runs: audibleRuns, sources: sources) {
+            payloads.append(summary)
+        }
+        return payloads
+    }
+
+    private static func isNotifiable(_ item: ATMCollectionItem) -> Bool {
+        ["create", "append", "insight"].contains(item.action)
+            || item.status == "failed"
+            || nonempty(item.error) != nil
+    }
+
+    private static func displayItemID(
+        for item: ATMCollectionItem,
+        in items: [ATMCollectionItem]
+    ) -> String {
+        guard item.action == "append", let todoID = nonempty(item.todoID) else { return item.id }
+        return items.first { $0.action == "create" && $0.todoID == todoID }?.id ?? item.id
+    }
+
+    private static func actionLabel(for item: ATMCollectionItem) -> String {
+        if item.status == "failed" || nonempty(item.error) != nil { return "收集失败" }
+        switch item.action {
+        case "create": return "新任务"
+        case "append": return "任务补充"
+        case "insight": return "新结论"
+        default: return "新收集"
+        }
+    }
+
+    private static func contentText(for item: ATMCollectionItem) -> String {
+        nonempty(item.title)
+            ?? nonempty(item.summary)
+            ?? nonempty(item.error)
+            ?? nonempty(item.rawContext)
+            ?? "打开收集查看详情"
+    }
+
+    private static func nonempty(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else { return nil }
+        return trimmed
     }
 }
 
@@ -385,24 +501,34 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
     }
 
-    func sendCollectionSummary(_ runs: [ATMCollectionRun], sources: [ATMCollectionSource] = []) {
-        guard let center,
-              let payload = ATMCollectionNotificationPayload.make(runs: runs, sources: sources)
-        else { return }
-        let content = UNMutableNotificationContent()
-        content.title = "ATM · 收集"
-        content.subtitle = payload.subtitle
-        content.body = payload.body
-        content.sound = .default
-        content.categoryIdentifier = "ATM_COLLECTION"
-        content.userInfo = ["event": "collection"]
-        center.add(
-            UNNotificationRequest(
-                identifier: "atm-collection-\(UUID().uuidString)",
-                content: content,
-                trigger: nil
+    func sendCollectionResults(
+        _ runs: [ATMCollectionRun],
+        items: [ATMCollectionItem],
+        sources: [ATMCollectionSource] = []
+    ) {
+        guard let center else { return }
+        for payload in ATMCollectionNotificationPayload.makeResults(
+            runs: runs,
+            items: items,
+            sources: sources
+        ) {
+            let content = UNMutableNotificationContent()
+            content.title = "ATM · 收集"
+            content.subtitle = payload.subtitle
+            content.body = payload.body
+            content.sound = .default
+            content.categoryIdentifier = "ATM_COLLECTION"
+            var userInfo = ["event": "collection"]
+            if let itemID = payload.itemID { userInfo["collection_item_id"] = itemID }
+            content.userInfo = userInfo
+            center.add(
+                UNNotificationRequest(
+                    identifier: payload.identifier,
+                    content: content,
+                    trigger: nil
+                )
             )
-        )
+        }
     }
 
     func userNotificationCenter(

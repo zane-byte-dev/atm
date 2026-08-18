@@ -199,6 +199,8 @@ atm collect item save <item-id> [--collection <collection-id>] --json
 atm collect item read <item-id> [<item-id> ...] --json
 atm collect item read --all --json
 atm collect item unread <item-id> [<item-id> ...] --json
+atm collect item archive <item-id> [<item-id> ...] --json   # 了结，保留记录、Todo 和已处理消息
+atm collect item unarchive <item-id> [<item-id> ...] --json # 重新打开
 
 # 可选的人工批量入口：把当天 insight 汇总成一篇知识文档，每来源每天一篇，重跑原地重写
 atm collect digest [--source <source-id>] [--date 2026-08-03] --json

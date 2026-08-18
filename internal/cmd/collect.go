@@ -139,6 +139,7 @@ func init() {
 		collectSourceMuteCmd, collectSourceUnmuteCmd, collectSourceDeleteCmd)
 	collectItemCmd.AddCommand(collectItemReprocessCmd, collectItemPromoteCmd, collectItemCorrectCmd,
 		collectItemSaveCmd, collectItemReadCmd, collectItemUnreadCmd,
+		collectItemArchiveCmd, collectItemUnarchiveCmd,
 		collectItemRevertCmd, collectItemDeleteCmd)
 	collectCmd.AddCommand(collectStatusCmd, collectRunCmd, collectDigestCmd, collectEnableCmd,
 		collectDisableCmd, collectHistoryCmd, collectSearchCmd, collectAnalyzeCmd,
@@ -1346,6 +1347,48 @@ var collectItemUnreadCmd = &cobra.Command{
 			return printCollectionReadChange(db, uniqueStrings(args), false)
 		})
 	},
+}
+
+var collectItemArchiveCmd = &cobra.Command{
+	Use:   "archive <item-id>...",
+	Short: "Settle collection results without deleting them",
+	Long: "Archive collection results as settled. The records stay in the audit ledger, " +
+		"their source messages stay handled, and linked Todos are unchanged. Archived " +
+		"results can be restored with `atm collect item unarchive`.",
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return withDB(false, func(db *sql.DB) error {
+			return printCollectionArchiveChange(db, uniqueStrings(args), true)
+		})
+	},
+}
+
+var collectItemUnarchiveCmd = &cobra.Command{
+	Use:   "unarchive <item-id>...",
+	Short: "Reopen archived collection results",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return withDB(false, func(db *sql.DB) error {
+			return printCollectionArchiveChange(db, uniqueStrings(args), false)
+		})
+	},
+}
+
+func printCollectionArchiveChange(db *sql.DB, ids []string, archived bool) error {
+	items, err := store.SetCollectionItemsArchived(db, ids, archived)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		output.JSON(map[string]any{"items": items, "count": len(items), "archived": archived})
+		return nil
+	}
+	verb := "Reopened"
+	if archived {
+		verb = "Archived"
+	}
+	fmt.Printf("%s %d collection results\n", verb, len(items))
+	return nil
 }
 
 func printCollectionReadChange(db *sql.DB, ids []string, read bool) error {

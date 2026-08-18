@@ -163,6 +163,11 @@ struct DesktopCollectionView: View {
             revealSelectedSourceGroup()
             markSelectedItemRead()
         }
+        .onChange(of: navigation.collectionItemRevealRequest) { _ in
+            drawerTab = .records
+            revealSelectedSourceGroup()
+            markSelectedItemRead()
+        }
         .sheet(isPresented: $showingAddSource) {
             CollectionSourceEditor(store: store) { showingAddSource = false }
         }
@@ -574,7 +579,7 @@ struct DesktopCollectionView: View {
         .buttonStyle(.atmRow)
         .focusable(false)
         .atmContentStackRow()
-        // 右键只放导航和删除。重新处理、修正、撤销这些要看记录状态才知道能不能做，
+        // 右键只放导航、了结和删除。重新处理、修正、撤销这些要看记录状态才知道能不能做，
         // 判定在详情栏（见 CollectionItemDetail），在这儿抄一遍就是抄两套规则。
         .atmRightClickMenu {
             if rowUnreadCount > 0 {
@@ -593,6 +598,15 @@ struct DesktopCollectionView: View {
                 copyCollectionItemID(item.id)
             }
             ATMMenuSeparator()
+            if item.isArchived {
+                ATMMenuItem("重新打开", systemImage: "arrow.uturn.backward") {
+                    store.setCollectionItemsArchived(records, archived: false)
+                }
+            } else if !item.shouldCollapseInCollection {
+                ATMMenuItem("了结记录", systemImage: "archivebox") {
+                    store.setCollectionItemsArchived(records, archived: true)
+                }
+            }
             ATMMenuItem("删除记录", destructive: true) {
                 itemDeletion = CollectionItemDeletion(items: recordsIncludingSupplements([item]))
             }
@@ -767,7 +781,8 @@ private struct CollectionSourceDetail: View {
                             scheduleCard
                             rulesCard
                         }
-                        .padding(24)
+                        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                        .padding(.vertical, 24)
                         .frame(maxWidth: 760, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
@@ -1396,7 +1411,7 @@ private struct CollectionItemDetail: View {
                     rawContextSummary
                 }
             }
-            .padding(.horizontal, 24)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 20)
             .frame(maxWidth: 880, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -1455,6 +1470,15 @@ private struct CollectionItemDetail: View {
                 // 其余条目要看状态才知道能不能做，删除对任何一条记录都成立，所以
                 // 菜单不再需要「有没有动作」那道门——它永远至少有一项。
                 Menu {
+                    if item.isArchived {
+                        Button("重新打开") {
+                            store.setCollectionItemsArchived([item] + supplements, archived: false)
+                        }
+                    } else if !item.shouldCollapseInCollection {
+                        Button("了结记录") {
+                            store.setCollectionItemsArchived([item] + supplements, archived: true)
+                        }
+                    }
                     if item.action == "ignore" {
                         Button("重新判断") { store.reprocessCollectionItem(item) }
                     }

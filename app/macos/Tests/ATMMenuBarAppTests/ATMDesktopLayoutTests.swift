@@ -7,6 +7,10 @@ final class ATMDesktopLayoutTests: XCTestCase {
         XCTAssertEqual(ATMDesktopLayout.collapsedSidebarWidth, 58)
     }
 
+    func testDetailHeaderTabsAndContentShareTheSameLeadingEdge() {
+        XCTAssertEqual(ATMDetailLayout.tabsHorizontalPadding, ATMDetailLayout.horizontalPadding)
+    }
+
     @MainActor
     func testNavigationHistoryRestoresSectionAndDetailSelection() {
         let navigation = ATMDesktopNavigation()
@@ -83,5 +87,17 @@ final class ATMDesktopLayoutTests: XCTestCase {
 
         navigation.goBack()
         XCTAssertEqual(navigation.section, .usage)
+    }
+
+    @MainActor
+    func testCollectionNotificationRevealRepeatsForTheSameRecord() {
+        let navigation = ATMDesktopNavigation()
+
+        navigation.revealCollectionItem("ci1")
+        XCTAssertEqual(navigation.selectedCollectionItemID, "ci1")
+        XCTAssertEqual(navigation.collectionItemRevealRequest, 1)
+
+        navigation.revealCollectionItem("ci1")
+        XCTAssertEqual(navigation.collectionItemRevealRequest, 2)
     }
 }

@@ -10,17 +10,21 @@ enum ATMManualOrder {
     static let knowledgeCollectionsKey = "ATMKnowledgeCollectionOrder"
     static let collectionSourcesKey = "ATMCollectionSourceOrder"
 
-    /// Kept as `public.utf8-plain-text` via the plain `NSItemProvider(object:)`
-    /// initializer, which is the construction the drag is known to work with.
+    /// `public.utf8-plain-text` via the plain `NSItemProvider(object:)`
+    /// initializer. Plainer than it looks, and deliberate.
     ///
-    /// A private exported type would be the better answer — it would stop a text
-    /// drag from another app from ever becoming a drop candidate here, which is
-    /// the one hole this design still has (see `pendingMoveSource`). But whether
-    /// such a type survives SwiftUI's macOS `onDrag` bridge is not something
-    /// this repo can test: `NSItemProvider` is not `NSPasteboardWriting`, so the
-    /// pasteboard hand-off happens inside SwiftUI where no test can reach it,
-    /// and a wrong guess costs the whole reordering gesture. Left alone until a
-    /// manual drag can confirm it.
+    /// A private exported type — `UTType(exportedAs:)` plus a matching
+    /// `onDrop(of:)` — would be the better design: it would stop text dragged in
+    /// from another app from ever becoming a drop candidate here, which is the
+    /// one hole this file still has (see `pendingMoveSource`). It was tried, and
+    /// it does not work: with a private type nothing on these rows is ever a drop
+    /// target, so the whole reordering gesture dies silently. Both
+    /// `.ownProcess` and `.all` representation visibility were tried, so the
+    /// visibility is not what breaks it — SwiftUI's macOS drag bridge does not
+    /// carry the type through. No test can catch this, either: `NSItemProvider`
+    /// is not `NSPasteboardWriting`, so the pasteboard hand-off happens inside
+    /// SwiftUI where nothing here can reach it, and the only signal is a human
+    /// trying to drag a row. Do not "fix" this back without one.
     static func itemProvider(for id: String) -> NSItemProvider {
         NSItemProvider(object: id as NSString)
     }
@@ -110,19 +114,21 @@ struct ATMManualOrderDropDelegate: DropDelegate {
     /// decide from `draggedID` alone and neither reads `DropInfo`, which has no
     /// public initializer for tests to build.
     ///
-    /// Deliberately *not* wired to `validateDrop`: `onDrag` sets `draggedID` as
-    /// a side effect, and if SwiftUI defers that write past the first
-    /// `validateDrop` the gesture is refused for the whole session. `dropUpdated`
-    /// is polled continuously, so gating there resolves within a frame instead.
+    /// No `validateDrop`: `dropUpdated` and `dropEntered` already gate on this,
+    /// and unlike them `validateDrop` is a one-shot per session — a false there
+    /// costs the whole gesture, and it buys nothing the other two do not.
     var acceptsDrop: Bool { draggedID != nil }
 
     /// The row to move, or nil when the pointer sits on the dragged row itself.
     ///
-    /// Known hole: a drag released outside the list — or cancelled with Esc —
-    /// never reaches `performDrop`, so `draggedID` keeps naming that row, and a
-    /// later *text drag from another app* onto this list would be taken for it.
-    /// Closing that needs a private drag type, which `itemProvider` explains why
-    /// this file does not yet use.
+    /// Known hole, accepted: a drag released outside the list — or cancelled with
+    /// Esc — never reaches `performDrop`, so `draggedID` keeps naming that row,
+    /// and a later *text drag from another app* onto this list is taken for it
+    /// and reorders once. The payload cannot be checked here to tell the two
+    /// apart — `DropInfo` only loads asynchronously — and the drag type that
+    /// would rule it out at the door does not survive SwiftUI (see
+    /// `ATMManualOrder.itemProvider`). Costs one bogus reorder the next drag
+    /// undoes, which is cheaper than losing the gesture.
     var pendingMoveSource: String? {
         guard let draggedID, draggedID != targetID else { return nil }
         return draggedID
@@ -154,10 +160,19 @@ extension View {
         dragged: Binding<String?>,
         move: @escaping (_ draggedID: String, _ targetID: String) -> Void
     ) -> some View {
-        onDrag {
+        // Without an explicit preview macOS drags a transparent snapshot of the
+        // row, so the label floats with no ground under it and smears over every
+        // row it passes. All that is missing is ground, so the preview is the row
+        // over the middle column's own surface and nothing else: `elevated` plus a
+        // border was tried and read as a stray white slab, because in light
+        // appearance it is pure white against a near-white `listPane` — a card
+        // where the list has none. What sells the lift is the system's own drag
+        // shadow, not anything painted here.
+        let preview = background(ATMTheme.listPane)
+        return onDrag({
             dragged.wrappedValue = id
             return ATMManualOrder.itemProvider(for: id)
-        }
+        }, preview: { preview })
         .onDrop(
             of: [.text],
             delegate: ATMManualOrderDropDelegate(targetID: id, draggedID: dragged, move: move)

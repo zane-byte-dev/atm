@@ -1,5 +1,42 @@
 import SwiftUI
 
+/// Shared controls for choosing and refreshing one session reading mode. Live
+/// Agent details place this beside their page tabs; standalone indexed-session
+/// details keep it in the transcript's own toolbar.
+struct DesktopSessionReadControls: View {
+    let sessionID: String
+    @ObservedObject var store: ATMDataStore
+    @Binding var mode: ATMSessionReadMode
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("阅读方式")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+            Picker("阅读方式", selection: $mode) {
+                ForEach(ATMSessionReadMode.allCases) { readMode in
+                    Text(readMode.title).tag(readMode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .fixedSize(horizontal: true, vertical: false)
+            .help(mode.help)
+            Button {
+                store.loadSessionRead(sessionID, mode: mode, reload: true)
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .disabled(store.isLoadingSessionRead(sessionID, mode: mode))
+            .help("重新读取这一段")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 /// 一个会话的三段式阅读：摘要看结果、时序看它怎么花掉 token、完整看整条链路（含思考）。
 ///
 /// 三段各自是一次独立读取，而不是一份大 payload 前端筛：完整视图要回到 Agent 自己的
@@ -9,40 +46,25 @@ struct DesktopSessionTranscriptView: View {
     /// 会话所属 Agent 的展示名，只用于「这个 Agent 不记录思考」这类说明文案。
     let agentLabel: String
     @ObservedObject var store: ATMDataStore
-
-    @State private var mode: ATMSessionReadMode = .brief
+    @Binding var mode: ATMSessionReadMode
+    var showsReadControls = true
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Spacer(minLength: 0)
-                Text("阅读方式")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                Picker("阅读方式", selection: $mode) {
-                    ForEach(ATMSessionReadMode.allCases) { readMode in
-                        Text(readMode.title).tag(readMode)
-                    }
+            if showsReadControls {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    DesktopSessionReadControls(
+                        sessionID: sessionID,
+                        store: store,
+                        mode: $mode
+                    )
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .controlSize(.small)
-                .fixedSize(horizontal: true, vertical: false)
-                .help(mode.help)
-                Button {
-                    store.loadSessionRead(sessionID, mode: mode, reload: true)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .disabled(store.isLoadingSessionRead(sessionID, mode: mode))
-                .help("重新读取这一段")
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
+                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                .padding(.vertical, 10)
 
-            Divider()
+                Divider()
+            }
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -66,7 +88,8 @@ struct DesktopSessionTranscriptView: View {
                 }
                 .frame(maxWidth: 820, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(16)
+                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                .padding(.vertical, 16)
             }
             .atmAnimatedSwap(mode.rawValue, style: .detail)
         }

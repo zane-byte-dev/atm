@@ -70,6 +70,9 @@ struct ATMDetailHeader<Eyebrow: View, Actions: View, Meta: View>: View {
 /// 缩进浅一档。
 enum ATMDetailLayout {
     static let horizontalPadding: CGFloat = 24
-    static let tabsHorizontalPadding: CGFloat = 16
+    /// Tabs and every root content column share the header's leading edge.
+    /// Keeping a second, smaller inset here made the capsule and body protrude
+    /// 8pt to the left of the title (16px in Retina screenshots).
+    static let tabsHorizontalPadding: CGFloat = horizontalPadding
     static let tabsVerticalPadding: CGFloat = 10
 }

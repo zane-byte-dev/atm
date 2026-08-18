@@ -506,6 +506,9 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     /// Zero means this result has not been acknowledged. The current CLI always
     /// returns the field; nil is treated as read for compatibility with old builds.
     let readAt: Int64?
+    /// Zero means active. A positive timestamp is a manual, recoverable settle
+    /// action on this collection record; it does not close the linked Todo.
+    let archivedAt: Int64?
     /// How many times this batch has been tried. Absent from older CLI output,
     /// which is read as zero: a fresh budget is the safe reading, because it
     /// describes an item the next run will pick up rather than one already
@@ -529,6 +532,7 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
              priority, reason, confidence, status, attempts, error
         case proposedAction = "proposed_action"
         case readAt = "read_at"
+        case archivedAt = "archived_at"
         case dispatchStatus = "dispatch_status"
         case dispatchError = "dispatch_error"
         case sourceID = "source_id"
@@ -604,6 +608,8 @@ extension ATMCollectionItem {
         todoStatus == "done" || todoStatus == "dropped"
     }
 
+    var isArchived: Bool { (archivedAt ?? 0) > 0 }
+
     /// The main list is what you glance at, and that means work: things ATM filed
     /// or wants filed. An unsaved insight still needs the user's decision, so it
     /// stays visible until its conclusion has explicitly been saved to knowledge.
@@ -611,7 +617,8 @@ extension ATMCollectionItem {
     /// up here turned the workspace into a history feed, where twelve of twenty
     /// rows wanted nothing.
     var shouldCollapseInCollection: Bool {
-        action == "ignore"
+        isArchived
+            || action == "ignore"
             || (action == "insight" && knowledgeDocumentID?.isEmpty == false)
             || todoClosed
     }
@@ -623,13 +630,13 @@ extension ATMCollectionItem {
 /// create stays visible so older or externally-created Todos never disappear.
 enum ATMCollectionItemGrouping {
     static func visibleItems(_ items: [ATMCollectionItem]) -> [ATMCollectionItem] {
-        let createdTodoIDs = Set(items.compactMap { item -> String? in
+        let createdTodoStates = Set(items.compactMap { item -> String? in
             guard item.action == "create", let todoID = item.todoID, !todoID.isEmpty else { return nil }
-            return todoID
+            return "\(todoID)\u{0}\(item.shouldCollapseInCollection)"
         })
         return items.filter { item in
             guard item.action == "append", let todoID = item.todoID else { return true }
-            return !createdTodoIDs.contains(todoID)
+            return !createdTodoStates.contains("\(todoID)\u{0}\(item.shouldCollapseInCollection)")
         }
     }
 
@@ -639,7 +646,10 @@ enum ATMCollectionItemGrouping {
     ) -> [ATMCollectionItem] {
         guard item.action == "create", let todoID = item.todoID, !todoID.isEmpty else { return [] }
         return items
-            .filter { $0.action == "append" && $0.todoID == todoID }
+            .filter {
+                $0.action == "append" && $0.todoID == todoID
+                    && $0.shouldCollapseInCollection == item.shouldCollapseInCollection
+            }
             .sorted {
                 let lhs = $0.occurredAt ?? $0.createdAt
                 let rhs = $1.occurredAt ?? $1.createdAt

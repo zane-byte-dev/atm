@@ -945,6 +945,10 @@ enum ATMCommandBuilder {
         ["collect", "item", "read", "--all", "--json"]
     }
 
+    static func collectionItemArchive(ids: [String], archived: Bool) -> [String] {
+        ["collect", "item", archived ? "archive" : "unarchive"] + ids + ["--json"]
+    }
+
     static func guardToolStatus() -> [String] {
         ["guard", "status", "--json"]
     }
@@ -2054,6 +2058,15 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
+    /// Manually settles or reopens processing records without deleting their
+    /// audit trail, changing linked Todos, or making their messages collectible
+    /// again. A create row and its folded supplements are passed together.
+    func setCollectionItemsArchived(_ items: [ATMCollectionItem], archived: Bool) {
+        let ids = Array(Set(items.map(\.id))).sorted()
+        guard !ids.isEmpty else { return }
+        runCollectionItemAction([archived ? "archive" : "unarchive"] + ids)
+    }
+
     /// Reads the pending list and reconciles banners against it.
     ///
     /// The socket push is what makes a banner appear promptly; this is what makes
@@ -2312,8 +2325,9 @@ final class ATMDataStore: ObservableObject {
         }
         let newRuns = runs.filter { !previous.contains($0.id) && $0.status != "running" }
         notifiedCollectionRunIDs = previous.union(currentIDs)
-        ATMNotificationManager.shared.sendCollectionSummary(
+        ATMNotificationManager.shared.sendCollectionResults(
             newRuns,
+            items: collectionOverview.items,
             sources: collectionOverview.sources
         )
     }

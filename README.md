@@ -116,6 +116,8 @@ atm collect item save <item-id>          # 确认后把收集结论保存为知�
 atm collect item read <item-id>          # 标记一条收集结果已读
 atm collect item read --all              # 全部标为已读
 atm collect item unread <item-id>        # 重新标为未读
+atm collect item archive <item-id>       # 了结记录（保留审计和关联 Todo）
+atm collect item unarchive <item-id>     # 重新打开已了结记录
 atm collect source mute <source-id>      # 这个来源不再弹通知（照常收集、照常算未读）
 atm collect source unmute <source-id>    # 恢复通知
 ```

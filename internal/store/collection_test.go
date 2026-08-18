@@ -149,6 +149,94 @@ func TestCollectionReadStateCountsOnlyActionableResults(t *testing.T) {
 	}
 }
 
+func TestCollectionItemsCanBeArchivedAndReopenedWithoutBeingRecollected(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "archive-item", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []CollectionItem{}
+	for _, fingerprint := range []string{"main", "supplement", "retryable-failure"} {
+		action, status := "create", "processed"
+		if fingerprint == "retryable-failure" {
+			action, status = "failed", "failed"
+		}
+		item, _, err := PutCollectionItem(db, CollectionItem{
+			SourceID: source.ID, Connector: "test", Fingerprint: fingerprint,
+			MessageIDs: []string{"m-" + fingerprint}, Action: action, Status: status, Attempts: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, item)
+	}
+	ids := []string{items[0].ID, items[1].ID, items[2].ID}
+	archived, err := SetCollectionItemsArchived(db, ids, true)
+	if err != nil || len(archived) != 3 || archived[0].ArchivedAt == 0 || archived[0].ReadAt == 0 || archived[2].ArchivedAt == 0 {
+		t.Fatalf("archive = %+v err=%v", archived, err)
+	}
+	overview, err := LoadCollectionOverview(db, 20)
+	if err != nil || overview.Summary.Unread != 0 {
+		t.Fatalf("overview after archive = %+v err=%v", overview.Summary, err)
+	}
+	handled, err := HandledCollectionMessageIDs(db, source.ID)
+	if err != nil || len(handled) != 3 {
+		t.Fatalf("archiving released handled messages: %v err=%v", handled, err)
+	}
+	if _, err := SetCollectionItemsArchived(db, []string{items[0].ID, "missing"}, false); err == nil {
+		t.Fatal("stale id should make the archive update fail atomically")
+	}
+	stillArchived, err := GetCollectionItem(db, items[0].ID)
+	if err != nil || stillArchived.ArchivedAt == 0 {
+		t.Fatalf("failed batch partially reopened item: %+v err=%v", stillArchived, err)
+	}
+	reopened, err := SetCollectionItemsArchived(db, ids, false)
+	if err != nil || reopened[0].ArchivedAt != 0 || reopened[2].ArchivedAt != 0 || reopened[0].ReadAt == 0 {
+		t.Fatalf("reopen = %+v err=%v", reopened, err)
+	}
+}
+
+func TestMigrateV46AddsCollectionItemArchiveState(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX idx_collection_items_archived`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE collection_items DROP COLUMN archived_at`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE schema_version SET version=46`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db, err = Open()
+	if err != nil {
+		t.Fatalf("migrate v46: %v", err)
+	}
+	defer db.Close()
+	var version, columns int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_items') WHERE name='archived_at'`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || columns != 1 {
+		t.Fatalf("version=%d archived_at columns=%d", version, columns)
+	}
+}
+
 func TestMigrateV43MarksHistoricalCollectionItemsRead(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()

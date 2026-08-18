@@ -241,6 +241,11 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 46
+		case 46:
+			if err := migrateV46ToV47(db); err != nil {
+				return err
+			}
+			version = 47
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -1285,6 +1290,34 @@ func migrateV45ToV46(db *sql.DB) error {
 		}
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 46`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV46ToV47 gives collection results a recoverable manual end state.
+// Existing records remain active: unlike Todo-derived completion there is no
+// historical signal from which a manual decision could be reconstructed.
+func migrateV46ToV47(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	has, err := tableHasColumn(tx, "collection_items", "archived_at")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := tx.Exec(`ALTER TABLE collection_items ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_collection_items_archived
+		ON collection_items(archived_at,updated_at DESC)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 47`); err != nil {
 		return err
 	}
 	return tx.Commit()

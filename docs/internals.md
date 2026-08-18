@@ -144,6 +144,9 @@ macOS 菜单栏 App 常驻时按默认 5 分钟间隔采集；主窗口关闭不
 折叠进「已保存与已了结」，主列表只留还欠一个动作的跟进。同一 Todo 的 `append` 不再平铺成同权重
 记录，而是按时间收进对应 `create` 的详情。`insight` 先保存在记录自己的结论中，只有用户显式执行
 `collect item save` 才写进中央知识库；`collect digest` 仅保留为人工的按来源/日期批量汇总入口。
+没有关联 Todo、或不想等待 Todo 生命周期时，可用 `collect item archive` 手动了结记录；它只写
+`collection_items.archived_at`，不会改 Todo、不会删除审计，也不会释放消息让下一轮重复收集。
+`collect item unarchive` 可恢复到主列表；App 中对应「了结记录」和「重新打开」。
 
 新产生的收集结果默认未读：新建 Todo、对已有 Todo 的补充、还没保存的结论和等人确认的提议都算，
 `collect status` 报未读数，侧栏和菜单栏出徽标，App 前台时还会弹一条桌面通知。打开即已读，

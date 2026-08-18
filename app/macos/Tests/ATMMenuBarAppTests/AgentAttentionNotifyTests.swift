@@ -208,7 +208,17 @@ final class AgentAttentionNotifyTests: XCTestCase {
 
     func testUnrecognizedOrEmptyPayloadsJustOpenTheApp() {
         XCTAssertEqual(ATMNotificationRoute.from(userInfo: [:]), .app)
-        XCTAssertEqual(ATMNotificationRoute.from(userInfo: ["event": "collection"]), .collection)
+        XCTAssertEqual(
+            ATMNotificationRoute.from(userInfo: ["event": "collection"]),
+            .collection(itemID: nil)
+        )
+        XCTAssertEqual(
+            ATMNotificationRoute.from(userInfo: [
+                "event": "collection",
+                "collection_item_id": "ci-new",
+            ]),
+            .collection(itemID: "ci-new")
+        )
         XCTAssertEqual(ATMNotificationRoute.from(userInfo: ["session_id": ""]), .app)
     }
 

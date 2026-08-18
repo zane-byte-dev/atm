@@ -147,6 +147,10 @@ type CollectionItem struct {
 	// ReadAt is zero until the user opens or explicitly acknowledges this
 	// collection result. It is intentionally independent of Todo lifecycle.
 	ReadAt int64 `json:"read_at"`
+	// ArchivedAt is a manual, recoverable end state for the collection record.
+	// It does not change the linked Todo or release source messages for another
+	// collection pass. Zero means the record is still active.
+	ArchivedAt int64 `json:"archived_at"`
 	// Attempts counts how many times processing this batch has been tried.
 	// Automatic retries stop at MaxCollectionAttempts; see
 	// CollectionRetriesExhausted.
@@ -611,6 +615,77 @@ func SetCollectionItemsRead(db *sql.DB, ids []string, read bool) ([]CollectionIt
 	return items, nil
 }
 
+// SetCollectionItemsArchived settles or reopens collection records atomically.
+// Archiving also acknowledges the records so manually completed work cannot
+// keep an unread badge alive. Reopening deliberately preserves the read state:
+// it restores a known record, it does not manufacture a new collection result.
+func SetCollectionItemsArchived(db *sql.DB, ids []string, archived bool) ([]CollectionItem, error) {
+	unique := uniqueCollectionItemIDs(ids)
+	if len(unique) == 0 {
+		return nil, fmt.Errorf("at least one collection item id is required")
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, len(unique))
+	for index, id := range unique {
+		args[index] = id
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var found int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM collection_items WHERE id IN (`+placeholders+`)`, args...).Scan(&found); err != nil {
+		return nil, err
+	}
+	if found != len(unique) {
+		return nil, fmt.Errorf("one or more collection items were not found")
+	}
+	now := time.Now().In(config.Loc).Unix()
+	archivedAt := int64(0)
+	if archived {
+		archivedAt = now
+		updateArgs := append([]any{archivedAt, now, now}, args...)
+		if _, err := tx.Exec(`UPDATE collection_items SET archived_at=?,read_at=?,updated_at=? WHERE id IN (`+placeholders+`)`, updateArgs...); err != nil {
+			return nil, err
+		}
+	} else {
+		updateArgs := append([]any{archivedAt, now}, args...)
+		if _, err := tx.Exec(`UPDATE collection_items SET archived_at=?,updated_at=? WHERE id IN (`+placeholders+`)`, updateArgs...); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	items := make([]CollectionItem, 0, len(unique))
+	for _, id := range unique {
+		item, err := GetCollectionItem(db, id)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func uniqueCollectionItemIDs(ids []string) []string {
+	unique := make([]string, 0, len(ids))
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	return unique
+}
+
 // MarkAllCollectionItemsRead acknowledges every result that can enter the
 // unread count. Noise and transient failures are not user-facing collection
 // results, so they do not need a synthetic read timestamp.
@@ -618,7 +693,7 @@ func MarkAllCollectionItemsRead(db *sql.DB) (int64, error) {
 	result, err := db.Exec(`UPDATE collection_items SET read_at=? WHERE id IN (
 		SELECT i.id FROM collection_items i
 		LEFT JOIN todos t ON t.id=i.todo_id
-		WHERE i.read_at=0 AND (
+		WHERE i.read_at=0 AND i.archived_at=0 AND (
 			i.proposed_action<>'' OR
 			(i.action='insight' AND i.knowledge_document_id='') OR
 			(i.action IN ('create','append') AND (i.todo_id IS NULL OR COALESCE(t.status,'') NOT IN ('done','dropped')))
@@ -644,7 +719,7 @@ func MarkAllCollectionItemsRead(db *sql.DB) (int64, error) {
 // to reprocess.
 func HandledCollectionMessageIDs(db *sql.DB, sourceID string) (map[string]struct{}, error) {
 	rows, err := db.Query(`SELECT message_ids FROM collection_items
-		WHERE source_id=? AND (status='processed' OR proposed_action<>''
+		WHERE source_id=? AND (archived_at<>0 OR status='processed' OR proposed_action<>''
 			OR (status='failed' AND attempts>=?))`, sourceID, MaxCollectionAttempts)
 	if err != nil {
 		return nil, err
@@ -738,7 +813,7 @@ func ListCollectionItems(db *sql.DB, sourceID string, limit int) ([]CollectionIt
 		limit = 100
 	}
 	rows, err := db.Query(collectionItemSelect+` WHERE (?='' OR i.source_id=?)
-		ORDER BY i.updated_at DESC,i.id DESC LIMIT ?`, sourceID, sourceID, limit)
+		ORDER BY (i.archived_at<>0),i.updated_at DESC,i.id DESC LIMIT ?`, sourceID, sourceID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1018,7 +1093,7 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 	}
 	err = db.QueryRow(`SELECT COUNT(*) FROM collection_items i
 		LEFT JOIN todos t ON t.id=i.todo_id
-		WHERE i.read_at=0 AND (
+		WHERE i.read_at=0 AND i.archived_at=0 AND (
 			i.proposed_action<>'' OR
 			(i.action='insight' AND i.knowledge_document_id='') OR
 			(i.action IN ('create','append') AND (i.todo_id IS NULL OR COALESCE(t.status,'') NOT IN ('done','dropped')))
@@ -1033,7 +1108,7 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 const collectionItemSelect = `SELECT i.id,i.source_id,i.connector,i.conversation_id,i.fingerprint,
 	i.message_ids,i.sender,i.occurred_at,i.raw_context,i.action,i.proposed_action,i.title,i.summary,
 	i.item_type,i.project,i.priority,i.reason,i.confidence,i.knowledge_document_id,i.knowledge_collection,
-	COALESCE(i.todo_id,''),i.status,i.read_at,i.attempts,
+	COALESCE(i.todo_id,''),i.status,i.read_at,i.archived_at,i.attempts,
 	i.dispatch_status,i.dispatch_error,i.error,
 	i.created_at,i.updated_at,COALESCE(t.status,''),t.archived_at IS NOT NULL
 	FROM collection_items i LEFT JOIN todos t ON t.id=i.todo_id`
@@ -1069,7 +1144,7 @@ func scanCollectionItem(scanner collectionScanner) (CollectionItem, error) {
 		&item.Fingerprint, &messageIDs, &item.Sender, &item.OccurredAt, &item.RawContext,
 		&item.Action, &item.ProposedAction, &item.Title, &item.Summary, &item.ItemType, &item.Project,
 		&item.Priority, &item.Reason, &item.Confidence, &item.KnowledgeDocumentID,
-		&item.KnowledgeCollection, &item.TodoID, &item.Status, &item.ReadAt, &item.Attempts,
+		&item.KnowledgeCollection, &item.TodoID, &item.Status, &item.ReadAt, &item.ArchivedAt, &item.Attempts,
 		&item.DispatchStatus, &item.DispatchError, &item.Error, &item.CreatedAt, &item.UpdatedAt,
 		&item.TodoStatus, &todoArchived)
 	item.TodoArchived = todoArchived != 0

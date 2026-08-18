@@ -58,7 +58,9 @@ import (
 // v46 adds collection_sources.muted so one noisy source can be taken out of the
 // desktop notifications without being taken out of collection: unread counts and
 // badges are untouched, only the banner is. Nothing is backfilled — 0 is the
-// behaviour every source had before.
+// behaviour every source had before. v47 adds collection_items.archived_at so a
+// person can settle a collected result without deleting its audit trail or
+// releasing its messages for collection again.
 // Keep
 // the minimum at 21 while those upgrade steps exist; after the live database has
 // been upgraded,
@@ -67,7 +69,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 46
+	SchemaVersion        = 47
 	minUpgradableVersion = 21
 )
 
@@ -623,6 +625,9 @@ func createSchema(tx *sql.Tx) error {
 			-- Read state belongs to the collection result, not to the Todo it may
 			-- have created. Zero means the result has not been acknowledged.
 			read_at         INTEGER NOT NULL DEFAULT 0,
+			-- A manually settled result stays in the audit ledger and handled-message
+			-- set, but leaves the active collection list. Zero means active.
+			archived_at     INTEGER NOT NULL DEFAULT 0,
 			-- How many times processing this batch has been tried. A failed item
 			-- is deliberately left out of the handled set so the next run picks it
 			-- up again, which is right for a connector that was briefly down and
@@ -646,6 +651,7 @@ func createSchema(tx *sql.Tx) error {
 		`CREATE INDEX idx_collection_items_source ON collection_items(source_id,occurred_at DESC)`,
 		`CREATE INDEX idx_collection_items_todo ON collection_items(todo_id)`,
 		`CREATE INDEX idx_collection_items_unread ON collection_items(read_at,updated_at DESC)`,
+		`CREATE INDEX idx_collection_items_archived ON collection_items(archived_at,updated_at DESC)`,
 
 		// One row per source per day: the knowledge document that day's insights
 		// were distilled into. A day's digest is a function of every insight that

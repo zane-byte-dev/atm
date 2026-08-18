@@ -222,7 +222,8 @@ final class StatusBarController {
             // Clicking the banner opens the window that can actually hold the
             // decision, not the transient menu-bar panel.
             approvalPresenter?.openManually()
-        case .collection:
+        case .collection(let itemID):
+            if let itemID { desktopNavigation.revealCollectionItem(itemID) }
             openDesktop(section: .collection)
         case .app:
             openDesktop()

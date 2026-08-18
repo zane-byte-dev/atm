@@ -80,8 +80,8 @@ final class ATMManualOrderTests: XCTestCase {
         )
     }
 
-    /// The row ID has to ride along as text: SwiftUI will not start a drag from a
-    /// provider with nothing registered on it.
+    /// The row ID has to ride along as text: a provider advertising nothing is a
+    /// row no drop target matches, which is how the gesture dies silently.
     func testItemProviderCarriesTheRowIDAsText() {
         let provider = ATMManualOrder.itemProvider(for: "inbox")
         XCTAssertEqual(provider.registeredTypeIdentifiers, [UTType.utf8PlainText.identifier])

@@ -341,7 +341,11 @@ final class ModelsTests: XCTestCase {
                        {"id":"ci3","source_id":"cs1","connector":"example",
                         "conversation_id":"channel-1","fingerprint":"fp3","message_ids":["m3"],
                         "action":"create","title":"没有回流状态的旧记录",
-                        "todo_id":"t3","status":"processed","created_at":104,"updated_at":105}],
+                        "todo_id":"t3","status":"processed","created_at":104,"updated_at":105},
+                       {"id":"ci4","source_id":"cs1","connector":"example",
+                        "conversation_id":"channel-1","fingerprint":"fp4","message_ids":["m4"],
+                        "action":"insight","title":"手动了结的结论","archived_at":106,
+                        "status":"processed","read_at":106,"created_at":106,"updated_at":106}],
               "digests":[]
             }
             """.utf8
@@ -382,6 +386,9 @@ final class ModelsTests: XCTestCase {
         XCTAssertNil(overview.items[2].todoStatus)
         XCTAssertNil(overview.items[2].todoArchived)
         XCTAssertEqual(overview.items[2].shouldCollapseInCollection, false)
+        XCTAssertTrue(overview.items[3].isArchived)
+        XCTAssertTrue(overview.items[3].shouldCollapseInCollection)
+        XCTAssertFalse(overview.items[3].isUnread)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "run"]), 300)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "item", "reprocess", "ci1"]), 180)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["todo", "refine", "t1", "--json"]), 180)
@@ -411,6 +418,14 @@ final class ModelsTests: XCTestCase {
             ATMCommandBuilder.collectionMarkAllRead(),
             ["collect", "item", "read", "--all", "--json"]
         )
+        XCTAssertEqual(
+            ATMCommandBuilder.collectionItemArchive(ids: ["ci1", "ci2"], archived: true),
+            ["collect", "item", "archive", "ci1", "ci2", "--json"]
+        )
+        XCTAssertEqual(
+            ATMCommandBuilder.collectionItemArchive(ids: ["ci1"], archived: false),
+            ["collect", "item", "unarchive", "ci1", "--json"]
+        )
     }
 
     func testCollectionGroupsTodoSupplementsUnderTheCreateRecord() throws {
@@ -428,18 +443,28 @@ final class ModelsTests: XCTestCase {
                "occurred_at":20,"status":"processed","created_at":20,"updated_at":20},
               {"id":"standalone","source_id":"s","connector":"c","fingerprint":"f4",
                "message_ids":["m4"],"action":"append","todo_id":"external-todo","status":"processed",
-               "created_at":40,"updated_at":40}
+               "created_at":40,"updated_at":40},
+              {"id":"archived-create","source_id":"s","connector":"c","fingerprint":"f5",
+               "message_ids":["m5"],"action":"create","todo_id":"t2","status":"processed",
+               "archived_at":50,"created_at":50,"updated_at":50},
+              {"id":"active-append","source_id":"s","connector":"c","fingerprint":"f6",
+               "message_ids":["m6"],"action":"append","todo_id":"t2","status":"processed",
+               "created_at":60,"updated_at":60}
             ]
             """.utf8
         )
         let items = try JSONDecoder().decode([ATMCollectionItem].self, from: data)
-        XCTAssertEqual(ATMCollectionItemGrouping.visibleItems(items).map(\.id), ["create", "standalone"])
+        XCTAssertEqual(
+            ATMCollectionItemGrouping.visibleItems(items).map(\.id),
+            ["create", "standalone", "archived-create", "active-append"]
+        )
         XCTAssertEqual(
             ATMCollectionItemGrouping.supplements(for: items[0], in: items).map(\.id),
             ["early", "late"]
         )
         XCTAssertEqual(ATMCollectionItemGrouping.unreadCount(for: items[0], in: items), 1)
         XCTAssertTrue(ATMCollectionItemGrouping.supplements(for: items[3], in: items).isEmpty)
+        XCTAssertTrue(ATMCollectionItemGrouping.supplements(for: items[4], in: items).isEmpty)
     }
 
     func testTaskRunDecodesExecutionEvidence() throws {

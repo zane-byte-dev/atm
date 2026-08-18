@@ -438,6 +438,7 @@ private struct DesktopAgentPresenceDetail: View {
     let onOpenSession: () -> Void
 
     @State private var selectedTab: DetailTab = .overview
+    @State private var transcriptMode: ATMSessionReadMode = .brief
     @State private var copied = false
     @State private var showingInterruptConfirmation = false
 
@@ -445,7 +446,27 @@ private struct DesktopAgentPresenceDetail: View {
         ATMDetailScaffold {
             detailHeader
         } tabs: {
-            ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
+                    if selectedTab == .transcript {
+                        Spacer(minLength: 12)
+                        transcriptReadControls
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
+                    if selectedTab == .transcript {
+                        HStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            transcriptReadControls
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         } content: {
             Group {
                 switch selectedTab {
@@ -457,7 +478,9 @@ private struct DesktopAgentPresenceDetail: View {
                     DesktopSessionTranscriptView(
                         sessionID: session.sessionID,
                         agentLabel: ATMAgentDisplay.name(session.tool),
-                        store: store
+                        store: store,
+                        mode: $transcriptMode,
+                        showsReadControls: false
                     )
                 case .logs:
                     fullLogsContent
@@ -582,6 +605,14 @@ private struct DesktopAgentPresenceDetail: View {
         return items
     }
 
+    private var transcriptReadControls: some View {
+        DesktopSessionReadControls(
+            sessionID: session.sessionID,
+            store: store,
+            mode: $transcriptMode
+        )
+    }
+
     private var overviewContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
@@ -603,7 +634,7 @@ private struct DesktopAgentPresenceDetail: View {
                 technicalDetails
             }
             .frame(maxWidth: 820, alignment: .leading)
-            .padding(.horizontal, 24)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -615,7 +646,7 @@ private struct DesktopAgentPresenceDetail: View {
                 executionUpdates
             }
             .frame(maxWidth: 820, alignment: .leading)
-            .padding(.horizontal, 24)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -632,7 +663,7 @@ private struct DesktopAgentPresenceDetail: View {
                     Button("刷新") { store.loadTaskRunLog(for: todoID) }
                         .controlSize(.small)
                 }
-                .padding(.horizontal, 16)
+                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
                 .frame(height: 42)
                 .background(ATMTheme.listPane)
 
@@ -640,7 +671,7 @@ private struct DesktopAgentPresenceDetail: View {
                     ATMTranscriptTextView(
                         text: log.isEmpty ? "该执行尚未产生日志。" : log,
                         font: .monospacedSystemFont(ofSize: ATMFont.Tier.caption.size, weight: .regular),
-                        insets: NSSize(width: 16, height: 14),
+                        insets: NSSize(width: ATMDetailLayout.horizontalPadding, height: 14),
                         accessibilityLabel: "Codex 全部执行日志",
                         scrollsToEndOnUpdate: true
                     )
@@ -1068,6 +1099,7 @@ private struct DesktopIndexedSessionDetail: View {
     let relatedTodo: ATMTodo?
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
+    @State private var transcriptMode: ATMSessionReadMode = .brief
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1075,7 +1107,8 @@ private struct DesktopIndexedSessionDetail: View {
             DesktopSessionTranscriptView(
                 sessionID: session.id,
                 agentLabel: ATMAgentDisplay.name(session.agent),
-                store: store
+                store: store,
+                mode: $transcriptMode
             )
         }
         .background(ATMTheme.canvas)
@@ -1120,7 +1153,7 @@ private struct DesktopIndexedSessionDetail: View {
                 Spacer(minLength: 0)
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
         .padding(.vertical, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ATMTheme.surface)

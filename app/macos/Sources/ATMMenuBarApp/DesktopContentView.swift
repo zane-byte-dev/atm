@@ -383,6 +383,9 @@ final class ATMDesktopNavigation: ObservableObject {
     @Published var selectedCollectionItemID: String? {
         didSet { if section == .collection { navigationDidChange() } }
     }
+    /// Bumped even when the destination ID is unchanged, so clicking a collection
+    /// notification always returns an already-open workspace from 来源 to 记录.
+    @Published private(set) var collectionItemRevealRequest = 0
     @Published var selectedAgentID: String? {
         didSet { if section == .agents { navigationDidChange() } }
     }
@@ -435,6 +438,11 @@ final class ATMDesktopNavigation: ObservableObject {
         backStack.append(recordedLocation)
         trimHistory(&backStack)
         restore(target)
+    }
+
+    func revealCollectionItem(_ itemID: String) {
+        selectedCollectionItemID = itemID
+        collectionItemRevealRequest += 1
     }
 
     private var currentLocation: ATMDesktopLocation {
@@ -1633,7 +1641,7 @@ struct DesktopTodoDetail: View {
                 title: "正在整理任务",
                 message: "模型在润色标题和需求；复杂工作会拆成子任务并写一份计划。"
             )
-            .padding(.horizontal, 16)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.top, 10)
         } else if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty {
             ATMInlineNotice(
@@ -1644,7 +1652,7 @@ struct DesktopTodoDetail: View {
                 onAction: { store.refineTodo(id: todo.id) },
                 onDismiss: { store.dismissRefineError(for: todo.id) }
             )
-            .padding(.horizontal, 16)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.top, 10)
         }
     }
@@ -1863,7 +1871,8 @@ struct DesktopTodoDetail: View {
                 }
 
             }
-            .padding(16)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+            .padding(.vertical, 16)
             .frame(maxWidth: 860, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
@@ -2026,7 +2035,8 @@ struct DesktopTodoDetail: View {
                         .atmWorkspaceCard()
                     }
                 }
-                .padding(18)
+                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                .padding(.vertical, 18)
                 .frame(maxWidth: 860, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
@@ -2343,7 +2353,8 @@ struct DesktopTodoDetail: View {
                 }
                 TodoProgressView(todo: todo, store: store)
             }
-            .padding(16)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+            .padding(.vertical, 16)
             .frame(maxWidth: 860, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
