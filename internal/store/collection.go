@@ -138,6 +138,9 @@ type CollectionItem struct {
 	KnowledgeCollection string `json:"knowledge_collection,omitempty"`
 	TodoID              string `json:"todo_id,omitempty"`
 	Status              string `json:"status"`
+	// ReadAt is zero until the user opens or explicitly acknowledges this
+	// collection result. It is intentionally independent of Todo lifecycle.
+	ReadAt int64 `json:"read_at"`
 	// Attempts counts how many times processing this batch has been tried.
 	// Automatic retries stop at MaxCollectionAttempts; see
 	// CollectionRetriesExhausted.
@@ -185,6 +188,9 @@ type CollectionSummary struct {
 	// goes quiet instead of failing loudly every run, so something has to say it
 	// is still there — otherwise the fix trades a noisy problem for a silent one.
 	RetryStopped int `json:"retry_stopped"`
+	// Unread is the number of collected results still worth surfacing to a
+	// person: new Todo writes, supplements, unsaved conclusions and proposals.
+	Unread int `json:"unread_count"`
 }
 
 type CollectionOverview struct {
@@ -472,14 +478,14 @@ func PutCollectionItem(db *sql.DB, item CollectionItem) (CollectionItem, bool, e
 	result, err := db.Exec(`INSERT INTO collection_items
 		(id,source_id,connector,conversation_id,fingerprint,message_ids,sender,occurred_at,
 		raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,
-		 knowledge_document_id,knowledge_collection,todo_id,status,attempts,dispatch_status,dispatch_error,
+		 knowledge_document_id,knowledge_collection,todo_id,status,read_at,attempts,dispatch_status,dispatch_error,
 		 error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
 		item.ID, item.SourceID, item.Connector, item.ConversationID, item.Fingerprint,
 		string(messageIDs), item.Sender, item.OccurredAt, item.RawContext, item.Action,
 		item.ProposedAction, item.Title, item.Summary, item.ItemType, item.Project, item.Priority, item.Reason,
 		item.Confidence, item.KnowledgeDocumentID, item.KnowledgeCollection,
-		nullableString(item.TodoID), item.Status, item.Attempts,
+		nullableString(item.TodoID), item.Status, item.ReadAt, item.Attempts,
 		item.DispatchStatus, item.DispatchError, item.Error, item.CreatedAt, item.UpdatedAt)
 	if err != nil {
 		return CollectionItem{}, false, err
@@ -500,11 +506,11 @@ func UpdateCollectionItem(db *sql.DB, item CollectionItem) error {
 	item.UpdatedAt = time.Now().In(config.Loc).Unix()
 	_, err = db.Exec(`UPDATE collection_items SET conversation_id=?,message_ids=?,sender=?,occurred_at=?,
 		raw_context=?,action=?,proposed_action=?,title=?,summary=?,item_type=?,project=?,priority=?,reason=?,confidence=?,
-		knowledge_document_id=?,knowledge_collection=?,todo_id=?,status=?,attempts=?,dispatch_status=?,dispatch_error=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
+		knowledge_document_id=?,knowledge_collection=?,todo_id=?,status=?,read_at=?,attempts=?,dispatch_status=?,dispatch_error=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
 		item.Sender, item.OccurredAt, item.RawContext, item.Action, item.ProposedAction, item.Title, item.Summary,
 		item.ItemType, item.Project, item.Priority, item.Reason, item.Confidence,
 		item.KnowledgeDocumentID, item.KnowledgeCollection,
-		nullableString(item.TodoID), item.Status, item.Attempts, item.DispatchStatus,
+		nullableString(item.TodoID), item.Status, item.ReadAt, item.Attempts, item.DispatchStatus,
 		item.DispatchError, item.Error, item.UpdatedAt, item.ID)
 	return err
 }
@@ -516,6 +522,85 @@ func GetCollectionItemByFingerprint(db *sql.DB, connector, fingerprint string) (
 
 func GetCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
 	return scanCollectionItem(db.QueryRow(collectionItemSelect+` WHERE i.id=?`, id))
+}
+
+// SetCollectionItemsRead atomically acknowledges or reopens specific collection
+// records. Missing IDs fail the whole operation so a UI group cannot become
+// half-read when one of its folded supplement records is stale.
+func SetCollectionItemsRead(db *sql.DB, ids []string, read bool) ([]CollectionItem, error) {
+	unique := make([]string, 0, len(ids))
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		unique = append(unique, id)
+	}
+	if len(unique) == 0 {
+		return nil, fmt.Errorf("at least one collection item id is required")
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, len(unique))
+	for index, id := range unique {
+		args[index] = id
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var found int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM collection_items WHERE id IN (`+placeholders+`)`, args...).Scan(&found); err != nil {
+		return nil, err
+	}
+	if found != len(unique) {
+		return nil, fmt.Errorf("one or more collection items were not found")
+	}
+	readAt := int64(0)
+	if read {
+		readAt = time.Now().In(config.Loc).Unix()
+	}
+	updateArgs := append([]any{readAt}, args...)
+	if _, err := tx.Exec(`UPDATE collection_items SET read_at=? WHERE id IN (`+placeholders+`)`, updateArgs...); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	items := make([]CollectionItem, 0, len(unique))
+	for _, id := range unique {
+		item, err := GetCollectionItem(db, id)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// MarkAllCollectionItemsRead acknowledges every result that can enter the
+// unread count. Noise and transient failures are not user-facing collection
+// results, so they do not need a synthetic read timestamp.
+func MarkAllCollectionItemsRead(db *sql.DB) (int64, error) {
+	result, err := db.Exec(`UPDATE collection_items SET read_at=? WHERE id IN (
+		SELECT i.id FROM collection_items i
+		LEFT JOIN todos t ON t.id=i.todo_id
+		WHERE i.read_at=0 AND (
+			i.proposed_action<>'' OR
+			(i.action='insight' AND i.knowledge_document_id='') OR
+			(i.action IN ('create','append') AND (i.todo_id IS NULL OR COALESCE(t.status,'') NOT IN ('done','dropped')))
+		)
+	)`,
+		time.Now().In(config.Loc).Unix())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // HandledCollectionMessageIDs returns the exact source messages that already
@@ -900,6 +985,16 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 	}
 	err = db.QueryRow(`SELECT COUNT(*) FROM collection_items
 		WHERE status='failed' AND attempts>=?`, MaxCollectionAttempts).Scan(&summary.RetryStopped)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	err = db.QueryRow(`SELECT COUNT(*) FROM collection_items i
+		LEFT JOIN todos t ON t.id=i.todo_id
+		WHERE i.read_at=0 AND (
+			i.proposed_action<>'' OR
+			(i.action='insight' AND i.knowledge_document_id='') OR
+			(i.action IN ('create','append') AND (i.todo_id IS NULL OR COALESCE(t.status,'') NOT IN ('done','dropped')))
+		)`).Scan(&summary.Unread)
 	return CollectionOverview{Summary: summary, Sources: sources, Runs: runs,
 		Items: items, Digests: digests}, err
 }
@@ -910,7 +1005,7 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 const collectionItemSelect = `SELECT i.id,i.source_id,i.connector,i.conversation_id,i.fingerprint,
 	i.message_ids,i.sender,i.occurred_at,i.raw_context,i.action,i.proposed_action,i.title,i.summary,
 	i.item_type,i.project,i.priority,i.reason,i.confidence,i.knowledge_document_id,i.knowledge_collection,
-	COALESCE(i.todo_id,''),i.status,i.attempts,
+	COALESCE(i.todo_id,''),i.status,i.read_at,i.attempts,
 	i.dispatch_status,i.dispatch_error,i.error,
 	i.created_at,i.updated_at,COALESCE(t.status,''),t.archived_at IS NOT NULL
 	FROM collection_items i LEFT JOIN todos t ON t.id=i.todo_id`
@@ -944,7 +1039,7 @@ func scanCollectionItem(scanner collectionScanner) (CollectionItem, error) {
 		&item.Fingerprint, &messageIDs, &item.Sender, &item.OccurredAt, &item.RawContext,
 		&item.Action, &item.ProposedAction, &item.Title, &item.Summary, &item.ItemType, &item.Project,
 		&item.Priority, &item.Reason, &item.Confidence, &item.KnowledgeDocumentID,
-		&item.KnowledgeCollection, &item.TodoID, &item.Status, &item.Attempts,
+		&item.KnowledgeCollection, &item.TodoID, &item.Status, &item.ReadAt, &item.Attempts,
 		&item.DispatchStatus, &item.DispatchError, &item.Error, &item.CreatedAt, &item.UpdatedAt,
 		&item.TodoStatus, &todoArchived)
 	item.TodoArchived = todoArchived != 0

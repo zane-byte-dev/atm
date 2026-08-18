@@ -82,8 +82,115 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 		t.Fatalf("load overview: %v", err)
 	}
 	if overview.Summary.Sources != 1 || overview.Summary.Enabled != 0 || overview.Summary.Fetched != 2 ||
-		overview.Summary.Created != 1 || len(overview.Items) != 1 || len(overview.Runs) != 1 {
+		overview.Summary.Created != 1 || overview.Summary.Unread != 1 ||
+		len(overview.Items) != 1 || len(overview.Runs) != 1 {
 		t.Fatalf("unexpected overview: %+v", overview)
+	}
+}
+
+func TestCollectionReadStateCountsOnlyActionableResults(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "read-state", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []CollectionItem{
+		{SourceID: source.ID, Connector: "test", Fingerprint: "create", Action: "create", Status: "processed"},
+		{SourceID: source.ID, Connector: "test", Fingerprint: "append", Action: "append", Status: "processed"},
+		{SourceID: source.ID, Connector: "test", Fingerprint: "insight", Action: "insight", Status: "processed"},
+		{SourceID: source.ID, Connector: "test", Fingerprint: "ignore", Action: "ignore", Status: "processed"},
+	}
+	stored := map[string]CollectionItem{}
+	for _, item := range items {
+		item.MessageIDs = []string{"m-" + item.Fingerprint}
+		created, _, err := PutCollectionItem(db, item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored[item.Fingerprint] = created
+	}
+	overview, err := LoadCollectionOverview(db, 20)
+	if err != nil || overview.Summary.Unread != 3 {
+		t.Fatalf("initial unread=%d err=%v", overview.Summary.Unread, err)
+	}
+	changed, err := SetCollectionItemsRead(db,
+		[]string{stored["create"].ID, stored["append"].ID}, true)
+	if err != nil || len(changed) != 2 || changed[0].ReadAt == 0 || changed[1].ReadAt == 0 {
+		t.Fatalf("mark read = %+v err=%v", changed, err)
+	}
+	overview, _ = LoadCollectionOverview(db, 20)
+	if overview.Summary.Unread != 1 {
+		t.Fatalf("unread after read = %d", overview.Summary.Unread)
+	}
+	if _, err := SetCollectionItemsRead(db, []string{stored["create"].ID}, false); err != nil {
+		t.Fatal(err)
+	}
+	overview, _ = LoadCollectionOverview(db, 20)
+	if overview.Summary.Unread != 2 {
+		t.Fatalf("unread after reopening = %d", overview.Summary.Unread)
+	}
+	count, err := MarkAllCollectionItemsRead(db)
+	if err != nil || count != 2 {
+		t.Fatalf("mark all count=%d err=%v", count, err)
+	}
+	overview, _ = LoadCollectionOverview(db, 20)
+	if overview.Summary.Unread != 0 {
+		t.Fatalf("unread after mark all = %d", overview.Summary.Unread)
+	}
+	if _, err := SetCollectionItemsRead(db, []string{"missing"}, true); err == nil {
+		t.Fatal("missing item should make the read update fail")
+	}
+}
+
+func TestMigrateV43MarksHistoricalCollectionItemsRead(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "read-migration", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _, err := PutCollectionItem(db, CollectionItem{
+		SourceID: source.ID, Connector: "test", Fingerprint: "historical",
+		MessageIDs: []string{"m1"}, Action: "insight", Status: "processed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX idx_collection_items_unread`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE collection_items DROP COLUMN read_at`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE schema_version SET version=43`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db, err = Open()
+	if err != nil {
+		t.Fatalf("migrate v43: %v", err)
+	}
+	defer db.Close()
+	migrated, err := GetCollectionItem(db, item.ID)
+	if err != nil || migrated.ReadAt == 0 {
+		t.Fatalf("historical item was not marked read: %+v err=%v", migrated, err)
+	}
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != SchemaVersion {
+		t.Fatalf("version=%d err=%v", version, err)
 	}
 }
 

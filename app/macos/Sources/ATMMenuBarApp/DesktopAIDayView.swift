@@ -138,8 +138,16 @@ struct DesktopAIDayView: View {
     private var refreshButton: some View {
         HStack(spacing: 8) {
             if store.isLoading { ProgressView().controlSize(.small) }
-            Button { store.refresh() } label: { Image(systemName: "arrow.clockwise") }
-                .buttonStyle(.plain).help("刷新 AI Day")
+            ATMIconButton(
+                systemImage: "arrow.clockwise",
+                help: "刷新 AI Day",
+                chrome: .bare,
+                isEnabled: !store.isLoading,
+                side: 30,
+                iconTier: .bodyLarge
+            ) {
+                store.refresh()
+            }
         }
     }
 

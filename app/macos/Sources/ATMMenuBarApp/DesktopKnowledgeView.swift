@@ -8,7 +8,6 @@ private enum KnowledgeDrawerTab: String {
 }
 
 struct DesktopKnowledgeView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
     let onCreateCollection: () -> Void
@@ -85,10 +84,10 @@ struct DesktopKnowledgeView: View {
     var body: some View {
         ATMSplitColumn(
             id: "knowledge",
-            defaultWidth: 316,
-            minWidth: 260,
-            maxWidth: 410,
-            detailMinWidth: 400
+            defaultWidth: ATMWorkspaceLayout.navigatorDefaultWidth,
+            minWidth: ATMWorkspaceLayout.navigatorMinWidth,
+            maxWidth: ATMWorkspaceLayout.navigatorMaxWidth,
+            detailMinWidth: ATMWorkspaceLayout.readingDetailMinWidth
         ) {
             itemList
         } detail: {
@@ -269,8 +268,9 @@ struct DesktopKnowledgeView: View {
     }
 
     private var itemList: some View {
-        VStack(spacing: 0) {
+        ATMGroupedNavigator {
             knowledgeDrawerTabs
+        } content: {
             Group {
                 if drawerTab == .articles {
                     articleGroups
@@ -280,7 +280,6 @@ struct DesktopKnowledgeView: View {
             }
             .atmAnimatedSwap(drawerTab.rawValue, style: .tab)
         }
-        .background(ATMTheme.listPane)
     }
 
     private var knowledgeDetailIdentity: String {
@@ -291,13 +290,12 @@ struct DesktopKnowledgeView: View {
     }
 
     private var knowledgeDrawerTabs: some View {
-        HStack(spacing: 18) {
+        ATMNavigatorHeader {
             ATMCompactSegmentedTabs(
                 selection: $drawerTab,
                 items: [(.articles, "文章"), (.libraries, "知识库")]
             )
-            Spacer(minLength: 4)
-
+        } trailing: {
             if drawerTab == .articles {
                 ATMIconButton(
                     systemImage: isListLoading ? "hourglass" : "arrow.clockwise",
@@ -333,12 +331,11 @@ struct DesktopKnowledgeView: View {
                 }
             }
         }
-        .atmDrawerHeaderRow()
     }
 
     private var articleGroups: some View {
         ScrollView {
-            LazyVStack(spacing: 5) {
+            LazyVStack(spacing: ATMGroupedNavigatorMetrics.groupSpacing) {
                 knowledgeLibraryGroup(
                     id: ATMKnowledgeLibrary.memoryID,
                     title: "共享记忆",
@@ -365,8 +362,8 @@ struct DesktopKnowledgeView: View {
                     collection: nil
                 )
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 10)
+            .padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
+            .padding(.vertical, ATMGroupedNavigatorMetrics.contentVerticalInset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -379,12 +376,13 @@ struct DesktopKnowledgeView: View {
                 ATMEmptyState(icon: "folder", title: "还没有知识库", detail: "点击右上角新建第一个知识库")
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 5) {
+                    LazyVStack(spacing: ATMGroupedNavigatorMetrics.groupSpacing) {
                         ForEach(sortedKnowledgeCollections) { collection in
                             knowledgeLibraryManagementRow(collection)
                         }
                     }
-                    .padding(8)
+                    .padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
+                    .padding(.vertical, ATMGroupedNavigatorMetrics.contentVerticalInset)
                 }
             }
         }
@@ -397,14 +395,19 @@ struct DesktopKnowledgeView: View {
             navigation.selectedKnowledgeLibraryID = collection.id
             expandedLibraryIDs.insert(collection.id)
         } label: {
-            HStack(spacing: 10) {
+            ATMNavigatorRow(isSelected: isSelected) {
                 Image(systemName: collection.id == "inbox" ? "tray" : "folder")
                     .font(ATMFont.font(.body, weight: .medium))
                     .foregroundStyle(ATMTheme.accent)
-                    .frame(width: 18)
+                    .frame(
+                        width: ATMContentRowLayout.leadingVisualSize,
+                        height: ATMContentRowLayout.leadingVisualSize
+                    )
+                    .background(ATMTheme.accentFill, in: Circle())
+            } content: {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(collection.name)
-                        .font(ATMFont.font(.body, weight: .semibold))
+                        .font(ATMFont.font(.body, weight: .medium))
                         .foregroundStyle(ATMTheme.primary)
                         .lineLimit(1)
                     Text(collection.id)
@@ -412,7 +415,7 @@ struct DesktopKnowledgeView: View {
                         .foregroundStyle(ATMTheme.secondary)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 4)
+            } trailing: {
                 Text(String(collection.documentCount))
                     .font(ATMFont.mono(.caption, .semibold))
                     .foregroundStyle(ATMTheme.secondary)
@@ -420,7 +423,6 @@ struct DesktopKnowledgeView: View {
                     .padding(.vertical, 2)
                     .background(ATMTheme.controlFill, in: Capsule())
             }
-            .atmRowSurface(isSelected: isSelected)
             .contentShape(Rectangle())
         }
         .buttonStyle(.atmRow)
@@ -467,79 +469,30 @@ struct DesktopKnowledgeView: View {
         let isArchiveLibrary = id == ATMKnowledgeLibrary.archiveID
         let displayedItems = isSelected ? items : (itemsByLibraryID[id] ?? [])
         let hasLoadedItems = isSelected || itemsByLibraryID[id] != nil
+        let expanded = Binding<Bool>(
+            get: { expandedLibraryIDs.contains(id) },
+            set: { shouldExpand in
+                if shouldExpand {
+                    expandedLibraryIDs.insert(id)
+                    if !isSelected { navigation.selectedKnowledgeLibraryID = id }
+                } else if isSelected {
+                    expandedLibraryIDs.remove(id)
+                } else {
+                    // An already-open, non-selected group becomes current on the
+                    // first click; a second click can then collapse it.
+                    navigation.selectedKnowledgeLibraryID = id
+                }
+            }
+        )
 
         VStack(spacing: 3) {
-            HStack(spacing: 3) {
-                Button {
-                    withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
-                        if isExpanded {
-                            if isSelected {
-                                expandedLibraryIDs.remove(id)
-                            } else {
-                                navigation.selectedKnowledgeLibraryID = id
-                            }
-                        } else {
-                            expandedLibraryIDs.insert(id)
-                            if !isSelected {
-                                navigation.selectedKnowledgeLibraryID = id
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 7) {
-                        Image(systemName: "chevron.right")
-                            .font(ATMFont.font(.caption, weight: .semibold))
-                            .foregroundStyle(ATMTheme.secondary)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        Image(systemName: icon)
-                            .font(ATMFont.font(.caption, weight: .semibold))
-                            .foregroundStyle(ATMTheme.accent)
-                            .frame(width: 14)
-                        Text(title)
-                            .lineLimit(1)
-                        if let count {
-                            Text(String(count))
-                                .font(ATMFont.mono(.caption, .semibold))
-                                .foregroundStyle(ATMTheme.secondary)
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(ATMTheme.controlFill, in: Capsule())
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .font(ATMFont.font(.footnote, weight: .semibold))
-                    .padding(.horizontal, 10)
-                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .atmRightClickMenu {
-                    if isArchiveLibrary {
-                        ATMMenuItem("刷新归档") {
-                            documentCache.removeAll()
-                            refreshGeneration += 1
-                        }
-                    } else {
-                        ATMMenuItem("新建知识库…") { onCreateCollection() }
-                        if let collection {
-                            ATMMenuItem("在此新建知识…") {
-                                navigation.selectedKnowledgeLibraryID = collection.id
-                                expandedLibraryIDs.insert(collection.id)
-                                showingCreateSheet = true
-                            }
-                            ATMMenuSeparator()
-                            ATMMenuItem("重命名…") { onRenameCollection(collection) }
-                            ATMMenuItem("删除…", destructive: true) { onDeleteCollection(collection) }
-                        }
-                        ATMMenuSeparator()
-                        ATMMenuItem("刷新目录") { store.refreshKnowledgeCatalog() }
-                        ATMMenuItem("复制知识库 ID") {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(id, forType: .string)
-                        }
-                    }
-                }
-
+            ATMNavigatorGroupHeader(
+                title: title,
+                count: count ?? displayedItems.count,
+                tint: ATMTheme.accent,
+                systemImage: icon,
+                isExpanded: expanded
+            ) {
                 if isSelected, id != ATMKnowledgeLibrary.memoryID, !isArchiveLibrary {
                     Menu {
                         Button {
@@ -570,6 +523,32 @@ struct DesktopKnowledgeView: View {
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
                     .disabled(isImporting)
+                }
+            }
+            .atmRightClickMenu {
+                if isArchiveLibrary {
+                    ATMMenuItem("刷新归档") {
+                        documentCache.removeAll()
+                        refreshGeneration += 1
+                    }
+                } else {
+                    ATMMenuItem("新建知识库…") { onCreateCollection() }
+                    if let collection {
+                        ATMMenuItem("在此新建知识…") {
+                            navigation.selectedKnowledgeLibraryID = collection.id
+                            expandedLibraryIDs.insert(collection.id)
+                            showingCreateSheet = true
+                        }
+                        ATMMenuSeparator()
+                        ATMMenuItem("重命名…") { onRenameCollection(collection) }
+                        ATMMenuItem("删除…", destructive: true) { onDeleteCollection(collection) }
+                    }
+                    ATMMenuSeparator()
+                    ATMMenuItem("刷新目录") { store.refreshKnowledgeCatalog() }
+                    ATMMenuItem("复制知识库 ID") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(id, forType: .string)
+                    }
                 }
             }
 
@@ -705,7 +684,7 @@ struct DesktopKnowledgeView: View {
             }
             requestSelection(item.id)
         } label: {
-            HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
+            ATMNavigatorRow(isSelected: selected) {
                 Image(systemName: item.icon)
                     .font(ATMFont.font(.body, weight: .medium))
                     .foregroundStyle(iconColor)
@@ -714,6 +693,7 @@ struct DesktopKnowledgeView: View {
                         height: ATMContentRowLayout.leadingVisualSize
                     )
                     .background(iconColor.opacity(0.10), in: Circle())
+            } content: {
                 VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                     Text(item.title)
                         .font(ATMFont.font(.body, weight: .medium))
@@ -724,7 +704,7 @@ struct DesktopKnowledgeView: View {
                         Text(subtitle)
                             .font(ATMFont.footnote)
                             .foregroundStyle(ATMTheme.secondary)
-                            .lineLimit(2)
+                            .lineLimit(1)
                             .multilineTextAlignment(.leading)
                     }
                     HStack(spacing: 5) {
@@ -737,9 +717,7 @@ struct DesktopKnowledgeView: View {
                     .font(ATMFont.caption)
                     .foregroundStyle(ATMTheme.secondary)
                 }
-                Spacer(minLength: 0)
             }
-            .atmRowSurface(isSelected: selected)
         }
         .buttonStyle(.atmRow)
         .atmRightClickMenu { knowledgeMenuEntries(for: item) }
@@ -902,7 +880,7 @@ struct DesktopKnowledgeView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 20)
-            .frame(maxWidth: 900, alignment: .leading)
+            .frame(maxWidth: ATMWorkspaceLayout.readingColumnMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -1009,7 +987,7 @@ struct DesktopKnowledgeView: View {
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 20)
-            .frame(maxWidth: 900, alignment: .leading)
+            .frame(maxWidth: ATMWorkspaceLayout.readingColumnMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }

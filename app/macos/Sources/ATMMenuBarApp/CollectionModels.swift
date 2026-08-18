@@ -11,6 +11,9 @@ struct ATMCollectionSummary: Decodable, Equatable {
     let insightToday: Int
     let ignoredToday: Int
     let failedToday: Int
+    /// New Todo writes, supplements and unsaved conclusions that the user has
+    /// not opened yet. Optional only for compatibility with an older CLI.
+    let unreadCount: Int?
     /// 自动重试已用尽、正在等人处理的记录数。按整个台账统计，不限今天：值为 0 时界面
     /// 什么都不说，非 0 才是唯一需要人看一眼的失败信号。旧版 CLI 不返回，按 0 读。
     let retryStopped: Int?
@@ -25,12 +28,13 @@ struct ATMCollectionSummary: Decodable, Equatable {
         case ignoredToday = "ignored_today"
         case failedToday = "failed_today"
         case retryStopped = "retry_stopped"
+        case unreadCount = "unread_count"
     }
 
     static let empty = ATMCollectionSummary(
         sources: 0, enabledSources: 0, fetchedToday: 0, createdToday: 0,
         appendedToday: 0, insightToday: 0, ignoredToday: 0, failedToday: 0,
-        retryStopped: 0
+        unreadCount: 0, retryStopped: 0
     )
 }
 
@@ -415,6 +419,7 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     let occurredAt: Int64?
     let rawContext: String?
     let action: String
+    let proposedAction: String?
     let title: String?
     let summary: String?
     let itemType: String?
@@ -428,6 +433,9 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     let knowledgeCollection: String?
     let todoID: String?
     let status: String
+    /// Zero means this result has not been acknowledged. The current CLI always
+    /// returns the field; nil is treated as read for compatibility with old builds.
+    let readAt: Int64?
     /// How many times this batch has been tried. Absent from older CLI output,
     /// which is read as zero: a fresh budget is the safe reading, because it
     /// describes an item the next run will pick up rather than one already
@@ -449,6 +457,8 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, connector, fingerprint, sender, action, title, summary, project,
              priority, reason, confidence, status, attempts, error
+        case proposedAction = "proposed_action"
+        case readAt = "read_at"
         case dispatchStatus = "dispatch_status"
         case dispatchError = "dispatch_error"
         case sourceID = "source_id"
@@ -507,6 +517,16 @@ enum ATMCollectionItemType: String, CaseIterable, Identifiable {
 }
 
 extension ATMCollectionItem {
+    /// Read state is only meaningful for a result the collection workspace asks
+    /// the person to inspect. Noise, transient failures, saved conclusions and
+    /// closed Todos never inflate the unread badge.
+    var isUnread: Bool {
+        guard readAt == 0 else { return false }
+        if proposedAction?.isEmpty == false { return true }
+        if shouldCollapseInCollection { return false }
+        return action == "create" || action == "append" || action == "insight"
+    }
+
     /// True once the Todo this record filed has been finished or dropped. The
     /// request that came in from the source has been answered, so the record is
     /// done too — whoever closed the Todo, and whenever.
@@ -555,6 +575,13 @@ enum ATMCollectionItemGrouping {
                 let rhs = $1.occurredAt ?? $1.createdAt
                 return lhs == rhs ? $0.id < $1.id : lhs < rhs
             }
+    }
+
+    static func unreadCount(
+        for item: ATMCollectionItem,
+        in items: [ATMCollectionItem]
+    ) -> Int {
+        ([item] + supplements(for: item, in: items)).filter(\.isUnread).count
     }
 }
 

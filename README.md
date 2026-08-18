@@ -113,7 +113,27 @@ atm collect source add --connector slack --kind channel --id C123 --project atm
 atm collect enable                       # 开启 App 常驻期间的后台自动收集
 atm collect run                          # 立即增量收集一次
 atm collect item save <item-id>          # 确认后把收集结论保存为知识
+atm collect item read <item-id>          # 标记一条收集结果已读
+atm collect item read --all              # 全部标为已读
+atm collect item unread <item-id>        # 重新标为未读
 ```
+
+**外发动作闸门**（默认不安装）
+
+```bash
+atm guard install dws --bin ~/.qoderwork/bin/dws   # 装到工具自己的路径上
+atm guard status                         # 哪些工具被拦住了，哪些被绕过了
+atm guard list                           # 待授权的外发动作
+atm guard show <id>                      # 一条请求的全文与执行结果
+atm guard approve <id>                   # 批准，并由 ATM 执行这条命令
+atm guard deny <id> --reason "内容不对"    # 拒绝
+atm guard uninstall dws                  # 撤掉，把工具的二进制放回原位
+```
+
+拦的是「会被别人看到」的动作——发钉钉消息、催 MR 评审人、推 ATA 群——读操作完全不碰。装闸门之前
+先 `atm backup`，装完跑一次 `atm guard status`：**PATH 上有同名两份时装错那份等于没装**，`status`
+会明确告诉你。规则在 `~/.atm/config.json` 的 `guard` 段，不配置也有内置的三条。
+机制、取舍与拦不到什么见 [docs/internals.md](docs/internals.md#外发动作闸门)。
 
 全局 flag：
 
@@ -125,7 +145,8 @@ atm collect item save <item-id>          # 确认后把收集结论保存为知�
 
 独立菜单栏 App 常驻显示今日 Token 和「需要你 N」，主窗口提供任务、收集、Agent、知识、用量和 AI Day 六个
 工作区。会话详情的「对话」支持摘要、时序、完整三种读法；收集工作区把钉钉等外部来源的消息分类成
-Todo 或待确认结论，结论由用户明确保存到知识库，并可重试、纠错与撤销。
+Todo 或待确认结论。新 Todo、Todo 补充和未保存结论会作为未读收集结果持续提醒，打开后标为已读；
+结论由用户明确保存到知识库，并可重试、纠错与撤销。
 
 ```bash
 app/macos/Scripts/build-app.sh
@@ -216,6 +237,11 @@ Qoder 装完要重启才生效；Pi 需要手动复制
   （submit/review）、完成、放弃都会提醒；`--json` 同样发送；缺少通知命令时静默跳过，不影响任务状态。
   菜单栏 App 在刷新时也会对外部新建/进入待验收发原生通知。设 `ATM_SKIP_LOCAL_NOTIFICATION=1`
   可关闭 CLI 本地通知
+- 外发动作闸门只支持 macOS / Linux：它靠 `exec` 替换当前进程，装的 shim 也是 POSIX shell 脚本。
+  Windows 上 `atm guard install` 直接报错而不是装一个半能用的东西
+- 想再加一层保险，可以在 `~/.claude/settings.json` 的 `permissions.deny` 里加
+  `"Bash(*-atm-real*)"`，挡住直接调用被移开的真身。**这一条要你自己加，ATM 不会代写**——
+  `atm agent hook install` 写的是同一个文件，而它承诺过只装上报 hook、不改任何权限决定
 
 ## 构建
 

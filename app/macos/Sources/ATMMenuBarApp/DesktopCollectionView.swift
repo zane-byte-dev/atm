@@ -38,7 +38,6 @@ private struct CollectionItemDeletion {
 }
 
 struct DesktopCollectionView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
 
@@ -76,6 +75,10 @@ struct DesktopCollectionView: View {
         ATMCollectionItemGrouping.visibleItems(filteredItems)
     }
 
+    private var unreadCount: Int {
+        store.collectionOverview.summary.unreadCount ?? 0
+    }
+
     private var selectedItem: ATMCollectionItem? {
         guard let id = navigation.selectedCollectionItemID else { return displayedItems.first }
         return displayedItems.first { $0.id == id } ?? displayedItems.first
@@ -102,13 +105,14 @@ struct DesktopCollectionView: View {
     var body: some View {
         ATMSplitColumn(
             id: "collection",
-            defaultWidth: 330,
-            minWidth: 260,
-            maxWidth: 420,
-            detailMinWidth: 420
+            defaultWidth: ATMWorkspaceLayout.navigatorDefaultWidth,
+            minWidth: ATMWorkspaceLayout.navigatorMinWidth,
+            maxWidth: ATMWorkspaceLayout.navigatorMaxWidth,
+            detailMinWidth: ATMWorkspaceLayout.objectDetailMinWidth
         ) {
-            VStack(spacing: 0) {
+            ATMGroupedNavigator {
                 collectionDrawerTabs
+            } content: {
                 workspaceErrorBanner
                 Group {
                     if drawerTab == .records {
@@ -119,9 +123,6 @@ struct DesktopCollectionView: View {
                 }
                 .atmAnimatedSwap(drawerTab.rawValue, style: .tab)
             }
-            // 中栏 surface / 右栏 canvas —— 和任务、Agent、知识一致，标题区也算中栏，
-            // 底色铺在整根列上；只铺在列表上时标题区会漏出根视图的 canvas。
-            .background(ATMTheme.listPane)
         } detail: {
             detailColumn
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -133,8 +134,12 @@ struct DesktopCollectionView: View {
             selectDefaultItem()
             selectDefaultSource()
             revealSelectedSourceGroup()
+            markSelectedItemRead()
         }
-        .onChange(of: store.collectionOverview.items.map(\.id)) { _ in selectDefaultItem() }
+        .onChange(of: store.collectionOverview.items.map(\.id)) { _ in
+            selectDefaultItem()
+            markSelectedItemRead()
+        }
         .onChange(of: store.collectionOverview.sources.map(\.id)) { _ in selectDefaultSource() }
         .onChange(of: drawerTab) { tab in
             if tab == .sources {
@@ -144,7 +149,10 @@ struct DesktopCollectionView: View {
             }
         }
         .onChange(of: showingIgnoredItems) { _ in selectDefaultItem() }
-        .onChange(of: navigation.selectedCollectionItemID) { _ in revealSelectedSourceGroup() }
+        .onChange(of: navigation.selectedCollectionItemID) { _ in
+            revealSelectedSourceGroup()
+            markSelectedItemRead()
+        }
         .sheet(isPresented: $showingAddSource) {
             CollectionSourceEditor(store: store) { showingAddSource = false }
         }
@@ -179,37 +187,48 @@ struct DesktopCollectionView: View {
     }
 
     private var collectionDrawerTabs: some View {
-        HStack(spacing: 12) {
+        ATMNavigatorHeader {
             ATMCompactSegmentedTabs(
                 selection: $drawerTab,
                 items: [(.records, "记录"), (.sources, "来源")]
             )
-            Spacer(minLength: 4)
-            ATMIconButton(
-                systemImage: "gearshape",
-                help: "收集设置",
-                chrome: .bare,
-                side: 30,
-                iconTier: .bodyLarge
-            ) {
-                showingCollectionSettings.toggle()
-            }
-            .popover(isPresented: $showingCollectionSettings, arrowEdge: .top) {
-                CollectionAutomationSettings(store: store)
-            }
-            if drawerTab == .sources {
+        } trailing: {
+            HStack(spacing: ATMSpacing.xSmall) {
+                if drawerTab == .records, unreadCount > 0 {
+                    Button {
+                        store.markAllCollectionItemsRead()
+                    } label: {
+                        Label("全部已读", systemImage: "checkmark.circle")
+                            .font(ATMFont.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("将 \(unreadCount) 条新收集全部标为已读")
+                }
                 ATMIconButton(
-                    systemImage: "plus",
-                    help: "添加来源",
-                    chrome: .chip,
+                    systemImage: "gearshape",
+                    help: "收集设置",
+                    chrome: .bare,
                     side: 30,
                     iconTier: .bodyLarge
                 ) {
-                    showingAddSource = true
+                    showingCollectionSettings.toggle()
+                }
+                .popover(isPresented: $showingCollectionSettings, arrowEdge: .top) {
+                    CollectionAutomationSettings(store: store)
+                }
+                if drawerTab == .sources {
+                    ATMIconButton(
+                        systemImage: "plus",
+                        help: "添加来源",
+                        chrome: .chip,
+                        side: 30,
+                        iconTier: .bodyLarge
+                    ) {
+                        showingAddSource = true
+                    }
                 }
             }
         }
-        .atmDrawerHeaderRow()
     }
 
     /// 采集失败有来源可归属，右栏的“采集状态”卡片已经说了；但添加/删除来源、
@@ -253,8 +272,8 @@ struct DesktopCollectionView: View {
                                 .atmContentStackRow()
                         }
                     }
-                    .padding(.horizontal, ATMContentRowLayout.outerHorizontalPadding)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
+                    .padding(.vertical, ATMGroupedNavigatorMetrics.contentVerticalInset)
                 }
             }
         }
@@ -266,7 +285,7 @@ struct DesktopCollectionView: View {
             if selectedSourceID != source.id { editingSourceID = nil }
             selectedSourceID = source.id
         } label: {
-            HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
+            ATMNavigatorRow(isSelected: selected) {
                 Image(systemName: source.symbolName)
                     .font(ATMFont.font(.body, weight: .medium))
                     .foregroundStyle(source.enabled ? ATMTheme.accent : ATMTheme.secondary)
@@ -278,13 +297,12 @@ struct DesktopCollectionView: View {
                         (source.enabled ? ATMTheme.accent : ATMTheme.secondary).opacity(0.10),
                         in: Circle()
                     )
+            } content: {
                 VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
-                    HStack(spacing: 6) {
-                        Text(source.displayName)
-                            .font(ATMFont.font(.body, weight: .medium))
-                            .foregroundStyle(ATMTheme.primary)
-                            .lineLimit(1)
-                    }
+                    Text(source.displayName)
+                        .font(ATMFont.font(.body, weight: .medium))
+                        .foregroundStyle(ATMTheme.primary)
+                        .lineLimit(1)
                     Text(
                         "\(source.connector) · \(collectionKindLabel(source.kind)) · 每 \(source.effectiveIntervalMinutes) 分钟"
                     )
@@ -292,7 +310,7 @@ struct DesktopCollectionView: View {
                     .foregroundStyle(ATMTheme.secondary)
                     .lineLimit(1)
                 }
-                Spacer(minLength: 0)
+            } trailing: {
                 HStack(spacing: 5) {
                     Circle()
                         .fill(sourceStatusColor(source))
@@ -303,7 +321,6 @@ struct DesktopCollectionView: View {
                 }
                 .fixedSize()
             }
-            .atmRowSurface(isSelected: selected)
             .contentShape(Rectangle())
         }
         .buttonStyle(.atmRow)
@@ -328,19 +345,19 @@ struct DesktopCollectionView: View {
                     detail: "添加来源后，ATM 会在后台自动收集。"
                 )
             } else {
-                List {
+                ATMGroupedNavigatorScroll {
                     ForEach(store.collectionOverview.sources) { source in
                         let items = primaryItems.filter { $0.sourceID == source.id }
                         if !items.isEmpty {
                             let expanded = expandedBinding(for: source.id)
-                            Section {
+                            ATMNavigatorGroup {
+                                sourceSectionHeader(source, items: items, expanded: expanded)
+                            } content: {
                                 if expanded.wrappedValue {
                                     ForEach(items) { item in
                                         itemRow(item)
                                     }
                                 }
-                            } header: {
-                                sourceSectionHeader(source, items: items, expanded: expanded)
                             }
                         }
                     }
@@ -348,13 +365,7 @@ struct DesktopCollectionView: View {
                     let unknownItems = primaryItems.filter { source(for: $0) == nil }
                     if !unknownItems.isEmpty {
                         let expanded = expandedBinding(for: "__unknown__")
-                        Section {
-                            if expanded.wrappedValue {
-                                ForEach(unknownItems) { item in
-                                    itemRow(item)
-                                }
-                            }
-                        } header: {
+                        ATMNavigatorGroup {
                             genericSourceSectionHeader(
                                 "其他来源",
                                 systemImage: "questionmark.folder",
@@ -362,28 +373,32 @@ struct DesktopCollectionView: View {
                                 expanded: expanded,
                                 clear: { requestClear("其他来源", items: unknownItems) }
                             )
+                        } content: {
+                            if expanded.wrappedValue {
+                                ForEach(unknownItems) { item in
+                                    itemRow(item)
+                                }
+                            }
                         }
                     }
 
                     if !ignoredItems.isEmpty {
-                        Section {
-                            if showingIgnoredItems {
-                                ForEach(ignoredItems) { item in
-                                    itemRow(item).opacity(0.78)
-                                }
-                            }
-                        } header: {
+                        ATMNavigatorGroup {
                             genericSourceSectionHeader(
                                 "已保存与已了结",
                                 count: ignoredItems.count,
                                 expanded: $showingIgnoredItems,
                                 clear: { requestClear("已保存与已了结", items: ignoredItems) }
                             )
+                        } content: {
+                            if showingIgnoredItems {
+                                ForEach(ignoredItems) { item in
+                                    itemRow(item).opacity(0.78)
+                                }
+                            }
                         }
                     }
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
             }
         }
         // 记录的删除确认挂在中栏而不是根视图：来源删除已经占了根视图的
@@ -420,47 +435,35 @@ struct DesktopCollectionView: View {
         items: [ATMCollectionItem],
         expanded: Binding<Bool>
     ) -> some View {
-        HStack(spacing: 7) {
-            Button {
-                withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
-                    expanded.wrappedValue.toggle()
+        ATMNavigatorGroupHeader(
+            title: source.displayName,
+            count: items.count,
+            tint: source.enabled ? ATMTheme.accent : ATMTheme.secondary,
+            systemImage: source.symbolName,
+            isExpanded: expanded
+        ) {
+            HStack(spacing: ATMSpacing.small) {
+                if !source.enabled {
+                    Text("已暂停")
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
                 }
-            } label: {
-                ATMDrawerDisclosureLabel(
-                    title: source.displayName,
-                    count: items.count,
-                    tint: source.enabled ? ATMTheme.accent : ATMTheme.secondary,
-                    isExpanded: expanded.wrappedValue,
-                    systemImage: source.symbolName
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if !source.enabled {
-                Text("已暂停")
-                    .font(ATMFont.caption)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-            Spacer()
-            sectionActionMenu {
-                Button("查看聊天记录") {
-                    historySource = source
+                sectionActionMenu {
+                    Button("查看聊天记录") {
+                        historySource = source
+                    }
+                    Button("编辑") { editSource(source) }
+                    Button(source.enabled ? "暂停" : "启用") {
+                        store.setCollectionSource(source, enabled: !source.enabled)
+                    }
+                    Divider()
+                    Button("清空记录", role: .destructive) {
+                        requestClear(source.displayName, items: items)
+                    }
+                    Button("删除来源", role: .destructive) { deleteCandidate = source }
                 }
-                Button("编辑") { editSource(source) }
-                Button(source.enabled ? "暂停" : "启用") {
-                    store.setCollectionSource(source, enabled: !source.enabled)
-                }
-                Divider()
-                // 两条销毁动作紧挨着，所以都点明销毁的是什么：清空动的是这一组记录、
-                // 来源留着继续收；删除动的是来源配置、记录留着。
-                Button("清空记录", role: .destructive) {
-                    requestClear(source.displayName, items: items)
-                }
-                Button("删除来源", role: .destructive) { deleteCandidate = source }
             }
         }
-        .textCase(nil)
     }
 
     private func genericSourceSectionHeader(
@@ -470,23 +473,13 @@ struct DesktopCollectionView: View {
         expanded: Binding<Bool>,
         clear: (() -> Void)? = nil
     ) -> some View {
-        HStack(spacing: 7) {
-            Button {
-                withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
-                    expanded.wrappedValue.toggle()
-                }
-            } label: {
-                ATMDrawerDisclosureLabel(
-                    title: title,
-                    count: count,
-                    tint: ATMTheme.secondary,
-                    isExpanded: expanded.wrappedValue,
-                    systemImage: systemImage
-                )
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            Spacer()
+        ATMNavigatorGroupHeader(
+            title: title,
+            count: count,
+            tint: ATMTheme.secondary,
+            systemImage: systemImage,
+            isExpanded: expanded
+        ) {
             if let clear {
                 sectionActionMenu {
                     Button("清空记录", role: .destructive, action: clear)
@@ -494,7 +487,6 @@ struct DesktopCollectionView: View {
             }
         }
         .foregroundStyle(ATMTheme.secondary)
-        .textCase(nil)
     }
 
     /// 分组标题右侧的省略号菜单。三种分组（来源、其他来源、已保存与已了结）用同一个，
@@ -517,18 +509,36 @@ struct DesktopCollectionView: View {
         // 选中判定比的是 `selectedItem`，不是 selectedCollectionItemID —— 后者为 nil 时
         // 详情栏会回退展示首条，直接比 ID 会出现「右栏有内容、中栏没高亮」。
         let selected = selectedItem?.id == item.id
+        let records = [item] + supplements(for: item)
+        let rowUnreadCount = records.filter(\.isUnread).count
         return Button {
+            if rowUnreadCount > 0 {
+                store.setCollectionItemsRead(records, read: true)
+            }
             navigation.selectedCollectionItemID = item.id
         } label: {
-            CollectionItemRow(item: item, supplementCount: supplements(for: item).count)
-                .atmRowSurface(isSelected: selected)
+            CollectionItemRow(
+                item: item,
+                supplementCount: records.count - 1,
+                unreadCount: rowUnreadCount,
+                isSelected: selected
+            )
         }
         .buttonStyle(.atmRow)
         .focusable(false)
-        .atmContentListRow()
+        .atmContentStackRow()
         // 右键只放导航和删除。重新处理、修正、撤销这些要看记录状态才知道能不能做，
         // 判定在详情栏（见 CollectionItemDetail），在这儿抄一遍就是抄两套规则。
         .atmRightClickMenu {
+            if rowUnreadCount > 0 {
+                ATMMenuItem("标为已读", systemImage: "checkmark.circle") {
+                    store.setCollectionItemsRead(records, read: true)
+                }
+            } else {
+                ATMMenuItem("标为未读", systemImage: "circle.fill") {
+                    store.setCollectionItemsRead(records, read: false)
+                }
+            }
             if item.todoID != nil {
                 ATMMenuItem("打开 Todo") { openTodo(item) }
             }
@@ -656,6 +666,13 @@ struct DesktopCollectionView: View {
         var set = collapsedSourceGroups
         guard set.remove(groupID) != nil else { return }
         collapsedSourceGroupsRaw = set.sorted().joined(separator: ",")
+    }
+
+    private func markSelectedItemRead() {
+        guard drawerTab == .records, let item = selectedItem else { return }
+        let records = [item] + supplements(for: item)
+        guard records.contains(where: \.isUnread) else { return }
+        store.setCollectionItemsRead(records, read: true)
     }
 }
 
@@ -1116,6 +1133,8 @@ private struct CollectionConnectorHealthSummary: View {
 private struct CollectionItemRow: View {
     let item: ATMCollectionItem
     let supplementCount: Int
+    let unreadCount: Int
+    let isSelected: Bool
 
     private var itemType: ATMCollectionItemType {
         ATMCollectionItemType.resolve(item.itemType)
@@ -1124,7 +1143,7 @@ private struct CollectionItemRow: View {
     private var retryStopped: Bool { item.retryStopped == true }
 
     var body: some View {
-        HStack(alignment: .top, spacing: ATMContentRowLayout.leadingSpacing) {
+        ATMNavigatorRow(isSelected: isSelected) {
             Image(systemName: collectionActionIcon(item.action, retryStopped: retryStopped))
                 .font(ATMFont.font(.footnote, weight: .semibold))
                 .symbolRenderingMode(.monochrome)
@@ -1137,6 +1156,7 @@ private struct CollectionItemRow: View {
                     collectionActionColor(item.action, retryStopped: retryStopped).opacity(0.10),
                     in: Circle()
                 )
+        } content: {
             VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                 Text(item.title?.isEmpty == false
                     ? item.title!
@@ -1145,7 +1165,7 @@ private struct CollectionItemRow: View {
                         retryStopped: retryStopped,
                         saved: item.knowledgeDocumentID?.isEmpty == false
                     ))
-                    .font(ATMFont.font(.body, weight: .medium))
+                    .font(ATMFont.font(.body, weight: unreadCount > 0 ? .semibold : .medium))
                     .lineLimit(2)
                 HStack(spacing: 5) {
                     Text(itemType.title)
@@ -1178,6 +1198,14 @@ private struct CollectionItemRow: View {
                 }
                 .font(ATMFont.caption)
                 .foregroundStyle(ATMTheme.secondary)
+            }
+        } trailing: {
+            if unreadCount > 0 {
+                Circle()
+                    .fill(ATMTheme.accent)
+                    .frame(width: 7, height: 7)
+                    .padding(.top, 7)
+                    .accessibilityLabel("未读")
             }
         }
     }
@@ -1216,12 +1244,19 @@ private struct CollectionItemDetail: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
+        ATMDetailScaffold {
             header
-            detailTabs
+        } tabs: {
+            ATMCapsuleTabs(
+                selection: $selectedTab,
+                items: [
+                    (.decision, "处理详情"),
+                    (.transcript, transcriptTabTitle),
+                ]
+            )
+        } content: {
             content
         }
-        .background(ATMTheme.canvas)
         .sheet(isPresented: $showingCorrection) {
             CollectionCorrectionSheet(item: item) { title, project, priority in
                 store.correctCollectionItem(
@@ -1288,22 +1323,6 @@ private struct CollectionItemDetail: View {
             .frame(maxWidth: 880, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-    }
-
-    private var detailTabs: some View {
-        HStack {
-            ATMCapsuleTabs(
-                selection: $selectedTab,
-                items: [
-                    (.decision, "处理详情"),
-                    (.transcript, transcriptTabTitle),
-                ]
-            )
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(ATMTheme.canvas)
     }
 
     private var transcriptTabTitle: String {
@@ -1744,6 +1763,73 @@ private enum CollectionSourceEditorPresentation: Equatable {
     case detail
 }
 
+enum CollectionIntervalUnit: Int, CaseIterable, Identifiable {
+    case minute = 1
+    case hour = 60
+    case day = 1440
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .minute: return "分钟"
+        case .hour: return "小时"
+        case .day: return "天"
+        }
+    }
+}
+
+struct CollectionIntervalInput {
+    let text: String
+    let unit: CollectionIntervalUnit
+
+    var minutes: Int? {
+        guard validationMessage == nil else { return nil }
+        return Int(text.trimmingCharacters(in: .whitespacesAndNewlines)).map {
+            $0 * unit.rawValue
+        }
+    }
+
+    var validationMessage: String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return "请输入采集频率" }
+        guard trimmed.allSatisfy({ $0.isNumber }), let value = Int(trimmed), value > 0 else {
+            return "采集频率必须是正整数"
+        }
+        guard value <= 1440 / unit.rawValue else {
+            return "采集间隔不能超过 1 天"
+        }
+        return nil
+    }
+
+    static func displayValue(for minutes: Int) -> (text: String, unit: CollectionIntervalUnit) {
+        if minutes.isMultiple(of: CollectionIntervalUnit.day.rawValue) {
+            return (String(minutes / CollectionIntervalUnit.day.rawValue), .day)
+        }
+        if minutes.isMultiple(of: CollectionIntervalUnit.hour.rawValue) {
+            return (String(minutes / CollectionIntervalUnit.hour.rawValue), .hour)
+        }
+        return (String(minutes), .minute)
+    }
+}
+
+private struct CollectionIntervalPreset: Identifiable {
+    let minutes: Int
+    let label: String
+
+    var id: Int { minutes }
+}
+
+private let collectionIntervalPresets = [
+    CollectionIntervalPreset(minutes: 5, label: "每 5 分钟"),
+    CollectionIntervalPreset(minutes: 15, label: "每 15 分钟"),
+    CollectionIntervalPreset(minutes: 30, label: "每 30 分钟"),
+    CollectionIntervalPreset(minutes: 60, label: "每小时"),
+    CollectionIntervalPreset(minutes: 360, label: "每 6 小时"),
+    CollectionIntervalPreset(minutes: 720, label: "每 12 小时"),
+    CollectionIntervalPreset(minutes: 1440, label: "每天"),
+]
+
 /// One source form shared by the add sheet and the right-hand detail editor.
 /// Keeping the fields here means validation and CLI arguments cannot drift
 /// between the two presentations.
@@ -1764,7 +1850,8 @@ private struct CollectionSourceEditor: View {
     @State private var knowledgeCollection = ""
     @State private var strategy = "tasks"
     @State private var decisionUnit = "window"
-    @State private var intervalMinutes = 5
+    @State private var intervalValue = "5"
+    @State private var intervalUnit = CollectionIntervalUnit.minute
     @State private var autoDispatch = false
 
     @State private var searchKind = ATMCollectionSearchKind.all
@@ -1812,7 +1899,11 @@ private struct CollectionSourceEditor: View {
         _knowledgeCollection = State(initialValue: source?.knowledgeCollection ?? "")
         _strategy = State(initialValue: source?.effectiveStrategy ?? "tasks")
         _decisionUnit = State(initialValue: source?.effectiveDecisionUnit ?? "window")
-        _intervalMinutes = State(initialValue: source?.effectiveIntervalMinutes ?? 5)
+        let interval = CollectionIntervalInput.displayValue(
+            for: source?.effectiveIntervalMinutes ?? 5
+        )
+        _intervalValue = State(initialValue: interval.text)
+        _intervalUnit = State(initialValue: interval.unit)
         _autoDispatch = State(initialValue: source?.automaticallyDispatches ?? false)
     }
 
@@ -1908,6 +1999,7 @@ private struct CollectionSourceEditor: View {
 
     private var saveBlockReason: String? {
         if let reason = identity.blockReason { return reason }
+        if let reason = intervalInput.validationMessage { return reason }
         if autoDispatch && project.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return "自动派发前请指定项目"
         }
@@ -1915,7 +2007,9 @@ private struct CollectionSourceEditor: View {
     }
 
     private func save() {
-        guard let target = identity.target else { return }
+        guard let target = identity.target, let intervalMinutes = intervalInput.minutes else {
+            return
+        }
         store.addCollectionSource(
             connector: identity.trimmedConnector, target: target, name: name,
             project: project, priority: priority,
@@ -2325,8 +2419,8 @@ private struct CollectionSourceEditor: View {
                         // Only nudge the interval when it is still the other
                         // strategy's default; a frequency someone chose survives.
                         let previousDefault = value == "observe" ? 5 : 60
-                        if intervalMinutes == previousDefault {
-                            intervalMinutes = value == "observe" ? 60 : 5
+                        if intervalInput.minutes == previousDefault {
+                            setIntervalMinutes(value == "observe" ? 60 : 5)
                         }
                         if value == "observe" { autoDispatch = false }
                     }
@@ -2343,10 +2437,40 @@ private struct CollectionSourceEditor: View {
 
                 HStack(alignment: .top, spacing: 14) {
                     formField("采集频率", hint: "每次检查新消息的间隔") {
-                        Stepper(value: $intervalMinutes, in: 1...1440) {
-                            Text("每 \(intervalMinutes) 分钟")
-                                .monospacedDigit()
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(spacing: 8) {
+                                Picker("常用频率", selection: intervalPresetSelection) {
+                                    Text("自定义").tag(-1)
+                                    ForEach(collectionIntervalPresets) { preset in
+                                        Text(preset.label).tag(preset.minutes)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(minWidth: 118)
+
+                                TextField("数值", text: $intervalValue)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 72)
+
+                                Picker("单位", selection: $intervalUnit) {
+                                    ForEach(CollectionIntervalUnit.allCases) { unit in
+                                        Text(unit.label).tag(unit)
+                                    }
+                                }
+                                .labelsHidden()
+                                .frame(width: 82)
+                            }
+
+                            if let message = intervalInput.validationMessage {
+                                Label(message, systemImage: "exclamationmark.circle.fill")
+                                    .font(ATMFont.caption)
+                                    .foregroundStyle(ATMTheme.danger)
+                            } else if intervalUnit != .minute, let minutes = intervalInput.minutes {
+                                Text("实际间隔：\(minutes) 分钟")
+                                    .font(ATMFont.caption)
+                                    .foregroundStyle(ATMTheme.secondary)
+                                    .monospacedDigit()
+                            }
                         }
                     }
                     if strategy == "observe" {
@@ -2427,6 +2551,31 @@ private struct CollectionSourceEditor: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var intervalInput: CollectionIntervalInput {
+        CollectionIntervalInput(text: intervalValue, unit: intervalUnit)
+    }
+
+    private var intervalPresetSelection: Binding<Int> {
+        Binding(
+            get: {
+                guard let minutes = intervalInput.minutes,
+                      collectionIntervalPresets.contains(where: { $0.minutes == minutes })
+                else { return -1 }
+                return minutes
+            },
+            set: { minutes in
+                guard minutes > 0 else { return }
+                setIntervalMinutes(minutes)
+            }
+        )
+    }
+
+    private func setIntervalMinutes(_ minutes: Int) {
+        let display = CollectionIntervalInput.displayValue(for: minutes)
+        intervalValue = display.text
+        intervalUnit = display.unit
     }
 
     private var strategyHint: String {

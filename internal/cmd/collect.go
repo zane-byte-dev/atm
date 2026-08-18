@@ -58,6 +58,7 @@ var (
 	collectItemProject      string
 	collectItemPriority     string
 	collectItemCollection   string
+	collectItemReadAll      bool
 )
 
 func init() {
@@ -130,11 +131,14 @@ func init() {
 	collectItemDeleteCmd.Flags().BoolVarP(&collectYes, "yes", "y", false, "skip confirmation")
 	collectItemSaveCmd.Flags().StringVar(&collectItemCollection, "collection", "",
 		"knowledge collection to save into (default: source setting or "+config.CollectionDigestCollection+")")
+	collectItemReadCmd.Flags().BoolVar(&collectItemReadAll, "all", false,
+		"mark every unread collection result as read")
 
 	collectSourceCmd.AddCommand(collectSourceListCmd, collectSourceSearchCmd, collectSourceAddCmd,
 		collectSourceEnableCmd, collectSourceDisableCmd, collectSourceDeleteCmd)
 	collectItemCmd.AddCommand(collectItemReprocessCmd, collectItemPromoteCmd, collectItemCorrectCmd,
-		collectItemSaveCmd, collectItemRevertCmd, collectItemDeleteCmd)
+		collectItemSaveCmd, collectItemReadCmd, collectItemUnreadCmd,
+		collectItemRevertCmd, collectItemDeleteCmd)
 	collectCmd.AddCommand(collectStatusCmd, collectRunCmd, collectDigestCmd, collectEnableCmd,
 		collectDisableCmd, collectHistoryCmd, collectSearchCmd, collectAnalyzeCmd,
 		collectSourceCmd, collectItemCmd)
@@ -202,6 +206,9 @@ var collectStatusCmd = &cobra.Command{
 			if pending := collectionPendingProposals(value.Items); pending > 0 {
 				// Proposals wait on a person; without a count they are easy to forget.
 				fmt.Printf("Awaiting confirmation: %d · atm collect item promote <item-id>\n", pending)
+			}
+			if value.Summary.Unread > 0 {
+				fmt.Printf("Unread collection results: %d · atm collect item read --all\n", value.Summary.Unread)
 			}
 			for _, health := range value.ConnectorHealth {
 				detail := ""
@@ -1141,6 +1148,68 @@ var collectItemSaveCmd = &cobra.Command{
 		}
 		return printCollectionItem(item)
 	},
+}
+
+var collectItemReadCmd = &cobra.Command{
+	Use:   "read <item-id>...",
+	Short: "Mark collection results as read",
+	Args: func(cmd *cobra.Command, args []string) error {
+		if collectItemReadAll {
+			if len(args) > 0 {
+				return fmt.Errorf("read accepts item ids or --all, not both")
+			}
+			return nil
+		}
+		if len(args) == 0 {
+			return fmt.Errorf("read requires at least one item id or --all")
+		}
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return withDB(false, func(db *sql.DB) error {
+			if collectItemReadAll {
+				count, err := store.MarkAllCollectionItemsRead(db)
+				if err != nil {
+					return err
+				}
+				if jsonOutput {
+					output.JSON(map[string]any{"count": count, "read": true})
+				} else {
+					fmt.Printf("Marked %d collection results read\n", count)
+				}
+				return nil
+			}
+			return printCollectionReadChange(db, uniqueStrings(args), true)
+		})
+	},
+}
+
+var collectItemUnreadCmd = &cobra.Command{
+	Use:   "unread <item-id>...",
+	Short: "Mark collection results as unread",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return withDB(false, func(db *sql.DB) error {
+			return printCollectionReadChange(db, uniqueStrings(args), false)
+		})
+	},
+}
+
+func printCollectionReadChange(db *sql.DB, ids []string, read bool) error {
+	items, err := store.SetCollectionItemsRead(db, ids, read)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		output.JSON(map[string]any{"items": items, "count": len(items), "read": read})
+		return nil
+	}
+	state := "unread"
+	if read {
+		state = "read"
+	}
+	fmt.Printf("Marked %d collection results %s\n", len(items), state)
+	return nil
 }
 
 var collectItemRevertCmd = &cobra.Command{

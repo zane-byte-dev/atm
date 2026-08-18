@@ -113,6 +113,9 @@ var (
 	// keep service credentials and private endpoints outside ATM while returning
 	// versioned, provider-neutral cards for the CLI and App.
 	QuotaProviders map[string]QuotaProviderConfig
+	// Guard holds the outbound action gate's overrides. The built-in rules apply
+	// with no config at all; this only widens or retunes them.
+	Guard GuardConfig
 	// TextModelBaseURL and TextModelName configure ATM's narrow built-in text
 	// service. Credentials deliberately stay out of config.json: the CLI reads
 	// ~/.atm/credentials.json, with DEEPSEEK_API_KEY as an ephemeral override.
@@ -175,6 +178,68 @@ type QuotaProviderConfig struct {
 	VisibleMetrics []string `json:"visible_metrics,omitempty"`
 }
 
+// GuardJSONArg reads a preview value out of a positional argument that is itself
+// JSON, which is how aone-kit carries a tool's parameters.
+type GuardJSONArg struct {
+	// Index is 1-based over the command's leading non-flag tokens.
+	Index int `json:"index"`
+	// Path is dotted, e.g. "fieldName_0.content".
+	Path string `json:"path"`
+}
+
+// GuardExtractor locates one piece of a gated command's preview — who it reaches,
+// and what it says. Extraction is presentation only: a rule that matches is
+// always gated, whether or not a preview could be built from it.
+type GuardExtractor struct {
+	// Flags are alternatives, tried in order; both --flag value and --flag=value
+	// are read.
+	Flags []string `json:"flags,omitempty"`
+	// Positional is 1-based over the command's leading non-flag tokens.
+	Positional int           `json:"positional,omitempty"`
+	JSONArg    *GuardJSONArg `json:"json_arg,omitempty"`
+}
+
+// GuardRule describes one command shape that must not run unreviewed.
+//
+// Path and ArgvPattern are both evaluated against only the *leading* run of
+// non-flag tokens, never the whole command line. That is what stops a message
+// body from choosing its own rule: an agent sending
+// `--text "ata::message-ding-talk-send-to-webhook"` must not have that text
+// gate — or worse, mis-preview — an unrelated read.
+type GuardRule struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Path must appear as a consecutive run of subcommand tokens, e.g.
+	// ["chat","message","send"].
+	Path []string `json:"path,omitempty"`
+	// ArgvPattern is matched against single tokens and should be anchored, for
+	// commands whose dangerous action is encoded inside one argument.
+	ArgvPattern string         `json:"argv_pattern,omitempty"`
+	Target      GuardExtractor `json:"target,omitzero"`
+	Title       GuardExtractor `json:"title,omitzero"`
+	Body        GuardExtractor `json:"body,omitzero"`
+}
+
+type GuardToolConfig struct {
+	// Bin is the path the shim was installed at. Empty means exec.LookPath.
+	Bin string `json:"bin,omitempty"`
+	// Rules replace the built-in rules of the same id and add new ones. Setting
+	// this to an empty list does not disable the built-ins; remove the tool or
+	// uninstall its shim for that.
+	Rules []GuardRule `json:"rules,omitempty"`
+}
+
+// GuardConfig configures the outbound action gate. The wait is agent-scale and
+// the expiry is human-scale, deliberately: the wait only has to catch a user who
+// is already at the desk, and a request outliving it is the designed path rather
+// than a failure.
+type GuardConfig struct {
+	WaitSeconds         int                        `json:"wait_seconds,omitempty"`
+	ExpireMinutes       int                        `json:"expire_minutes,omitempty"`
+	DenyCooldownMinutes int                        `json:"deny_cooldown_minutes,omitempty"`
+	Tools               map[string]GuardToolConfig `json:"tools,omitempty"`
+}
+
 type FileConfig struct {
 	Timezone          string `json:"timezone,omitempty"`
 	OwnerName         string `json:"owner_name,omitempty"`
@@ -206,6 +271,7 @@ type FileConfig struct {
 	Pricing         map[string][4]float64          `json:"pricing,omitempty"`
 	Subscriptions   map[string]float64             `json:"subscriptions,omitempty"`
 	ProjectAliases  map[string]string              `json:"project_aliases,omitempty"`
+	Guard           GuardConfig                    `json:"guard,omitzero"`
 }
 
 func LoadConfig() {
@@ -292,6 +358,7 @@ func loadConfigFile() {
 	}
 	CollectionConnectors = cfg.CollectionConnectors
 	QuotaProviders = cfg.QuotaProviders
+	Guard = cfg.Guard
 	if cfg.DataDir != "" {
 		AtmDir = expandHome(cfg.DataDir)
 		AtmDB = filepath.Join(AtmDir, "atm.db")
@@ -389,6 +456,7 @@ func ShowConfig() string {
 		Pricing:                        Pricing,
 		Subscriptions:                  Subscriptions,
 		ProjectAliases:                 ProjectAliases,
+		Guard:                          Guard,
 	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	return string(b)

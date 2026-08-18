@@ -223,7 +223,7 @@ extension View {
     /// Shared raised surface for the desktop workspaces. Keeping this in one
     /// place prevents Collection, Agent, Knowledge and Settings from drifting
     /// into four subtly different card styles.
-    func atmWorkspaceCard(cornerRadius: CGFloat = 12) -> some View {
+    func atmWorkspaceCard(cornerRadius: CGFloat = ATMRadius.panel) -> some View {
         background(
             ATMTheme.elevated,
             in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)

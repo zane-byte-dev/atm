@@ -195,6 +195,11 @@ atm collect run --due --json                       # 后台按来源独立频率
 # insight 先留在处理记录的“结论”；确认后再显式保存，重复执行不会产生副本
 atm collect item save <item-id> [--collection <collection-id>] --json
 
+# 新 Todo、补充和未保存结论默认未读；查看或处理后确认，也可重新标回未读
+atm collect item read <item-id> [<item-id> ...] --json
+atm collect item read --all --json
+atm collect item unread <item-id> [<item-id> ...] --json
+
 # 可选的人工批量入口：把当天 insight 汇总成一篇知识文档，每来源每天一篇，重跑原地重写
 atm collect digest [--source <source-id>] [--date 2026-08-03] --json
 atm collect digest --dry-run --json                # 只看摘要正文，不写知识库
@@ -236,6 +241,24 @@ atm collect item delete <item-id> <item-id> ... -y --json
 没有或要最新再 `collect history`（调用连接器并把结果同步进本地库，默认保留 90 天）。history 的 JSON
 带 `synced`（本次新增几条）和 `stale`——`stale: true` 表示连接器不可用、这批是本地旧记录，
 向人汇报时要说明这一点，不要当成最新状态。
+
+## 外发动作闸门
+
+```bash
+atm guard list --json                 # 待授权的外发动作
+atm guard show <id> --json            # 一条请求的全文与执行结果
+atm guard status --json               # 哪些工具真的被拦住了
+```
+
+**你不要直接调用 `atm guard exec`**——它是装在工具自己路径上的 shim 调的，不是给 Agent 用的入口。
+
+如果你调某个本地 CLI 时拿到了 exit 75 / 77 / 70 和一段中文说明，那说明这个动作被闸门拦下了。按那段
+说明做：**不要重试，也不要换用其他命令或工具绕过**。75 表示请求还在等用户批准，用户批准后 **ATM 会
+自己执行那条命令**，你再跑一次会把同一条消息发两遍。把要发的内容原样交给用户，然后继续本轮剩下的
+工作。
+
+`approve` / `deny` 是人的动作。**批准会真的把命令执行掉**（发出真实消息），所以除非用户明确要求你
+代他批准，不要自己调；`running` 的请求任何情况下都不要重跑——那意味着「不知道发出去没有」。
 
 ## Artifact、统计与健康检查
 

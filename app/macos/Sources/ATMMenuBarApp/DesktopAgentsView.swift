@@ -17,7 +17,6 @@ struct DesktopAgentsView: View {
         }
     }
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
 
@@ -59,10 +58,10 @@ struct DesktopAgentsView: View {
     var body: some View {
         ATMSplitColumn(
             id: "agents",
-            defaultWidth: 330,
-            minWidth: 260,
-            maxWidth: 420,
-            detailMinWidth: 440
+            defaultWidth: ATMWorkspaceLayout.navigatorDefaultWidth,
+            minWidth: ATMWorkspaceLayout.navigatorMinWidth,
+            maxWidth: ATMWorkspaceLayout.navigatorMaxWidth,
+            detailMinWidth: ATMWorkspaceLayout.readingDetailMinWidth
         ) {
             agentList
         } detail: {
@@ -133,27 +132,22 @@ struct DesktopAgentsView: View {
     }
 
     private var agentList: some View {
-        VStack(spacing: 0) {
-            // 没有中栏大标题：左侧栏的高亮已经说了这是 Agent，分组标题也已经带了各自的
-            // 计数和状态色，跟收集 / 知识一样直接从范围段控起头。
-            HStack {
-                // 中栏短标签用紧凑段控，跟收集 / 知识的「记录 / 来源」「文章 / 知识库」一致；
-                // 胶囊留给右栏详情分页。
+        ATMGroupedNavigator {
+            ATMNavigatorHeader {
                 ATMCompactSegmentedTabs(
                     selection: $scope,
                     items: ListScope.allCases.map { (value: $0, title: $0.title) }
                 )
-                Spacer(minLength: 0)
+            } trailing: {
+                EmptyView()
             }
-            .atmDrawerHeaderRow()
-
+        } content: {
             if scope == .all {
                 indexedList
             } else {
                 liveList
             }
         }
-        .background(ATMTheme.listPane)
     }
 
     private var liveList: some View {
@@ -165,12 +159,19 @@ struct DesktopAgentsView: View {
                     detail: "ATM 会在检测到新的 Agent 会话活动后自动显示。"
                 )
             } else {
-                List {
+                ATMGroupedNavigatorScroll {
                     ForEach(ATMAgentPresenceState.allCases) { state in
                         let values = sessions.filter { $0.presenceState == state }
                         if !values.isEmpty {
                             let expanded = expandedBinding(for: state)
-                            Section {
+                            ATMNavigatorGroup {
+                                ATMNavigatorGroupHeader(
+                                    title: state.title,
+                                    count: values.count,
+                                    tint: state.tint,
+                                    isExpanded: expanded
+                                )
+                            } content: {
                                 if expanded.wrappedValue {
                                     ForEach(values) { session in
                                         Button {
@@ -185,33 +186,13 @@ struct DesktopAgentsView: View {
                                         .buttonStyle(.atmRow)
                                         // 行里不再逐张画来源，tooltip 兜住完整来源。
                                         .help(originLabel(session))
-                                        .atmContentListRow()
+                                        .atmContentStackRow()
                                     }
                                 }
-                            } header: {
-                                Button {
-                                    withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
-                                        expanded.wrappedValue.toggle()
-                                    }
-                                } label: {
-                                    HStack {
-                                        ATMDrawerDisclosureLabel(
-                                            title: state.title,
-                                            count: values.count,
-                                            tint: state.tint,
-                                            isExpanded: expanded.wrappedValue
-                                        )
-                                        Spacer()
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
                             }
                         }
                     }
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
             }
 
             if unobservedBindingCount > 0 {
@@ -250,7 +231,7 @@ struct DesktopAgentsView: View {
                     detail: "同步过的 Agent 会话都会出现在这里，包括早已结束的。"
                 )
             } else {
-                List {
+                ATMGroupedNavigatorScroll(spacing: 0) {
                     ForEach(store.indexedSessions) { session in
                         Button {
                             selectedIndexedSessionID = session.id
@@ -261,7 +242,7 @@ struct DesktopAgentsView: View {
                             )
                         }
                         .buttonStyle(.atmRow)
-                        .atmContentListRow()
+                        .atmContentStackRow()
                     }
                     if !store.indexedSessionsReachedEnd {
                         Button {
@@ -279,11 +260,9 @@ struct DesktopAgentsView: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(store.isLoadingIndexedSessions)
-                        .atmContentListRow()
+                        .atmContentStackRow()
                     }
                 }
-                .listStyle(.sidebar)
-                .scrollContentBackground(.hidden)
             }
         }
     }
@@ -315,17 +294,11 @@ struct DesktopAgentsView: View {
     }
 
     private var emptyDetail: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "cpu")
-                .font(ATMFont.font(.display, weight: .light))
-                .foregroundStyle(ATMTheme.secondary)
-            Text("选择一个 Agent 会话")
-                .font(ATMFont.font(.title3, weight: .semibold))
-            Text("查看它在哪里、正在做什么，以及是否需要你介入。")
-                .font(ATMFont.body)
-                .foregroundStyle(ATMTheme.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ATMEmptyState(
+            icon: "cpu",
+            title: "选择一个 Agent 会话",
+            detail: "查看它在哪里、正在做什么，以及是否需要你介入。"
+        )
     }
 
     private func selectFirstIfNeeded() {
@@ -388,45 +361,45 @@ private struct DesktopAgentPresenceRow: View {
     let isSelected: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
-            HStack(spacing: ATMContentRowLayout.leadingSpacing) {
-                ATMAgentMark(agent: session.tool, size: 16)
-                    .frame(
-                        width: ATMContentRowLayout.leadingVisualSize,
-                        height: ATMContentRowLayout.leadingVisualSize
-                    )
+        ATMNavigatorRow(isSelected: isSelected) {
+            ATMAgentMark(agent: session.tool, size: 16)
+                .frame(
+                    width: ATMContentRowLayout.leadingVisualSize,
+                    height: ATMContentRowLayout.leadingVisualSize
+                )
+        } content: {
+            VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                 Text(session.presenceTitle)
                     // 固定字重 —— 见 ATMRowSurface：选中不切字重，否则标题会抖。
                     .font(ATMFont.font(.body, weight: .medium))
                     .foregroundStyle(ATMTheme.primary)
                     .lineLimit(1)
-                Spacer(minLength: 6)
-                trailingMeta
-            }
 
-            if session.bindingTodoID != nil || session.latestUserInputBelowTitle != nil {
-                HStack(alignment: .firstTextBaseline, spacing: 5) {
-                    if let todoID = session.bindingTodoID {
-                        Text(todoID.uppercased())
-                            .font(ATMFont.mono(.caption, .medium))
-                            .foregroundStyle(ATMTheme.accent)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 2)
-                            .background(ATMTheme.accent.opacity(0.08), in: Capsule())
+                if session.bindingTodoID != nil || session.latestUserInputBelowTitle != nil {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        if let todoID = session.bindingTodoID {
+                            Text(todoID.uppercased())
+                                .font(ATMFont.mono(.caption, .medium))
+                                .foregroundStyle(ATMTheme.accent)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(ATMTheme.accentFill, in: Capsule())
+                        }
+                        if let input = session.latestUserInputBelowTitle {
+                            Text("你")
+                                .font(ATMFont.font(.caption, weight: .semibold))
+                            Text(input)
+                                .font(ATMFont.footnote)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
                     }
-                    if let input = session.latestUserInputBelowTitle {
-                        Text("你")
-                            .font(ATMFont.font(.caption, weight: .semibold))
-                        Text(input)
-                            .font(ATMFont.footnote)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 0)
+                    .foregroundStyle(ATMTheme.secondary)
                 }
-                .foregroundStyle(ATMTheme.secondary)
             }
+        } trailing: {
+            trailingMeta
         }
-        .atmRowSurface(isSelected: isSelected)
     }
 
     /// 尾部整块 `fixedSize`：让长标题先被截断，而不是把介入状态和时长挤没。
@@ -469,9 +442,11 @@ private struct DesktopAgentPresenceDetail: View {
     @State private var showingInterruptConfirmation = false
 
     var body: some View {
-        VStack(spacing: 0) {
+        ATMDetailScaffold {
             detailHeader
-            detailTabs
+        } tabs: {
+            ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
+        } content: {
             Group {
                 switch selectedTab {
                 case .overview:
@@ -490,7 +465,6 @@ private struct DesktopAgentPresenceDetail: View {
             }
             .atmAnimatedSwap(selectedTab.rawValue, style: .detail)
         }
-        .background(ATMTheme.canvas)
         .confirmationDialog(
             "中断当前 Agent 执行？",
             isPresented: $showingInterruptConfirmation,
@@ -593,17 +567,6 @@ private struct DesktopAgentPresenceDetail: View {
         }
         .font(ATMFont.font(.footnote, weight: .medium))
         .fixedSize()
-    }
-
-    /// 胶囊分页与任务 / 收集详情共用 `ATMCapsuleTabs`。
-    private var detailTabs: some View {
-        HStack {
-            ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(ATMTheme.canvas)
     }
 
     private var detailTabItems: [(value: DetailTab, title: String)] {
@@ -1064,35 +1027,35 @@ private struct DesktopIndexedSessionRow: View {
     let isSelected: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
-            HStack(spacing: ATMContentRowLayout.leadingSpacing) {
-                ATMAgentMark(agent: session.agent, size: 16)
-                    .frame(
-                        width: ATMContentRowLayout.leadingVisualSize,
-                        height: ATMContentRowLayout.leadingVisualSize
-                    )
+        ATMNavigatorRow(isSelected: isSelected) {
+            ATMAgentMark(agent: session.agent, size: 16)
+                .frame(
+                    width: ATMContentRowLayout.leadingVisualSize,
+                    height: ATMContentRowLayout.leadingVisualSize
+                )
+        } content: {
+            VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                 Text(session.title)
                     .font(ATMFont.font(.body, weight: .medium))
                     .foregroundStyle(ATMTheme.primary)
                     .lineLimit(1)
-                Spacer(minLength: 6)
-                Text("Q\(session.qCount)")
-                    .font(ATMFont.mono(.caption, .medium))
-                    .foregroundStyle(ATMTheme.secondary)
-                    .fixedSize()
+
+                HStack(spacing: 6) {
+                    Label(session.project.isEmpty ? "未归属项目" : session.project, systemImage: "folder")
+                        .lineLimit(1)
+                    Text("·")
+                    Text(session.startedAt.map(ATMSessionTimeFormat.clock) ?? session.createdAt)
+                        .font(ATMFont.mono(.caption, .medium))
+                    Spacer(minLength: 0)
+                }
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
             }
-            HStack(spacing: 6) {
-                Label(session.project.isEmpty ? "未归属项目" : session.project, systemImage: "folder")
-                    .lineLimit(1)
-                Text("·")
-                Text(session.startedAt.map(ATMSessionTimeFormat.clock) ?? session.createdAt)
-                    .font(ATMFont.mono(.caption, .medium))
-                Spacer(minLength: 0)
-            }
-            .font(ATMFont.footnote)
-            .foregroundStyle(ATMTheme.secondary)
+        } trailing: {
+            Text("Q\(session.qCount)")
+                .font(ATMFont.mono(.caption, .medium))
+                .foregroundStyle(ATMTheme.secondary)
         }
-        .atmRowSurface(isSelected: isSelected)
     }
 }
 

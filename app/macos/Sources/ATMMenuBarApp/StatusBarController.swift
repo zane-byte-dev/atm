@@ -203,22 +203,29 @@ final class StatusBarController {
                 return
             }
             openDesktop(todo: todo)
+        case .collection:
+            openDesktop(section: .collection)
         case .app:
             openDesktop()
         }
     }
 
     private func bindStore() {
-        store.$dashboardState
-            .sink { [weak self] state in
+        Publishers.CombineLatest(store.$dashboardState, store.$collectionOverview)
+            .sink { [weak self] state, collection in
                 guard let button = self?.statusItem.button else { return }
                 let snapshot = state.snapshot
                 let quota = state.quota
                 var title = snapshot.menuBarTitle
+                let unread = collection.summary.unreadCount ?? 0
+                if unread > 0 {
+                    title = "新收集 \(unread)" + (title.isEmpty ? "" : " · \(title)")
+                }
                 if !title.isEmpty, let suffix = quota.menuBarSuffix {
                     title += " · \(suffix)"
                 }
-                let tooltip = [snapshot.menuBarTooltip, quota.tooltipText]
+                let collectionTooltip = unread > 0 ? "\(unread) 条新收集待查看" : nil
+                let tooltip = [collectionTooltip, snapshot.menuBarTooltip, quota.tooltipText]
                     .compactMap { $0 }
                     .joined(separator: " · ")
                 button.title = title.isEmpty ? "" : " \(title)"

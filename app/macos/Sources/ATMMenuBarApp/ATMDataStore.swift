@@ -933,6 +933,14 @@ enum ATMCommandBuilder {
         if local { arguments.append("--local") }
         return arguments
     }
+
+    static func collectionItemRead(ids: [String], read: Bool) -> [String] {
+        ["collect", "item", read ? "read" : "unread"] + ids + ["--json"]
+    }
+
+    static func collectionMarkAllRead() -> [String] {
+        ["collect", "item", "read", "--all", "--json"]
+    }
 }
 
 struct ATMTodaySessionsState: Equatable {
@@ -1126,6 +1134,7 @@ final class ATMDataStore: ObservableObject {
     private var pendingRefresh = false
     private var pendingSync = false
     private var isCollectionRefreshing = false
+    private var collectionReadUpdatesInFlight: Set<String> = []
     private var isLiveStatusLoading = false
     private var lastCollectionAttemptAt: Date?
     private var notifiedCollectionRunIDs: Set<String>?
@@ -1932,6 +1941,36 @@ final class ATMDataStore: ObservableObject {
 
     func revertCollectionItem(_ item: ATMCollectionItem) {
         runCollectionItemAction(["revert", item.id, "--yes"])
+    }
+
+    func setCollectionItemsRead(_ items: [ATMCollectionItem], read: Bool) {
+        let ids = Array(Set(items.map(\.id))).sorted()
+        guard !ids.isEmpty else { return }
+        let pending = Set(ids)
+        guard collectionReadUpdatesInFlight.isDisjoint(with: pending) else { return }
+        collectionReadUpdatesInFlight.formUnion(pending)
+        Task {
+            defer { collectionReadUpdatesInFlight.subtract(pending) }
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(ATMCommandBuilder.collectionItemRead(ids: ids, read: read))
+                refreshCollection()
+            } catch {
+                collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
+            }
+        }
+    }
+
+    func markAllCollectionItemsRead() {
+        Task {
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(ATMCommandBuilder.collectionMarkAllRead())
+                refreshCollection()
+            } catch {
+                collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
+            }
+        }
     }
 
     /// Removes one processing record. `--yes` because the desktop already asked;

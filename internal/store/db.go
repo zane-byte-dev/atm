@@ -226,6 +226,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 43
+		case 43:
+			if err := migrateV43ToV44(db); err != nil {
+				return err
+			}
+			version = 44
+		case 44:
+			if err := migrateV44ToV45(db); err != nil {
+				return err
+			}
+			version = 45
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -1162,6 +1172,89 @@ func migrateV42ToV43(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 43`); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV43ToV44 adds durable read state to collection results. Existing
+// records are marked read at their last update so upgrading does not turn the
+// entire historical ledger into a wall of new notifications; only records
+// produced after the migration start unread.
+func migrateV43ToV44(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	has, err := tableHasColumn(tx, "collection_items", "read_at")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := tx.Exec(`ALTER TABLE collection_items ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE collection_items SET read_at=updated_at WHERE read_at=0`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_collection_items_unread
+		ON collection_items(read_at,updated_at DESC)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 44`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV44ToV45 adds the outbound action gate's ledger. Nothing is backfilled:
+// before v45 no command was gated, so there are no historical decisions to
+// invent, and inventing one would claim a send had been reviewed when it had not.
+func migrateV44ToV45(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS approvals (
+			id           TEXT PRIMARY KEY,
+			dedup_key    TEXT NOT NULL,
+			tool         TEXT NOT NULL,
+			rule_id      TEXT NOT NULL DEFAULT '',
+			real_bin     TEXT NOT NULL,
+			argv         TEXT NOT NULL,
+			cwd          TEXT NOT NULL DEFAULT '',
+			env_agent    TEXT NOT NULL DEFAULT '',
+			label        TEXT NOT NULL DEFAULT '',
+			preview_target TEXT NOT NULL DEFAULT '',
+			preview_title  TEXT NOT NULL DEFAULT '',
+			preview_body   TEXT NOT NULL DEFAULT '',
+			status       TEXT NOT NULL CHECK (status IN ('pending','approved','running','done','denied','expired')),
+			stdin_piped  INTEGER NOT NULL DEFAULT 0 CHECK (stdin_piped IN (0,1)),
+			gate_pid      INTEGER NOT NULL DEFAULT 0,
+			gate_deadline INTEGER NOT NULL DEFAULT 0,
+			attach_count INTEGER NOT NULL DEFAULT 1,
+			requested_at INTEGER NOT NULL,
+			expires_at   INTEGER NOT NULL,
+			decided_at   INTEGER,
+			decided_by   TEXT NOT NULL DEFAULT '',
+			reason       TEXT NOT NULL DEFAULT '',
+			ran_by       TEXT NOT NULL DEFAULT '',
+			exit_code    INTEGER,
+			output       TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_approvals_status_requested ON approvals(status, requested_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_approvals_dedup ON approvals(dedup_key, requested_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_pending_dedup ON approvals(dedup_key)
+			WHERE status='pending'`,
+		`UPDATE schema_version SET version = 45`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

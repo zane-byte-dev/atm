@@ -25,6 +25,7 @@ enum ATMAgentAttentionNotifyPreferences {
 enum ATMNotificationRoute: Equatable {
     case todo(String)
     case agentSession(String)
+    case collection
     case app
 
     /// Rebuilds the route from a delivered notification's `userInfo`.
@@ -34,6 +35,9 @@ enum ATMNotificationRoute: Equatable {
         }
         if let todoID = userInfo["todo_id"] as? String, !todoID.isEmpty {
             return .todo(todoID)
+        }
+        if userInfo["event"] as? String == "collection" {
+            return .collection
         }
         return .app
     }
@@ -144,10 +148,8 @@ struct ATMCollectionNotificationPayload: Equatable {
         let appended = runs.reduce(0) { $0 + $1.appendedCount }
         let insight = runs.reduce(0) { $0 + $1.insightCount }
         let failed = runs.reduce(0) { $0 + $1.failedCount }
-        // Insights alone do not interrupt anyone: nothing was filed for them to
-        // act on, and the day's digest is there whenever they go looking.
-        guard created + appended + failed > 0 else { return nil }
-        let subtitle = failed > 0 ? "自动收集需要处理" : "自动收集完成"
+        guard created + appended + insight + failed > 0 else { return nil }
+        let subtitle = failed > 0 ? "收集有结果需要处理" : "有新的收集待查看"
         let body = "新增 \(created) · 补充 \(appended) · 结论 \(insight) · 失败 \(failed)"
         return ATMCollectionNotificationPayload(subtitle: subtitle, body: body)
     }

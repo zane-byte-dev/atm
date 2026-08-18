@@ -17,6 +17,24 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **外发动作闸门：Agent 用本地 CLI 发消息之前，先问你一句。** 起因是真的发出去过——驱动这些 CLI 的
+  技能文档给出的命令自带 `-y`，把 CLI 自己的二次确认关掉了，于是「发钉钉群消息」和「读群消息」一样
+  安静。`atm guard install <tool>` 把工具的二进制移到 `<name>-atm-real`，原位置放一个 shim；读操作
+  原样直通（不碰数据库、`exec` 替换进程、零残留），命中规则的才变成一条待授权请求，弹通知，
+  你批准后**由 ATM 自己把命令跑完**——等你决定的时候提出请求的 Agent 通常已经走了。默认拦三条：
+  钉钉发消息、催 MR 评审人、ATA 群推送。命令、取舍与拦不到什么见
+  [docs/internals.md](docs/internals.md#外发动作闸门)。
+
+  刻意**没有**做的几件事。没做成某个 Agent 的 permission hook：调这些 CLI 的有三个 Agent，闸门必须
+  与 Agent 无关；而且 ATM 已经承诺过它装的 hook 只上报、不改授权决定。没做新的 daemon 或定时清理：
+  过期用 SQL 现算，任何清理路径都不执行任何东西。没有让 `running` 的请求被重试——闸门在执行途中死掉
+  就是「不知道发出去没有」，这个信息不存在，重试只会重复发消息。
+
+  两个说清楚的局限。**MCP 工具拦不到**：闸门只看命令执行，通过 MCP 完成的外发动作不经过 `execve`；
+  装了闸门之后 `atm doctor` 会在检测到 MCP server 时提醒，因为装了闸门的人会停止盯着外发，这时一个
+  看不见的通道比没装更危险。**铁了心要绕的 Agent 绕得开**：移开的真身就在旁边，同一 uid 的进程挡不住。
+  这是防「不假思索」的护栏，真正起作用的硬化是拒绝时写给模型的那句「不要换用其他命令或工具绕过」。
+
 - **认识本地 Antigravity 了：用量进统计，额度进 `atm quota`。** 它是本机第二活跃的 client，之前
   `atm stats` / `atm session list` / `atm quota` 里完全看不到。用量来自
   `~/.gemini/antigravity/conversations/*.db` 的 `gen_metadata`——逐次模型调用，带时间戳、模型、

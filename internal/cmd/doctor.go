@@ -279,6 +279,7 @@ func buildDoctorReport(db *sql.DB) (doctorReport, error) {
 		issues = append(issues, collectionRetentionIssues(db)...)
 	}
 	issues = append(issues, collectionModelIssues()...)
+	issues = append(issues, guardIssues(db)...)
 	var todoIssues []store.TodoDependencyIssue
 	if todos, loadErr := store.LoadTodosReadOnly(); loadErr == nil {
 		todoIssues = store.AuditTodoDependencies(todos)

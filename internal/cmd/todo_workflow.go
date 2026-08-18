@@ -334,23 +334,34 @@ func notifyCopy(t *store.Todo, event string) (title, subtitle, body string) {
 }
 
 func notifyTodoEvent(t *store.Todo, event string) {
+	title, subtitle, msg := notifyCopy(t, event)
+	postLocalBanner(title, subtitle, msg, "todo show "+t.ID)
+}
+
+// postLocalBanner raises one desktop notification, fire and forget.
+//
+// `execute` is the argument string for a click-through back into this same
+// binary, and is only honoured by terminal-notifier — the osascript and
+// notify-send fallbacks have nowhere to put it. Pass "" when there is nothing to
+// open.
+//
+// Every path is .Start() and never waited on: a banner is a courtesy, and a
+// notifier that hangs must not become the caller's problem. In particular the
+// outbound action gate calls this while an agent is blocked on it.
+func postLocalBanner(title, subtitle, msg, execute string) {
 	if skipLocalNotification() {
 		return
 	}
-
-	title, subtitle, msg := notifyCopy(t, event)
-
-	bin, err := os.Executable()
-	if err != nil {
-		bin = "atm"
-	}
 	if path, err := exec.LookPath("terminal-notifier"); err == nil {
-		exec.Command(path,
-			"-title", title,
-			"-subtitle", subtitle,
-			"-message", msg,
-			"-execute", fmt.Sprintf("%s todo show %s", bin, t.ID),
-		).Start()
+		args := []string{"-title", title, "-subtitle", subtitle, "-message", msg}
+		if execute != "" {
+			bin, err := os.Executable()
+			if err != nil {
+				bin = "atm"
+			}
+			args = append(args, "-execute", bin+" "+execute)
+		}
+		exec.Command(path, args...).Start()
 		return
 	}
 	switch runtime.GOOS {

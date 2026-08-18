@@ -49,7 +49,12 @@ import (
 // aggregates, badge history/progress, feedback, source permissions and settings.
 // v43 stops treating an insight as an automatic knowledge write: each collection
 // item records the knowledge document created only after the user explicitly
-// saves its conclusion.
+// saves its conclusion. v44 adds collection_items.read_at so newly collected
+// Todos, supplements and conclusions remain visibly pending until the user has
+// actually opened or acknowledged them. v45 adds approvals, the outbound action
+// gate's ledger: one row per attempt by an agent to run a command that reaches
+// someone else, plus what the user decided about it. Nothing is backfilled —
+// before v45 nothing was gated, so there are no historical decisions to invent.
 // Keep
 // the minimum at 21 while those upgrade steps exist; after the live database has
 // been upgraded,
@@ -58,7 +63,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 43
+	SchemaVersion        = 45
 	minUpgradableVersion = 21
 )
 
@@ -442,6 +447,64 @@ func createSchema(tx *sql.Tx) error {
 			value TEXT NOT NULL
 		)`,
 
+		// --- outbound action gate: what an agent tried to send, and what you decided ---
+		// One row per gated command attempt. This table is the only place in the
+		// database whose contents are later handed to exec(), so `atm guard approve`
+		// refuses any real_bin that is not a currently installed shim's real binary.
+		`CREATE TABLE approvals (
+			id           TEXT PRIMARY KEY,
+			-- dedup_key identifies the command; id identifies the request. They are
+			-- deliberately separate: making the content hash the primary key would
+			-- force a later approval of a previously denied command to overwrite the
+			-- denial, erasing the one record this feature exists to keep.
+			dedup_key    TEXT NOT NULL,
+			tool         TEXT NOT NULL,
+			rule_id      TEXT NOT NULL DEFAULT '',
+			real_bin     TEXT NOT NULL,
+			argv         TEXT NOT NULL,
+			cwd          TEXT NOT NULL DEFAULT '',
+			-- Best effort only: Qoder and Antigravity set none of the session env
+			-- vars ATM knows, so this is often empty. cwd is the reliable answer to
+			-- "who asked".
+			env_agent    TEXT NOT NULL DEFAULT '',
+			label        TEXT NOT NULL DEFAULT '',
+			preview_target TEXT NOT NULL DEFAULT '',
+			preview_title  TEXT NOT NULL DEFAULT '',
+			preview_body   TEXT NOT NULL DEFAULT '',
+			-- 'running' is terminal for automation. A gate that dies between running
+			-- and done leaves no evidence of whether the message went out, and no
+			-- lock can recover information that does not exist, so nothing ever
+			-- retries such a row.
+			status       TEXT NOT NULL CHECK (status IN ('pending','approved','running','done','denied','expired')),
+			-- Deferred execution is refused when the body arrived on a pipe, because
+			-- stdin cannot be reproduced and a silent wrong-content send is worse
+			-- than a refusal.
+			stdin_piped  INTEGER NOT NULL DEFAULT 0 CHECK (stdin_piped IN (0,1)),
+			-- gate_pid is diagnostic only. gate_deadline is the ownership boundary:
+			-- the waiting gate owns execution until then, whoever wins the claim
+			-- owns it after. kill(pid,0) is unusable here because the exposure
+			-- window is the request's whole lifetime, long enough for PID reuse.
+			gate_pid      INTEGER NOT NULL DEFAULT 0,
+			gate_deadline INTEGER NOT NULL DEFAULT 0,
+			-- How many times an agent re-ran the identical command. A rising count
+			-- means the wait budget is wrong, not that the user is indecisive.
+			attach_count INTEGER NOT NULL DEFAULT 1,
+			requested_at INTEGER NOT NULL,
+			expires_at   INTEGER NOT NULL,
+			decided_at   INTEGER,
+			decided_by   TEXT NOT NULL DEFAULT '',
+			reason       TEXT NOT NULL DEFAULT '',
+			ran_by       TEXT NOT NULL DEFAULT '',
+			exit_code    INTEGER,
+			output       TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX idx_approvals_status_requested ON approvals(status, requested_at DESC)`,
+		`CREATE INDEX idx_approvals_dedup ON approvals(dedup_key, requested_at DESC)`,
+		// At most one pending request per identical command. A retrying agent
+		// attaches to the existing row instead of raising a second banner.
+		`CREATE UNIQUE INDEX idx_approvals_pending_dedup ON approvals(dedup_key)
+			WHERE status='pending'`,
+
 		// --- automatic collection: connector input, decisions and audit ---
 		// Sources are user-authored configuration. Runs and items are an audit
 		// ledger: deleting a source must not erase why a Todo was created, so the
@@ -548,6 +611,9 @@ func createSchema(tx *sql.Tx) error {
 			todo_id         TEXT REFERENCES todos(id) ON DELETE SET NULL,
 			status          TEXT NOT NULL DEFAULT 'pending'
 				CHECK (status IN ('pending','processed','failed')),
+			-- Read state belongs to the collection result, not to the Todo it may
+			-- have created. Zero means the result has not been acknowledged.
+			read_at         INTEGER NOT NULL DEFAULT 0,
 			-- How many times processing this batch has been tried. A failed item
 			-- is deliberately left out of the handled set so the next run picks it
 			-- up again, which is right for a connector that was briefly down and
@@ -570,6 +636,7 @@ func createSchema(tx *sql.Tx) error {
 		`CREATE INDEX idx_collection_items_updated ON collection_items(updated_at DESC)`,
 		`CREATE INDEX idx_collection_items_source ON collection_items(source_id,occurred_at DESC)`,
 		`CREATE INDEX idx_collection_items_todo ON collection_items(todo_id)`,
+		`CREATE INDEX idx_collection_items_unread ON collection_items(read_at,updated_at DESC)`,
 
 		// One row per source per day: the knowledge document that day's insights
 		// were distilled into. A day's digest is a function of every insight that

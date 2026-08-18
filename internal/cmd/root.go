@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -53,6 +54,14 @@ func Execute() {
 		// 失败路径也要落账：一次超时的收集判定同样占了一次调用。os.Exit 不跑 defer，
 		// 所以这里和成功路径各显式落一次。
 		flushBuiltinModelCalls()
+		// A command that chose its own exit status has also already written its own
+		// stderr. Neither the log line nor the default error line belongs here: the
+		// guard's refusal text is read by a model, and appending to it changes what
+		// that model is told to do.
+		var coded exitError
+		if errors.As(err, &coded) {
+			os.Exit(coded.ExitCode())
+		}
 		// stderr is for whoever is watching; the log is for whoever is not. The
 		// App, collection and hooks all invoke atm unattended, and until this
 		// existed their failures vanished with the process.

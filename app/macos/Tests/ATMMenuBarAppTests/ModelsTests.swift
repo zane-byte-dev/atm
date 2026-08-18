@@ -310,7 +310,7 @@ final class ModelsTests: XCTestCase {
               "connector_health":[{"connector":"example","status":"ready","checked_at":110}],
               "summary":{"sources":1,"enabled_sources":1,"fetched_today":3,
                          "created_today":1,"appended_today":1,"insight_today":0,
-                         "ignored_today":1,"failed_today":0},
+                         "ignored_today":1,"failed_today":0,"unread_count":1},
               "sources":[{"id":"cs1","connector":"example","kind":"channel",
                           "external_id":"channel-1","name":"产品反馈","project":"atm",
                           "exclude_pattern":"机器人通知",
@@ -332,12 +332,12 @@ final class ModelsTests: XCTestCase {
                         "project":"atm","priority":"P1","reason":"明确需求","confidence":0.95,
                         "todo_id":"t1","todo_status":"open",
                         "dispatch_status":"dispatched",
-                        "status":"processed","created_at":100,"updated_at":101},
+                        "status":"processed","read_at":0,"created_at":100,"updated_at":101},
                        {"id":"ci2","source_id":"cs1","connector":"example",
                         "conversation_id":"channel-1","fingerprint":"fp2","message_ids":["m2"],
                         "action":"create","title":"修好部署脚本","item_type":"bug",
                         "todo_id":"t2","todo_status":"done","todo_archived":true,
-                        "status":"processed","created_at":102,"updated_at":103},
+                        "status":"processed","read_at":103,"created_at":102,"updated_at":103},
                        {"id":"ci3","source_id":"cs1","connector":"example",
                         "conversation_id":"channel-1","fingerprint":"fp3","message_ids":["m3"],
                         "action":"create","title":"没有回流状态的旧记录",
@@ -349,6 +349,7 @@ final class ModelsTests: XCTestCase {
         let overview = try JSONDecoder().decode(ATMCollectionOverview.self, from: data)
         XCTAssertTrue(overview.enabled)
         XCTAssertEqual(overview.summary.createdToday, 1)
+        XCTAssertEqual(overview.summary.unreadCount, 1)
         XCTAssertEqual(overview.items.first?.id, "ci1")
         XCTAssertEqual(overview.sources.first?.externalID, "channel-1")
         XCTAssertEqual(overview.sources.first?.excludePattern, "机器人通知")
@@ -368,6 +369,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.items.first?.todoID, "t1")
         XCTAssertEqual(overview.items.first?.messageIDs, ["m1"])
         XCTAssertEqual(overview.items.first?.dispatchStatus, "dispatched")
+        XCTAssertEqual(overview.items.first?.isUnread, true)
         // A record is only settled once the Todo it filed is: the open one stays in
         // the main list, the finished one folds away with the insights and noise.
         XCTAssertEqual(overview.items.first?.todoClosed, false)
@@ -375,6 +377,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(overview.items[1].todoClosed, true)
         XCTAssertEqual(overview.items[1].shouldCollapseInCollection, true)
         XCTAssertEqual(overview.items[1].todoArchived, true)
+        XCTAssertEqual(overview.items[1].isUnread, false)
         // Written before the CLI derived the Todo's state: absent, not closed.
         XCTAssertNil(overview.items[2].todoStatus)
         XCTAssertNil(overview.items[2].todoArchived)
@@ -384,7 +387,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["todo", "refine", "t1", "--json"]), 180)
         XCTAssertEqual(ATMCommandPolicy.timeout(for: ["config", "test-text-model", "--json"]), 45)
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)
-        XCTAssertEqual(notification?.subtitle, "自动收集完成")
+        XCTAssertEqual(notification?.subtitle, "有新的收集待查看")
         XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 结论 0 · 失败 0")
     }
 
@@ -395,16 +398,31 @@ final class ModelsTests: XCTestCase {
         )
     }
 
+    func testCollectionReadCommandsUseThePersistentCLIPath() {
+        XCTAssertEqual(
+            ATMCommandBuilder.collectionItemRead(ids: ["ci1", "ci2"], read: true),
+            ["collect", "item", "read", "ci1", "ci2", "--json"]
+        )
+        XCTAssertEqual(
+            ATMCommandBuilder.collectionItemRead(ids: ["ci1"], read: false),
+            ["collect", "item", "unread", "ci1", "--json"]
+        )
+        XCTAssertEqual(
+            ATMCommandBuilder.collectionMarkAllRead(),
+            ["collect", "item", "read", "--all", "--json"]
+        )
+    }
+
     func testCollectionGroupsTodoSupplementsUnderTheCreateRecord() throws {
         let data = Data(
             """
             [
               {"id":"create","source_id":"s","connector":"c","fingerprint":"f1",
                "message_ids":["m1"],"action":"create","todo_id":"t1","status":"processed",
-               "created_at":10,"updated_at":10},
+               "read_at":10,"created_at":10,"updated_at":10},
               {"id":"late","source_id":"s","connector":"c","fingerprint":"f2",
                "message_ids":["m2"],"action":"append","todo_id":"t1","summary":"第二次补充",
-               "occurred_at":30,"status":"processed","created_at":30,"updated_at":30},
+               "occurred_at":30,"status":"processed","read_at":0,"created_at":30,"updated_at":30},
               {"id":"early","source_id":"s","connector":"c","fingerprint":"f3",
                "message_ids":["m3"],"action":"append","todo_id":"t1","summary":"第一次补充",
                "occurred_at":20,"status":"processed","created_at":20,"updated_at":20},
@@ -420,6 +438,7 @@ final class ModelsTests: XCTestCase {
             ATMCollectionItemGrouping.supplements(for: items[0], in: items).map(\.id),
             ["early", "late"]
         )
+        XCTAssertEqual(ATMCollectionItemGrouping.unreadCount(for: items[0], in: items), 1)
         XCTAssertTrue(ATMCollectionItemGrouping.supplements(for: items[3], in: items).isEmpty)
     }
 

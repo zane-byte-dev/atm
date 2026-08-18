@@ -14,7 +14,7 @@ struct ATMDrawerHeader<Trailing: View>: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
+        ATMNavigatorHeader {
             HStack(alignment: .firstTextBaseline, spacing: 7) {
                 Text(title)
                     .font(ATMFont.font(.title2, weight: .semibold))
@@ -22,10 +22,9 @@ struct ATMDrawerHeader<Trailing: View>: View {
                     .font(ATMFont.mono(.footnote, .semibold))
                     .foregroundStyle(ATMTheme.secondary)
             }
-            Spacer()
+        } trailing: {
             trailing
         }
-        .atmDrawerHeaderRow()
     }
 }
 
@@ -36,8 +35,8 @@ extension View {
     /// 高度和纵向居中必须一致，否则切页时下面的列表会整体上下平移。内容各自决定，
     /// 这里只负责这一条带子本身。
     func atmDrawerHeaderRow() -> some View {
-        padding(.horizontal, ATMDesktopLayout.drawerHeaderHorizontalPadding)
-            .frame(height: ATMDesktopLayout.drawerHeaderHeight)
+        padding(.horizontal, ATMGroupedNavigatorMetrics.headerHorizontalInset)
+            .frame(height: ATMGroupedNavigatorMetrics.headerHeight)
     }
 }
 
@@ -74,11 +73,8 @@ struct ATMDrawerDisclosureLabel: View {
             Text(String(count))
                 .font(ATMFont.mono(.caption, .semibold))
                 .foregroundStyle(ATMTheme.secondary)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1)
-                .background(ATMTheme.controlFill, in: Capsule())
         }
-        .font(ATMFont.font(.footnote, weight: .semibold))
+        .font(ATMFont.font(.footnote, weight: .medium))
     }
 }
 
@@ -102,11 +98,11 @@ struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
         ZStack(alignment: .leading) {
             // 始终是同一个实体视图，只改变横向位置。相比在两个 Button 中条件创建背景，
             // 这在 macOS 上不会被当成一次无动画的视图替换。
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
+            RoundedRectangle(cornerRadius: ATMRadius.control, style: .continuous)
                 .fill(ATMTheme.rowSelected)
                 .frame(width: segmentWidth, height: segmentHeight)
                 .overlay {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: ATMRadius.control, style: .continuous)
                         .stroke(ATMTheme.border.opacity(0.75))
                 }
                 .shadow(color: .black.opacity(0.07), radius: 2, y: 1)
@@ -134,7 +130,7 @@ struct ATMCompactSegmentedTabs<Selection: Hashable>: View {
             }
         }
         .padding(2)
-        .background(ATMTheme.segmentTrack, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(ATMTheme.segmentTrack, in: RoundedRectangle(cornerRadius: ATMRadius.row, style: .continuous))
         .animation(ATMMotion.resolved(ATMMotion.selection, reduceMotion: reduceMotion), value: selectedIndex)
     }
 }
@@ -206,18 +202,14 @@ enum ATMRowSurface {
 
     var cornerRadius: CGFloat {
         switch self {
-        case .content: return 8
-        case .navigation: return 7
-        case .nestedNavigation: return 6
+        case .content: return ATMGroupedNavigatorMetrics.rowCornerRadius
+        case .navigation: return ATMRadius.row
+        case .nestedNavigation: return ATMRadius.control
         }
     }
 
     var selectedFillOpacity: Double {
-        switch self {
-        case .content: return 1
-        case .navigation: return 0.12
-        case .nestedNavigation: return 0.09
-        }
+        ATMGroupedNavigatorMetrics.selectedFillOpacity
     }
 
     var horizontalPadding: CGFloat {
@@ -238,8 +230,8 @@ enum ATMRowSurface {
     /// 导航行靠最小高度而不是纵向内边距定高，行高才不随标签行数变化。
     var minHeight: CGFloat? {
         switch self {
-        case .content: return nil
-        case .navigation: return 32
+        case .content: return ATMGroupedNavigatorMetrics.rowMinHeight
+        case .navigation: return ATMGroupedNavigatorMetrics.groupHeight
         case .nestedNavigation: return 25
         }
     }
@@ -251,11 +243,11 @@ enum ATMRowSurface {
 /// 以及有前导图标时的文字起点。两层都集中后，`List` 与 `LazyVStack` 才不会各自长出
 /// 一套看起来相近、实际相差几 pt 的布局。
 enum ATMContentRowLayout {
-    static let outerHorizontalPadding: CGFloat = 8
+    static let outerHorizontalPadding: CGFloat = ATMSpacing.small
     static let outerVerticalPadding: CGFloat = 2
     static let leadingVisualSize: CGFloat = 24
-    static let leadingSpacing: CGFloat = 9
-    static let contentSpacing: CGFloat = 5
+    static let leadingSpacing: CGFloat = ATMSpacing.small
+    static let contentSpacing: CGFloat = ATMSpacing.xSmall
 
     static var listInsets: EdgeInsets {
         EdgeInsets(
@@ -295,9 +287,7 @@ private struct ATMRowSurfaceModifier: ViewModifier {
     /// 选中优先于 hover——否则悬停在已选中行上会叠成第三种颜色。
     private var fill: Color {
         if isSelected {
-            return surface == .content
-                ? ATMTheme.rowSelected
-                : ATMTheme.accent.opacity(surface.selectedFillOpacity)
+            return ATMTheme.accent.opacity(surface.selectedFillOpacity)
         }
         if isHovered { return ATMTheme.primary.opacity(0.04) }
         return .clear
