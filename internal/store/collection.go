@@ -53,8 +53,14 @@ type CollectionSource struct {
 	Priority        string `json:"priority"`
 	AutoDispatch    bool   `json:"auto_dispatch"`
 	Enabled         bool   `json:"enabled"`
-	CreatedAt       int64  `json:"created_at"`
-	UpdatedAt       int64  `json:"updated_at"`
+	// Muted keeps this source's new results out of the desktop notifications and
+	// nothing else: they are still collected, still count as unread and still
+	// raise the sidebar and menubar badges. Disabled is the other axis — it stops
+	// the collecting itself. The zero value notifies, so a source that predates
+	// the column, or a caller that never heard of it, behaves as it always did.
+	Muted     bool  `json:"muted"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 }
 
 // CollectionDigest records the knowledge document one source's insights for one
@@ -273,10 +279,14 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 		source.CreatedAt = now
 	}
 	source.UpdatedAt = now
+	// muted is written on insert but deliberately left out of the conflict update:
+	// this upsert is also how an existing source is edited (the App's save runs
+	// `collect source add`), and re-saving an interval must not quietly put a
+	// muted source back into the notifications. SetCollectionSourceMuted owns it.
 	_, err := db.Exec(`INSERT INTO collection_sources
 		(id,connector,kind,external_id,name,project,exclude_pattern,instruction,knowledge_collection,
-		 strategy,decision_unit,interval_minutes,priority,auto_dispatch,enabled,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 strategy,decision_unit,interval_minutes,priority,auto_dispatch,enabled,muted,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(connector,kind,external_id) DO UPDATE SET
 			name=excluded.name,project=excluded.project,exclude_pattern=excluded.exclude_pattern,
 			instruction=excluded.instruction,knowledge_collection=excluded.knowledge_collection,
@@ -288,7 +298,7 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 		source.Project, source.ExcludePattern, source.Instruction, source.KnowledgeCollection,
 		source.Strategy, source.DecisionUnit, source.IntervalMinutes, source.Priority,
 		boolInt(source.AutoDispatch),
-		boolInt(source.Enabled), source.CreatedAt, source.UpdatedAt)
+		boolInt(source.Enabled), boolInt(source.Muted), source.CreatedAt, source.UpdatedAt)
 	if err != nil {
 		return CollectionSource{}, err
 	}
@@ -329,6 +339,24 @@ func ListCollectionSources(db *sql.DB, connector string, enabledOnly bool) ([]Co
 func SetCollectionSourceEnabled(db *sql.DB, id string, enabled bool) error {
 	result, err := db.Exec(`UPDATE collection_sources SET enabled=?,updated_at=? WHERE id=?`,
 		boolInt(enabled), time.Now().In(config.Loc).Unix(), id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err == nil && count == 0 {
+		return fmt.Errorf("collection source not found: %s", id)
+	}
+	return err
+}
+
+// SetCollectionSourceMuted takes one source in or out of the desktop
+// notifications. Separate from SetCollectionSourceEnabled because they answer
+// different questions: enabled is whether this source is watched at all, muted is
+// only whether a banner is raised for what it finds. Unread state is untouched
+// either way — muting a source hides the interruption, not the work.
+func SetCollectionSourceMuted(db *sql.DB, id string, muted bool) error {
+	result, err := db.Exec(`UPDATE collection_sources SET muted=?,updated_at=? WHERE id=?`,
+		boolInt(muted), time.Now().In(config.Loc).Unix(), id)
 	if err != nil {
 		return err
 	}
@@ -1011,7 +1039,7 @@ const collectionItemSelect = `SELECT i.id,i.source_id,i.connector,i.conversation
 	FROM collection_items i LEFT JOIN todos t ON t.id=i.todo_id`
 
 const collectionSourceSelect = `SELECT id,connector,kind,external_id,name,project,exclude_pattern,
-	instruction,knowledge_collection,strategy,decision_unit,interval_minutes,priority,auto_dispatch,enabled,
+	instruction,knowledge_collection,strategy,decision_unit,interval_minutes,priority,auto_dispatch,enabled,muted,
 	created_at,updated_at
 	FROM collection_sources`
 
@@ -1021,13 +1049,15 @@ type collectionScanner interface {
 
 func scanCollectionSource(scanner collectionScanner) (CollectionSource, error) {
 	var source CollectionSource
-	var autoDispatch, enabled int
+	var autoDispatch, enabled, muted int
 	err := scanner.Scan(&source.ID, &source.Connector, &source.Kind, &source.ExternalID,
 		&source.Name, &source.Project, &source.ExcludePattern, &source.Instruction,
 		&source.KnowledgeCollection, &source.Strategy, &source.DecisionUnit,
-		&source.IntervalMinutes, &source.Priority, &autoDispatch, &enabled, &source.CreatedAt, &source.UpdatedAt)
+		&source.IntervalMinutes, &source.Priority, &autoDispatch, &enabled, &muted,
+		&source.CreatedAt, &source.UpdatedAt)
 	source.AutoDispatch = autoDispatch != 0
 	source.Enabled = enabled != 0
+	source.Muted = muted != 0
 	return source, err
 }
 

@@ -50,7 +50,9 @@ struct DesktopCollectionView: View {
     @State private var showingCollectionSettings = false
     @State private var drawerTab = CollectionDrawerTab.records
     @State private var selectedSourceID: String?
+    @State private var draggedSourceID: String?
     @AppStorage("ATMCollapsedCollectionSourceGroups") private var collapsedSourceGroupsRaw = ""
+    @AppStorage(ATMManualOrder.collectionSourcesKey) private var collectionSourceOrder = ""
 
     private var collapsedSourceGroups: Set<String> {
         Set(collapsedSourceGroupsRaw.split(separator: ",").map(String.init))
@@ -85,9 +87,17 @@ struct DesktopCollectionView: View {
     }
 
     private var selectedSource: ATMCollectionSource? {
-        let sources = store.collectionOverview.sources
+        let sources = orderedSources
         guard let selectedSourceID else { return sources.first }
         return sources.first { $0.id == selectedSourceID } ?? sources.first
+    }
+
+    private var orderedSources: [ATMCollectionSource] {
+        ATMManualOrder.ordered(
+            store.collectionOverview.sources,
+            stored: collectionSourceOrder,
+            id: \.id
+        )
     }
 
     private var primaryItems: [ATMCollectionItem] {
@@ -266,10 +276,20 @@ struct DesktopCollectionView: View {
                 )
             } else {
                 ScrollView {
+                    // Lazy rows scrolled out of view are not drop targets, so a
+                    // source cannot be dragged past the top of the viewport; the
+                    // right-click 上移/下移 pair is the answer for that, not a plain
+                    // `VStack` — rows size off `maxWidth: .infinity`, which needs the
+                    // definite width proposal only the lazy stack passes down.
                     LazyVStack(spacing: 0) {
-                        ForEach(store.collectionOverview.sources) { source in
+                        ForEach(orderedSources) { source in
                             sourceManagementRow(source)
                                 .atmContentStackRow()
+                                .atmManualOrderRow(
+                                    id: source.id,
+                                    dragged: $draggedSourceID,
+                                    move: moveCollectionSource
+                                )
                         }
                     }
                     .padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
@@ -312,25 +332,49 @@ struct DesktopCollectionView: View {
                 }
             } trailing: {
                 HStack(spacing: 5) {
+                    // Mute has no other visible trace: without a glyph here the
+                    // only symptom is a banner that never comes.
+                    if !source.notifiesDesktop {
+                        Image(systemName: "speaker.slash.fill")
+                            .font(ATMFont.font(.caption, weight: .medium))
+                            .foregroundStyle(ATMTheme.secondary)
+                            .help("桌面通知已静默，仍照常收集并计入未读")
+                    }
                     Circle()
                         .fill(sourceStatusColor(source))
                         .frame(width: 7, height: 7)
                     Text(sourceStatusText(source))
                         .font(ATMFont.caption)
                         .foregroundStyle(ATMTheme.secondary)
+                    // Decorative, not a grab handle: the whole row drags, and the
+                    // row's own help already says so, so a second tooltip scoped to
+                    // this glyph would only imply dragging starts here.
+                    Image(systemName: "line.3.horizontal")
+                        .font(ATMFont.font(.caption, weight: .medium))
+                        .foregroundStyle(ATMTheme.secondary.opacity(0.65))
+                        .padding(.leading, 2)
                 }
                 .fixedSize()
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.atmRow)
-        .help("查看来源配置")
+        .help("查看来源配置；拖动可调整顺序")
         .atmRightClickMenu {
             ATMMenuItem("查看聊天记录") { historySource = source }
             ATMMenuItem("编辑") { editSource(source) }
             ATMMenuItem(source.enabled ? "暂停" : "启用") {
                 store.setCollectionSource(source, enabled: !source.enabled)
             }
+            ATMMenuItem(source.notifiesDesktop ? "静默通知" : "恢复通知") {
+                store.setCollectionSource(source, muted: source.notifiesDesktop)
+            }
+            ATMMenuSeparator()
+            ATMManualOrder.moveMenuEntries(
+                for: source.id,
+                in: orderedSources.map(\.id),
+                move: moveCollectionSource
+            )
             ATMMenuSeparator()
             ATMMenuItem("删除", destructive: true) { deleteCandidate = source }
         }
@@ -346,7 +390,7 @@ struct DesktopCollectionView: View {
                 )
             } else {
                 ATMGroupedNavigatorScroll {
-                    ForEach(store.collectionOverview.sources) { source in
+                    ForEach(orderedSources) { source in
                         let items = primaryItems.filter { $0.sourceID == source.id }
                         if !items.isEmpty {
                             let expanded = expandedBinding(for: source.id)
@@ -456,6 +500,9 @@ struct DesktopCollectionView: View {
                     Button(source.enabled ? "暂停" : "启用") {
                         store.setCollectionSource(source, enabled: !source.enabled)
                     }
+                    Button(source.notifiesDesktop ? "静默通知" : "恢复通知") {
+                        store.setCollectionSource(source, muted: source.notifiesDesktop)
+                    }
                     Divider()
                     Button("清空记录", role: .destructive) {
                         requestClear(source.displayName, items: items)
@@ -563,6 +610,7 @@ struct DesktopCollectionView: View {
                 onFinishEditing: { editingSourceID = nil },
                 onHistory: { historySource = source },
                 onToggle: { store.setCollectionSource(source, enabled: !source.enabled) },
+                onToggleMute: { store.setCollectionSource(source, muted: source.notifiesDesktop) },
                 onCollect: { store.runCollectionNow(source: source) },
                 onDelete: { deleteCandidate = source }
             )
@@ -655,9 +703,18 @@ struct DesktopCollectionView: View {
     }
 
     private func selectDefaultSource() {
-        let sources = store.collectionOverview.sources
+        let sources = orderedSources
         guard !sources.contains(where: { $0.id == selectedSourceID }) else { return }
         selectedSourceID = sources.first?.id
+    }
+
+    private func moveCollectionSource(_ draggedID: String, _ targetID: String) {
+        collectionSourceOrder = ATMManualOrder.moving(
+            draggedID,
+            over: targetID,
+            stored: collectionSourceOrder,
+            fallback: orderedSources.map(\.id)
+        )
     }
 
     private func revealSelectedSourceGroup() {
@@ -686,6 +743,7 @@ private struct CollectionSourceDetail: View {
     let onFinishEditing: () -> Void
     let onHistory: () -> Void
     let onToggle: () -> Void
+    let onToggleMute: () -> Void
     let onCollect: () -> Void
     let onDelete: () -> Void
 
@@ -779,6 +837,17 @@ private struct CollectionSourceDetail: View {
                 )
                 .toggleStyle(.switch)
                 .controlSize(.small)
+
+                Toggle(
+                    "桌面通知",
+                    isOn: Binding(
+                        get: { source.notifiesDesktop },
+                        set: { _ in onToggleMute() }
+                    )
+                )
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .help("关掉只是不再弹通知：这个来源照常收集，结果照常计入未读")
 
                 Spacer(minLength: 12)
 
@@ -897,6 +966,10 @@ private struct CollectionSourceDetail: View {
     private var scheduleCard: some View {
         sourceCard("自动收集", systemImage: "clock") {
             sourceValueRow("来源开关", source.enabled ? "已启用" : "已暂停")
+            sourceValueRow(
+                "桌面通知",
+                source.notifiesDesktop ? "有新收集会提醒" : "已静默，仍计入未读"
+            )
             sourceValueRow("自动调度", store.collectionOverview.enabled ? "正在运行" : "总开关已关闭")
             sourceValueRow("间隔", "每 \(source.effectiveIntervalMinutes) 分钟")
             sourceValueRow("处理方式", source.effectiveStrategy == "observe" ? "收集结论，按需保存" : "创建或补充 Todo")

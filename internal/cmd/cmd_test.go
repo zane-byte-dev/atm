@@ -743,6 +743,23 @@ const bodyWithShellMetacharacters = "## 问题\n\n" +
 	"环境变量 $HOME 与 ${PATH} 不该被展开，$(date) 与 `date` 不该被执行。\n" +
 	"引号：\"double\" 'single' —— 反斜杠 \\ 与感叹号 ! 也要原样保留。\n"
 
+func TestValidateInlineTodoDescriptionRejectsEscapedMarkdownNewlines(t *testing.T) {
+	err := validateInlineTodoDescription(`目标：支持收集提醒。\n范围：\n- 新结果默认未读。\n- 打开后变为已读。`)
+	if err == nil || !strings.Contains(err.Error(), "--desc-file") {
+		t.Fatalf("escaped multiline description error = %v", err)
+	}
+
+	for _, description := range []string{
+		"目标：支持收集提醒。\n范围：\n- 新结果默认未读。",
+		`代码中的单个 \n 应保持原样`,
+		`JSON 示例会把换行编码为 \n，也可能再次写作 \n。`,
+	} {
+		if err := validateInlineTodoDescription(description); err != nil {
+			t.Errorf("rejected legal inline description %q: %v", description, err)
+		}
+	}
+}
+
 func TestRunTodoEditReadsDescriptionFromFileOrStdin(t *testing.T) {
 	withTempAtmDir(t)
 	if err := seedTodos(store.Todo{ID: "t1", Title: "Edit me", Priority: "P1", Status: "open", Created: store.Today()}); err != nil {

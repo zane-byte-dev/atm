@@ -78,7 +78,7 @@ func init() {
 	todoAddCmd.Flags().StringVar(&todoAddReviewAtFlag, "review-at", "", "next review date (YYYY-MM-DD)")
 	todoAddCmd.Flags().StringVar(&todoSourceFlag, "source", "", "source of the task")
 	todoAddCmd.Flags().StringVar(&todoAddCreatorFlag, "creator", "", "who filed it: "+strings.Join(store.TodoCreatorVocabulary, ", ")+" (default: the agent in the environment, otherwise me)")
-	todoAddCmd.Flags().StringVar(&todoDescFlag, "desc", "", "description")
+	todoAddCmd.Flags().StringVar(&todoDescFlag, "desc", "", "single-line description (use --desc-file for multiline text)")
 	todoAddCmd.Flags().StringVar(&todoDescFileFlag, "desc-file", "", "read description from a file (use - for stdin)")
 	todoAddCmd.Flags().BoolVar(&todoBatchFlag, "batch", false, "read YAML/JSON batch input from stdin")
 	todoAddCmd.MarkFlagsMutuallyExclusive("desc", "desc-file")
@@ -89,7 +89,7 @@ func init() {
 	todoSubmitCmd.Flags().StringVar(&todoSubmitReasonFlag, "reason", "", "submission summary or evidence")
 
 	todoEditCmd.Flags().StringVar(&todoEditTitleFlag, "title", "", "new title")
-	todoEditCmd.Flags().StringVar(&todoEditDescFlag, "desc", "", "new description")
+	todoEditCmd.Flags().StringVar(&todoEditDescFlag, "desc", "", "new single-line description (use --desc-file for multiline text)")
 	todoEditCmd.Flags().StringVar(&todoEditDescFileFlag, "desc-file", "", "read new description from a file (use - for stdin)")
 	todoEditCmd.MarkFlagsMutuallyExclusive("desc", "desc-file")
 	todoEditCmd.Flags().StringVar(&todoEditPriorityFlag, "priority", "", "new priority: P0, P1, P2")

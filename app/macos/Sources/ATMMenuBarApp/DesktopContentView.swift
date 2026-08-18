@@ -1826,13 +1826,13 @@ struct DesktopTodoDetail: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if let refineSource = store.refineSource(for: todo.id) {
-                    Label("from \(refineSource)", systemImage: "sparkles")
+                    Label("曾由 \(refineSource) 整理", systemImage: "sparkles")
                         .font(ATMFont.font(.caption, weight: .semibold))
                         .foregroundStyle(ATMTheme.accent)
                         .padding(.horizontal, 9)
                         .padding(.vertical, 5)
                         .background(ATMTheme.accentFill, in: Capsule())
-                        .help("任务优化来源")
+                        .help("历史任务优化来源；描述后续可能已修改")
                 }
 
                 if let description = nonEmpty(todo.description) {

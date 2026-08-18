@@ -316,10 +316,39 @@ func readBodyFlagOrFile(cmd *cobra.Command, name, inline, path string) (string, 
 	return string(data), nil
 }
 
+// validateInlineTodoDescription catches the common shell-quoting mistake where
+// a caller passes "first\\n- second" to --desc expecting the backslash escape to
+// become a newline. Cobra receives those bytes verbatim, and persisting them
+// makes the Markdown reader show "\\n" in the task body. Keep this check on the
+// inline flag only: --desc-file is the byte-preserving escape hatch for technical
+// prose that intentionally discusses encoded newlines.
+func validateInlineTodoDescription(description string) error {
+	if err := store.ValidateTodoDescription(description); err != nil {
+		return err
+	}
+	if strings.Contains(description, "\n") || strings.Count(description, `\n`) < 2 {
+		return nil
+	}
+	for _, line := range strings.Split(description, `\n`)[1:] {
+		line = strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") ||
+			strings.HasPrefix(line, "+ ") || strings.HasPrefix(line, "#") {
+			return fmt.Errorf(
+				"description contains literal \\n sequences before Markdown structure; " +
+					"use real line breaks (for multiline CLI input, use --desc-file)",
+			)
+		}
+	}
+	return nil
+}
+
 func todoAddDescription(cmd *cobra.Command) (string, error) {
 	description, err := readBodyFlagOrFile(cmd, "desc", todoDescFlag, todoDescFileFlag)
 	if err != nil {
 		return "", err
+	}
+	if cmd.Flags().Changed("desc") {
+		return description, validateInlineTodoDescription(description)
 	}
 	return description, store.ValidateTodoDescription(description)
 }
@@ -480,7 +509,11 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if cmd.Flags().Changed("desc") || cmd.Flags().Changed("desc-file") {
-		if err := store.ValidateTodoDescription(editedDescription); err != nil {
+		validate := store.ValidateTodoDescription
+		if cmd.Flags().Changed("desc") {
+			validate = validateInlineTodoDescription
+		}
+		if err := validate(editedDescription); err != nil {
 			return err
 		}
 	}

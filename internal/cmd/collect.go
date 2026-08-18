@@ -135,7 +135,8 @@ func init() {
 		"mark every unread collection result as read")
 
 	collectSourceCmd.AddCommand(collectSourceListCmd, collectSourceSearchCmd, collectSourceAddCmd,
-		collectSourceEnableCmd, collectSourceDisableCmd, collectSourceDeleteCmd)
+		collectSourceEnableCmd, collectSourceDisableCmd,
+		collectSourceMuteCmd, collectSourceUnmuteCmd, collectSourceDeleteCmd)
 	collectItemCmd.AddCommand(collectItemReprocessCmd, collectItemPromoteCmd, collectItemCorrectCmd,
 		collectItemSaveCmd, collectItemReadCmd, collectItemUnreadCmd,
 		collectItemRevertCmd, collectItemDeleteCmd)
@@ -210,6 +211,11 @@ var collectStatusCmd = &cobra.Command{
 			if value.Summary.Unread > 0 {
 				fmt.Printf("Unread collection results: %d · atm collect item read --all\n", value.Summary.Unread)
 			}
+			// Otherwise a muted source is a silent setting explaining a silence:
+			// someone wondering why a group stopped notifying has nowhere to look.
+			if muted := collectionMutedSources(value.Sources); muted > 0 {
+				fmt.Printf("Muted sources: %d · still collected and counted as unread · atm collect source unmute <source-id>\n", muted)
+			}
 			for _, health := range value.ConnectorHealth {
 				fmt.Printf("%s: %s\n", health.Connector, collectionHealthLine(health))
 			}
@@ -240,6 +246,17 @@ func collectionPendingProposals(items []store.CollectionItem) int {
 		}
 	}
 	return pending
+}
+
+// collectionMutedSources counts the sources whose results never raise a banner.
+func collectionMutedSources(sources []store.CollectionSource) int {
+	muted := 0
+	for _, source := range sources {
+		if source.Muted {
+			muted++
+		}
+	}
+	return muted
 }
 
 func collectionArchiveSpan(stats store.CollectionMessageStats) string {
@@ -554,6 +571,13 @@ var collectSourceListCmd = &cobra.Command{
 				if source.AutoDispatch {
 					fmt.Printf("%-20s 新 Todo 自动交给 Codex\n", "")
 				}
+				// Printed only when muted: a line on every other row would just
+				// repeat the default. Says what mute does not cover, because the
+				// question a muted source raises is "why no banner", not "why no
+				// unread".
+				if source.Muted {
+					fmt.Printf("%-20s 桌面通知已静默，仍照常收集并计入未读\n", "")
+				}
 				// Printed only when it deviates: a column reading "window" on
 				// every row would just widen an already wide line.
 				if source.DecisionUnit == store.CollectionDecisionUnitMessage {
@@ -731,6 +755,39 @@ func collectionSourceToggleCommand(name string, enabled bool) *cobra.Command {
 				}
 				if jsonOutput {
 					output.JSON(map[string]any{"id": args[0], "enabled": enabled})
+				}
+				return nil
+			})
+		},
+	}
+}
+
+var collectSourceMuteCmd = collectionSourceMuteCommand("mute", true)
+var collectSourceUnmuteCmd = collectionSourceMuteCommand("unmute", false)
+
+// collectionSourceMuteCommand builds the pair that takes one source in or out of
+// the desktop notifications. Kept apart from enable/disable on purpose: pausing a
+// source stops the collecting, muting one only stops the banner — the results
+// still arrive and still count as unread.
+func collectionSourceMuteCommand(name string, muted bool) *cobra.Command {
+	short := "Stop desktop notifications for one collection source"
+	if !muted {
+		short = "Resume desktop notifications for one collection source"
+	}
+	return &cobra.Command{
+		Use:   name + " <source-id>",
+		Short: short,
+		Long: short + ". Collection itself is unaffected: a muted source keeps " +
+			"collecting, its results keep counting as unread and the sidebar and " +
+			"menubar badges still rise. Use `collect source disable` to stop collecting.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return withDB(false, func(db *sql.DB) error {
+				if err := store.SetCollectionSourceMuted(db, args[0], muted); err != nil {
+					return err
+				}
+				if jsonOutput {
+					output.JSON(map[string]any{"id": args[0], "muted": muted})
 				}
 				return nil
 			})

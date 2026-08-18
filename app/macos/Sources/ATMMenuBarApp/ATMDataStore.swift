@@ -1961,6 +1961,27 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
+    /// Takes one source in or out of the desktop notifications. Separate from the
+    /// enabled toggle above because it answers a different question: pausing stops
+    /// the collecting, muting only stops the banner — the results still arrive and
+    /// still count as unread.
+    func setCollectionSource(_ source: ATMCollectionSource, muted: Bool) {
+        Task {
+            do {
+                let runner = try ATMCommandRunner()
+                _ = try await runner.run(
+                    ATMCollectionSourceMuteCommand.arguments(sourceID: source.id, muted: muted)
+                )
+                collectionSourceErrors[source.id] = nil
+                refreshCollection()
+            } catch {
+                let message = ATMErrorText.compact(error.localizedDescription, limit: 200)
+                collectionSourceErrors[source.id] = message
+                collectionErrorMessage = message
+            }
+        }
+    }
+
     func deleteCollectionSource(_ source: ATMCollectionSource) {
         Task {
             do {
@@ -2291,7 +2312,10 @@ final class ATMDataStore: ObservableObject {
         }
         let newRuns = runs.filter { !previous.contains($0.id) && $0.status != "running" }
         notifiedCollectionRunIDs = previous.union(currentIDs)
-        ATMNotificationManager.shared.sendCollectionSummary(newRuns)
+        ATMNotificationManager.shared.sendCollectionSummary(
+            newRuns,
+            sources: collectionOverview.sources
+        )
     }
 
     private func shouldRunCollection(_ status: ATMCollectionOverview, now: Date = Date()) -> Bool {

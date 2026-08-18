@@ -236,6 +236,11 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 45
+		case 45:
+			if err := migrateV45ToV46(db); err != nil {
+				return err
+			}
+			version = 46
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -1255,6 +1260,32 @@ func migrateV44ToV45(db *sql.DB) error {
 		if _, err := tx.Exec(statement); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+// migrateV45ToV46 lets one source be taken out of the desktop notifications
+// without being taken out of collection. Nothing is backfilled: 0 means "still
+// notifies", which is what every source did before this column existed, and the
+// distinction only ever suppresses a banner — unread counts and badges are the
+// same for a muted source as for any other.
+func migrateV45ToV46(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	has, err := tableHasColumn(tx, "collection_sources", "muted")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := tx.Exec(`ALTER TABLE collection_sources ADD COLUMN muted INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 46`); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

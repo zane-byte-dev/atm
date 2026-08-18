@@ -49,6 +49,8 @@ struct DesktopKnowledgeView: View {
     @State private var isFeedbackSaving = false
     @State private var expandedLibraryIDs: Set<String> = []
     @State private var drawerTab = KnowledgeDrawerTab.articles
+    @State private var draggedLibraryID: String?
+    @AppStorage(ATMManualOrder.knowledgeCollectionsKey) private var knowledgeCollectionOrder = ""
     @FocusState private var editorFocused: Bool
 
     private var selectedLibraryID: String {
@@ -60,11 +62,12 @@ struct DesktopKnowledgeView: View {
     }
 
     private var sortedKnowledgeCollections: [ATMKnowledgeCollection] {
-        store.knowledgeCollections.sorted {
+        let fallback = store.knowledgeCollections.sorted {
             if $0.id == "inbox" { return true }
             if $1.id == "inbox" { return false }
             return $0.name.localizedStandardCompare($1.name) == .orderedAscending
         }
+        return ATMManualOrder.ordered(fallback, stored: knowledgeCollectionOrder, id: \.id)
     }
 
     private var libraryTitle: String {
@@ -376,9 +379,19 @@ struct DesktopKnowledgeView: View {
                 ATMEmptyState(icon: "folder", title: "还没有知识库", detail: "点击右上角新建第一个知识库")
             } else {
                 ScrollView {
+                    // Lazy rows scrolled out of view are not drop targets, so a
+                    // library cannot be dragged past the top of the viewport; the
+                    // right-click 上移/下移 pair is the answer for that, not a plain
+                    // `VStack` — rows size off `maxWidth: .infinity`, which needs the
+                    // definite width proposal only the lazy stack passes down.
                     LazyVStack(spacing: ATMGroupedNavigatorMetrics.groupSpacing) {
                         ForEach(sortedKnowledgeCollections) { collection in
                             knowledgeLibraryManagementRow(collection)
+                                .atmManualOrderRow(
+                                    id: collection.id,
+                                    dragged: $draggedLibraryID,
+                                    move: moveKnowledgeCollection
+                                )
                         }
                     }
                     .padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
@@ -416,19 +429,37 @@ struct DesktopKnowledgeView: View {
                         .lineLimit(1)
                 }
             } trailing: {
-                Text(String(collection.documentCount))
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(ATMTheme.controlFill, in: Capsule())
+                HStack(spacing: 7) {
+                    Text(String(collection.documentCount))
+                        .font(ATMFont.mono(.caption, .semibold))
+                        .foregroundStyle(ATMTheme.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(ATMTheme.controlFill, in: Capsule())
+                    // Decorative, not a grab handle: the whole row drags, and the
+                    // row's own help already says so, so a second tooltip scoped to
+                    // this glyph would only imply dragging starts here.
+                    Image(systemName: "line.3.horizontal")
+                        .font(ATMFont.font(.caption, weight: .medium))
+                        .foregroundStyle(ATMTheme.secondary.opacity(0.65))
+                }
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(.atmRow)
+        .help("选择知识库；拖动可调整顺序")
         .atmRightClickMenu {
             knowledgeLibraryManagementMenuEntries(collection)
         }
+    }
+
+    private func moveKnowledgeCollection(_ draggedID: String, _ targetID: String) {
+        knowledgeCollectionOrder = ATMManualOrder.moving(
+            draggedID,
+            over: targetID,
+            stored: knowledgeCollectionOrder,
+            fallback: sortedKnowledgeCollections.map(\.id)
+        )
     }
 
     @ATMMenuBuilder
@@ -446,6 +477,12 @@ struct DesktopKnowledgeView: View {
             drawerTab = .articles
             showingCreateSheet = true
         }
+        ATMMenuSeparator()
+        ATMManualOrder.moveMenuEntries(
+            for: collection.id,
+            in: sortedKnowledgeCollections.map(\.id),
+            move: moveKnowledgeCollection
+        )
         ATMMenuSeparator()
         ATMMenuItem("重命名…") { onRenameCollection(collection) }
         ATMMenuItem("删除…", destructive: true) { onDeleteCollection(collection) }

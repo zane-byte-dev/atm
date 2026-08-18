@@ -149,11 +149,29 @@ struct ATMCollectionNotificationPayload: Equatable {
     let subtitle: String
     let body: String
 
-    static func make(runs: [ATMCollectionRun]) -> ATMCollectionNotificationPayload? {
-        let created = runs.reduce(0) { $0 + $1.createdCount }
-        let appended = runs.reduce(0) { $0 + $1.appendedCount }
-        let insight = runs.reduce(0) { $0 + $1.insightCount }
-        let failed = runs.reduce(0) { $0 + $1.failedCount }
+    /// `sources` is what decides whose results may interrupt: a muted source is
+    /// left out of the counts entirely, so a run that only touched muted sources
+    /// produces no banner at all. Everything else about a muted source is
+    /// unchanged — it still collects, and its results still count as unread in
+    /// the sidebar and menubar, which is where they are meant to be noticed.
+    ///
+    /// A run whose source cannot be found still notifies. The source may have
+    /// been deleted after the run, or predate source-scoped runs; either way
+    /// "unknown" is not the same claim as "muted", and swallowing the banner
+    /// would lose a real result to a bookkeeping gap.
+    static func make(
+        runs: [ATMCollectionRun],
+        sources: [ATMCollectionSource] = []
+    ) -> ATMCollectionNotificationPayload? {
+        let mutedIDs = Set(sources.filter { !$0.notifiesDesktop }.map(\.id))
+        let audible = runs.filter { run in
+            guard let sourceID = run.sourceID, !sourceID.isEmpty else { return true }
+            return !mutedIDs.contains(sourceID)
+        }
+        let created = audible.reduce(0) { $0 + $1.createdCount }
+        let appended = audible.reduce(0) { $0 + $1.appendedCount }
+        let insight = audible.reduce(0) { $0 + $1.insightCount }
+        let failed = audible.reduce(0) { $0 + $1.failedCount }
         guard created + appended + insight + failed > 0 else { return nil }
         let subtitle = failed > 0 ? "收集有结果需要处理" : "有新的收集待查看"
         let body = "新增 \(created) · 补充 \(appended) · 结论 \(insight) · 失败 \(failed)"
@@ -367,8 +385,10 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         center.removePendingNotificationRequests(withIdentifiers: identifiers)
     }
 
-    func sendCollectionSummary(_ runs: [ATMCollectionRun]) {
-        guard let center, let payload = ATMCollectionNotificationPayload.make(runs: runs) else { return }
+    func sendCollectionSummary(_ runs: [ATMCollectionRun], sources: [ATMCollectionSource] = []) {
+        guard let center,
+              let payload = ATMCollectionNotificationPayload.make(runs: runs, sources: sources)
+        else { return }
         let content = UNMutableNotificationContent()
         content.title = "ATM · 收集"
         content.subtitle = payload.subtitle

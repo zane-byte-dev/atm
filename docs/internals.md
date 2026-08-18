@@ -145,6 +145,17 @@ macOS 菜单栏 App 常驻时按默认 5 分钟间隔采集；主窗口关闭不
 记录，而是按时间收进对应 `create` 的详情。`insight` 先保存在记录自己的结论中，只有用户显式执行
 `collect item save` 才写进中央知识库；`collect digest` 仅保留为人工的按来源/日期批量汇总入口。
 
+新产生的收集结果默认未读：新建 Todo、对已有 Todo 的补充、还没保存的结论和等人确认的提议都算，
+`collect status` 报未读数，侧栏和菜单栏出徽标，App 前台时还会弹一条桌面通知。打开即已读，
+`collect item read --all` 全部标已读，`collect item unread` 重新标未读。同一来源后续追加会让它重新变成未读。
+
+三个开关管三件不同的事，别混：`collect disable` 关掉整体自动调度；`collect source disable`
+暂停某个来源的采集；`collect source mute` 只掐这个来源的桌面通知——它照常采集、结果照常计入未读、
+徽标照常涨，只是不再弹窗。所以「不想被打断」用 mute，「不想再看这个群」才用 disable。
+静默状态由 `mute`/`unmute` 独占：`collect source add` 是 upsert，编辑来源不会顺手把静默改回来。
+命令行里静默来源在 `collect source list` 有单独一行标注，`collect status` 报静默来源数；App 里
+来源行有 🔇 标记、详情页有「桌面通知」开关。找不到来源的历史 Run 仍然通知——「查不到」不等于「已静默」。
+
 `history` 和 `run` 拉到的聊天原文都会同步进 `~/.atm/atm.db`，默认保留 90 天：
 
 ```bash

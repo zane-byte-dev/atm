@@ -54,11 +54,12 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     let priority: String
     let autoDispatch: Bool?
     let enabled: Bool
+    let muted: Bool?
     let createdAt: Int64
     let updatedAt: Int64
 
     enum CodingKeys: String, CodingKey {
-        case id, connector, kind, name, project, priority, enabled, strategy, instruction
+        case id, connector, kind, name, project, priority, enabled, muted, strategy, instruction
         case autoDispatch = "auto_dispatch"
         case externalID = "external_id"
         case decisionUnit = "decision_unit"
@@ -76,6 +77,12 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
 
     var effectiveStrategy: String { strategy == "observe" ? "observe" : "tasks" }
     var automaticallyDispatches: Bool { effectiveStrategy == "tasks" && autoDispatch == true }
+
+    /// Whether this source's new results are allowed to raise a desktop banner.
+    /// Muting is only about the banner: a muted source keeps collecting, its
+    /// results keep counting as unread and the badges still rise. A database or
+    /// fixture that predates the column notifies, which is what it always did.
+    var notifiesDesktop: Bool { muted != true }
 
     /// Older databases and hand-written fixtures predate the column, and window
     /// is what they behaved as.
@@ -331,6 +338,15 @@ struct ATMCollectionRun: Decodable, Identifiable, Equatable {
 enum ATMCollectionRunCommand {
     static func arguments(sourceID: String) -> [String] {
         ["collect", "run", "--source", sourceID, "--json"]
+    }
+}
+
+/// Muting one source's desktop notifications. Its own verb rather than a flag on
+/// the source upsert, so that saving an edited source cannot silently change it —
+/// and deliberately not `disable`, which stops the collecting instead.
+enum ATMCollectionSourceMuteCommand {
+    static func arguments(sourceID: String, muted: Bool) -> [String] {
+        ["collect", "source", muted ? "mute" : "unmute", sourceID, "--json"]
     }
 }
 

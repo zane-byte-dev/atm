@@ -55,6 +55,10 @@ import (
 // gate's ledger: one row per attempt by an agent to run a command that reaches
 // someone else, plus what the user decided about it. Nothing is backfilled —
 // before v45 nothing was gated, so there are no historical decisions to invent.
+// v46 adds collection_sources.muted so one noisy source can be taken out of the
+// desktop notifications without being taken out of collection: unread counts and
+// badges are untouched, only the banner is. Nothing is backfilled — 0 is the
+// behaviour every source had before.
 // Keep
 // the minimum at 21 while those upgrade steps exist; after the live database has
 // been upgraded,
@@ -63,7 +67,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 45
+	SchemaVersion        = 46
 	minUpgradableVersion = 21
 )
 
@@ -548,6 +552,11 @@ func createSchema(tx *sql.Tx) error {
 			-- different authority. Observe sources can never dispatch.
 			auto_dispatch INTEGER NOT NULL DEFAULT 0 CHECK (auto_dispatch IN (0,1)),
 			enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+			-- Whether this source's new results stay out of desktop notifications.
+			-- Only the banner: muted results still collect, still count as unread
+			-- and still raise the sidebar and menubar badges. Deliberately absent
+			-- from the upsert's conflict update so editing a source cannot undo it.
+			muted       INTEGER NOT NULL DEFAULT 0 CHECK (muted IN (0,1)),
 			created_at  INTEGER NOT NULL,
 			updated_at  INTEGER NOT NULL,
 			UNIQUE (connector, kind, external_id)
