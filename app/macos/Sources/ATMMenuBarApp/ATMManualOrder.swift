@@ -9,25 +9,32 @@ import UniformTypeIdentifiers
 enum ATMManualOrder {
     static let knowledgeCollectionsKey = "ATMKnowledgeCollectionOrder"
     static let collectionSourcesKey = "ATMCollectionSourceOrder"
-    private static let dragProviderNamePrefix = "atm-manual-order:"
-
     /// `public.utf8-plain-text` via the plain `NSItemProvider(object:)`
     /// initializer. Plainer than it looks, and deliberate.
     ///
-    /// A private exported type does not survive SwiftUI's macOS drag bridge, so
-    /// the provider remains plain text. `suggestedName` supplies a synchronous,
-    /// process-owned marker that the drop delegate can verify before it moves a
-    /// row; the text payload alone is not enough because a cancelled drag leaves
-    /// the row binding alive until another drop ends the session.
+    /// Two attempts to mark these drags as ATM's own have now been made, and both
+    /// killed the gesture outright — nothing on these rows accepts a drop, so
+    /// dragging does nothing at all:
+    ///
+    /// 1. A private exported type (`UTType(exportedAs:)` plus a matching
+    ///    `onDrop(of:)`). SwiftUI's macOS drag bridge does not carry the type
+    ///    through; `.ownProcess` and `.all` visibility were both tried, so
+    ///    visibility is not what breaks it.
+    /// 2. A `suggestedName` marker checked against `DropInfo.itemProviders`. The
+    ///    drop side receives providers rebuilt from the drag pasteboard, and
+    ///    `suggestedName` is metadata rather than a pasteboard type, so it is
+    ///    gone by then and every real drop fails the check.
+    ///
+    /// Neither is catchable by a test, which is the trap: a provider built in
+    /// process keeps whatever you set on it, so `owns`-style unit tests pass
+    /// while the app cannot be dragged. `NSItemProvider` is not
+    /// `NSPasteboardWriting`, so the pasteboard hand-off happens inside SwiftUI
+    /// where nothing here can reach it, and the only signal is a human dragging
+    /// a row. The hole this would close is documented as accepted on
+    /// `ATMManualOrderDropDelegate.pendingMoveSource`. Do not try a third time
+    /// without a human on the other end.
     static func itemProvider(for id: String) -> NSItemProvider {
-        let provider = NSItemProvider(object: id as NSString)
-        provider.suggestedName = dragProviderNamePrefix + id
-        return provider
-    }
-
-    static func owns(_ provider: NSItemProvider, for id: String) -> Bool {
-        provider.suggestedName == dragProviderNamePrefix + id
-            && provider.canLoadObject(ofClass: NSString.self)
+        NSItemProvider(object: id as NSString)
     }
 
     static func ordered<Element>(
@@ -122,36 +129,35 @@ struct ATMManualOrderDropDelegate: DropDelegate {
 
     /// The row to move, or nil when the pointer sits on the dragged row itself.
     ///
-    /// A cancelled drag can leave this source ID alive, so callbacks must also
-    /// verify the provider marker before treating it as the current drag.
+    /// Known hole, accepted: a drag released outside the list — or cancelled with
+    /// Esc — never reaches `performDrop`, so `draggedID` keeps naming that row,
+    /// and a later *text drag from another app* onto this list is taken for it
+    /// and reorders once. The payload cannot be checked here to tell the two
+    /// apart: `DropInfo` only loads asynchronously, and both synchronous markers
+    /// that would work on paper are gone by the time the drop side sees them
+    /// (see `ATMManualOrder.itemProvider`). Costs one bogus reorder the next drag
+    /// undoes, which is cheaper than losing the gesture — and losing the gesture
+    /// is exactly what closing it has cost twice.
     var pendingMoveSource: String? {
         guard let draggedID, draggedID != targetID else { return nil }
         return draggedID
     }
 
-    private func acceptsDrop(_ info: DropInfo, sourceID: String) -> Bool {
-        info.itemProviders(for: [.text]).contains {
-            ATMManualOrder.owns($0, for: sourceID)
-        }
-    }
-
     func dropEntered(info: DropInfo) {
-        guard let source = pendingMoveSource, acceptsDrop(info, sourceID: source) else { return }
+        guard let source = pendingMoveSource else { return }
         move(source, targetID)
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        guard let source = draggedID else { return DropProposal(operation: .cancel) }
-        return DropProposal(operation: acceptsDrop(info, sourceID: source) ? .move : .cancel)
+        DropProposal(operation: acceptsDrop ? .move : .cancel)
     }
 
     /// `false` when no ATM drag is in flight, so a foreign drop falls through to
     /// whatever else wants it rather than being silently swallowed here.
     func performDrop(info: DropInfo) -> Bool {
-        guard let source = draggedID else { return false }
-        let accepted = acceptsDrop(info, sourceID: source)
+        guard acceptsDrop else { return false }
         draggedID = nil
-        return accepted
+        return true
     }
 }
 

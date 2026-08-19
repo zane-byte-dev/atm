@@ -80,20 +80,19 @@ final class ATMManualOrderTests: XCTestCase {
         )
     }
 
-    /// The row ID has to ride along as text: a provider advertising nothing is a
-    /// row no drop target matches, which is how the gesture dies silently.
-    func testItemProviderCarriesTheRowIDAsText() {
+    /// The row ID has to ride along as plain text and nothing more exotic: the
+    /// drop side only ever matches `public.utf8-plain-text`, and a provider it
+    /// cannot match is a row no drop target accepts — which is how this gesture
+    /// dies, silently and completely.
+    ///
+    /// Deliberately asserts nothing about ATM being able to recognise its own
+    /// drag. Every marker tried so far survives a provider built here and is gone
+    /// by the time a real drop reads it, so a test asserting otherwise passes
+    /// while the app cannot be dragged at all. See `ATMManualOrder.itemProvider`.
+    func testItemProviderCarriesTheRowIDAsPlainTextOnly() {
         let provider = ATMManualOrder.itemProvider(for: "inbox")
         XCTAssertEqual(provider.registeredTypeIdentifiers, [UTType.utf8PlainText.identifier])
         XCTAssertTrue(provider.canLoadObject(ofClass: NSString.self))
-        XCTAssertTrue(ATMManualOrder.owns(provider, for: "inbox"))
-        XCTAssertFalse(ATMManualOrder.owns(provider, for: "another-row"))
-    }
-
-    func testForeignTextProviderCannotResumeACancelledManualOrderDrag() {
-        let provider = NSItemProvider(object: "inbox" as NSString)
-
-        XCTAssertFalse(ATMManualOrder.owns(provider, for: "inbox"))
     }
 
     @MainActor
