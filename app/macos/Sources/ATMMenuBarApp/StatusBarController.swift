@@ -118,6 +118,10 @@ final class StatusBarController {
                 openDesktop: { [weak self] todo in
                     self?.closePanel()
                     self?.openDesktop(todo: todo)
+                },
+                openUsage: { [weak self] in
+                    self?.closePanel()
+                    self?.openDesktop(section: .usage)
                 }
             )
         )
@@ -319,8 +323,12 @@ final class StatusBarController {
         store.refresh(sync: true)
         panel.anchor(to: button)
         panel.orderFrontRegardless()
+        // `FloatingPanel` is deliberately a nonactivating panel that can join
+        // every Space. Activating the whole app here also raises ATM's main
+        // window; when that window belongs to another Space, handing focus to
+        // Screenshot can make macOS switch there and back. The panel can become
+        // key and handle its controls without activating its owning app.
         panel.makeKey()
-        NSApp.activate(ignoringOtherApps: true)
         setStatusItemHighlighted(true)
         startOutsideClickMonitor()
     }

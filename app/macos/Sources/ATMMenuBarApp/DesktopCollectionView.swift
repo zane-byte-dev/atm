@@ -138,7 +138,7 @@ struct DesktopCollectionView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .atmAnimatedSwap(collectionDetailIdentity, style: .detail)
         }
-        .background(ATMTheme.canvas)
+        .background(Color.clear)
         .onAppear {
             store.refreshCollection()
             selectDefaultItem()
@@ -292,6 +292,7 @@ struct DesktopCollectionView: View {
                                 .atmContentStackRow()
                                 .atmManualOrderRow(
                                     id: source.id,
+                                    title: source.displayName,
                                     dragged: $draggedSourceID,
                                     move: moveCollectionSource
                                 )
@@ -351,13 +352,6 @@ struct DesktopCollectionView: View {
                     Text(sourceStatusText(source))
                         .font(ATMFont.caption)
                         .foregroundStyle(ATMTheme.secondary)
-                    // Decorative, not a grab handle: the whole row drags, and the
-                    // row's own help already says so, so a second tooltip scoped to
-                    // this glyph would only imply dragging starts here.
-                    Image(systemName: "line.3.horizontal")
-                        .font(ATMFont.font(.caption, weight: .medium))
-                        .foregroundStyle(ATMTheme.secondary.opacity(0.65))
-                        .padding(.leading, 2)
                 }
                 .fixedSize()
             }
@@ -629,11 +623,13 @@ struct DesktopCollectionView: View {
                 onDelete: { deleteCandidate = source }
             )
         } else if drawerTab == .sources {
-            ATMEmptyState(
-                icon: "tray.2",
-                title: "还没有收集来源",
-                detail: "在中栏点击添加来源后，这里会显示它的配置。"
-            )
+            ATMDetailBodySurface {
+                ATMEmptyState(
+                    icon: "tray.2",
+                    title: "还没有收集来源",
+                    detail: "在中栏点击添加来源后，这里会显示它的配置。"
+                )
+            }
         } else if let item = selectedItem {
             CollectionItemDetail(
                 store: store,
@@ -648,10 +644,12 @@ struct DesktopCollectionView: View {
                 }
             )
         } else {
-            ATMEmptyState(
-                icon: "doc.text.magnifyingglass",
-                title: "选择一条处理记录"
-            )
+            ATMDetailBodySurface {
+                ATMEmptyState(
+                    icon: "doc.text.magnifyingglass",
+                    title: "选择一条处理记录"
+                )
+            }
         }
     }
 
@@ -774,7 +772,8 @@ private struct CollectionSourceDetail: View {
                 VStack(spacing: 0) {
                     header
                     Divider()
-                    ScrollView {
+                    ATMDetailBodySurface {
+                        ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             runCard
                             identityCard
@@ -783,40 +782,39 @@ private struct CollectionSourceDetail: View {
                         }
                         .padding(.horizontal, ATMDetailLayout.horizontalPadding)
                         .padding(.vertical, 24)
-                        .frame(maxWidth: 760, alignment: .leading)
+                        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
                 }
             }
         }
-        .background(ATMTheme.canvas)
+        .background(Color.clear)
     }
 
     private var header: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 13) {
-                Image(systemName: source.symbolName)
-                    .font(ATMFont.font(.title3, weight: .semibold))
-                    .symbolRenderingMode(.monochrome)
-                    .foregroundStyle(source.enabled ? ATMTheme.accent : ATMTheme.secondary)
-                    .frame(width: 40, height: 40)
-                    .background(
-                        (source.enabled ? ATMTheme.accent : ATMTheme.secondary).opacity(0.10),
-                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    // 字号字重跟 `ATMDetailHeader` 对齐。这一块不套那个壳：它是头像领衔的
-                    // 身份卡（40pt 图标在标题左边），结构本来就不是「眉标 / 标题 / 状态」三层。
-                    Text(source.displayName)
-                        .font(ATMFont.font(.title2, weight: .semibold))
-                        .lineLimit(1)
-                    Label(sourceStatusText, systemImage: sourceStatusIcon)
-                        .font(ATMFont.caption)
-                        .foregroundStyle(sourceStatusColor)
+        ATMDetailHeader(title: source.displayName, titleLineLimit: 2) {
+            Label("收集来源", systemImage: source.symbolName)
+                .font(ATMFont.footnote)
+                .foregroundStyle(source.enabled ? ATMTheme.accent : ATMTheme.secondary)
+        } actions: {
+            HStack(spacing: 6) {
+                Button(action: onEdit) {
+                    Label("编辑", systemImage: "slider.horizontal.3")
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
 
-                Spacer(minLength: 16)
+                Button(action: onCollect) {
+                    Label(
+                        store.isCollecting(sourceID: source.id) ? "收集中" : "立即收集",
+                        systemImage: store.isCollecting(sourceID: source.id) ? "hourglass" : "arrow.clockwise"
+                    )
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!source.enabled || store.isCollecting)
+                .help(source.enabled ? "只收集这个来源" : "先启用这个来源")
 
                 Menu {
                     Button(action: onHistory) {
@@ -839,54 +837,53 @@ private struct CollectionSourceDetail: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .fixedSize()
             }
-
-            HStack(spacing: 12) {
-                Toggle(
-                    "自动收集",
-                    isOn: Binding(
-                        get: { source.enabled },
-                        set: { _ in onToggle() }
-                    )
-                )
-                .toggleStyle(.switch)
-                .controlSize(.small)
-
-                Toggle(
-                    "桌面通知",
-                    isOn: Binding(
-                        get: { source.notifiesDesktop },
-                        set: { _ in onToggleMute() }
-                    )
-                )
-                .toggleStyle(.switch)
-                .controlSize(.small)
-                .help("关掉只是不再弹通知：这个来源照常收集，结果照常计入未读")
-
-                Spacer(minLength: 12)
-
-                Button(action: onEdit) {
-                    Label("编辑", systemImage: "slider.horizontal.3")
+            .fixedSize()
+        } meta: {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 14) {
+                    sourceStatus
+                    Spacer(minLength: 8)
+                    sourceToggles
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-
-                Button(action: onCollect) {
-                    Label(
-                        store.isCollecting(sourceID: source.id) ? "收集中" : "立即收集",
-                        systemImage: store.isCollecting(sourceID: source.id) ? "hourglass" : "arrow.clockwise"
-                    )
+                VStack(alignment: .leading, spacing: 10) {
+                    sourceStatus
+                    sourceToggles
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!source.enabled || store.isCollecting)
-                .help(source.enabled ? "只收集这个来源" : "先启用这个来源")
             }
         }
-        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-        .padding(.vertical, 18)
-        .background(ATMTheme.elevated)
+    }
+
+    private var sourceStatus: some View {
+        Label(sourceStatusText, systemImage: sourceStatusIcon)
+            .font(ATMFont.caption)
+            .foregroundStyle(sourceStatusColor)
+    }
+
+    private var sourceToggles: some View {
+        HStack(spacing: 12) {
+            Toggle(
+                "自动收集",
+                isOn: Binding(
+                    get: { source.enabled },
+                    set: { _ in onToggle() }
+                )
+            )
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            Toggle(
+                "桌面通知",
+                isOn: Binding(
+                    get: { source.notifiesDesktop },
+                    set: { _ in onToggleMute() }
+                )
+            )
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .help("关掉只是不再弹通知：这个来源照常收集，结果照常计入未读")
+        }
+        .fixedSize()
     }
 
     private var sourceStatusText: String {
@@ -1399,21 +1396,19 @@ private struct CollectionItemDetail: View {
     @ViewBuilder
     private var content: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 12) {
                 switch selectedTab {
                 case .decision:
-                    sourceSummary
-                    detailDivider
-                    decisionSummary
-                    detailDivider
-                    outcomeSummary
+                    collectionDetailCard { sourceSummary }
+                    collectionDetailCard { decisionSummary }
+                    collectionDetailCard { outcomeSummary }
                 case .transcript:
                     rawContextSummary
                 }
             }
             .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 20)
-            .frame(maxWidth: 880, alignment: .leading)
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
@@ -1791,9 +1786,13 @@ private struct CollectionItemDetail: View {
             .lineLimit(1)
     }
 
-    private var detailDivider: some View {
-        Divider()
-            .padding(.vertical, 20)
+    private func collectionDetailCard<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .atmWorkspaceCard()
     }
 }
 
@@ -2021,7 +2020,7 @@ private struct CollectionSourceEditor: View {
                     .frame(width: 620, height: source == nil ? 700 : 640)
             }
         }
-        .background(ATMTheme.canvas)
+        .background(presentation == .detail ? Color.clear : ATMTheme.canvas)
         .onAppear {
             // Opening on the one field that always needs typing; when the
             // connector is still unchosen the picker is one Tab away.
@@ -2032,9 +2031,17 @@ private struct CollectionSourceEditor: View {
     private var editorContent: some View {
         VStack(spacing: 0) {
             sheetHeader
-
             Divider()
+            if presentation == .detail {
+                ATMDetailBodySurface { editorBody }
+            } else {
+                editorBody
+            }
+        }
+    }
 
+    private var editorBody: some View {
+        VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     sourceSection
@@ -2045,9 +2052,7 @@ private struct CollectionSourceEditor: View {
                 .frame(maxWidth: 760, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-
             Divider()
-
             footer
         }
     }
@@ -2072,7 +2077,7 @@ private struct CollectionSourceEditor: View {
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 18)
-        .background(ATMTheme.surface)
+        .background(presentation == .detail ? ATMTheme.elevated : ATMTheme.surface)
     }
 
     private var footer: some View {

@@ -209,6 +209,51 @@ private struct ATMAnimatedSwapModifier: ViewModifier {
     }
 }
 
+enum ATMWorkspaceCardPresentation {
+    case raised
+    case embeddedSection
+}
+
+private struct ATMWorkspaceCardPresentationKey: EnvironmentKey {
+    static let defaultValue: ATMWorkspaceCardPresentation = .raised
+}
+
+extension EnvironmentValues {
+    var atmWorkspaceCardPresentation: ATMWorkspaceCardPresentation {
+        get { self[ATMWorkspaceCardPresentationKey.self] }
+        set { self[ATMWorkspaceCardPresentationKey.self] = newValue }
+    }
+}
+
+private struct ATMWorkspaceCardModifier: ViewModifier {
+    @Environment(\.atmWorkspaceCardPresentation) private var presentation
+    let cornerRadius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        switch presentation {
+        case .raised:
+            content
+                .background(
+                    ATMTheme.elevated,
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(ATMTheme.border, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+        case .embeddedSection:
+            content
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(ATMTheme.border.opacity(0.72))
+                        .frame(height: 1)
+                }
+        }
+    }
+}
+
 extension View {
     /// ATM keeps its scroll bars out of sight. The panes are dense — nested cards,
     /// list columns, Markdown descriptions — and an overlay scroller drew a grey
@@ -226,17 +271,11 @@ extension View {
 
     /// Shared raised surface for the desktop workspaces. Keeping this in one
     /// place prevents Collection, Agent, Knowledge and Settings from drifting
-    /// into four subtly different card styles.
+    /// into four subtly different card styles. Inside the right-hand detail
+    /// surface this becomes a simple divided section, avoiding cards nested in
+    /// cards while preserving each section's existing spacing and content.
     func atmWorkspaceCard(cornerRadius: CGFloat = ATMRadius.panel) -> some View {
-        background(
-            ATMTheme.elevated,
-            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .stroke(ATMTheme.border, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+        modifier(ATMWorkspaceCardModifier(cornerRadius: cornerRadius))
     }
 
     /// Animate an identity-backed replacement (workspace, tab body or detail)

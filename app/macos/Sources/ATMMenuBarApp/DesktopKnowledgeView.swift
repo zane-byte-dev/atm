@@ -96,7 +96,6 @@ struct DesktopKnowledgeView: View {
         } detail: {
             detailPane
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(ATMTheme.canvas)
                 .atmAnimatedSwap(knowledgeDetailIdentity, style: .detail)
         }
         .task {
@@ -389,6 +388,7 @@ struct DesktopKnowledgeView: View {
                             knowledgeLibraryManagementRow(collection)
                                 .atmManualOrderRow(
                                     id: collection.id,
+                                    title: collection.name,
                                     dragged: $draggedLibraryID,
                                     move: moveKnowledgeCollection
                                 )
@@ -429,20 +429,12 @@ struct DesktopKnowledgeView: View {
                         .lineLimit(1)
                 }
             } trailing: {
-                HStack(spacing: 7) {
-                    Text(String(collection.documentCount))
-                        .font(ATMFont.mono(.caption, .semibold))
-                        .foregroundStyle(ATMTheme.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(ATMTheme.controlFill, in: Capsule())
-                    // Decorative, not a grab handle: the whole row drags, and the
-                    // row's own help already says so, so a second tooltip scoped to
-                    // this glyph would only imply dragging starts here.
-                    Image(systemName: "line.3.horizontal")
-                        .font(ATMFont.font(.caption, weight: .medium))
-                        .foregroundStyle(ATMTheme.secondary.opacity(0.65))
-                }
+                Text(String(collection.documentCount))
+                    .font(ATMFont.mono(.caption, .semibold))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(ATMTheme.controlFill, in: Capsule())
             }
             .contentShape(Rectangle())
         }
@@ -664,43 +656,53 @@ struct DesktopKnowledgeView: View {
                     onDelete: { onDeleteCollection(selectedLibrary) }
                 )
             } else if drawerTab == .libraries {
-                ATMEmptyState(icon: "folder", title: "还没有知识库", detail: "新建知识库后，这里会显示它的说明和数据")
+                ATMDetailBodySurface {
+                    ATMEmptyState(icon: "folder", title: "还没有知识库", detail: "新建知识库后，这里会显示它的说明和数据")
+                }
             } else if let item = selectedItem, editingItemID == item.id {
                 knowledgeEditor(for: item)
             } else if isDetailLoading {
-                ATMEmptyState(icon: "hourglass", title: "正在读取详情")
+                ATMDetailBodySurface {
+                    ATMEmptyState(icon: "hourglass", title: "正在读取详情")
+                }
             } else if let detailError {
                 let presentation = ATMErrorPresentation.resolve(detailError, fallbackTitle: "详情加载失败")
-                VStack {
-                    ATMInlineNotice(
-                        severity: .error,
-                        title: presentation.title,
-                        message: presentation.message,
-                        details: detailError,
-                        actionTitle: "重试",
-                        onAction: { Task { await loadSelectedDocument() } },
-                        onDismiss: { self.detailError = nil }
-                    )
-                    Spacer()
+                ATMDetailBodySurface {
+                    VStack {
+                        ATMInlineNotice(
+                            severity: .error,
+                            title: presentation.title,
+                            message: presentation.message,
+                            details: detailError,
+                            actionTitle: "重试",
+                            onAction: { Task { await loadSelectedDocument() } },
+                            onDismiss: { self.detailError = nil }
+                        )
+                        Spacer()
+                    }
+                    .padding(24)
                 }
-                .padding(24)
             } else if let item = selectedItem {
                 switch item {
                 case .document(let summary):
                     if let document {
                         documentDetail(document, summary: summary)
                     } else {
-                        ATMEmptyState(icon: "doc.text", title: summary.title)
+                        ATMDetailBodySurface {
+                            ATMEmptyState(icon: "doc.text", title: summary.title)
+                        }
                     }
                 case .memory(let memory):
                     memoryDetail(memory)
                 }
             } else {
-                ATMEmptyState(
-                    icon: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? "brain.head.profile" : "doc.text",
-                    title: "选择一条内容",
-                    detail: "从中栏查看知识详情"
-                )
+                ATMDetailBodySurface {
+                    ATMEmptyState(
+                        icon: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? "brain.head.profile" : "doc.text",
+                        title: "选择一条内容",
+                        detail: "从中栏查看知识详情"
+                    )
+                }
             }
         }
     }
@@ -894,31 +896,39 @@ struct DesktopKnowledgeView: View {
     }
 
     private func documentDetail(_ document: ATMKnowledgeDocument, summary: ATMKnowledgeDocumentSummary) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                detailHeader(
-                    title: document.metadata.title,
-                    identifier: document.metadata.id,
-                    infoTitle: "知识信息",
-                    infoFields: documentInfoFields(document),
-                    onEdit: isEditable(document) ? { startEditingDocument(document) } : nil,
-                    onEditInfo: { showingMetadataSheet = true },
-                    onArchive: { showingArchiveConfirmation = true },
-                    onDelete: { deleteSummary = summary },
-                    archiveTitle: document.metadata.status == "archived" ? "恢复知识" : "归档知识"
-                )
+        VStack(spacing: 0) {
+            detailHeader(
+                title: document.metadata.title,
+                identifier: document.metadata.id,
+                kindTitle: document.metadata.status == "archived" ? "已归档知识" : "知识文档",
+                kindImage: document.metadata.status == "archived" ? "archivebox" : "doc.text",
+                infoTitle: "知识信息",
+                infoFields: documentInfoFields(document),
+                onEdit: isEditable(document) ? { startEditingDocument(document) } : nil,
+                onEditInfo: { showingMetadataSheet = true },
+                onArchive: { showingArchiveConfirmation = true },
+                onDelete: { deleteSummary = summary },
+                archiveTitle: document.metadata.status == "archived" ? "恢复知识" : "归档知识"
+            )
+            Divider()
 
-                knowledgeFeedbackBar(document)
+            ATMDetailBodySurface {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        knowledgeFeedbackBar(document)
 
-                ATMMarkdownContentView(
-                    source: ATMMarkdown.documentBody(document.content, removingTitle: document.metadata.title)
-                )
+                        ATMMetadataStrip(items: knowledgeFactItems(document))
 
+                        ATMMarkdownContentView(
+                            source: ATMMarkdown.documentBody(document.content, removingTitle: document.metadata.title)
+                        )
+                    }
+                    .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                    .padding(.vertical, 20)
+                    .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-            .frame(maxWidth: ATMWorkspaceLayout.readingColumnMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -1010,28 +1020,38 @@ struct DesktopKnowledgeView: View {
     }
 
     private func memoryDetail(_ memory: ATMMemoryHit) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                detailHeader(
-                    title: memory.title,
-                    identifier: memory.id,
-                    infoTitle: "记忆信息",
-                    infoFields: memoryInfoFields(memory),
-                    onEdit: { startEditingMemory(memory) }
-                )
+        VStack(spacing: 0) {
+            detailHeader(
+                title: memory.title,
+                identifier: memory.id,
+                kindTitle: "共享记忆",
+                kindImage: "brain.head.profile",
+                infoTitle: "记忆信息",
+                infoFields: memoryInfoFields(memory),
+                onEdit: { startEditingMemory(memory) }
+            )
+            Divider()
 
-                ATMMarkdownContentView(source: memory.content)
+            ATMDetailBodySurface {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        ATMMetadataStrip(items: memoryFactItems(memory))
+                        ATMMarkdownContentView(source: memory.content)
+                    }
+                        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                        .padding(.vertical, 20)
+                        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-            .frame(maxWidth: ATMWorkspaceLayout.readingColumnMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private func detailHeader(
         title: String,
         identifier: String,
+        kindTitle: String,
+        kindImage: String,
         infoTitle: String,
         infoFields: [KnowledgeInfoField],
         onEdit: (() -> Void)? = nil,
@@ -1040,89 +1060,87 @@ struct DesktopKnowledgeView: View {
         onDelete: (() -> Void)? = nil,
         archiveTitle: String = "归档知识"
     ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(libraryTitle)
-                .font(ATMFont.font(.caption, weight: .semibold))
-                .foregroundStyle(ATMTheme.accent)
+        ATMDetailHeader(title: title, titleLineLimit: 4) {
+            Label(libraryTitle, systemImage: "folder")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+        } actions: {
+            HStack(spacing: 2) {
+                if let onEdit {
+                    ATMIconButton(
+                        systemImage: "pencil",
+                        help: "编辑 Markdown",
+                        chrome: .bare,
+                        side: 26,
+                        iconTier: .bodyLarge,
+                        action: onEdit
+                    )
+                }
 
-            HStack(alignment: .top, spacing: 10) {
-                // 跟任务 / Agent / 收集的 `ATMDetailHeader` 用同一档标题字号。这一页的标题
-                // 不套那个壳——它在文档流里、跟正文一起滚动，不是固定头——但字号必须一致，
-                // 否则切页时同一层级的标题会大一圈。
-                Text(title)
-                    .font(ATMFont.font(.title2, weight: .semibold))
-                    .lineLimit(4)
-                    .textSelection(.enabled)
-                    .layoutPriority(1)
+                ATMIconButton(
+                    systemImage: "info.circle",
+                    help: infoTitle,
+                    chrome: .bare,
+                    isEmphasized: showingInfo,
+                    side: 26,
+                    iconTier: .bodyLarge
+                ) { showingInfo.toggle() }
+                .popover(isPresented: $showingInfo, arrowEdge: .top) {
+                    knowledgeInfoPopover(title: infoTitle, fields: infoFields)
+                }
 
-                Spacer(minLength: 2)
+                ATMIconButton(
+                    systemImage: copiedIdentifier == identifier ? "checkmark" : "doc.on.doc",
+                    help: copiedIdentifier == identifier ? "已复制" : "复制 ID",
+                    chrome: .bare,
+                    isEmphasized: copiedIdentifier == identifier,
+                    side: 26,
+                    iconTier: .bodyLarge
+                ) { copyIdentifier(identifier) }
 
-                HStack(spacing: 2) {
-                    if let onEdit {
-                        ATMIconButton(
-                            systemImage: "pencil",
-                            help: "编辑 Markdown",
-                            chrome: .bare,
+                if onEditInfo != nil || onArchive != nil || onDelete != nil {
+                    Menu {
+                        if let onEditInfo {
+                            Button(action: onEditInfo) {
+                                Label("编辑信息", systemImage: "slider.horizontal.3")
+                            }
+                        }
+                        if let onArchive {
+                            Divider()
+                            Button(action: onArchive) {
+                                Label(archiveTitle, systemImage: archiveTitle == "恢复知识" ? "arrow.uturn.backward" : "archivebox")
+                            }
+                        }
+                        if let onDelete {
+                            Divider()
+                            Button(role: .destructive, action: onDelete) {
+                                Label("永久删除…", systemImage: "trash")
+                            }
+                        }
+                    } label: {
+                        ATMIconMenuLabel(
+                            systemImage: "ellipsis",
+                            help: "管理知识",
                             side: 26,
-                            iconTier: .bodyLarge,
-                            action: onEdit
+                            iconTier: .bodyLarge
                         )
                     }
-
-                    ATMIconButton(
-                        systemImage: "info.circle",
-                        help: infoTitle,
-                        chrome: .bare,
-                        isEmphasized: showingInfo,
-                        side: 26,
-                        iconTier: .bodyLarge
-                    ) { showingInfo.toggle() }
-                    .popover(isPresented: $showingInfo, arrowEdge: .top) {
-                        knowledgeInfoPopover(title: infoTitle, fields: infoFields)
-                    }
-
-                    ATMIconButton(
-                        systemImage: copiedIdentifier == identifier ? "checkmark" : "doc.on.doc",
-                        help: copiedIdentifier == identifier ? "已复制" : "复制 ID",
-                        chrome: .bare,
-                        isEmphasized: copiedIdentifier == identifier,
-                        side: 26,
-                        iconTier: .bodyLarge
-                    ) { copyIdentifier(identifier) }
-
-                    if onEditInfo != nil || onArchive != nil || onDelete != nil {
-                        Menu {
-                            if let onEditInfo {
-                                Button(action: onEditInfo) {
-                                    Label("编辑信息", systemImage: "slider.horizontal.3")
-                                }
-                            }
-                            if let onArchive {
-                                Divider()
-                                Button(action: onArchive) {
-                                    Label(archiveTitle, systemImage: archiveTitle == "恢复知识" ? "arrow.uturn.backward" : "archivebox")
-                                }
-                            }
-                            if let onDelete {
-                                Divider()
-                                Button(role: .destructive, action: onDelete) {
-                                    Label("永久删除…", systemImage: "trash")
-                                }
-                            }
-                        } label: {
-                            ATMIconMenuLabel(
-                                systemImage: "ellipsis",
-                                help: "管理知识",
-                                side: 26,
-                                iconTier: .bodyLarge
-                            )
-                        }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
                 }
-                .padding(.top, 1)
             }
+            .fixedSize()
+        } meta: {
+            HStack(spacing: 8) {
+                Label(kindTitle, systemImage: kindImage)
+                    .foregroundStyle(ATMTheme.secondary)
+                Text(identifier)
+                    .font(ATMFont.mono(.caption, .medium))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(ATMFont.caption)
         }
     }
 
@@ -1187,24 +1205,25 @@ struct DesktopKnowledgeView: View {
             .background(ATMTheme.surface.opacity(0.72))
 
             Divider()
-
-            if editorMode == .edit {
-                TextEditor(text: $editContent)
-                    .font(ATMFont.mono(.body))
-                    .lineSpacing(3)
-                    .scrollContentBackground(.hidden)
-                    .padding(14)
-                    .background(ATMTheme.canvas)
-                    .focused($editorFocused)
-                    .disabled(isSaving)
-            } else {
-                ScrollView {
-                    ATMMarkdownContentView(source: editContent)
-                        .padding(24)
-                        .frame(maxWidth: 980, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+            ATMDetailBodySurface {
+                if editorMode == .edit {
+                    TextEditor(text: $editContent)
+                        .font(ATMFont.mono(.body))
+                        .lineSpacing(3)
+                        .scrollContentBackground(.hidden)
+                        .padding(14)
+                        .background(Color.clear)
+                        .focused($editorFocused)
+                        .disabled(isSaving)
+                } else {
+                    ScrollView {
+                        ATMMarkdownContentView(source: editContent)
+                            .padding(24)
+                            .frame(maxWidth: 980, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .background(Color.clear)
                 }
-                .background(ATMTheme.canvas)
             }
         }
     }
@@ -1372,6 +1391,33 @@ struct DesktopKnowledgeView: View {
         return fields
     }
 
+    /// Keep the most useful scan-level facts visible in the document itself;
+    /// the info popover still owns the exhaustive metadata list.
+    private func knowledgeFactItems(_ document: ATMKnowledgeDocument) -> [ATMMetadataItem] {
+        let documentLibrary = store.knowledgeCollections.first { $0.id == document.collection }?.name
+            ?? document.collection
+        return [
+            ATMMetadataItem(
+                "library",
+                label: "知识库",
+                value: documentLibrary,
+                systemImage: "folder"
+            ),
+            ATMMetadataItem(
+                "producer",
+                label: "贡献者",
+                value: document.metadata.producer,
+                systemImage: "person"
+            ),
+            ATMMetadataItem(
+                "updated",
+                label: "更新",
+                value: KnowledgeDateFormatter.display(document.metadata.updatedAt),
+                systemImage: "clock"
+            ),
+        ]
+    }
+
     private func memoryInfoFields(_ memory: ATMMemoryHit) -> [KnowledgeInfoField] {
         var fields = [
             KnowledgeInfoField(label: "范围", value: localizedScope(memory.scope)),
@@ -1385,6 +1431,29 @@ struct DesktopKnowledgeView: View {
             fields.append(KnowledgeInfoField(label: key, value: memory.metadata[key] ?? ""))
         }
         return fields
+    }
+
+    private func memoryFactItems(_ memory: ATMMemoryHit) -> [ATMMetadataItem] {
+        [
+            ATMMetadataItem(
+                "scope",
+                label: "范围",
+                value: localizedScope(memory.scope),
+                systemImage: "person.2"
+            ),
+            ATMMetadataItem(
+                "source",
+                label: "来源",
+                value: memory.metadata["source"] ?? memory.source,
+                systemImage: "arrow.turn.down.right"
+            ),
+            ATMMetadataItem(
+                "created",
+                label: "创建",
+                value: KnowledgeDateFormatter.display(memory.createdAt),
+                systemImage: "calendar"
+            ),
+        ]
     }
 
     private func metadataRow(_ label: String, _ value: String) -> some View {
@@ -1545,78 +1614,78 @@ private struct KnowledgeLibraryDetail: View {
         VStack(spacing: 0) {
             header
             Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    overviewCard
-                    topicsCard
-                    routingCard
+            ATMDetailBodySurface {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        overviewCard
+                        topicsCard
+                        routingCard
+                    }
+                    .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                    .padding(.vertical, 20)
+                    .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(24)
-                .frame(maxWidth: 760, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .background(ATMTheme.canvas)
+        .background(Color.clear)
     }
 
     private var header: some View {
-        HStack(spacing: 13) {
-            Image(systemName: collection.id == "inbox" ? "tray" : "folder")
-                .font(ATMFont.font(.title3, weight: .semibold))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(ATMTheme.accent)
-                .frame(width: 40, height: 40)
-                .background(ATMTheme.accentFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(collection.name)
-                    .font(ATMFont.font(.title2, weight: .bold))
-                    .lineLimit(1)
-                Text("\(roleLabel) · \(collection.documentCount) 篇知识")
-                    .font(ATMFont.caption)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-
-            Spacer(minLength: 16)
-
-            Button(action: onOpenArticles) {
-                Label("查看文章", systemImage: "doc.text")
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-
-            Menu {
-                Button(action: onCreateDocument) {
-                    Label("新建知识", systemImage: "square.and.pencil")
+        ATMDetailHeader(title: collection.name, titleLineLimit: 2) {
+            Label("知识库", systemImage: collection.id == "inbox" ? "tray" : "folder")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+        } actions: {
+            HStack(spacing: 6) {
+                Button(action: onOpenArticles) {
+                    Label("查看文章", systemImage: "doc.text")
                 }
-                Button(action: onRename) {
-                    Label("重命名", systemImage: "pencil")
-                }
-                Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(collection.id, forType: .string)
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+
+                Menu {
+                    Button(action: onCreateDocument) {
+                        Label("新建知识", systemImage: "square.and.pencil")
+                    }
+                    Button(action: onRename) {
+                        Label("重命名", systemImage: "pencil")
+                    }
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(collection.id, forType: .string)
+                    } label: {
+                        Label("复制知识库 ID", systemImage: "doc.on.doc")
+                    }
+                    Divider()
+                    Button(role: .destructive, action: onDelete) {
+                        Label("删除知识库", systemImage: "trash")
+                    }
                 } label: {
-                    Label("复制知识库 ID", systemImage: "doc.on.doc")
+                    ATMIconMenuLabel(
+                        systemImage: "ellipsis",
+                        help: "知识库操作",
+                        side: 28,
+                        iconTier: .bodyLarge
+                    )
                 }
-                Divider()
-                Button(role: .destructive, action: onDelete) {
-                    Label("删除知识库", systemImage: "trash")
-                }
-            } label: {
-                ATMIconMenuLabel(
-                    systemImage: "ellipsis",
-                    help: "知识库操作",
-                    side: 28,
-                    iconTier: .bodyLarge
-                )
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
             .fixedSize()
+        } meta: {
+            HStack(spacing: 8) {
+                Text(roleLabel)
+                Text("·")
+                Text("\(collection.documentCount) 篇知识")
+                Text("·")
+                Text(collection.id)
+                    .font(ATMFont.mono(.caption, .medium))
+            }
+            .font(ATMFont.caption)
+            .foregroundStyle(ATMTheme.secondary)
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 18)
-        .background(ATMTheme.surface)
     }
 
     private var overviewCard: some View {

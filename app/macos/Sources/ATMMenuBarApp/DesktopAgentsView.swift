@@ -66,34 +66,34 @@ struct DesktopAgentsView: View {
             agentList
         } detail: {
             Group {
-                switch scope {
-                case .live:
-                    if let session = selectedSession {
-                        DesktopAgentPresenceDetail(
-                            session: session,
-                            relatedTodo: relatedTodo(for: session),
-                            runTodoID: navigation.selectedAgentRunTodoID ?? session.bindingTodoID,
-                            store: store,
-                            navigation: navigation,
-                            onOpenSession: { openSession(session) }
-                        )
-                        .id(session.id)
-                    } else {
-                        emptyDetail
+                    switch scope {
+                    case .live:
+                        if let session = selectedSession {
+                            DesktopAgentPresenceDetail(
+                                session: session,
+                                relatedTodo: relatedTodo(for: session),
+                                runTodoID: navigation.selectedAgentRunTodoID ?? session.bindingTodoID,
+                                store: store,
+                                navigation: navigation,
+                                onOpenSession: { openSession(session) }
+                            )
+                            .id(session.id)
+                        } else {
+                            emptyDetail
+                        }
+                    case .all:
+                        if let indexed = selectedIndexedSession {
+                            DesktopIndexedSessionDetail(
+                                session: indexed,
+                                relatedTodo: relatedTodo(forSessionID: indexed.id),
+                                store: store,
+                                navigation: navigation
+                            )
+                            .id(indexed.id)
+                        } else {
+                            emptyDetail
+                        }
                     }
-                case .all:
-                    if let indexed = selectedIndexedSession {
-                        DesktopIndexedSessionDetail(
-                            session: indexed,
-                            relatedTodo: relatedTodo(forSessionID: indexed.id),
-                            store: store,
-                            navigation: navigation
-                        )
-                        .id(indexed.id)
-                    } else {
-                        emptyDetail
-                    }
-                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .atmAnimatedSwap(detailIdentity, style: .detail)
@@ -294,11 +294,13 @@ struct DesktopAgentsView: View {
     }
 
     private var emptyDetail: some View {
-        ATMEmptyState(
-            icon: "cpu",
-            title: "选择一个 Agent 会话",
-            detail: "查看它在哪里、正在做什么，以及是否需要你介入。"
-        )
+        ATMDetailBodySurface {
+            ATMEmptyState(
+                icon: "cpu",
+                title: "选择一个 Agent 会话",
+                detail: "查看它在哪里、正在做什么，以及是否需要你介入。"
+            )
+        }
     }
 
     private func selectFirstIfNeeded() {
@@ -633,7 +635,7 @@ private struct DesktopAgentPresenceDetail: View {
                 }
                 technicalDetails
             }
-            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
             .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -645,7 +647,7 @@ private struct DesktopAgentPresenceDetail: View {
             VStack(alignment: .leading, spacing: 12) {
                 executionUpdates
             }
-            .frame(maxWidth: 820, alignment: .leading)
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
             .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -864,12 +866,33 @@ private struct DesktopAgentPresenceDetail: View {
         }
     }
 
-    /// 扁平列表让连续的短进展保持一组，留白负责区分消息，避免形成表格感。
+    /// A light timeline keeps consecutive updates in one reading stream while
+    /// making their boundaries visible. Cards would incorrectly imply that each
+    /// polling update is an independent object.
     private func executionUpdateList(_ updates: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            ForEach(Array(updates.enumerated()), id: \.offset) { _, update in
-                ATMMarkdownContentView(source: update)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(updates.enumerated()), id: \.offset) { index, update in
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(spacing: 0) {
+                        Circle()
+                            .fill(index == 0 ? ATMTheme.accent : ATMTheme.secondary.opacity(0.55))
+                            .frame(width: 8, height: 8)
+                            .padding(.top, 6)
+                        if index < updates.count - 1 {
+                            Rectangle()
+                                .fill(ATMTheme.border)
+                                .frame(width: 1)
+                                .frame(maxHeight: .infinity)
+                                .padding(.vertical, 5)
+                        }
+                    }
+                    .frame(width: 10)
+
+                    ATMMarkdownContentView(source: update)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.bottom, index < updates.count - 1 ? 20 : 4)
+                }
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.vertical, 12)
@@ -1104,18 +1127,21 @@ private struct DesktopIndexedSessionDetail: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            DesktopSessionTranscriptView(
-                sessionID: session.id,
-                agentLabel: ATMAgentDisplay.name(session.agent),
-                store: store,
-                mode: $transcriptMode
-            )
+            Divider()
+            ATMDetailBodySurface {
+                DesktopSessionTranscriptView(
+                    sessionID: session.id,
+                    agentLabel: ATMAgentDisplay.name(session.agent),
+                    store: store,
+                    mode: $transcriptMode
+                )
+            }
         }
-        .background(ATMTheme.canvas)
+        .background(Color.clear)
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        ATMDetailHeader(title: session.title, titleLineLimit: 3) {
             HStack(spacing: 7) {
                 ATMAgentMark(agent: session.agent, size: 18)
                 Text(ATMAgentDisplay.name(session.agent))
@@ -1124,39 +1150,28 @@ private struct DesktopIndexedSessionDetail: View {
                 Text("·")
                 Text(session.shortID)
                     .font(ATMFont.mono(.footnote, .medium))
-                Spacer(minLength: 0)
             }
             .font(ATMFont.font(.footnote, weight: .medium))
             .foregroundStyle(ATMTheme.secondary)
             .lineLimit(1)
-
-            Text(session.title)
-                .font(ATMFont.font(.title2, weight: .semibold))
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 10) {
-                Text(timeRange)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                if let todo = relatedTodo {
-                    Button {
-                        navigation.section = .tasks
-                        navigation.selectedTodoID = todo.id
-                    } label: {
-                        Label("\(todo.id.uppercased()) \(todo.title)", systemImage: "checklist")
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("跳到这个会话绑定的任务")
+        } actions: {
+            if let todo = relatedTodo {
+                Button {
+                    navigation.section = .tasks
+                    navigation.selectedTodoID = todo.id
+                } label: {
+                    Label("\(todo.id.uppercased()) \(todo.title)", systemImage: "checklist")
+                        .lineLimit(1)
                 }
-                Spacer(minLength: 0)
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+                .help("跳到这个会话绑定的任务")
             }
+        } meta: {
+            Label(timeRange, systemImage: "clock")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
         }
-        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-        .padding(.vertical, 16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.surface)
     }
 
     /// 开始与最后活动分开显示，两者相同时只说一次：会话跨天时这是唯一能看出来的地方。

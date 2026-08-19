@@ -1192,23 +1192,24 @@ private struct DesktopTasksView: View {
                         navigation: navigation,
                         isTrashed: showingTrash
                     )
-                        // Identity is the Todo id alone. Folding title / description /
-                        // status into it recreated the view on every background sync
-                        // that touched them, which reset the selected tab and threw
-                        // away an open edit form mid-typing. The form seeds itself
-                        // from `todo` when 编辑 is picked, so it opens on current
-                        // values without needing a fresh identity to do it.
+                            // Identity is the Todo id alone. Folding title / description /
+                            // status into it recreated the view on every background sync
+                            // that touched them, which reset the selected tab and threw
+                            // away an open edit form mid-typing. The form seeds itself
+                            // from `todo` when 编辑 is picked, so it opens on current
+                            // values without needing a fresh identity to do it.
                         .id(todo.id)
                 } else {
-                    ATMEmptyState(
-                        icon: showingTrash ? "trash" : "checklist",
-                        title: showingTrash ? "选择一个已删除任务" : "选择一个任务",
-                        detail: "从中栏查看详情、编辑 Markdown 或执行快捷操作。"
-                    )
+                    ATMDetailBodySurface {
+                        ATMEmptyState(
+                            icon: showingTrash ? "trash" : "checklist",
+                            title: showingTrash ? "选择一个已删除任务" : "选择一个任务",
+                            detail: "从中栏查看详情、编辑 Markdown 或执行快捷操作。"
+                        )
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ATMTheme.canvas)
             .atmAnimatedSwap(
                 "todo:\(selectedTodo?.id ?? "empty"):\(showingTrash)",
                 style: .detail
@@ -1519,7 +1520,7 @@ struct DesktopTodoDetail: View {
             if isEditing {
                 editHeader
                 Divider()
-                editContent
+                ATMDetailBodySurface { editContent }
             } else {
                 ATMDetailScaffold {
                     detailHeader
@@ -1542,7 +1543,7 @@ struct DesktopTodoDetail: View {
                 }
             }
         }
-        .background(ATMTheme.canvas)
+        .background(Color.clear)
         .onAppear {
             if !isTrashed {
                 store.loadBoundSessions(for: todo.id)
@@ -1844,8 +1845,10 @@ struct DesktopTodoDetail: View {
                 }
 
                 if let description = nonEmpty(todo.description) {
-                    ATMMarkdownContentView(source: description)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    detailCard("任务目标", icon: "scope") {
+                        ATMMarkdownContentView(source: description)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
 
                 if let links = todo.links, !links.isEmpty {
@@ -1873,7 +1876,7 @@ struct DesktopTodoDetail: View {
             }
             .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 16)
-            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
@@ -1953,67 +1956,7 @@ struct DesktopTodoDetail: View {
         if let run = latestTaskRun {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(taskRunColor(run.status))
-                            .frame(width: 8, height: 8)
-                        Text(taskRunStatusLabel(run.status))
-                            .font(ATMFont.font(.body, weight: .semibold))
-                        if run.isActive { ProgressView().controlSize(.small) }
-                        Spacer(minLength: 12)
-                        if let route = taskRunLaunchRoute, route.isAvailable {
-                            Button {
-                                openTaskRunSession(route)
-                            } label: {
-                                Label(route.actionTitle, systemImage: "arrow.up.forward.app")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .help("\(route.actionTitle)（\(route.destinationLabel)）；交互控制由原生 Agent 提供")
-                        }
-                        if run.isActive {
-                            Button("中断", role: .destructive) {
-                                showingTaskRunInterruptConfirmation = true
-                            }
-                            .controlSize(.small)
-                            .disabled(store.isActing)
-                        }
-                        if canContinueTaskRun {
-                            Button("继续修改") { presentCodexContinuation() }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                                .disabled(store.isActing)
-                        }
-                        if run.status == "failed" || run.status == "interrupted" {
-                            Button("重新委派") { presentDispatchSheet() }
-                                .controlSize(.small)
-                                .disabled(store.isActing)
-                        }
-                        Button("刷新") {
-                            store.loadTaskRuns(for: todo.id)
-                            store.refreshLiveStatus()
-                        }
-                        .controlSize(.small)
-                    }
-
-                    Text(run.message ?? "run \(run.id)")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                        .textSelection(.enabled)
-                    if let route = taskRunLaunchRoute, route.isAvailable {
-                        Label(
-                            "需要输入、处理授权或使用更多控制时，请在 \(route.destinationLabel) 中继续；ATM 仍会同步状态和日志。",
-                            systemImage: "arrow.up.forward.app"
-                        )
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Label(run.workDir, systemImage: "folder")
-                        .font(ATMFont.mono(.caption))
-                        .foregroundStyle(ATMTheme.secondary)
-                        .lineLimit(1)
-                        .textSelection(.enabled)
+                    taskRunSummary(run)
 
                     if let session = taskRunSession {
                         taskRunAgentPreview(session)
@@ -2037,7 +1980,7 @@ struct DesktopTodoDetail: View {
                 }
                 .padding(.horizontal, ATMDetailLayout.horizontalPadding)
                 .padding(.vertical, 18)
-                .frame(maxWidth: 860, alignment: .leading)
+                .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         } else {
@@ -2052,6 +1995,75 @@ struct DesktopTodoDetail: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private func taskRunSummary(_ run: ATMTaskRun) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(taskRunColor(run.status))
+                    .frame(width: 8, height: 8)
+                Text(taskRunStatusLabel(run.status))
+                    .font(ATMFont.font(.body, weight: .semibold))
+                if run.isActive { ProgressView().controlSize(.small) }
+                Spacer(minLength: 12)
+                if let route = taskRunLaunchRoute, route.isAvailable {
+                    Button {
+                        openTaskRunSession(route)
+                    } label: {
+                        Label(route.actionTitle, systemImage: "arrow.up.forward.app")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help("\(route.actionTitle)（\(route.destinationLabel)）；交互控制由原生 Agent 提供")
+                }
+                if run.isActive {
+                    Button("中断", role: .destructive) {
+                        showingTaskRunInterruptConfirmation = true
+                    }
+                    .controlSize(.small)
+                    .disabled(store.isActing)
+                }
+                if canContinueTaskRun {
+                    Button("继续修改") { presentCodexContinuation() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(store.isActing)
+                }
+                if run.status == "failed" || run.status == "interrupted" {
+                    Button("重新委派") { presentDispatchSheet() }
+                        .controlSize(.small)
+                        .disabled(store.isActing)
+                }
+                Button("刷新") {
+                    store.loadTaskRuns(for: todo.id)
+                    store.refreshLiveStatus()
+                }
+                .controlSize(.small)
+            }
+
+            Text(run.message ?? "run \(run.id)")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+                .textSelection(.enabled)
+            if let route = taskRunLaunchRoute, route.isAvailable {
+                Label(
+                    "需要输入、处理授权或使用更多控制时，请在 \(route.destinationLabel) 中继续；ATM 仍会同步状态和日志。",
+                    systemImage: "arrow.up.forward.app"
+                )
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Label(run.workDir, systemImage: "folder")
+                .font(ATMFont.mono(.caption))
+                .foregroundStyle(ATMTheme.secondary)
+                .lineLimit(1)
+                .textSelection(.enabled)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .atmWorkspaceCard()
     }
 
     private func taskRunMissingSessionMessage(_ run: ATMTaskRun) -> String {
@@ -2355,21 +2367,19 @@ struct DesktopTodoDetail: View {
             }
             .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 16)
-            .frame(maxWidth: 860, alignment: .leading)
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
-    /// No card, no section title: the tab holds nothing but the binding history and
-    /// already carries its own name, so a titled white box around the only thing on
-    /// the page was framing with nothing to frame against.
+    /// Sessions are independent durable objects, so each one owns a bounded card;
+    /// the page itself stays untitled because the tab already names the collection.
     private var sessionContent: some View {
         ScrollView {
             TodoSessionHistoryView(todo: todo, store: store)
-                // 14 + the row surface's own 10 lines the rows up with the tab bar.
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: 860, alignment: .leading)
+                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                .padding(.vertical, 16)
+                .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
@@ -2656,9 +2666,7 @@ struct DesktopTodoDetail: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
-        .shadow(color: Color.black.opacity(0.045), radius: 8, y: 2)
+        .atmWorkspaceCard(cornerRadius: 11)
     }
 
     private func actionButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
@@ -3143,32 +3151,39 @@ private struct DesktopUsageContent: View, Equatable {
     private static let todaySessionsPageSize = 10
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                usageModuleChrome
-                usageFilterToolbar
+        VStack(spacing: 0) {
+            usageModuleChrome
+            Divider()
+            ATMDetailTabs { usagePagePicker }
+            ATMDetailBodySurface {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 20) {
+                        usageFilterToolbar
 
-                // Quota is a pinned top-level summary, independent of the
-                // overview / today-sessions tab and usage filters below.
-                if !quota.isEmpty {
-                    quotaModule
+                        // Quota is a pinned top-level summary, independent of the
+                        // overview / today-sessions tab and usage filters below.
+                        if !quota.isEmpty {
+                            quotaModule
+                        }
+
+                        usageModule
+                    }
+                    .padding(.horizontal, 28)
+                    .padding(.top, 24)
+                    .padding(.bottom, 36)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-
-                usageModule
+                .background(
+                    LinearGradient(
+                        colors: [ATMTheme.accent.opacity(0.025), ATMTheme.elevated, ATMTheme.elevated],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .ignoresSafeArea()
+                )
             }
-            .padding(.horizontal, 28)
-            .padding(.top, 24)
-            .padding(.bottom, 36)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .background(
-            LinearGradient(
-                colors: [ATMTheme.accent.opacity(0.025), ATMTheme.canvas, ATMTheme.canvas],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-        )
+        .background(ATMTheme.canvas)
         .onAppear {
             normalizeFilters()
         }
@@ -3279,8 +3294,8 @@ private struct DesktopUsageContent: View, Equatable {
         .accessibilityLabel("用量页面")
     }
 
-    /// Wide: title | (time above filters, both trailing).
-    /// Narrow: keep the page switch beside the title and move health below.
+    /// The header owns identity and global health only. The page switch is the
+    /// separate strip between this band and the content card.
     private var usageModuleChrome: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .center, spacing: 16) {
@@ -3300,7 +3315,6 @@ private struct DesktopUsageContent: View, Equatable {
                     .foregroundStyle(ATMTheme.secondary)
                 }
                 Spacer(minLength: 8)
-                usagePagePicker
                 dataHealthButton
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -3322,13 +3336,16 @@ private struct DesktopUsageContent: View, Equatable {
                     .foregroundStyle(ATMTheme.secondary)
                 }
                 HStack {
-                    usagePagePicker
                     Spacer()
                     dataHealthButton
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.horizontal, 28)
+        .padding(.top, 24)
+        .padding(.bottom, 18)
+        .background(ATMTheme.elevated)
     }
 
     private var dataHealthButton: some View {
@@ -3367,14 +3384,7 @@ private struct DesktopUsageContent: View, Equatable {
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            ATMTheme.elevated,
-            in: RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
-                .stroke(ATMTheme.border.opacity(0.75))
-        )
+        .background(ATMTheme.controlFill.opacity(0.55), in: RoundedRectangle(cornerRadius: ATMRadius.control))
     }
 
     private func isFeaturedMetric(_ metric: ATMUsageMetric) -> Bool {
@@ -4633,14 +4643,6 @@ private struct DesktopUsageContent: View, Equatable {
                 }
             }
             .padding(.vertical, 8)
-            .background(
-                ATMTheme.elevated,
-                in: RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
-                    .stroke(ATMTheme.border.opacity(0.8))
-            )
 
             LazyVGrid(columns: Self.supportingMetricColumns, spacing: 8) {
                 ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in

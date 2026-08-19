@@ -4,6 +4,7 @@ struct QuickPanelView: View {
     @ObservedObject var store: ATMDataStore
     let close: () -> Void
     let openDesktop: (ATMTodo?) -> Void
+    let openUsage: () -> Void
 
     @State private var metricsRange: ATMMetricsRange = .today
 
@@ -184,42 +185,33 @@ struct QuickPanelView: View {
         card: ATMProviderQuotaCard,
         metric: ATMProviderQuotaMetric
     ) -> some View {
-        let url = card.payload.linkURL
         return quotaPercentRow(
             agent: card.agent,
             title: "\(card.providerLabel) \(metric.label)",
             percent: metric.usedPercent,
             help: "\(ATMAgentDisplay.name(card.agent)) · \(card.providerLabel) · "
                 + "\(card.payload.title)：\(metric.valueText)（\(String(format: "%.1f", metric.usedPercent))%）"
-                + (url == nil ? "" : " · 点击打开"),
-            url: url
+                + " · 点击查看用量"
         )
     }
 
-    /// `url` is the page behind the reading, when the provider named one. Built-in
-    /// rate-limit windows have no such page and stay unclickable.
-    @ViewBuilder
+    /// The desktop usage page is the single place that explains quota and usage
+    /// together. Provider-specific links remain available from their full cards
+    /// there instead of making otherwise identical quick-panel rows route
+    /// differently.
     private func quotaPercentRow(
         agent: String,
         title: String,
         percent: Double,
-        help: String,
-        url: URL? = nil
+        help: String
     ) -> some View {
-        if let url {
-            Button {
-                // The panel is transient and the browser is about to take focus,
-                // so it goes away first — same as opening the desktop window.
-                close()
-                NSWorkspace.shared.open(url)
-            } label: {
-                quotaPercentRowBody(agent: agent, title: title, percent: percent, help: help)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        } else {
+        Button {
+            openUsage()
+        } label: {
             quotaPercentRowBody(agent: agent, title: title, percent: percent, help: help)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     private func quotaPercentRowBody(

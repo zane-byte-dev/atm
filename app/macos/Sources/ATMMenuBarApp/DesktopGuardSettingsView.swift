@@ -81,7 +81,7 @@ struct DesktopGuardSettingsView: View {
                 .font(ATMFont.footnote)
                 .foregroundStyle(ATMTheme.secondary)
             // Only errors not attributable to one tool land here; the rest are shown
-            // in that tool's own card, next to the button that produced them.
+            // in that tool's own section, next to the button that produced them.
             if store.guardConfigErrorTool == nil, let error = store.guardConfigErrorMessage {
                 Text(error)
                     .font(ATMFont.footnote)
@@ -396,13 +396,10 @@ struct DesktopGuardSettingsView: View {
         content()
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                ATMTheme.elevated,
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(ATMTheme.border, lineWidth: 1)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(ATMTheme.border.opacity(0.72))
+                    .frame(height: 1)
             }
     }
 }

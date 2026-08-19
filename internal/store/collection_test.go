@@ -203,6 +203,54 @@ func TestCollectionItemsCanBeArchivedAndReopenedWithoutBeingRecollected(t *testi
 	}
 }
 
+func TestRecentlyArchivedCollectionItemRemainsInLimitedOverview(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "archive-window", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldest CollectionItem
+	for index := 0; index < 201; index++ {
+		item, _, err := PutCollectionItem(db, CollectionItem{
+			SourceID: source.ID, Connector: "test", Fingerprint: fmt.Sprintf("item-%03d", index),
+			MessageIDs: []string{fmt.Sprintf("message-%03d", index)}, Action: "create", Status: "processed",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			oldest = item
+		}
+	}
+	if _, err := db.Exec(`UPDATE collection_items SET updated_at=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetCollectionItemsArchived(db, []string{oldest.ID}, true); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ListCollectionItems(db, "", 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range items {
+		if item.ID == oldest.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the newly archived item fell outside the limited overview, so the UI cannot reopen it")
+	}
+}
+
 func TestMigrateV46AddsCollectionItemArchiveState(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()

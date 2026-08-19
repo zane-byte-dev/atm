@@ -813,7 +813,7 @@ func ListCollectionItems(db *sql.DB, sourceID string, limit int) ([]CollectionIt
 		limit = 100
 	}
 	rows, err := db.Query(collectionItemSelect+` WHERE (?='' OR i.source_id=?)
-		ORDER BY (i.archived_at<>0),i.updated_at DESC,i.id DESC LIMIT ?`, sourceID, sourceID, limit)
+		ORDER BY i.updated_at DESC,i.id DESC LIMIT ?`, sourceID, sourceID, limit)
 	if err != nil {
 		return nil, err
 	}

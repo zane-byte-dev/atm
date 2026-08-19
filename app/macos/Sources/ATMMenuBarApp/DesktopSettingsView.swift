@@ -240,28 +240,30 @@ struct DesktopSettingsView: View {
                     .frame(height: 1)
             }
 
-            Group {
-                switch selectedTab {
-                case .general:
-                    generalSettings
-                case .shortcuts:
-                    shortcutSettings
-                case .voice:
-                    voiceSettings
-                case .notify:
-                    notifySettings
-                case .guardGate:
-                    DesktopGuardSettingsView(store: store)
-                case .todo:
-                    todoSettings
-                case .model:
-                    textModelSettings
+            ATMDetailBodySurface {
+                Group {
+                    switch selectedTab {
+                    case .general:
+                        generalSettings
+                    case .shortcuts:
+                        shortcutSettings
+                    case .voice:
+                        voiceSettings
+                    case .notify:
+                        notifySettings
+                    case .guardGate:
+                        DesktopGuardSettingsView(store: store)
+                    case .todo:
+                        todoSettings
+                    case .model:
+                        textModelSettings
+                    }
                 }
             }
         }
         // 设置内容是阅读/编辑画布，和任务、Agent 的详情栏一样保持清晰；
         // 冷中性色 listPane 只属于左侧分类抽屉。
-        .background(ATMTheme.elevated)
+        .background(ATMTheme.canvas)
     }
 
     private var generalSettings: some View {
@@ -1429,13 +1431,10 @@ struct DesktopSettingsView: View {
         content()
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                ATMTheme.elevated,
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(ATMTheme.border, lineWidth: 1)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(ATMTheme.border.opacity(0.72))
+                    .frame(height: 1)
             }
     }
 

@@ -86,7 +86,7 @@ struct DesktopSessionTranscriptView: View {
                         timelineContent
                     }
                 }
-                .frame(maxWidth: 820, alignment: .leading)
+                .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(.horizontal, ATMDetailLayout.horizontalPadding)
                 .padding(.vertical, 16)
@@ -108,10 +108,13 @@ struct DesktopSessionTranscriptView: View {
                 if transcript.turns.isEmpty {
                     placeholder("这个会话还没有可读的问答")
                 } else {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 0) {
                         transcriptNotices(transcript)
-                        ForEach(transcript.turns) { turn in
-                            turnCard(turn)
+                        ForEach(Array(transcript.turns.enumerated()), id: \.element.id) { index, turn in
+                            turnBlock(turn)
+                            if index < transcript.turns.count - 1 {
+                                Divider()
+                            }
                         }
                         if transcript.truncated, mode == .brief {
                             // 说清楚这是尾部而不是全部，否则「摘要」会被读成「会话只有这么多」。
@@ -149,7 +152,10 @@ struct DesktopSessionTranscriptView: View {
         }
     }
 
-    private func turnCard(_ turn: ATMSessionTurn) -> some View {
+    /// Conversation is one reading stream, not a dashboard of independent
+    /// objects. Dividers separate turns without lifting every message into its
+    /// own card.
+    private func turnBlock(_ turn: ATMSessionTurn) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Text("第 \(turn.turn) 轮")
@@ -176,9 +182,8 @@ struct DesktopSessionTranscriptView: View {
                 ATMMarkdownContentView(source: answer)
             }
         }
-        .padding(16)
+        .padding(.vertical, 15)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .atmWorkspaceCard()
     }
 
     private func speaker(_ name: String, tint: Color) -> some View {

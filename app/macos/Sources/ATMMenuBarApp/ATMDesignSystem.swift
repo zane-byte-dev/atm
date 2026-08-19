@@ -32,6 +32,31 @@ enum ATMWorkspaceLayout {
     static let readingColumnMaxWidth: CGFloat = 900
 }
 
+/// One quiet, continuous card for the body below a detail header. The header
+/// remains a flat, fixed band separated from this scrolling content by a rule.
+struct ATMDetailBodySurface<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .environment(\.atmWorkspaceCardPresentation, .embeddedSection)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(ATMTheme.elevated)
+            .clipShape(RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
+                    .stroke(ATMTheme.border, lineWidth: ATMStroke.regular)
+            }
+            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+            .padding(ATMDetailLayout.surfaceInset)
+            .background(ATMTheme.canvas)
+    }
+}
+
 /// GroupedNavigator 的固定视觉契约。中栏页面只填内容，不再自行决定纵向节奏和选中态。
 enum ATMGroupedNavigatorMetrics {
     static let headerHeight: CGFloat = 64
@@ -306,12 +331,18 @@ struct ATMDetailScaffold<Header: View, Notice: View, Tabs: View, Content: View>:
     var body: some View {
         VStack(spacing: 0) {
             header
-            notice
+            Divider()
             ATMDetailTabs { tabs }
-            content
+            ATMDetailBodySurface {
+                VStack(spacing: 0) {
+                    notice
+                    content
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(ATMTheme.canvas)
+        .background(Color.clear)
     }
 }
 
@@ -369,10 +400,6 @@ struct ATMMetadataStrip: View {
                 .padding(.horizontal, 11)
                 .padding(.vertical, 9)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    ATMTheme.listPane,
-                    in: RoundedRectangle(cornerRadius: ATMRadius.row, style: .continuous)
-                )
             }
         }
     }
@@ -416,6 +443,7 @@ extension ATMDetailSection where Actions == EmptyView {
 
 /// 数据页的标准有界容器。数据类型与图表仍由调用方决定，表面语言不再分叉。
 struct ATMDataPanel<Header: View, Content: View>: View {
+    @Environment(\.atmWorkspaceCardPresentation) private var presentation
     let header: Header
     let content: Content
 
@@ -427,20 +455,36 @@ struct ATMDataPanel<Header: View, Content: View>: View {
         self.content = content()
     }
 
+    @ViewBuilder
     var body: some View {
+        switch presentation {
+        case .raised:
+            panelContent
+                .padding(18)
+                .background(
+                    ATMTheme.elevated,
+                    in: RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
+                        .stroke(ATMTheme.border, lineWidth: ATMStroke.regular)
+                }
+        case .embeddedSection:
+            panelContent
+                .padding(.vertical, 18)
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(ATMTheme.border.opacity(0.72))
+                        .frame(height: 1)
+                }
+        }
+    }
+
+    private var panelContent: some View {
         VStack(alignment: .leading, spacing: ATMSpacing.medium) {
             header
             content
         }
-        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            ATMTheme.elevated,
-            in: RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
-                .stroke(ATMTheme.border, lineWidth: ATMStroke.regular)
-        }
     }
 }

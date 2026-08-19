@@ -30,16 +30,19 @@ struct DesktopAIDayView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            Group {
-                switch tab {
-                case .today: todayView
-                case .atlas: atlasView
-                case .history: historyView
-                case .privacy: privacyView
+            ATMDetailTabs { tabs }
+            ATMDetailBodySurface {
+                Group {
+                    switch tab {
+                    case .today: todayView
+                    case .atlas: atlasView
+                    case .history: historyView
+                    case .privacy: privacyView
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .atmAnimatedSwap(tab, style: .tab)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .atmAnimatedSwap(tab, style: .tab)
         }
         .background(ATMTheme.canvas)
         .task { if store.today == nil { store.refresh() } }
@@ -91,21 +94,18 @@ struct DesktopAIDayView: View {
         }
     }
 
-    /// 跟用量页同构：标题 + 副标题在左，分页和操作在右，窄窗时操作换到下一行。此前是裸的
-    /// 22pt bold 加一个居中的 `.pickerStyle(.segmented)`，不响应窗宽——窄窗下四个中文标签
-    /// 会被挤成省略号。
+    /// Header only owns page identity and global actions. Navigation lives in
+    /// the tab strip below it, immediately above the content card.
     private var header: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .bottom, spacing: 14) {
                 title
                 Spacer(minLength: 8)
-                tabs
                 refreshButton
             }
             VStack(alignment: .leading, spacing: 12) {
                 title
                 HStack {
-                    tabs
                     Spacer()
                     refreshButton
                 }
@@ -115,6 +115,7 @@ struct DesktopAIDayView: View {
         .padding(.top, 22)
         .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.elevated)
     }
 
     private var title: some View {

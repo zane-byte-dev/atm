@@ -267,7 +267,10 @@ struct ATMCollectionNotificationPayload: Equatable {
         in items: [ATMCollectionItem]
     ) -> String {
         guard item.action == "append", let todoID = nonempty(item.todoID) else { return item.id }
-        return items.first { $0.action == "create" && $0.todoID == todoID }?.id ?? item.id
+        return items.first {
+            $0.action == "create" && $0.todoID == todoID
+                && $0.shouldCollapseInCollection == item.shouldCollapseInCollection
+        }?.id ?? item.id
     }
 
     private static func actionLabel(for item: ATMCollectionItem) -> String {

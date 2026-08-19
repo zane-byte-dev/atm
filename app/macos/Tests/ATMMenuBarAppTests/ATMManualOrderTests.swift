@@ -86,6 +86,14 @@ final class ATMManualOrderTests: XCTestCase {
         let provider = ATMManualOrder.itemProvider(for: "inbox")
         XCTAssertEqual(provider.registeredTypeIdentifiers, [UTType.utf8PlainText.identifier])
         XCTAssertTrue(provider.canLoadObject(ofClass: NSString.self))
+        XCTAssertTrue(ATMManualOrder.owns(provider, for: "inbox"))
+        XCTAssertFalse(ATMManualOrder.owns(provider, for: "another-row"))
+    }
+
+    func testForeignTextProviderCannotResumeACancelledManualOrderDrag() {
+        let provider = NSItemProvider(object: "inbox" as NSString)
+
+        XCTAssertFalse(ATMManualOrder.owns(provider, for: "inbox"))
     }
 
     @MainActor

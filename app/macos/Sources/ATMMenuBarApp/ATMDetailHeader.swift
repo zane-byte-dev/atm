@@ -7,8 +7,8 @@ import SwiftUI
 /// 24/17/18 与 20/16 两套，底色 `elevated` 与 `surface` 两种。切页时标题基线和头部底色
 /// 会一起变。现在度量只有这一份，内容仍归各页自己。
 ///
-/// 知识页不用这个壳：它的标题不是固定头，而是文档流里的第一块，跟正文一起在 900pt 阅读栏
-/// 内滚动；套上带底色的 band 会改掉那一页的阅读布局。那边只对齐标题字号。
+/// 知识文档也使用这个壳：对象身份留在固定头，长文正文单独滚动。这样在任务、
+/// Agent、收集和知识之间切换时，标题和全局操作不会随内容滚走。
 struct ATMDetailHeader<Eyebrow: View, Actions: View, Meta: View>: View {
     let title: String
     var titleLineLimit: Int?
@@ -69,7 +69,12 @@ struct ATMDetailHeader<Eyebrow: View, Actions: View, Meta: View>: View {
 /// 右栏的横向节奏。头部、分页条和正文列必须共用同一条左边界，标题才不会比它解释的正文
 /// 缩进浅一档。
 enum ATMDetailLayout {
+    /// The canvas shows one continuous detail card with a quiet gutter around it.
+    static let surfaceInset: CGFloat = ATMSpacing.medium
     static let horizontalPadding: CGFloat = 24
+    /// Object details share one readable measure; only the information structure
+    /// inside the column changes from tab to tab.
+    static let contentMaxWidth: CGFloat = 880
     /// Tabs and every root content column share the header's leading edge.
     /// Keeping a second, smaller inset here made the capsule and body protrude
     /// 8pt to the left of the title (16px in Retina screenshots).
