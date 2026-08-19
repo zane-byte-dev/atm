@@ -70,7 +70,8 @@ token、签名、credential 等敏感参数的 URL 会被拒绝。
 编码、测试和集成阶段保持在一张 Todo 中，只有可分别交付、验收和关闭的成果才拆为子任务。用户可
 直接修改；Prompt 追加在 ATM 固定的安全、事实与 JSON 格式规则之后，留空恢复默认。
 
-`todo add` 默认不整理；桌面添加在 `todo_refine_on_add`（默认开）时会自动跑一次。`in_progress`
+`todo add` 默认不整理；桌面上优化是详情页动作栏的一个按钮，弹窗里可以带一句本次要求（CLI 是 `--hint`），
+只有打开 `todo_refine_on_add`（默认关）时桌面添加才会自动跑一次。`in_progress`
 的 Todo 只润色不拆分，避免把正在工作的会话解绑。
 
 ### prompt 与 handoff
@@ -423,9 +424,15 @@ kind 会被所有消费 agent 事件的地方读到——给会话记上「会�
 ### SQLite
 
 结构化观测数据、工作状态和连接器审计都存储在 `~/.atm/atm.db`（SQLite + WAL）。Todo、tag、依赖、
-link、Session Binding 和 Comment 使用规范化表，状态与优先级枚举、日期格式由 CHECK 约束保证，
+link、图片、Session Binding 和 Comment 使用规范化表，状态与优先级枚举、日期格式由 CHECK 约束保证，
 Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事务：先取写锁再读快照，因此不需要
 乐观版本号；生命周期变更与 Binding 关闭/创建在同一次提交里落库。
+
+Todo 图片采用「SQLite 关系 + 受管本地文件」：`todo_images` 保存顺序、受管文件名、原文件名、媒体类型和
+字节数，文件位于 `~/.atm/todos/assets/<todo-id>/`。路径在读取时由 ATM 数据目录与受管文件名重新计算，
+不把机器上的绝对路径固化进数据库。导入先验证 PNG/JPEG/WebP/GIF/HEIC 的扩展名与文件头、10 MB 单文件
+上限和 10 张总数，再以 `0600` 权限原子复制；数据库事务失败会回滚刚复制的目录。Archive/Trash 只移动
+Todo 可见性，资源保持不动；永久删除由外键清除元数据，并在事务成功后删除对应资源目录。
 
 `approvals` 是这个库里唯一一张**内容之后会被交给 exec 的表**（[外发动作闸门](#外发动作闸门)），
 所以 `atm guard approve` 只肯执行被 shim 移开过的二进制。它也存着待发消息的正文和接收方——这是这个
@@ -442,7 +449,7 @@ Comment 和 Binding 通过外键随 Todo 级联删除。写入统一走一个事
 
 ### backup / restore
 
-`atm backup` 归档这个库真正无处重建的部分：Todo、共享记忆、中央知识、连接器收集账本和 review 游标。
+`atm backup` 归档这个库真正无处重建的部分：Todo（包括 `todos/assets/` 下的图片）、共享记忆、中央知识、连接器收集账本和 review 游标。
 会话镜像被有意排除——它由 `atm sync` 从各家 transcript 重建，归档因此小到一个量级，值得经常做。
 排除的方式是清空而不是删表：恢复出来的库 schema 完整，`atm doctor` 立刻可读，下一次 sync 把行填回来。
 `credentials.json` 也被有意排除，且不算作「未备份」的遗漏项：归档要经常做、要拷来拷去，不该顺手带走

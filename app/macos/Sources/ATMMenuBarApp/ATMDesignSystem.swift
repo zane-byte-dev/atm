@@ -338,12 +338,17 @@ struct ATMDetailScaffold<Header: View, Notice: View, Tabs: View, Content: View>:
             header
             Divider()
             ATMDetailTabs { tabs }
+            // The message band sits between the tabs and the body, outside the
+            // scroll view: a banner is a statement about this object, not a
+            // paragraph of its content. Inside the body card it scrolled away
+            // and had to compete with the reading column for width, which is
+            // why messages kept getting dropped into whichever tab wrote them.
+            // Empty when the caller emits nothing — it owns its own padding so
+            // an absent notice leaves no gap.
+            notice
             ATMDetailBodySurface {
-                VStack(spacing: 0) {
-                    notice
-                    content
-                }
-                .frame(maxWidth: .infinity)
+                content
+                    .frame(maxWidth: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -68,6 +68,9 @@ struct ATMComposerTextView: NSViewRepresentable {
     var onMeasuredHeight: ((CGFloat) -> Void)?
     /// Called when Return is pressed without a modifier. Nil disables submission.
     var onSubmit: (() -> Void)?
+	/// Gives image-aware forms first refusal on paste. Returning false preserves
+	/// ordinary text paste behavior.
+	var onPasteImages: ((NSPasteboard) -> Bool)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, allowsNewlines: allowsNewlines, onSubmit: onSubmit)
@@ -87,6 +90,7 @@ struct ATMComposerTextView: NSViewRepresentable {
         textView.placeholderString = placeholder
         textView.allowsNewlines = allowsNewlines
         textView.onMeasuredHeight = onMeasuredHeight
+		textView.onPasteImages = onPasteImages
 
         scrollView.documentView = textView
 
@@ -107,6 +111,7 @@ struct ATMComposerTextView: NSViewRepresentable {
         textView.placeholderString = placeholder
         textView.allowsNewlines = allowsNewlines
         textView.onMeasuredHeight = onMeasuredHeight
+		textView.onPasteImages = onPasteImages
         textView.textContainerInset = textInset
         // Never replace the storage while an IME is composing — that clears
         // marked text and re-shows the placeholder mid-pinyin.
@@ -204,6 +209,7 @@ final class ATMComposerNSTextView: NSTextView {
 
     /// See `ATMComposerTextView.onMeasuredHeight`.
     var onMeasuredHeight: ((CGFloat) -> Void)?
+	var onPasteImages: ((NSPasteboard) -> Bool)?
 
     private var lastMeasuredHeight: CGFloat = -1
     private var isMeasuring = false
@@ -251,6 +257,11 @@ final class ATMComposerNSTextView: NSTextView {
         }
         super.insertText(ATMComposerText.singleLine(plain), replacementRange: replacementRange)
     }
+
+	override func paste(_ sender: Any?) {
+		if onPasteImages?(NSPasteboard.general) == true { return }
+		super.paste(sender)
+	}
 
     /// Reports the laid-out text height, ignoring repeats so a caller that turns
     /// the value into a frame does not bounce back through here forever.

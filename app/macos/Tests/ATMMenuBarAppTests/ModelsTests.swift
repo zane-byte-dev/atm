@@ -253,19 +253,6 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMAIDayAtlasGuide.nextStep(badge), "距 L2 还差 3 天")
     }
 
-    func testTodoRefineMetadataReadsLatestPersistedSource() {
-        let content = """
-        ## 分析
-
-        - [2026-08-12 10:00] 模型整理（simple） · from deepseek：单一交付
-        - [2026-08-13 11:00] 模型整理（complex） · from company gateway
-
-          先拆解，再实现。
-        """
-        XCTAssertEqual(ATMTodoRefineMetadata.source(from: content), "company gateway")
-        XCTAssertNil(ATMTodoRefineMetadata.source(from: "## 分析\n\n待补充"))
-    }
-
     private struct CLIResult {
         let status: Int32
         let stdout: Data
@@ -3119,6 +3106,20 @@ final class ModelsTests: XCTestCase {
             ),
             ["todo", "add", "New task", "--priority", "P1", "--desc", "Why it matters", "--json"]
         )
+		XCTAssertEqual(
+			ATMCommandBuilder.addTodo(
+				ATMTodoDraft(
+					text: "Task with images",
+					project: "atm",
+					priority: "P1",
+					imagePaths: ["/tmp/one.png", "/tmp/two.webp"]
+				)
+			),
+			[
+				"todo", "add", "Task with images", "--priority", "P1", "--project", "atm",
+				"--image", "/tmp/one.png", "--image", "/tmp/two.webp", "--json",
+			]
+		)
         XCTAssertEqual(
             ATMCommandBuilder.refineTodo(id: "t142"),
             ["todo", "refine", "t142", "--json"]
@@ -3186,6 +3187,7 @@ final class ModelsTests: XCTestCase {
               "tags":["maintenance"],"wake_condition":"Review completed","review_at":"2026-07-15",
               "maintenance_limit":3,"created":"2026-07-14","source":"Codex",
               "links":[{"url":"https://example.com/review","kind":"review","title":"Review"}],
+              "images":[{"name":"screen.png","path":"/tmp/screen.png","media_type":"image/png","size_bytes":2048}],
               "on_done":"notify","start_ts":1783992000
             }
             """.utf8
@@ -3197,6 +3199,10 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(todo.reviewAt, "2026-07-15")
         XCTAssertEqual(todo.maintenanceLimit, 3)
         XCTAssertEqual(todo.links?.first?.title, "Review")
+		XCTAssertEqual(todo.images?.first?.name, "screen.png")
+		XCTAssertEqual(todo.images?.first?.path, "/tmp/screen.png")
+		XCTAssertEqual(todo.images?.first?.mediaType, "image/png")
+		XCTAssertEqual(todo.images?.first?.sizeBytes, 2048)
         XCTAssertEqual(todo.onDone, "notify")
     }
 
@@ -4174,6 +4180,34 @@ final class ModelsTests: XCTestCase {
         XCTAssertTrue(draft.isSubmittable)
         XCTAssertFalse(ATMTodoDraft(text: "   \n  ", project: "", priority: "P1").isSubmittable)
     }
+
+	func testTodoImageRulesAndTemporaryDraftCleanup() throws {
+		let directory = FileManager.default.temporaryDirectory
+			.appendingPathComponent("atm-image-rules-\(UUID().uuidString)")
+		try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+		defer { try? FileManager.default.removeItem(at: directory) }
+		let image = directory.appendingPathComponent("screen.png")
+		try Data([0x89, 0x50, 0x4e, 0x47]).write(to: image)
+
+		XCTAssertNil(ATMTodoImageRules.validationError(for: image, currentCount: 0))
+		XCTAssertEqual(
+			ATMTodoImageRules.validationError(for: image, currentCount: ATMTodoImageRules.maximumCount),
+			"每个任务最多添加 10 张图片。"
+		)
+		let text = directory.appendingPathComponent("notes.txt")
+		try Data("text".utf8).write(to: text)
+		XCTAssertTrue(ATMTodoImageRules.validationError(for: text, currentCount: 0)?.contains("不支持") == true)
+
+		let draft = ATMTodoDraft(
+			text: "Cleanup pasted image",
+			project: "atm",
+			priority: "P1",
+			imagePaths: [image.path],
+			temporaryImagePaths: [image.path]
+		)
+		draft.cleanupTemporaryImages()
+		XCTAssertFalse(FileManager.default.fileExists(atPath: image.path))
+	}
 
     func testTodoSuggestionPrefersProjectNamedInTheText() throws {
         let todos = [

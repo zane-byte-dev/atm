@@ -246,6 +246,11 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 47
+		case 47:
+			if err := migrateV47ToV48(db); err != nil {
+				return err
+			}
+			version = 48
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -1318,6 +1323,35 @@ func migrateV46ToV47(db *sql.DB) error {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 47`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV47ToV48 adds locally managed image attachments. Existing Todos have
+// no images, so the relation starts empty and needs no data backfill.
+func migrateV47ToV48(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS todo_images (
+		todo_id       TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+		position      INTEGER NOT NULL,
+		stored_name   TEXT NOT NULL,
+		original_name TEXT NOT NULL,
+		media_type    TEXT NOT NULL,
+		size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+		PRIMARY KEY (todo_id, stored_name)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_todo_images_todo_position
+		ON todo_images(todo_id, position)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 48`); err != nil {
 		return err
 	}
 	return tx.Commit()

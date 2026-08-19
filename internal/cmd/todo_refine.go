@@ -17,6 +17,7 @@ var (
 	todoRefineDryRunFlag  bool
 	todoRefineNoSplitFlag bool
 	todoRefineMaxChildren int
+	todoRefineHintFlag    string
 )
 
 func init() {
@@ -24,6 +25,7 @@ func init() {
 	todoRefineCmd.Flags().BoolVar(&todoRefineDryRunFlag, "dry-run", false, "print the proposal without writing")
 	todoRefineCmd.Flags().BoolVar(&todoRefineNoSplitFlag, "no-split", false, "polish title and description only; never create child todos")
 	todoRefineCmd.Flags().IntVar(&todoRefineMaxChildren, "max-children", refine.DefaultMaxChildren, "maximum child todos to create when splitting")
+	todoRefineCmd.Flags().StringVar(&todoRefineHintFlag, "hint", "", "one-shot request for this pass, e.g. \"拆细一点\" or \"补上验收标准\"")
 	todoCmd.AddCommand(todoRefineCmd)
 }
 
@@ -46,11 +48,17 @@ todo_refine_prompt guidance is appended after ATM's fixed safety and JSON rules.
 in_progress todos are polished but not split, so an active session is not
 unbound. Re-running refine will not mint a second set of children.
 
-CLI todo add is never implicit — pass --refine. The desktop app runs this
-automatically after a human files a todo when todo_refine_on_add is true.`,
+A bare second pass usually reports "already clear": the card is already
+structured, so the model returns the same text. Pass --hint to say what this
+pass should change instead.
+
+Refining is always asked for. CLI todo add needs --refine; the desktop app
+only runs this when a human triggers it, or on add when the opt-in
+todo_refine_on_add is turned on.`,
 	Example: `  atm todo refine t270
   atm todo refine t270 --dry-run
   atm todo refine t270 --no-split
+  atm todo refine t270 --hint "把验收标准写成可观察行为"
   atm todo add "把发布检查修一下" --project atm --refine`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runTodoRefine,
@@ -64,6 +72,7 @@ func runTodoRefine(cmd *cobra.Command, args []string) error {
 	return refineTodoByID(cmd, id, refine.Options{
 		AllowSplit:  !todoRefineNoSplitFlag,
 		MaxChildren: todoRefineMaxChildren,
+		Hint:        todoRefineHintFlag,
 	}, todoRefineDryRunFlag)
 }
 

@@ -131,14 +131,18 @@ var (
 	// one feature stay in one Todo instead of becoming analysis/design/test
 	// checklist children.
 	TodoRefinePrompt = DefaultTodoRefinePrompt
-	// TodoRefineOnAdd is the desktop default after a human files a todo: run
-	// one schema-constrained model pass to polish the card and, when the work
-	// is independently trackable, split it. CLI `todo add` never does this
-	// unless `--refine` is passed — agents already write structured cards and
-	// a network model call would break `id=$(atm todo add ...)`. Default on
-	// because that is the whole point of the feature; turn it off to keep
-	// messy capture text as typed.
-	TodoRefineOnAdd = true
+	// TodoRefineOnAdd runs one schema-constrained pass right after a human
+	// files a todo in the App: polish the card and, when the work is
+	// independently trackable, split it. CLI `todo add` never does this unless
+	// `--refine` is passed — agents already write structured cards and a
+	// network model call would break `id=$(atm todo add ...)`.
+	//
+	// Default off. Refining on add rewrites the card before anyone has looked
+	// at it, and a second pass on an already-structured card returns the same
+	// text — so the automatic one was in practice the only one, and it landed
+	// unasked. 优化 is a detail-page action now; turn this on to get it on
+	// every new todo as well.
+	TodoRefineOnAdd = false
 )
 
 const DefaultTodoRefinePrompt = `任务拆分默认采用保守策略：

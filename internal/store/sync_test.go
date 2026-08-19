@@ -378,7 +378,7 @@ func TestFreshDatabaseHasCurrentSchema(t *testing.T) {
 	for _, table := range []string{
 		"sessions", "messages", "tools", "usage", "usage_events", "skill_events",
 		"sync_state", "sync_health",
-		"todos", "todo_tags", "todo_dependencies", "todo_links",
+		"todos", "todo_tags", "todo_dependencies", "todo_links", "todo_images",
 		"todo_session_bindings", "work_state_meta",
 		"memory_events", "memory_event_tags", "memory_event_metadata",
 		"knowledge_feedback", "session_reviews",

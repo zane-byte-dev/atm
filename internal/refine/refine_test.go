@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -209,6 +210,7 @@ func TestPromptAppendsConfiguredGuidanceAfterFixedRules(t *testing.T) {
 		store.Todo{ID: "t9", Title: "修一下那个红的", Status: "open"},
 		"# 修一下那个红的",
 		"验收条件优先写成可观察行为。",
+		"",
 	)
 	for _, want := range []string{"Do not invent", "todo_refine_guidance", "验收条件优先写成可观察行为。"} {
 		if !strings.Contains(prompt, want) {
@@ -217,6 +219,47 @@ func TestPromptAppendsConfiguredGuidanceAfterFixedRules(t *testing.T) {
 	}
 	if strings.Index(prompt, "todo_refine_guidance") > strings.Index(prompt, "<atm_todo_card>") {
 		t.Fatalf("configured policy must precede untrusted Todo data:\n%s", prompt)
+	}
+}
+
+// A second refine is only useful if the hint reaches the model, and it has to
+// land after the configured policy (it outranks it) but still above the
+// untrusted Todo data.
+func TestPromptCarriesOneShotHintAfterPolicy(t *testing.T) {
+	prompt := PromptWithInstructions(
+		store.Todo{ID: "t9", Title: "修一下那个红的", Status: "open"},
+		"# 修一下那个红的",
+		"验收条件优先写成可观察行为。",
+		"拆细一点，每个子任务能独立验收。",
+	)
+	for _, want := range []string{"todo_refine_request", "拆细一点，每个子任务能独立验收。"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	policy := strings.Index(prompt, "todo_refine_guidance")
+	hint := strings.Index(prompt, "todo_refine_request")
+	card := strings.Index(prompt, "<atm_todo_card>")
+	if !(policy < hint && hint < card) {
+		t.Fatalf("hint must sit between configured policy and untrusted data:\n%s", prompt)
+	}
+}
+
+func TestPromptOmitsHintSectionWhenAbsent(t *testing.T) {
+	prompt := PromptWithInstructions(store.Todo{ID: "t9", Title: "修一下那个红的", Status: "open"}, "", "", "")
+	if strings.Contains(prompt, "todo_refine_request") {
+		t.Fatalf("empty hint must not open a request block:\n%s", prompt)
+	}
+}
+
+func TestNormalizeOptionsTrimsAndCapsHint(t *testing.T) {
+	opts := NormalizeOptions(Options{Hint: "  拆细一点  "})
+	if opts.Hint != "拆细一点" {
+		t.Fatalf("hint not trimmed: %q", opts.Hint)
+	}
+	long := NormalizeOptions(Options{Hint: strings.Repeat("细", maxHintRunes+50)})
+	if utf8.RuneCountInString(long.Hint) != maxHintRunes {
+		t.Fatalf("hint not capped: %d runes", utf8.RuneCountInString(long.Hint))
 	}
 }
 

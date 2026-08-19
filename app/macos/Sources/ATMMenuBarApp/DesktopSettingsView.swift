@@ -1006,7 +1006,7 @@ struct DesktopSettingsView: View {
                         .controlSize(.small)
                         .font(ATMFont.font(.body, weight: .medium))
 
-                        Text("关闭后仍可在任务菜单里选「优化任务」。命令行添加默认不整理，需要时加 --refine。")
+                        Text("默认关闭：优化是详情页上的一个动作，随时可以带一句要求再跑一遍。打开后每张新建的卡都会先自动跑一次。命令行添加同样不整理，需要时加 --refine。")
                             .font(ATMFont.footnote)
                             .foregroundStyle(ATMTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true)

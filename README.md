@@ -59,6 +59,7 @@ atm session clip <关键词>                # 复制 AI 回复到剪贴板
 
 ```bash
 atm todo add "<标题>"                    # 加一条；--refine 立刻润色并按需拆分
+atm todo add "<标题>" --image a.png       # 附本地图片；--image 可重复，最多 10 张
 atm todo list                           # 看列表
 atm todo start <id>                     # 进入工作中
 atm todo prompt <id> --copy             # 复制一行提示，粘贴进新的 Agent 会话

@@ -58,9 +58,10 @@ limited to features the user invokes or enables, including:
 - `atm config update-pricing`, which downloads public model pricing from
   OpenRouter;
 - opt-in live Grok quota lookup, which uses the locally stored Grok credential;
-- `atm todo refine`, which sends one task's fields and a Markdown-card excerpt to
-  the configured DeepSeek endpoint — automatically after a desktop capture unless
-  `todo_refine_on_add` is off — and `atm config test-text-model`, which reaches
+- `atm todo refine`, which sends one task's fields, a Markdown-card excerpt and
+  any request you typed for that pass to the configured DeepSeek endpoint — only
+  when asked for, unless you opt into `todo_refine_on_add` to also run it after a
+  desktop capture — and `atm config test-text-model`, which reaches
   the same endpoint with a fixed prompt and no task content. Neither sends
   anything before a credential is set;
 - explicitly configured message connectors and model commands;

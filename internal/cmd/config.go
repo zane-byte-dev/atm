@@ -70,9 +70,10 @@ Settable keys:
                                   single Todo; pass an empty string to restore it
   todo_refine_on_add true|false After a human files a todo in the App, run one
                                 model pass to polish the card and split complex
-                                work (default true). CLI todo add is never
-                                implicit; use todo add --refine or
-                                todo refine <id>. The saved API Key lives in
+                                work (default false — 优化 is an action on the
+                                Todo, not something that happens on add). CLI
+                                todo add is never implicit; use
+                                todo add --refine or todo refine <id>. The saved API Key lives in
                                 ~/.atm/credentials.json (mode 0600); CLI users
                                 can temporarily override it with DEEPSEEK_API_KEY`,
 	// Only `init` is a valid positional arg; anything else errors instead of

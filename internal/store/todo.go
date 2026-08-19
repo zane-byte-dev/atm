@@ -19,25 +19,37 @@ type TodoLink struct {
 	Relation string `json:"relation,omitempty" yaml:"relation,omitempty"`
 }
 
+// TodoImage is one locally managed image attachment. StoredName is the private
+// filename under ~/.atm/todos/assets/<todo-id>; Path is derived at read time so
+// moving ATM_HOME does not bake an obsolete absolute path into SQLite.
+type TodoImage struct {
+	Name       string `json:"name" yaml:"name"`
+	Path       string `json:"path" yaml:"path"`
+	MediaType  string `json:"media_type" yaml:"media_type"`
+	SizeBytes  int64  `json:"size_bytes" yaml:"size_bytes"`
+	StoredName string `json:"-" yaml:"-"`
+}
+
 type Todo struct {
 	// ID is the complete identifier, of the form "t104". Todos have no short/long
 	// distinction, so there is no short_id here — unlike a session, whose id is a
 	// UUID and whose short_id is the prefix humans type. Scripts that read
 	// short_id off a todo get nothing back.
-	ID               string     `json:"id"`
-	Title            string     `json:"title"`
-	Description      string     `json:"description,omitempty"`
-	Priority         string     `json:"priority"`
-	Status           string     `json:"status"`
-	Project          string     `json:"project,omitempty"`
-	Tags             []string   `json:"tags,omitempty"`
-	WakeCondition    string     `json:"wake_condition,omitempty"`
-	ReviewAt         string     `json:"review_at,omitempty"`
-	MaintenanceLimit int        `json:"maintenance_limit,omitempty"`
-	DependsOn        []string   `json:"depends_on,omitempty"`
-	Links            []TodoLink `json:"links,omitempty"`
-	Created          string     `json:"created"`
-	Source           string     `json:"source,omitempty"`
+	ID               string      `json:"id"`
+	Title            string      `json:"title"`
+	Description      string      `json:"description,omitempty"`
+	Priority         string      `json:"priority"`
+	Status           string      `json:"status"`
+	Project          string      `json:"project,omitempty"`
+	Tags             []string    `json:"tags,omitempty"`
+	WakeCondition    string      `json:"wake_condition,omitempty"`
+	ReviewAt         string      `json:"review_at,omitempty"`
+	MaintenanceLimit int         `json:"maintenance_limit,omitempty"`
+	DependsOn        []string    `json:"depends_on,omitempty"`
+	Links            []TodoLink  `json:"links,omitempty"`
+	Images           []TodoImage `json:"images,omitempty"`
+	Created          string      `json:"created"`
+	Source           string      `json:"source,omitempty"`
 	// Creator is who filed the todo: "me", "collect", or an agent name. See
 	// todo_creator.go for the vocabulary and why it is separate from Source.
 	// Empty on every todo that predates the field.
@@ -142,7 +154,20 @@ func LoadArchivedTodos() ([]ArchivedTodo, error) {
 		}
 		archived = append(archived, todo)
 	}
-	return archived, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	images, err := loadGroupedTodoImages(db)
+	if err != nil {
+		return nil, err
+	}
+	for index := range archived {
+		archived[index].Images = images[archived[index].ID]
+	}
+	return archived, nil
 }
 
 // NextTodoID returns an unused ID. Archived todos are counted even though they

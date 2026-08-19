@@ -63,6 +63,9 @@ func runTodoDelete(cmd *cobra.Command, args []string) error {
 			if store.TodoDocExists(id) {
 				_ = os.Remove(store.TodoDocPath(id))
 			}
+			if err := store.CleanupTodoAssets(id); err != nil {
+				return fmt.Errorf("todos deleted but image cleanup failed: %w", err)
+			}
 		}
 		fmt.Printf("Deleted %d todos from project %s\n", deleted, todoDeleteProjectFlag)
 		return nil
@@ -103,6 +106,9 @@ func runTodoDelete(cmd *cobra.Command, args []string) error {
 	}
 	if store.TodoDocExists(id) {
 		_ = os.Remove(store.TodoDocPath(id))
+	}
+	if err := store.CleanupTodoAssets(id); err != nil {
+		return fmt.Errorf("todo deleted but image cleanup failed: %w", err)
 	}
 	fmt.Printf("Deleted %s\n", id)
 	return nil
@@ -224,6 +230,7 @@ func runTodoAdd(cmd *cobra.Command, args []string) error {
 
 	var tf *store.TodoFile
 	var t store.Todo
+	var rollbackImageFiles func()
 	err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
 		tf = transaction.Todos()
 		t = store.Todo{
@@ -244,10 +251,19 @@ func runTodoAdd(cmd *cobra.Command, args []string) error {
 			t.WakeCondition = ""
 			t.ReviewAt = ""
 		}
+		images, cleanup, err := store.ImportTodoImages(t.ID, todoAddImageFlags)
+		if err != nil {
+			return err
+		}
+		rollbackImageFiles = cleanup
+		t.Images = images
 		tf.Items = append(tf.Items, t)
 		return nil
 	})
 	if err != nil {
+		if rollbackImageFiles != nil {
+			rollbackImageFiles()
+		}
 		return err
 	}
 	if err := ensureTodoDocs(tf, t.ID); err != nil {

@@ -1,7 +1,9 @@
 import AppKit
 import Charts
 import Combine
+import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum ATMDesktopSection: String, CaseIterable, Identifiable {
     case tasks
@@ -1493,6 +1495,8 @@ struct DesktopTodoDetail: View {
     @State private var deleteCandidate: ATMTodo?
     @State private var showingDispatchSheet = false
     @State private var showingCodexContinuation = false
+    @State private var showingRefineSheet = false
+    @State private var refineHint = ""
     @State private var showingTaskRunInterruptConfirmation = false
     @State private var taskRunLaunchError: String?
     @State private var codexContinuationInstructions = ""
@@ -1505,6 +1509,7 @@ struct DesktopTodoDetail: View {
     @State private var wakeCondition = ""
     @State private var reviewAt = ""
     @State private var source = ""
+	@State private var previewImageURL: URL?
 
     private static let reviewDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -1523,7 +1528,7 @@ struct DesktopTodoDetail: View {
                 ATMDetailScaffold {
                     detailHeader
                 } notice: {
-                    refineNotice
+                    noticeRegion
                 } tabs: {
                     ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
                 } content: {
@@ -1616,6 +1621,9 @@ struct DesktopTodoDetail: View {
         .sheet(isPresented: $showingCodexContinuation) {
             codexContinuationSheet
         }
+        .sheet(isPresented: $showingRefineSheet) {
+            refineSheet
+        }
         .sheet(isPresented: $showingDispatchSheet) {
             taskRunDispatchSheet
         }
@@ -1632,28 +1640,69 @@ struct DesktopTodoDetail: View {
         }
     }
 
+    /// 这个 Todo 的消息区，在 tab 与正文之间，是页面上唯一放横幅的地方。
+    ///
+    /// 以前每条消息都长在写它的那个 tab 里——「下一步」在任务描述的元数据下面，
+    /// 优化状态在正文卡片顶部——所以同一类东西出现在两个高度上，切个 tab 还会
+    /// 消失。现在位置只有一个，跟 tab 同级：谁要说话都排到这里，正文只管内容。
+    ///
+    /// 排序是「要你动手的在前」：优化的进行/失败/无改动是刚发生的事，「下一步」
+    /// 是一直挂着的状态。回收站里的任务不说话。
     @ViewBuilder
-    private var refineNotice: some View {
-        if store.refiningTodoIDs.contains(todo.id) {
-            ATMInlineNotice(
-                severity: .info,
-                title: "正在整理任务",
-                message: "模型在润色标题和需求；复杂工作会拆成子任务并写一份计划。"
-            )
-            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-            .padding(.top, 10)
-        } else if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty {
-            ATMInlineNotice(
-                severity: .warning,
-                title: "任务整理失败",
-                message: error,
-                actionTitle: "重试",
-                onAction: { store.refineTodo(id: todo.id) },
-                onDismiss: { store.dismissRefineError(for: todo.id) }
-            )
-            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-            .padding(.top, 10)
+    private var noticeRegion: some View {
+        if !isTrashed, hasNotice {
+            VStack(spacing: 8) {
+                if store.refiningTodoIDs.contains(todo.id) {
+                    ATMInlineNotice(
+                        severity: .info,
+                        title: "正在整理任务",
+                        message: "模型在润色标题和需求；复杂工作会拆成子任务并写一份计划。"
+                    )
+                } else if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty {
+                    ATMInlineNotice(
+                        severity: .warning,
+                        title: "任务整理失败",
+                        message: error,
+                        actionTitle: "重试",
+                        onAction: { presentRefineSheet() },
+                        onDismiss: { store.dismissRefineError(for: todo.id) }
+                    )
+                } else if store.refineUnchangedTodoIDs.contains(todo.id) {
+                    // A bare pass on an already-structured card returns the same
+                    // text, so nothing on screen moves. Say so instead of
+                    // looking broken.
+                    ATMInlineNotice(
+                        severity: .info,
+                        title: "这一遍没有改动",
+                        message: "模型认为这张卡已经够清楚了。想换个方向就再优化一次，并写一句具体要求。",
+                        actionTitle: "带要求再优化",
+                        onAction: { presentRefineSheet() },
+                        onDismiss: { store.dismissRefineUnchanged(for: todo.id) }
+                    )
+                }
+                if let nextAction = latestNextAction {
+                    ATMInlineNotice(
+                        severity: .info,
+                        title: "下一步",
+                        message: nextAction
+                    )
+                }
+            }
+            // Aligned with the body card's edges, not the reading column: the
+            // band is a sibling of the card, so it shares its gutters.
+            .padding(.horizontal, ATMDetailLayout.surfaceHorizontalInset)
+            .padding(.top, ATMDetailLayout.surfaceVerticalInset)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// The region owns its padding, so it must not render at all when it has
+    /// nothing to say — otherwise an empty band leaves a gap under the tabs.
+    private var hasNotice: Bool {
+        if store.refiningTodoIDs.contains(todo.id) { return true }
+        if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty { return true }
+        if store.refineUnchangedTodoIDs.contains(todo.id) { return true }
+        return latestNextAction != nil
     }
 
     /// 「Agent 执行」只在真的有执行记录时出现。
@@ -1768,6 +1817,12 @@ struct DesktopTodoDetail: View {
                         copyLaunchPrompt(for: todo)
                     }
                 }
+                if !ATMTodoStatusActions.isClosed(todo) {
+                    actionButton("wand.and.stars", help: "优化任务") {
+                        presentRefineSheet()
+                    }
+                    .disabled(store.refiningTodoIDs.contains(todo.id))
+                }
                 overflowMenu(overflow: overflow, todo: todo)
             }
         }
@@ -1806,30 +1861,47 @@ struct DesktopTodoDetail: View {
         VStack(alignment: .leading, spacing: 14) {
             taskMetadata
 
-            if let refineSource = store.refineSource(for: todo.id) {
-                Label("曾由 \(refineSource) 整理", systemImage: "sparkles")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.accent)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(ATMTheme.accentFill, in: Capsule())
-                    .help("历史任务优化来源；描述后续可能已修改")
-            }
-
-            if let nextAction = latestNextAction {
-                ATMInlineNotice(
-                    severity: .info,
-                    title: "下一步",
-                    message: nextAction
-                )
-            }
-
             if let description = nonEmpty(todo.description) {
                 detailCard("任务目标", icon: "scope") {
                     ATMMarkdownContentView(source: description)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+
+			if let images = todo.images, !images.isEmpty {
+				detailCard("图片", icon: "photo.on.rectangle.angled") {
+					LazyVGrid(columns: [GridItem(.adaptive(minimum: 124, maximum: 180), spacing: 10)], spacing: 10) {
+						ForEach(images) { image in
+							Button {
+								previewImageURL = URL(fileURLWithPath: image.path)
+							} label: {
+								VStack(alignment: .leading, spacing: 6) {
+									if let thumbnail = NSImage(contentsOfFile: image.path) {
+										Image(nsImage: thumbnail)
+											.resizable()
+											.scaledToFill()
+											.frame(height: 92)
+											.clipped()
+									} else {
+										Image(systemName: "photo.badge.exclamationmark")
+											.frame(maxWidth: .infinity, minHeight: 92)
+											.foregroundStyle(ATMTheme.secondary)
+									}
+									Text(image.name)
+										.font(ATMFont.caption)
+										.lineLimit(1)
+										.truncationMode(.middle)
+								}
+								.padding(7)
+								.background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8))
+							}
+							.buttonStyle(.plain)
+							.help("预览 \(image.name)")
+						}
+					}
+				}
+				.quickLookPreview($previewImageURL)
+			}
 
             if let links = todo.links, !links.isEmpty {
                 detailCard("关联链接", icon: "link") {
@@ -1847,7 +1919,7 @@ struct DesktopTodoDetail: View {
                 }
             }
 
-            if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false {
+			if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false, todo.images?.isEmpty != false {
                 Text("暂无任务描述。")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
@@ -2331,6 +2403,65 @@ struct DesktopTodoDetail: View {
         .background(ATMTheme.canvas)
     }
 
+    /// 优化 always goes through this sheet, including the first pass: the hint is
+    /// what makes a second pass do anything, and a sheet is also the only place
+    /// to say that up front.
+    private var refineSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("优化任务")
+                    .font(ATMFont.font(.title2, weight: .semibold))
+                Text("一次模型调用，润色标题和需求；复杂工作会写一份计划并拆成子任务。可以留空直接优化。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $refineHint)
+                    .font(ATMFont.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(7)
+                    .frame(minHeight: 96)
+                    .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ATMTheme.border))
+                if refineHint.isEmpty {
+                    Text("这一遍想改什么？例如：拆细一点，或把验收标准写成可观察行为")
+                        .font(ATMFont.body)
+                        .foregroundStyle(ATMTheme.secondary.opacity(0.72))
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 15)
+                        .allowsHitTesting(false)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("取消") { showingRefineSheet = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("开始优化") { submitRefine() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(store.refiningTodoIDs.contains(todo.id))
+            }
+        }
+        .padding(22)
+        .frame(width: 520)
+        .background(ATMTheme.canvas)
+    }
+
+    private func presentRefineSheet() {
+        refineHint = ""
+        store.dismissRefineUnchanged(for: todo.id)
+        store.dismissRefineError(for: todo.id)
+        showingRefineSheet = true
+    }
+
+    private func submitRefine() {
+        let hint = refineHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        showingRefineSheet = false
+        store.refineTodo(id: todo.id, hint: hint)
+    }
+
     private func presentCodexContinuation() {
         codexContinuationInstructions = ""
         showingCodexContinuation = true
@@ -2357,8 +2488,9 @@ struct DesktopTodoDetail: View {
     }
 
     /// Dynamic entries have their own destination, so the timeline no longer sits
-    /// inside a second titled card. The latest next action is surfaced beside the
-    /// task description, where it can guide the work instead of reading as history.
+    /// inside a second titled card. The latest next action is not repeated here as
+    /// history — it lives in `noticeRegion`, above every tab, where it can guide
+    /// the work.
     private var activityContent: some View {
         TodoProgressView(todo: todo, store: store)
         .padding(.horizontal, ATMDetailLayout.horizontalPadding)
@@ -2653,14 +2785,6 @@ struct DesktopTodoDetail: View {
         todo: ATMTodo
     ) -> some View {
         Menu {
-            if !ATMTodoStatusActions.isClosed(todo) {
-                Button {
-                    store.refineTodo(id: todo.id)
-                } label: {
-                    Label("优化任务", systemImage: "wand.and.stars")
-                }
-                .disabled(store.refiningTodoIDs.contains(todo.id))
-            }
             Button {
                 beginEditing()
             } label: {
@@ -2788,6 +2912,12 @@ struct DesktopTodoDetail: View {
 /// One text box plus three recommended fields. The recommendations come from what
 /// was typed and from the existing todos, so the common case is: type the task,
 /// press Return.
+private struct ATMTodoDraftImage: Identifiable, Equatable {
+	let id = UUID()
+	let url: URL
+	let isTemporary: Bool
+}
+
 private struct DesktopAddTodoSheet: View {
     @ObservedObject var store: ATMDataStore
     var onCancel: () -> Void = {}
@@ -2795,6 +2925,10 @@ private struct DesktopAddTodoSheet: View {
     @State private var projectOverride: String?
     @State private var priorityOverride: String?
     @State private var isEditingProject = false
+	@State private var images: [ATMTodoDraftImage] = []
+	@State private var imageError: String?
+	@State private var isImageDropTarget = false
+	@State private var submitted = false
     let onAdd: (ATMTodoDraft) -> Void
 
     private var suggestion: ATMTodoSuggestion {
@@ -2811,6 +2945,8 @@ private struct DesktopAddTodoSheet: View {
             text: text,
             project: projectOverride ?? suggestion.project,
             priority: priorityOverride ?? suggestion.priority,
+			imagePaths: images.map(\.url.path),
+			temporaryImagePaths: images.filter(\.isTemporary).map(\.url.path)
         )
     }
 
@@ -2838,11 +2974,14 @@ private struct DesktopAddTodoSheet: View {
                 text: $text,
                 placeholder: "要完成什么？",
                 autoFocus: true,
-                onSubmit: { submit(draft) }
+				onSubmit: { submit(draft) },
+				onPasteImages: handleImagePaste
             )
                 .frame(height: 150)
                 .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
+
+			imagePicker
 
             HStack(spacing: 8) {
                 if isEditingProject {
@@ -2886,7 +3025,19 @@ private struct DesktopAddTodoSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 540)
+		.frame(width: 600)
+		.onDrop(of: [UTType.fileURL.identifier], isTargeted: $isImageDropTarget, perform: handleImageDrop)
+		// The text view catches paste while it owns focus. This sheet-level command
+		// also catches Command-V after the user clicks the picker, a thumbnail, or
+		// the sheet background. Restricting the command to image/file payloads lets
+		// ordinary text paste continue through the current first responder.
+		.onPasteCommand(of: [.image, .fileURL]) { _ in
+			_ = handleImagePaste(NSPasteboard.general)
+		}
+		.background(ATMImagePasteMonitor(onPasteImages: handleImagePaste))
+		.onDisappear {
+			if !submitted { draft.cleanupTemporaryImages() }
+		}
     }
 
     private var isOverridden: Bool {
@@ -2954,8 +3105,165 @@ projectOverride != nil || priorityOverride != nil
 
     private func submit(_ draft: ATMTodoDraft) {
         guard draft.isSubmittable else { return }
+		submitted = true
         onAdd(draft)
     }
+
+	private var imagePicker: some View {
+		VStack(alignment: .leading, spacing: 8) {
+			HStack {
+				Label("图片 \(images.count)/\(ATMTodoImageRules.maximumCount)", systemImage: "photo.on.rectangle.angled")
+					.font(ATMFont.font(.footnote, weight: .semibold))
+					.foregroundStyle(ATMTheme.secondary)
+				Spacer()
+				Button {
+					chooseImages()
+				} label: {
+					Label("选择图片", systemImage: "plus")
+				}
+				.buttonStyle(.borderless)
+				.disabled(images.count >= ATMTodoImageRules.maximumCount)
+			}
+			if images.isEmpty {
+				Text("拖入图片，或在弹窗内按 ⌘V 粘贴截图")
+					.font(ATMFont.footnote)
+					.foregroundStyle(ATMTheme.secondary)
+					.frame(maxWidth: .infinity, minHeight: 56)
+			} else {
+				ScrollView(.horizontal) {
+					HStack(spacing: 8) {
+						ForEach(images) { image in
+							ZStack(alignment: .topTrailing) {
+								if let thumbnail = NSImage(contentsOf: image.url) {
+									Image(nsImage: thumbnail)
+										.resizable()
+										.scaledToFill()
+										.frame(width: 72, height: 56)
+										.clipped()
+								} else {
+									Image(systemName: "photo.badge.exclamationmark")
+										.frame(width: 72, height: 56)
+										.background(ATMTheme.controlFill)
+								}
+								Button {
+									removeImage(image)
+								} label: {
+									Image(systemName: "xmark.circle.fill")
+										.symbolRenderingMode(.palette)
+										.foregroundStyle(.white, Color.black.opacity(0.62))
+								}
+								.buttonStyle(.plain)
+								.padding(3)
+							}
+							.clipShape(RoundedRectangle(cornerRadius: 7))
+							.help(image.url.lastPathComponent)
+						}
+					}
+				}
+				.scrollIndicators(.hidden)
+				.frame(height: 58)
+			}
+			if let imageError {
+				Text(imageError)
+					.font(ATMFont.footnote)
+					.foregroundStyle(ATMTheme.danger)
+			}
+		}
+		.padding(10)
+		.background(isImageDropTarget ? ATMTheme.accentFill : ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8))
+		.overlay(
+			RoundedRectangle(cornerRadius: 8)
+				.stroke(isImageDropTarget ? ATMTheme.accent : ATMTheme.border, style: StrokeStyle(lineWidth: 1, dash: [5]))
+		)
+	}
+
+	private func chooseImages() {
+		let panel = NSOpenPanel()
+		panel.allowsMultipleSelection = true
+		panel.canChooseDirectories = false
+		panel.allowedContentTypes = [.png, .jpeg, .webP, .gif, .heic]
+		panel.begin { response in
+			guard response == .OK else { return }
+			DispatchQueue.main.async {
+				for url in panel.urls { addImage(url) }
+			}
+		}
+	}
+
+	private func addImage(_ url: URL, temporary: Bool = false) {
+		if images.contains(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) {
+			imageError = "这张图片已经添加。"
+			if temporary { try? FileManager.default.removeItem(at: url) }
+			return
+		}
+		if let error = ATMTodoImageRules.validationError(for: url, currentCount: images.count) {
+			imageError = error
+			if temporary { try? FileManager.default.removeItem(at: url) }
+			return
+		}
+		images.append(ATMTodoDraftImage(url: url, isTemporary: temporary))
+		imageError = nil
+	}
+
+	private func removeImage(_ image: ATMTodoDraftImage) {
+		images.removeAll { $0.id == image.id }
+		if image.isTemporary { try? FileManager.default.removeItem(at: image.url) }
+		imageError = nil
+	}
+
+	private func handleImagePaste(_ pasteboard: NSPasteboard) -> Bool {
+		let fileURLs = (pasteboard.readObjects(
+			forClasses: [NSURL.self],
+			options: [.urlReadingFileURLsOnly: true]
+		) as? [NSURL])?.map { $0 as URL } ?? []
+		if !fileURLs.isEmpty {
+			for url in fileURLs { addImage(url) }
+			return true
+		}
+		guard let pasted = NSImage(pasteboard: pasteboard),
+			  let tiff = pasted.tiffRepresentation,
+			  let bitmap = NSBitmapImageRep(data: tiff),
+			  let png = bitmap.representation(using: .png, properties: [:]) else { return false }
+		let url = FileManager.default.temporaryDirectory
+			.appendingPathComponent("atm-pasted-\(UUID().uuidString).png")
+		do {
+			try png.write(to: url, options: .atomic)
+			try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+			addImage(url, temporary: true)
+			return true
+		} catch {
+			imageError = "无法保存粘贴的图片：\(error.localizedDescription)"
+			try? FileManager.default.removeItem(at: url)
+			return true
+		}
+	}
+
+	private func handleImageDrop(_ providers: [NSItemProvider]) -> Bool {
+		let providers = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+		guard !providers.isEmpty else { return false }
+		for provider in providers {
+			provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+				DispatchQueue.main.async {
+					if let error {
+						imageError = "无法读取拖入的图片：\(error.localizedDescription)"
+						return
+					}
+					let url: URL?
+					if let value = item as? URL {
+						url = value
+					} else if let value = item as? NSURL {
+						url = value as URL
+					} else if let data = item as? Data, let text = String(data: data, encoding: .utf8) {
+						url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines))
+					} else {
+						url = nil
+					}
+					if let url { addImage(url) }
+				}
+			}
+		}
+		return true
+	}
 }
 
 enum ATMUsagePageTab: String, CaseIterable, Identifiable {

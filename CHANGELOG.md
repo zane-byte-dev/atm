@@ -17,6 +17,11 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **新建任务可以带图片。** macOS 新建任务支持选择、拖拽和直接粘贴截图，创建前显示可移除的缩略图；
+  CLI 对应为可重复的 `atm todo add --image <path>`。支持 PNG、JPEG、WebP、GIF、HEIC，单张不超过
+  10 MB、每个任务最多 10 张。ATM 校验真实文件内容后复制到 `~/.atm/todos/assets/<todo-id>/`，
+  详情页显示缩略图并可用 Quick Look 预览。图片随归档、回收站和 backup 保留，只有永久删除任务时清理。
+
 - **收集结果有了未读/已读，来源可以单独静默。** 收集是后台跑的，结果什么时候到、哪些看过了，
   以前只能靠记忆——所以新产生的结果（新建 Todo、对已有 Todo 的补充、还没保存的结论、等人确认的提议）
   现在默认未读，收集页加粗区分，侧栏和菜单栏出未读数，`collect item read/unread` 也能在命令行改。
@@ -121,10 +126,17 @@ a database from a much older version. `atm backup` exists for exactly that case.
   are polished but not split, so an active session is not unbound. Re-running
   refine will not mint a second set of children. CLI `todo add` stays instant
   unless you pass `--refine` — agents already write structured cards, and a
-  90s model call would break `id=$(atm todo add ...)`. The App runs refine
-  automatically after a human files a todo; turn that off with
-  `atm config set todo_refine_on_add false` or 设置 → Todo. The row menu and
-  the detail overflow still offer 优化任务.
+  90s model call would break `id=$(atm todo add ...)`.
+  **优化 is an action you take, not something that happens on add.** The App
+  shows a 优化任务 button in the Todo detail action bar; it opens a sheet where
+  you can add one request for this pass ("拆细一点", "把验收标准写成可观察行为")
+  before it runs — `atm todo refine <id> --hint "…"` on the CLI. That request is
+  what makes a repeat pass do anything: a bare second pass on an
+  already-structured card gets the same text back from the model, which the App
+  now says out loud ("这一遍没有改动") instead of looking broken. Refining on add
+  is opt-in and off by default — it rewrote the card before anyone had looked at
+  it, so the automatic pass was in practice the only one. Turn it on with
+  `atm config set todo_refine_on_add true` or 设置 → Todo.
 
 - **Todo deletion is now recoverable.** The App's 删除 action moves a task
   straight to 回收站 without interrupting with a confirmation dialog. The task

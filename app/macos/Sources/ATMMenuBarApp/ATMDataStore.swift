@@ -862,13 +862,20 @@ enum ATMCommandBuilder {
         var arguments = ["todo", "add", draft.title, "--priority", draft.priority]
         if !draft.description.isEmpty { arguments += ["--desc", draft.description] }
         if !draft.project.isEmpty { arguments += ["--project", draft.project] }
+		for path in draft.imagePaths { arguments += ["--image", path] }
         // JSON so the desktop can select the new id after create succeeds.
         arguments.append("--json")
         return arguments
     }
 
-    static func refineTodo(id: String) -> [String] {
-        ["todo", "refine", id, "--json"]
+    /// hint is the one-shot request that makes a repeat pass worth running;
+    /// empty means "just polish it".
+    static func refineTodo(id: String, hint: String = "") -> [String] {
+        var arguments = ["todo", "refine", id]
+        let trimmed = hint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { arguments += ["--hint", trimmed] }
+        arguments.append("--json")
+        return arguments
     }
 
     static func handoffTodo(id: String) -> [String] {
@@ -1103,9 +1110,12 @@ final class ATMDataStore: ObservableObject {
     /// Mirrors `owner_name` in ~/.atm/config.json: how to name the human when a
     /// todo they filed themselves is displayed. Empty falls back to 我.
     @Published private(set) var ownerName = ""
-    /// Mirrors `todo_refine_on_add`. Default on: filing from the sheet should
-    /// come back as a card an Agent can start from, not the raw capture line.
-    @Published private(set) var todoRefineOnAdd = true
+    /// Mirrors `todo_refine_on_add`. Default off, matching the CLI default:
+    /// refining on add rewrote the card before anyone had looked at it, and a
+    /// second bare pass on an already-structured card returns the same text —
+    /// so the automatic one was in practice the only one. 优化 is an action on
+    /// the Todo now; turn this on to also get it on every new todo.
+    @Published private(set) var todoRefineOnAdd = false
     @Published private(set) var textModelBaseURL = "https://api.deepseek.com"
     @Published private(set) var textModelName = "deepseek-v4-flash"
     @Published private(set) var textModelSource = "deepseek"
@@ -1117,7 +1127,10 @@ final class ATMDataStore: ObservableObject {
     @Published var textModelSettingsErrorMessage: String?
     @Published private(set) var refiningTodoIDs: Set<String> = []
     @Published private(set) var refineErrorByTodoID: [String: String] = [:]
-    @Published private(set) var refineSourceByTodoID: [String: String] = [:]
+    /// Todos whose last refine pass returned `changed: false`. Without this the
+    /// action looked broken: the CLI prints "already clear" and the App wrote
+    /// nothing, so nothing on screen moved.
+    @Published private(set) var refineUnchangedTodoIDs: Set<String> = []
     /// Internal refresh gate only. No view renders this flag, so publishing it
     /// needlessly rebuilt the desktop at both ends of every one-minute refresh.
     private(set) var isLoading = false
@@ -1700,16 +1713,21 @@ final class ATMDataStore: ObservableObject {
         textModelTestSuccessMessage = nil
     }
 
-    func refineTodo(id: String, automatic: Bool = false) {
+    func refineTodo(id: String, hint: String = "", automatic: Bool = false) {
         let trimmed = id.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !refiningTodoIDs.contains(trimmed) else { return }
         refiningTodoIDs.insert(trimmed)
         refineErrorByTodoID[trimmed] = nil
+        refineUnchangedTodoIDs.remove(trimmed)
         Task {
             defer { refiningTodoIDs.remove(trimmed) }
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(ATMCommandBuilder.refineTodo(id: trimmed))
+                let data = try await runner.run(ATMCommandBuilder.refineTodo(id: trimmed, hint: hint))
+                struct Result: Decodable { let changed: Bool? }
+                if (try? JSONDecoder().decode(Result.self, from: data))?.changed == false {
+                    refineUnchangedTodoIDs.insert(trimmed)
+                }
                 // Children and a rewritten title only exist after refine returns.
                 refresh()
                 loadProgress(for: trimmed)
@@ -1725,6 +1743,10 @@ final class ATMDataStore: ObservableObject {
 
     func dismissRefineError(for id: String) {
         refineErrorByTodoID[id] = nil
+    }
+
+    func dismissRefineUnchanged(for id: String) {
+        refineUnchangedTodoIDs.remove(id)
     }
 
     func setGrokLiveQuota(_ enabled: Bool) {
@@ -2542,7 +2564,7 @@ final class ATMDataStore: ObservableObject {
         isActing = true
         errorMessage = nil
         Task {
-            defer { isActing = false }
+			defer { isActing = false }
             do {
                 let runner = try ATMCommandRunner()
                 let arguments = ATMCommandBuilder.arguments(for: action, todo: todo)
@@ -2647,7 +2669,10 @@ final class ATMDataStore: ObservableObject {
         isActing = true
         errorMessage = nil
         Task {
-            defer { isActing = false }
+			defer {
+				isActing = false
+				draft.cleanupTemporaryImages()
+			}
             do {
                 let runner = try ATMCommandRunner()
                 let data = try await runner.run(ATMCommandBuilder.addTodo(draft))
@@ -2753,10 +2778,6 @@ final class ATMDataStore: ObservableObject {
         progressByTodoID[todoID] ?? []
     }
 
-    func refineSource(for todoID: String) -> String? {
-        refineSourceByTodoID[todoID]
-    }
-
     func isLoadingProgress(for todoID: String) -> Bool {
         loadingProgressTodoIDs.contains(todoID)
     }
@@ -2778,10 +2799,8 @@ final class ATMDataStore: ObservableObject {
                 let doc = try JSONDecoder().decode(Doc.self, from: data)
                 let content = doc.content ?? ""
                 progressByTodoID[todoID] = ATMTodoProgressEntry.parse(from: content)
-                refineSourceByTodoID[todoID] = ATMTodoRefineMetadata.source(from: content)
             } catch {
                 progressByTodoID[todoID] = []
-                refineSourceByTodoID[todoID] = nil
             }
         }
     }

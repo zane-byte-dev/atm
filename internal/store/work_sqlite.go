@@ -74,11 +74,16 @@ func loadTodos(q sqlQueryer) (*TodoFile, error) {
 	if err != nil {
 		return nil, err
 	}
+	images, err := loadGroupedTodoImages(q)
+	if err != nil {
+		return nil, err
+	}
 	for i := range file.Items {
 		todo := &file.Items[i]
 		todo.Tags = tags[todo.ID]
 		todo.DependsOn = dependencies[todo.ID]
 		todo.Links = links[todo.ID]
+		todo.Images = images[todo.ID]
 	}
 	if file.archived, err = loadArchivedTodoStatuses(q); err != nil {
 		return nil, err
@@ -141,6 +146,26 @@ func loadGroupedTodoLinks(q sqlQueryer) (map[string][]TodoLink, error) {
 	return grouped, rows.Err()
 }
 
+func loadGroupedTodoImages(q sqlQueryer) (map[string][]TodoImage, error) {
+	rows, err := q.Query(`SELECT todo_id,stored_name,original_name,media_type,size_bytes
+		FROM todo_images ORDER BY todo_id,position,stored_name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	grouped := map[string][]TodoImage{}
+	for rows.Next() {
+		var todoID string
+		var image TodoImage
+		if err := rows.Scan(&todoID, &image.StoredName, &image.Name, &image.MediaType, &image.SizeBytes); err != nil {
+			return nil, err
+		}
+		image.Path = TodoImagePath(todoID, image.StoredName)
+		grouped[todoID] = append(grouped[todoID], image)
+	}
+	return grouped, rows.Err()
+}
+
 // snapshotTodos copies the file's items so later comparisons see the state as
 // loaded. Slices are cloned because callers mutate them in place.
 func snapshotTodos(file *TodoFile) map[string]todoRow {
@@ -149,6 +174,7 @@ func snapshotTodos(file *TodoFile) map[string]todoRow {
 		todo.Tags = append([]string(nil), todo.Tags...)
 		todo.DependsOn = append([]string(nil), todo.DependsOn...)
 		todo.Links = append([]TodoLink(nil), todo.Links...)
+		todo.Images = append([]TodoImage(nil), todo.Images...)
 		baseline[todo.ID] = todoRow{position: position, todo: todo}
 	}
 	return baseline
@@ -221,6 +247,11 @@ func writeTodos(store sqlWorkStore, file *TodoFile) error {
 				return err
 			}
 		}
+		if !existed || !reflect.DeepEqual(base.todo.Images, todo.Images) {
+			if err := writeTodoImages(store, todo); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -231,7 +262,7 @@ func writeTodos(store sqlWorkStore, file *TodoFile) error {
 func sameTodoScalars(a, b *Todo) bool {
 	scalars := func(todo *Todo) Todo {
 		copied := *todo
-		copied.Tags, copied.DependsOn, copied.Links = nil, nil, nil
+		copied.Tags, copied.DependsOn, copied.Links, copied.Images = nil, nil, nil, nil
 		return copied
 	}
 	// DeepEqual rather than ==: Closed, ClosedReason, StartTS, and DoneTS are
@@ -295,6 +326,21 @@ func writeTodoLinks(store sqlWorkStore, todo *Todo) error {
 	for index, link := range todo.Links {
 		if _, err := store.Exec(`INSERT INTO todo_links(todo_id,position,url,kind,title,relation)
 			VALUES(?,?,?,?,?,?)`, todo.ID, index, link.URL, link.Kind, link.Title, link.Relation); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeTodoImages(store sqlWorkStore, todo *Todo) error {
+	if _, err := store.Exec(`DELETE FROM todo_images WHERE todo_id=?`, todo.ID); err != nil {
+		return err
+	}
+	for index, image := range todo.Images {
+		if _, err := store.Exec(`INSERT INTO todo_images
+			(todo_id,position,stored_name,original_name,media_type,size_bytes)
+			VALUES(?,?,?,?,?,?)`, todo.ID, index, image.StoredName, image.Name,
+			image.MediaType, image.SizeBytes); err != nil {
 			return err
 		}
 	}

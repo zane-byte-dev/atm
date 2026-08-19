@@ -222,6 +222,59 @@ func TestApplyTodoRefineDoesNotNotifyByCreatingDuplicateChildren(t *testing.T) {
 	}
 }
 
+// --hint is the whole point of a repeat pass, so assert it survives the flag →
+// Options → prompt path and actually reaches the endpoint.
+func TestRunTodoRefineSendsHintToTheModel(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	oldJSON, oldHint := jsonOutput, todoRefineHintFlag
+	t.Cleanup(func() { jsonOutput, todoRefineHintFlag = oldJSON, oldHint })
+	jsonOutput = false
+	todoRefineHintFlag = "  拆细一点，每个子任务能独立验收。  "
+
+	parent := store.Todo{ID: "t1", Title: "修一下那个红的", Priority: "P1", Status: store.TodoStatusOpen, Created: store.Today()}
+	if err := seedTodos(parent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureTodoDoc(&parent); err != nil {
+		t.Fatal(err)
+	}
+	var sent string
+	undo := refineCaptureRequest(t, &sent, refine.Proposal{
+		Title: "修复发布检查失败", Description: "目标：检查变绿。",
+		Complexity: refine.ComplexitySimple, Reason: "一事一做",
+	})
+	defer undo()
+
+	todoRefineCmd.SetErr(io.Discard)
+	if err := runTodoRefine(todoRefineCmd, []string{"t1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sent, "todo_refine_request") || !strings.Contains(sent, "拆细一点，每个子任务能独立验收。") {
+		t.Fatalf("hint missing from request body: %s", sent)
+	}
+	if strings.Contains(sent, "  拆细一点") {
+		t.Fatalf("hint was not trimmed: %s", sent)
+	}
+}
+
+// refineCaptureRequest is refineSwapRunModel plus a copy of what was posted.
+func refineCaptureRequest(t *testing.T, sent *string, proposal refine.Proposal) func() {
+	t.Helper()
+	body, err := json.Marshal(proposal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		*sent = string(raw)
+		encoded, _ := json.Marshal(string(body))
+		fmt.Fprintf(w, `{"choices":[{"message":{"content":%s},"finish_reason":"stop"}]}`, encoded)
+	}))
+	t.Setenv("ATM_TEXT_MODEL_API_KEY", "test-key")
+	t.Setenv("ATM_TEXT_MODEL_BASE_URL", server.URL)
+	return func() { server.Close() }
+}
+
 func refineSwapRunModel(t *testing.T, proposal refine.Proposal) func() {
 	t.Helper()
 	// Analyze is in the refine package; command tests exercise its production

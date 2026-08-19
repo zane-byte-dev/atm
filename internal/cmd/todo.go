@@ -28,6 +28,7 @@ var (
 	todoSourceFlag         string
 	todoDescFlag           string
 	todoDescFileFlag       string
+	todoAddImageFlags      []string
 	todoBatchFlag          bool
 	todoReasonFlag         string
 	todoEditTitleFlag      string
@@ -80,9 +81,11 @@ func init() {
 	todoAddCmd.Flags().StringVar(&todoAddCreatorFlag, "creator", "", "who filed it: "+strings.Join(store.TodoCreatorVocabulary, ", ")+" (default: the agent in the environment, otherwise me)")
 	todoAddCmd.Flags().StringVar(&todoDescFlag, "desc", "", "single-line description (use --desc-file for multiline text)")
 	todoAddCmd.Flags().StringVar(&todoDescFileFlag, "desc-file", "", "read description from a file (use - for stdin)")
+	todoAddCmd.Flags().StringArrayVar(&todoAddImageFlags, "image", nil, "attach a local image (repeatable; PNG, JPEG, WebP, GIF, or HEIC; max 10 MB each, 10 total)")
 	todoAddCmd.Flags().BoolVar(&todoBatchFlag, "batch", false, "read YAML/JSON batch input from stdin")
 	todoAddCmd.MarkFlagsMutuallyExclusive("desc", "desc-file")
 	todoAddCmd.MarkFlagsMutuallyExclusive("batch", "desc-file")
+	todoAddCmd.MarkFlagsMutuallyExclusive("batch", "image")
 
 	todoDoneCmd.Flags().StringVar(&todoReasonFlag, "reason", "", "closing reason")
 	todoDropCmd.Flags().StringVar(&todoReasonFlag, "reason", "", "dropping reason")
@@ -153,6 +156,7 @@ var todoAddCmd = &cobra.Command{
 	Use:   "add <title>",
 	Short: "Add a new todo",
 	Example: `  atm todo add "Fix release checks" --project atm --desc-file notes.md
+  atm todo add "Review screenshots" --image before.png --image after.webp
   atm todo add "把发布检查修一下" --project atm --refine
   printf 'Multiline description\nwith details\n' | atm todo add "Fix release checks" --desc-file -
   cat <<'YAML' | atm todo add --batch

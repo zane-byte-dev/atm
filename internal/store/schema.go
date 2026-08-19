@@ -60,16 +60,17 @@ import (
 // badges are untouched, only the banner is. Nothing is backfilled — 0 is the
 // behaviour every source had before. v47 adds collection_items.archived_at so a
 // person can settle a collected result without deleting its audit trail or
-// releasing its messages for collection again.
-// Keep
-// the minimum at 21 while those upgrade steps exist; after the live database has
-// been upgraded,
-// raise this to SchemaVersion and delete the steps. Note what a hard
+// releasing its messages for collection again. v48 adds todo_images, the
+// normalized metadata for locally managed Todo image files.
+//
+// Keep the minimum at 21 while those upgrade steps exist; after the live database
+// has been upgraded, raise this to SchemaVersion and delete the steps. Note what a
+// hard
 // reject costs: session tables rebuild from agent logs on the next `atm sync`,
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 47
+	SchemaVersion        = 48
 	minUpgradableVersion = 21
 )
 
@@ -400,6 +401,16 @@ func createSchema(tx *sql.Tx) error {
 			relation TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (todo_id, url)
 		)`,
+		`CREATE TABLE todo_images (
+			todo_id       TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			position      INTEGER NOT NULL,
+			stored_name   TEXT NOT NULL,
+			original_name TEXT NOT NULL,
+			media_type    TEXT NOT NULL,
+			size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+			PRIMARY KEY (todo_id, stored_name)
+		)`,
+		`CREATE INDEX idx_todo_images_todo_position ON todo_images(todo_id, position)`,
 		`CREATE TABLE todo_session_bindings (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL,

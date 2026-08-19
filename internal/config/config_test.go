@@ -58,7 +58,7 @@ func withTempConfigHome(t *testing.T) string {
 	TodoRefinePrompt = DefaultTodoRefinePrompt
 	CollectionConnectors = nil
 	QuotaProviders = nil
-	TodoRefineOnAdd = true
+	TodoRefineOnAdd = false
 	Guard = GuardConfig{}
 
 	t.Cleanup(func() {
@@ -330,25 +330,26 @@ func TestGrokLiveQuotaEnvOverridesConfig(t *testing.T) {
 	}
 }
 
-func TestTodoRefineOnAddDefaultsOnAndCanBeDisabled(t *testing.T) {
+func TestTodoRefineOnAddDefaultsOffAndCanBeEnabled(t *testing.T) {
 	withTempConfigHome(t)
-	if !TodoRefineOnAdd {
-		t.Fatal("todo refine after add is on unless configured off")
+	LoadConfig()
+	if TodoRefineOnAdd {
+		t.Fatal("refining on add is opt-in: 优化 is an action, not a side effect of filing")
 	}
 	if err := os.MkdirAll(AtmDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ConfigPath, []byte(`{"todo_refine_on_add":false}`), 0644); err != nil {
+	if err := os.WriteFile(ConfigPath, []byte(`{"todo_refine_on_add":true}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 	LoadConfig()
-	if TodoRefineOnAdd {
-		t.Fatal("explicit false must turn desktop auto-refine off")
-	}
-	t.Setenv("ATM_TODO_REFINE_ON_ADD", "1")
-	LoadConfig()
 	if !TodoRefineOnAdd {
-		t.Fatal("env must force auto-refine on")
+		t.Fatal("explicit true must turn desktop auto-refine on")
+	}
+	t.Setenv("ATM_TODO_REFINE_ON_ADD", "0")
+	LoadConfig()
+	if TodoRefineOnAdd {
+		t.Fatal("env must force auto-refine off")
 	}
 }
 

@@ -88,4 +88,18 @@ final class ATMComposerTextViewTests: XCTestCase {
         // there would collapse the two into one line.
         XCTAssertEqual(textView.string, "标题\n细节")
     }
+
+	func testImageAwareComposerInterceptsPasteBeforeTextStorage() {
+		let textView = makeTextView()
+		var intercepted = false
+		textView.onPasteImages = { pasteboard in
+			intercepted = pasteboard === NSPasteboard.general
+			return true
+		}
+
+		textView.paste(nil)
+
+		XCTAssertTrue(intercepted)
+		XCTAssertTrue(textView.string.isEmpty)
+	}
 }

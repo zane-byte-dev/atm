@@ -454,6 +454,12 @@ func runTodoShow(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	if len(t.Images) > 0 {
+		fmt.Println("Images:")
+		for _, image := range t.Images {
+			fmt.Printf("  %s (%s, %d bytes) — %s\n", image.Name, image.MediaType, image.SizeBytes, image.Path)
+		}
+	}
 	if t.StartTS != nil {
 		fmt.Printf("Started:  %s\n", time.Unix(*t.StartTS, 0).In(config.Loc).Format("2006-01-02 15:04:05"))
 	}

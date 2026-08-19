@@ -12,26 +12,6 @@ enum ATMTodoActivityKind: String, Hashable {
     case supplement = "补充"
 }
 
-enum ATMTodoRefineMetadata {
-    /// `internal/refine.FormatAnalysis` writes this human-visible marker on the
-    /// first line of every model refinement. Reading the persisted card rather
-    /// than the current setting keeps the App honest after a provider change.
-    private static let sourceMarker = " · from "
-
-    static func source(from content: String) -> String? {
-        for line in content.components(separatedBy: "\n").reversed() {
-            guard let marker = line.range(of: sourceMarker) else { continue }
-            var value = String(line[marker.upperBound...])
-            if let reason = value.range(of: "：") {
-                value = String(value[..<reason.lowerBound])
-            }
-            value = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty { return value }
-        }
-        return nil
-    }
-}
-
 struct ATMTodoProgressEntry: Identifiable, Hashable {
     let id: Int
     let timestamp: String
@@ -156,6 +136,7 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
     let maintenanceLimit: Int?
     let dependsOn: [String]?
     let links: [ATMTodoLink]?
+	let images: [ATMTodoImage]?
     let created: String
     let source: String?
     /// Who filed the todo: "me", "collect", or an agent name. Nil on every todo
@@ -168,7 +149,7 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
     let doneTS: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case id, title, description, priority, status, project, tags, links, created, source
+        case id, title, description, priority, status, project, tags, links, images, created, source
         case closed, creator
         case closedReason = "closed_reason"
         case wakeCondition = "wake_condition"
@@ -217,6 +198,7 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         maintenanceLimit = todo.maintenanceLimit
         dependsOn = todo.dependsOn
         links = todo.links
+		images = todo.images
         created = todo.created
         source = todo.source
         creator = todo.creator
@@ -242,6 +224,7 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         maintenanceLimit = try values.decodeIfPresent(Int.self, forKey: .maintenanceLimit)
         dependsOn = try values.decodeIfPresent([String].self, forKey: .dependsOn)
         links = try values.decodeIfPresent([ATMTodoLink].self, forKey: .links)
+		images = try values.decodeIfPresent([ATMTodoImage].self, forKey: .images)
         created = try values.decode(String.self, forKey: .created)
         source = try values.decodeIfPresent(String.self, forKey: .source)
         creator = try values.decodeIfPresent(String.self, forKey: .creator)
@@ -251,6 +234,21 @@ struct ATMTodo: Decodable, Identifiable, Hashable {
         startTS = try values.decodeIfPresent(Int64.self, forKey: .startTS)
         doneTS = try values.decodeIfPresent(Int64.self, forKey: .doneTS)
     }
+}
+
+struct ATMTodoImage: Decodable, Hashable, Identifiable {
+	let name: String
+	let path: String
+	let mediaType: String
+	let sizeBytes: Int64
+
+	var id: String { path }
+
+	enum CodingKeys: String, CodingKey {
+		case name, path
+		case mediaType = "media_type"
+		case sizeBytes = "size_bytes"
+	}
 }
 
 /// Renders a todo's creator the way the CLI does, so the same record reads the

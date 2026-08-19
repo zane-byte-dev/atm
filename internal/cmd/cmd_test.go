@@ -679,6 +679,57 @@ func TestRunTodoAddPersistsTodo(t *testing.T) {
 	}
 }
 
+func TestRunTodoAddImportsImagesAndPermanentDeleteCleansFiles(t *testing.T) {
+	withTempAtmDir(t)
+	if err := seedTodos(); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "screenshot.png")
+	if err := os.WriteFile(source, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldJSON := jsonOutput
+	oldPriority, oldProject, oldStatus := todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag
+	oldSource, oldDesc, oldDescFile := todoSourceFlag, todoDescFlag, todoDescFileFlag
+	oldImages, oldYes := todoAddImageFlags, todoDeleteYesFlag
+	t.Cleanup(func() {
+		jsonOutput = oldJSON
+		todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag = oldPriority, oldProject, oldStatus
+		todoSourceFlag, todoDescFlag, todoDescFileFlag = oldSource, oldDesc, oldDescFile
+		todoAddImageFlags, todoDeleteYesFlag = oldImages, oldYes
+		todoAddCmd.SetErr(os.Stderr)
+	})
+	jsonOutput = false
+	todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag = "P1", "atm", store.TodoStatusOpen
+	todoSourceFlag, todoDescFlag, todoDescFileFlag = "test-suite", "", ""
+	todoAddImageFlags = []string{source}
+	todoAddCmd.SetErr(io.Discard)
+
+	var runErr error
+	captureStdout(t, func() { runErr = runTodoAdd(todoAddCmd, []string{"Task", "with", "image"}) })
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil || len(todos.Items) != 1 || len(todos.Items[0].Images) != 1 {
+		t.Fatalf("todos=%#v err=%v", todos, err)
+	}
+	managedPath := todos.Items[0].Images[0].Path
+	if _, err := os.Stat(managedPath); err != nil {
+		t.Fatalf("managed image missing: %v", err)
+	}
+
+	todoDeleteYesFlag = true
+	captureStdout(t, func() { runErr = runTodoDelete(todoDeleteCmd, []string{"t1"}) })
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if _, err := os.Stat(managedPath); !os.IsNotExist(err) {
+		t.Fatalf("managed image remains after permanent delete: %v", err)
+	}
+}
+
 func TestRunTodoAddReadsDescriptionFromFileOrStdin(t *testing.T) {
 	withTempAtmDir(t)
 	if err := seedTodos(); err != nil {
