@@ -66,31 +66,29 @@ struct DesktopSessionTranscriptView: View {
                 Divider()
             }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let error = store.sessionReadError(sessionID, mode: mode) {
-                        let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "会话读取失败")
-                        ATMInlineNotice(
-                            severity: .warning,
-                            title: presentation.title,
-                            message: presentation.message,
-                            details: error,
-                            actionTitle: "重试",
-                            onAction: { store.loadSessionRead(sessionID, mode: mode, reload: true) }
-                        )
-                    }
-                    switch mode {
-                    case .brief, .full:
-                        turnsContent
-                    case .timeline:
-                        timelineContent
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                if let error = store.sessionReadError(sessionID, mode: mode) {
+                    let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "会话读取失败")
+                    ATMInlineNotice(
+                        severity: .warning,
+                        title: presentation.title,
+                        message: presentation.message,
+                        details: error,
+                        actionTitle: "重试",
+                        onAction: { store.loadSessionRead(sessionID, mode: mode, reload: true) }
+                    )
                 }
-                .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-                .padding(.vertical, 16)
+                switch mode {
+                case .brief, .full:
+                    turnsContent
+                case .timeline:
+                    timelineContent
+                }
             }
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+            .padding(.vertical, 16)
             .atmAnimatedSwap(mode.rawValue, style: .detail)
         }
         // 切段和换会话都重新取一次；已缓存的组合不会真的落到 CLI。

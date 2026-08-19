@@ -657,13 +657,13 @@ struct DesktopKnowledgeView: View {
                 )
             } else if drawerTab == .libraries {
                 ATMDetailBodySurface {
-                    ATMEmptyState(icon: "folder", title: "还没有知识库", detail: "新建知识库后，这里会显示它的说明和数据")
+                    ATMEmptyState(icon: "folder", title: "还没有知识库", detail: "新建知识库后，这里会显示它的说明和数据", size: .inline, minHeight: 180)
                 }
             } else if let item = selectedItem, editingItemID == item.id {
                 knowledgeEditor(for: item)
             } else if isDetailLoading {
                 ATMDetailBodySurface {
-                    ATMEmptyState(icon: "hourglass", title: "正在读取详情")
+                    ATMEmptyState(icon: "hourglass", title: "正在读取详情", size: .inline, minHeight: 180)
                 }
             } else if let detailError {
                 let presentation = ATMErrorPresentation.resolve(detailError, fallbackTitle: "详情加载失败")
@@ -689,7 +689,7 @@ struct DesktopKnowledgeView: View {
                         documentDetail(document, summary: summary)
                     } else {
                         ATMDetailBodySurface {
-                            ATMEmptyState(icon: "doc.text", title: summary.title)
+                            ATMEmptyState(icon: "doc.text", title: summary.title, size: .inline, minHeight: 180)
                         }
                     }
                 case .memory(let memory):
@@ -700,7 +700,9 @@ struct DesktopKnowledgeView: View {
                     ATMEmptyState(
                         icon: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? "brain.head.profile" : "doc.text",
                         title: "选择一条内容",
-                        detail: "从中栏查看知识详情"
+                        detail: "从中栏查看知识详情",
+                        size: .inline,
+                        minHeight: 180
                     )
                 }
             }
@@ -913,21 +915,19 @@ struct DesktopKnowledgeView: View {
             Divider()
 
             ATMDetailBodySurface {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        knowledgeFeedbackBar(document)
+                VStack(alignment: .leading, spacing: 20) {
+                    knowledgeFeedbackBar(document)
 
-                        ATMMetadataStrip(items: knowledgeFactItems(document))
+                    ATMMetadataStrip(items: knowledgeFactItems(document))
 
-                        ATMMarkdownContentView(
-                            source: ATMMarkdown.documentBody(document.content, removingTitle: document.metadata.title)
-                        )
-                    }
-                    .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-                    .padding(.vertical, 20)
-                    .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    ATMMarkdownContentView(
+                        source: ATMMarkdown.documentBody(document.content, removingTitle: document.metadata.title)
+                    )
                 }
+                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                .padding(.vertical, 20)
+                .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -1033,16 +1033,14 @@ struct DesktopKnowledgeView: View {
             Divider()
 
             ATMDetailBodySurface {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        ATMMetadataStrip(items: memoryFactItems(memory))
-                        ATMMarkdownContentView(source: memory.content)
-                    }
-                        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-                        .padding(.vertical, 20)
-                        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 20) {
+                    ATMMetadataStrip(items: memoryFactItems(memory))
+                    ATMMarkdownContentView(source: memory.content)
                 }
+                    .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                    .padding(.vertical, 20)
+                    .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -1212,17 +1210,16 @@ struct DesktopKnowledgeView: View {
                         .lineSpacing(3)
                         .scrollContentBackground(.hidden)
                         .padding(14)
+                        .frame(minHeight: 420)
                         .background(Color.clear)
                         .focused($editorFocused)
                         .disabled(isSaving)
                 } else {
-                    ScrollView {
-                        ATMMarkdownContentView(source: editContent)
-                            .padding(24)
-                            .frame(maxWidth: 980, alignment: .leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .background(Color.clear)
+                    ATMMarkdownContentView(source: editContent)
+                        .padding(24)
+                        .frame(maxWidth: 980, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.clear)
                 }
             }
         }
@@ -1615,17 +1612,15 @@ private struct KnowledgeLibraryDetail: View {
             header
             Divider()
             ATMDetailBodySurface {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 14) {
-                        overviewCard
-                        topicsCard
-                        routingCard
-                    }
-                    .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-                    .padding(.vertical, 20)
-                    .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(alignment: .leading, spacing: 14) {
+                    overviewCard
+                    topicsCard
+                    routingCard
                 }
+                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                .padding(.vertical, 20)
+                .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .background(Color.clear)

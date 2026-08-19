@@ -298,7 +298,9 @@ struct DesktopAgentsView: View {
             ATMEmptyState(
                 icon: "cpu",
                 title: "选择一个 Agent 会话",
-                detail: "查看它在哪里、正在做什么，以及是否需要你介入。"
+                detail: "查看它在哪里、正在做什么，以及是否需要你介入。",
+                size: .inline,
+                minHeight: 180
             )
         }
     }
@@ -616,8 +618,7 @@ private struct DesktopAgentPresenceDetail: View {
     }
 
     private var overviewContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
                 if session.presenceState == .attention {
                     attentionBanner
                 }
@@ -634,24 +635,21 @@ private struct DesktopAgentPresenceDetail: View {
                     relatedTask
                 }
                 technicalDetails
-            }
-            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-            .padding(.vertical, 20)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+        .padding(.vertical, 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var updatesContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                executionUpdates
-            }
-            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-            .padding(.vertical, 20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 12) {
+            executionUpdates
         }
+        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+        .padding(.vertical, 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -692,7 +690,7 @@ private struct DesktopAgentPresenceDetail: View {
                             .buttonStyle(.borderedProminent)
                     }
                     .padding(28)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 240)
                 } else {
                     VStack(spacing: 10) {
                         ProgressView()
@@ -700,7 +698,7 @@ private struct DesktopAgentPresenceDetail: View {
                             .font(ATMFont.footnote)
                             .foregroundStyle(ATMTheme.secondary)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 240)
                 }
             }
         } else {
@@ -715,7 +713,7 @@ private struct DesktopAgentPresenceDetail: View {
                     .multilineTextAlignment(.center)
             }
             .padding(28)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 240)
         }
     }
 

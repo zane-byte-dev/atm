@@ -267,8 +267,7 @@ struct DesktopSettingsView: View {
     }
 
     private var generalSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card {
                     VStack(alignment: .leading, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -339,8 +338,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var aboutSection: some View {
@@ -368,8 +366,7 @@ struct DesktopSettingsView: View {
     // MARK: - 快捷键
 
     private var shortcutSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card { globalHotKeySection }
                 card { voiceShortcutSection }
 
@@ -381,8 +378,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func shortcutReferenceGroup(_ group: ATMShortcutGroup) -> some View {
@@ -490,8 +486,7 @@ struct DesktopSettingsView: View {
     /// lives with every other binding in 快捷键 so there is one place to discover
     /// and change keyboard behavior.
     private var voiceSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card { voiceEngineSection }
                 card { voiceTextSection }
                 card { voicePermissionSection }
@@ -502,8 +497,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { voicePermissions = ATMVoicePermissionSnapshot.current() }
     }
 
@@ -860,8 +854,7 @@ struct DesktopSettingsView: View {
     /// raise it, and the state-change sounds that cover everything not worth a
     /// banner.
     private var notifySettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card { agentAttentionNotifySection }
 
                 card { agentHookSection }
@@ -922,8 +915,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func agentSoundEventRow(
@@ -973,8 +965,7 @@ struct DesktopSettingsView: View {
     }
 
     private var todoSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card {
                     VStack(alignment: .leading, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -1026,14 +1017,12 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { store.loadTodoRefineOnAddSetting() }
     }
 
     private var textModelSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card {
                     VStack(alignment: .leading, spacing: 16) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -1182,8 +1171,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             textModelBaseURLDraft = store.textModelBaseURL
             textModelNameDraft = store.textModelName

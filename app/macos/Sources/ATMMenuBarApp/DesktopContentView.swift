@@ -1027,9 +1027,8 @@ struct DesktopContentView: View {
 
     private func sidebarButton(_ section: ATMDesktopSection) -> some View {
         let selected = navigation.section == section
-        let collectionUnread = section == .collection
-            ? (store.collectionOverview.summary.unreadCount ?? 0)
-            : 0
+        let hasUnreadCollection = section == .collection
+            && (store.collectionOverview.summary.unreadCount ?? 0) > 0
         return Button {
             navigation.section = section
             if section == .knowledge {
@@ -1039,11 +1038,12 @@ struct DesktopContentView: View {
             HStack(spacing: 9) {
                 ZStack(alignment: .topTrailing) {
                     Image(systemName: section.icon).frame(width: 18)
-                    if sidebarCollapsed, collectionUnread > 0 {
+                    if sidebarCollapsed, hasUnreadCollection {
                         Circle()
                             .fill(ATMTheme.accent)
                             .frame(width: 6, height: 6)
                             .offset(x: 3, y: -2)
+                            .accessibilityHidden(true)
                     }
                 }
                 if !sidebarCollapsed {
@@ -1052,16 +1052,11 @@ struct DesktopContentView: View {
                         .truncationMode(.tail)
                         .layoutPriority(1)
                     Spacer(minLength: 4)
-                    if collectionUnread > 0 {
-                        Text(collectionUnread > 99 ? "99+" : "\(collectionUnread)")
-                            .font(ATMFont.font(.caption, weight: .semibold))
-                            .foregroundStyle(Color.white)
-                            .lineLimit(1)
-                            .fixedSize()
-                            .padding(.horizontal, collectionUnread > 9 ? 5 : 0)
-                            .frame(minWidth: 22, minHeight: 22)
-                            .background(ATMTheme.accent, in: Capsule())
-                            .layoutPriority(2)
+                    if hasUnreadCollection {
+                        Circle()
+                            .fill(ATMTheme.accent)
+                            .frame(width: 7, height: 7)
+                            .accessibilityHidden(true)
                     }
                 }
             }
@@ -1070,7 +1065,8 @@ struct DesktopContentView: View {
             .atmDesktopRailSurface(isSelected: selected)
         }
         .buttonStyle(.plain)
-        .help(collectionUnread > 0 ? "\(section.title)，\(collectionUnread) 条未读" : section.title)
+        .help(hasUnreadCollection ? "\(section.title)，有未读" : section.title)
+        .accessibilityLabel(hasUnreadCollection ? "\(section.title)，有未读" : section.title)
     }
 
     private var sortedKnowledgeCollections: [ATMKnowledgeCollection] {
@@ -1204,7 +1200,9 @@ private struct DesktopTasksView: View {
                         ATMEmptyState(
                             icon: showingTrash ? "trash" : "checklist",
                             title: showingTrash ? "选择一个已删除任务" : "选择一个任务",
-                            detail: "从中栏查看详情、编辑 Markdown 或执行快捷操作。"
+                            detail: "从中栏查看详情、编辑 Markdown 或执行快捷操作。",
+                            size: .inline,
+                            minHeight: 180
                         )
                     }
                 }
@@ -1704,40 +1702,13 @@ struct DesktopTodoDetail: View {
                 Text(todo.id.uppercased())
                     .font(ATMFont.mono(.footnote, .semibold))
                     .foregroundStyle(ATMTheme.accent)
+                statusBadge
+                if store.isActing { ProgressView().controlSize(.small) }
             }
             .font(ATMFont.footnote)
             .foregroundStyle(ATMTheme.secondary)
         } actions: {
             detailActions
-        } meta: {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    statusBadge
-                    if store.isActing { ProgressView().controlSize(.small) }
-                }
-
-                ATMMetadataStrip(items: [
-                    ATMMetadataItem(
-                        "project",
-                        label: "项目",
-                        value: todo.project ?? "未分项目",
-                        systemImage: "folder"
-                    ),
-                    ATMMetadataItem(
-                        "priority",
-                        label: "优先级",
-                        value: ATMTodoPriorityStyle.label(todo.priority),
-                        systemImage: "flag",
-                        valueColor: priorityColor
-                    ),
-                    ATMMetadataItem(
-                        "created",
-                        label: "创建",
-                        value: todo.created,
-                        systemImage: "calendar"
-                    ),
-                ])
-            }
         }
     }
 
@@ -1832,53 +1803,86 @@ struct DesktopTodoDetail: View {
     }
 
     private var readContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if let refineSource = store.refineSource(for: todo.id) {
-                    Label("曾由 \(refineSource) 整理", systemImage: "sparkles")
-                        .font(ATMFont.font(.caption, weight: .semibold))
-                        .foregroundStyle(ATMTheme.accent)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(ATMTheme.accentFill, in: Capsule())
-                        .help("历史任务优化来源；描述后续可能已修改")
-                }
+        VStack(alignment: .leading, spacing: 14) {
+            taskMetadata
 
-                if let description = nonEmpty(todo.description) {
-                    detailCard("任务目标", icon: "scope") {
-                        ATMMarkdownContentView(source: description)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
+            if let refineSource = store.refineSource(for: todo.id) {
+                Label("曾由 \(refineSource) 整理", systemImage: "sparkles")
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(ATMTheme.accent)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(ATMTheme.accentFill, in: Capsule())
+                    .help("历史任务优化来源；描述后续可能已修改")
+            }
 
-                if let links = todo.links, !links.isEmpty {
-                    detailCard("关联链接", icon: "link") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(Array(links.enumerated()), id: \.offset) { _, link in
-                                if let url = URL(string: link.url) {
-                                    Link(destination: url) {
-                                        Label(link.title ?? link.url, systemImage: "arrow.up.right.square")
-                                            .font(ATMFont.font(.body, weight: .medium))
-                                            .lineLimit(2)
-                                    }
+            if let nextAction = latestNextAction {
+                ATMInlineNotice(
+                    severity: .info,
+                    title: "下一步",
+                    message: nextAction
+                )
+            }
+
+            if let description = nonEmpty(todo.description) {
+                detailCard("任务目标", icon: "scope") {
+                    ATMMarkdownContentView(source: description)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            if let links = todo.links, !links.isEmpty {
+                detailCard("关联链接", icon: "link") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(links.enumerated()), id: \.offset) { _, link in
+                            if let url = URL(string: link.url) {
+                                Link(destination: url) {
+                                    Label(link.title ?? link.url, systemImage: "arrow.up.right.square")
+                                        .font(ATMFont.font(.body, weight: .medium))
+                                        .lineLimit(2)
                                 }
                             }
                         }
                     }
                 }
-
-                if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false {
-                    Text("暂无任务描述。")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-
             }
-            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-            .padding(.vertical, 16)
-            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false {
+                Text("暂无任务描述。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
         }
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+        .padding(.vertical, 16)
+        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private var taskMetadata: some View {
+        ATMMetadataStrip(items: [
+            ATMMetadataItem(
+                "project",
+                label: "项目",
+                value: todo.project ?? "未分项目",
+                systemImage: "folder"
+            ),
+            ATMMetadataItem(
+                "priority",
+                label: "优先级",
+                value: ATMTodoPriorityStyle.label(todo.priority),
+                systemImage: "flag",
+                valueColor: priorityColor
+            ),
+            ATMMetadataItem(
+                "created",
+                label: "创建",
+                value: todo.created,
+                systemImage: "calendar"
+            ),
+        ])
+        .padding(.bottom, 14)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var latestTaskRun: ATMTaskRun? {
@@ -1954,8 +1958,7 @@ struct DesktopTodoDetail: View {
     @ViewBuilder
     private var taskRunContent: some View {
         if let run = latestTaskRun {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 14) {
                     taskRunSummary(run)
 
                     if let session = taskRunSession {
@@ -1977,12 +1980,11 @@ struct DesktopTodoDetail: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .atmWorkspaceCard()
                     }
-                }
-                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-                .padding(.vertical, 18)
-                .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+            .padding(.vertical, 18)
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         } else {
             // 这一页已经只在有执行记录时出现，所以这里只可能是加载中的一瞬，或者
             // 记录刚被清掉。不再摆一个空状态插画和一个「委派任务」按钮：委派入口
@@ -1993,7 +1995,7 @@ struct DesktopTodoDetail: View {
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 180)
         }
     }
 
@@ -2355,67 +2357,29 @@ struct DesktopTodoDetail: View {
     }
 
     /// Dynamic entries have their own destination, so the timeline no longer sits
-    /// inside a second titled card. The latest next action stays with the timeline
-    /// because it is derived from the same progress log.
+    /// inside a second titled card. The latest next action is surfaced beside the
+    /// task description, where it can guide the work instead of reading as history.
     private var activityContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if let nextAction = latestNextAction {
-                    nextActionBanner(nextAction)
-                }
-                TodoProgressView(todo: todo, store: store)
-            }
-            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-            .padding(.vertical, 16)
-            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
+        TodoProgressView(todo: todo, store: store)
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+        .padding(.vertical, 16)
+        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     /// Sessions are independent durable objects, so each one owns a bounded card;
     /// the page itself stays untitled because the tab already names the collection.
     private var sessionContent: some View {
-        ScrollView {
-            TodoSessionHistoryView(todo: todo, store: store)
-                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-                .padding(.vertical, 16)
-                .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
+        TodoSessionHistoryView(todo: todo, store: store)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+            .padding(.vertical, 16)
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var latestNextAction: String? {
         guard todo.status != "done", todo.status != "dropped" else { return nil }
         return store.progress(for: todo.id).reversed().compactMap(\.nextAction).first
-    }
-
-    /// The header already carries id / priority / status / project / created,
-    /// so the read view opens on the one thing it can't show: what to do next.
-    private func nextActionBanner(_ nextAction: String) -> some View {
-        HStack(alignment: .center, spacing: 11) {
-            Image(systemName: "arrow.up.right")
-                .font(ATMFont.font(.body, weight: .semibold))
-                .frame(width: 32, height: 32)
-                .background(ATMTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 3) {
-                Text("下一步")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                Text(nextAction)
-                    .font(ATMFont.font(.body, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(ATMTheme.accent)
-        .padding(13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.accent.opacity(0.075), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(ATMTheme.accent.opacity(0.16))
-        )
     }
 
     /// Two tiers, because the old flat run of eight identical fields gave 来源 the
@@ -2426,8 +2390,7 @@ struct DesktopTodoDetail: View {
     /// bound on height — below it, every attribute sat under the fold, so setting a
     /// priority meant scrolling past the whole body text to reach it.
     private var editContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 // Titles here are usually a whole sentence — the task is typed as
                 // one line and the description stays empty — so the field wraps and
                 // grows instead of showing a 40-character window of it.
@@ -2458,14 +2421,13 @@ struct DesktopTodoDetail: View {
                         .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                 }
-            }
-            // Capped and left-aligned: stretched across a wide detail pane, the
-            // text fields ran on for hundreds of points.
-            .frame(maxWidth: 620, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // Capped and left-aligned: stretched across a wide detail pane, the
+        // text fields ran on for hundreds of points.
+        .frame(maxWidth: 620, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// One label column, one control column — the old layout put each label and its
@@ -2664,7 +2626,10 @@ struct DesktopTodoDetail: View {
             content()
                 .foregroundStyle(ATMTheme.primary)
         }
-        .padding(14)
+        // The enclosing detail surface owns the horizontal and top inset. Keep
+        // only space before this section's divider so embedded sections do not
+        // turn into a second, padded card inside the body card.
+        .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .atmWorkspaceCard(cornerRadius: 11)
     }
@@ -3156,30 +3121,27 @@ private struct DesktopUsageContent: View, Equatable {
             Divider()
             ATMDetailTabs { usagePagePicker }
             ATMDetailBodySurface {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 20) {
-                        usageFilterToolbar
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    usageFilterToolbar
 
-                        // Quota is a pinned top-level summary, independent of the
-                        // overview / today-sessions tab and usage filters below.
-                        if !quota.isEmpty {
-                            quotaModule
-                        }
-
-                        usageModule
+                    // Quota is a pinned top-level summary, independent of the
+                    // overview / today-sessions tab and usage filters below.
+                    if !quota.isEmpty {
+                        quotaModule
                     }
-                    .padding(.horizontal, 28)
-                    .padding(.top, 24)
-                    .padding(.bottom, 36)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    usageModule
                 }
+                .padding(.horizontal, 28)
+                .padding(.top, 24)
+                .padding(.bottom, 36)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     LinearGradient(
                         colors: [ATMTheme.accent.opacity(0.025), ATMTheme.elevated, ATMTheme.elevated],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )
-                    .ignoresSafeArea()
                 )
             }
         }
@@ -4094,22 +4056,7 @@ private struct DesktopUsageContent: View, Equatable {
             .foregroundStyle(ATMTheme.secondary)
 
             HStack(spacing: 14) {
-                ZStack {
-                    Circle()
-                        .stroke(ATMTheme.controlFill, lineWidth: 5)
-                    Circle()
-                        .trim(from: 0, to: max(0, min(1, percent / 100)))
-                        .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
-                        .rotationEffect(.degrees(-90))
-                    HStack(alignment: .firstTextBaseline, spacing: 1) {
-                        Text(String(format: "%.0f", percent))
-                            .font(ATMFont.mono(.title2, .bold))
-                        Text("%")
-                            .font(ATMFont.mono(.micro, .semibold))
-                    }
-                    .foregroundStyle(ATMTheme.primary)
-                }
-                .frame(width: 62, height: 62)
+                quotaGauge(percent: percent, color: color)
 
                 VStack(alignment: .leading, spacing: 5) {
                     Text("已用")
@@ -4143,37 +4090,9 @@ private struct DesktopUsageContent: View, Equatable {
                 Spacer(minLength: 0)
             }
 
-            // With per-product data the bar itself carries the split: stacked
-            // colored segments of the same pool instead of extra text rows.
-            // Segment widths are clamped so their sum never exceeds the
-            // headline percent — if the API's product split ever drifts from
-            // the total, the bar scales down instead of contradicting the number.
-            GeometryReader { proxy in
-                let productSum = card.products.reduce(0) { $0 + max(0, $1.usedPercent) }
-                let productScale = productSum > percent && productSum > 0 ? percent / productSum : 1
-                ZStack(alignment: .leading) {
-                    Capsule().fill(ATMTheme.controlFill)
-                    if card.products.isEmpty {
-                        Capsule()
-                            .fill(color)
-                            .frame(width: max(0, min(1, percent / 100)) * proxy.size.width)
-                    } else {
-                        HStack(spacing: 0) {
-                            ForEach(Array(card.products.enumerated()), id: \.element.id) { index, product in
-                                Rectangle()
-                                    .fill(Self.quotaProductColor(index))
-                                    .frame(width: max(0, min(1, product.usedPercent * productScale / 100)) * proxy.size.width)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .clipShape(Capsule())
-                    }
-                }
-            }
-            .frame(height: 5)
-
             if !card.products.isEmpty {
-                // Legend for the stacked segments, one compact line.
+                // Keep product attribution as text; the circle is the only
+                // progress visualization on every quota card.
                 HStack(spacing: 10) {
                     ForEach(Array(card.products.enumerated()), id: \.element.id) { index, product in
                         HStack(spacing: 4) {
@@ -4262,24 +4181,29 @@ private struct DesktopUsageContent: View, Equatable {
         let payload = card.payload
         let label = ATMAgentDisplay.name(card.agent)
         let linksOut = payload.linkURL != nil
+        let primaryMetric = payload.metrics.first
+        let percent = max(0, primaryMetric?.usedPercent ?? 0)
+        let level = ATMQuotaLevel.level(forPercent: percent)
+        let color = payload.isUnavailable ? ATMTheme.warning : ATMTheme.quotaColor(level)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 5) {
                 ATMAgentMark(agent: card.agent, size: 15)
                 Text(label)
                     .font(ATMFont.font(.footnote, weight: .semibold))
                     .lineLimit(1)
-                Text(card.providerLabel)
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(ATMTheme.controlFill, in: Capsule())
-                    .fixedSize()
-                Spacer(minLength: 4)
                 if let period = payload.period, !period.isEmpty {
                     Text(period)
-                        .font(ATMFont.mono(.caption))
-                        .foregroundStyle(ATMTheme.secondary)
+                        .font(ATMFont.mono(.caption, .semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(ATMTheme.controlFill, in: Capsule())
+                        .fixedSize()
                 }
+                Spacer(minLength: 4)
+                Text(card.providerLabel)
+                    .font(ATMFont.mono(.caption))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
                 if linksOut {
                     // Drawn whether or not the pointer is here, so revealing it on
                     // hover cannot shove the period label sideways.
@@ -4292,16 +4216,39 @@ private struct DesktopUsageContent: View, Equatable {
             .frame(height: 20)
             .foregroundStyle(ATMTheme.secondary)
 
-            Text(payload.title)
-                .font(ATMFont.font(.caption, weight: .medium))
-                .foregroundStyle(ATMTheme.secondary)
-                .lineLimit(1)
-
             if payload.isUnavailable {
                 providerQuotaEmptyState(payload)
-            } else {
-                ForEach(payload.metrics) { metric in
-                    providerQuotaMetric(metric)
+            } else if let metric = primaryMetric {
+                HStack(spacing: 14) {
+                    quotaGauge(percent: percent, color: color)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(payload.title)
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(color)
+                                .frame(width: 6, height: 6)
+                            Text(quotaStatusLabel(level))
+                        }
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                        Text("\(metric.label) \(metric.valueText)")
+                            .font(ATMFont.mono(.caption, .semibold))
+                            .foregroundStyle(ATMTheme.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if payload.metrics.count > 1 {
+                    HStack(spacing: 10) {
+                        ForEach(Array(payload.metrics.dropFirst())) { extraMetric in
+                            providerQuotaMetricSummary(extraMetric)
+                        }
+                    }
                 }
             }
 
@@ -4332,7 +4279,7 @@ private struct DesktopUsageContent: View, Equatable {
         .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
         .background(
             LinearGradient(
-                colors: [ATMTheme.warning.opacity(0.045), ATMTheme.elevated, ATMTheme.elevated],
+                colors: [color.opacity(0.055), ATMTheme.elevated, ATMTheme.elevated],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             ),
@@ -4340,7 +4287,7 @@ private struct DesktopUsageContent: View, Equatable {
         )
         .overlay(
             RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
-                .stroke(isHovered ? ATMTheme.accent : ATMTheme.border)
+                .stroke(isHovered ? ATMTheme.accent : color.opacity(0.16))
         )
         // The card's own padding is part of the hit area, not a dead margin.
         .contentShape(RoundedRectangle(cornerRadius: ATMRadius.panel))
@@ -4369,34 +4316,42 @@ private struct DesktopUsageContent: View, Equatable {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func providerQuotaMetric(_ metric: ATMProviderQuotaMetric) -> some View {
+    private func providerQuotaMetricSummary(_ metric: ATMProviderQuotaMetric) -> some View {
         let percent = max(0, metric.usedPercent)
         let color = ATMTheme.quotaColor(ATMQuotaLevel.level(forPercent: percent))
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(metric.label)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                Text(metric.valueText)
-                    .font(ATMFont.mono(.body, .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Spacer(minLength: 2)
-                Text(String(format: "%.1f%%", percent))
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .foregroundStyle(color)
-                    .fixedSize()
-            }
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(ATMTheme.controlFill)
-                    Capsule()
-                        .fill(color)
-                        .frame(width: max(0, min(1, percent / 100)) * proxy.size.width)
-                }
-            }
-            .frame(height: 5)
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+            Text(metric.label)
+                .font(ATMFont.caption)
+            Text(String(format: "%.0f%%", percent))
+                .font(ATMFont.mono(.caption))
         }
+        .foregroundStyle(ATMTheme.secondary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
+    /// Shared by built-in windows and provider readings so quota cards use one
+    /// progress language: a single circular gauge, never a duplicate bar.
+    private func quotaGauge(percent: Double, color: Color) -> some View {
+        ZStack {
+            Circle()
+                .stroke(ATMTheme.controlFill, lineWidth: 5)
+            Circle()
+                .trim(from: 0, to: max(0, min(1, percent / 100)))
+                .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            HStack(alignment: .firstTextBaseline, spacing: 1) {
+                Text(String(format: "%.0f", percent))
+                    .font(ATMFont.mono(.title2, .bold))
+                Text("%")
+                    .font(ATMFont.mono(.micro, .semibold))
+            }
+            .foregroundStyle(ATMTheme.primary)
+        }
+        .frame(width: 62, height: 62)
     }
 
 

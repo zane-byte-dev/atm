@@ -40,7 +40,7 @@ struct DesktopAIDayView: View {
                     case .privacy: privacyView
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity)
                 .atmAnimatedSwap(tab, style: .tab)
             }
         }
@@ -154,21 +154,19 @@ struct DesktopAIDayView: View {
 
     @ViewBuilder private var todayView: some View {
         if let result = store.today {
-            ScrollView {
-                VStack(spacing: 18) {
-                    if !result.hasContent {
-                        ATMAIDayEmptyCard(day: result.day)
-                    } else if let badge = result.badge, let concept = result.concept {
-                        ATMAIDayStatusStrip(result: result, lastRefreshed: store.lastRefreshed)
-                        ATMAIDayResultCard(result: result, badge: badge, concept: concept, style: .today)
-                            .padding(24)
-                            .atmWorkspaceCard()
+            VStack(spacing: 18) {
+                if !result.hasContent {
+                    ATMAIDayEmptyCard(day: result.day)
+                } else if let badge = result.badge, let concept = result.concept {
+                    ATMAIDayStatusStrip(result: result, lastRefreshed: store.lastRefreshed)
+                    ATMAIDayResultCard(result: result, badge: badge, concept: concept, style: .today)
+                        .padding(24)
+                        .atmWorkspaceCard()
 
-                        evidenceCard(result)
-                        feedbackBar(result)
-                    }
-                }.padding(28).frame(maxWidth: 920)
-            }
+                    evidenceCard(result)
+                    feedbackBar(result)
+                }
+            }.padding(28).frame(maxWidth: 920)
         } else if store.isLoading { ProgressView("正在生成今天的 AI Day…") }
         else { ATMAIDayEmptyCard(day: "今天") }
     }
@@ -225,8 +223,7 @@ struct DesktopAIDayView: View {
 
     @ViewBuilder private var atlasView: some View {
         if let atlas = store.atlas {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 18) {
                     HStack {
                         Text("徽章星图").font(ATMFont.font(.title2, weight: .semibold))
                         Picker("", selection: $showAtlasMap) { Text("星图").tag(true); Text("列表").tag(false) }.pickerStyle(.segmented).frame(width: 150)
@@ -258,16 +255,14 @@ struct DesktopAIDayView: View {
                             }
                         }
                     }
-                }.padding(28)
-            }
+            }.padding(28)
         } else { ProgressView() }
     }
 
     @ViewBuilder private var historyView: some View {
         if let history = store.history {
             let days = historyFilter == nil ? history.days : history.days.filter { $0.badge?.id == historyFilter }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         Text("历史").font(ATMFont.font(.title2, weight: .semibold))
                         Picker("", selection: $historyFilter) {
@@ -309,8 +304,7 @@ struct DesktopAIDayView: View {
                             }.buttonStyle(.plain)
                         }
                     }
-                }.padding(28)
-            }
+            }.padding(28)
         } else { ProgressView() }
     }
 
@@ -325,8 +319,7 @@ struct DesktopAIDayView: View {
 
     @ViewBuilder private var privacyView: some View {
         if let privacy = store.privacy {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 18) {
                     Text("数据与隐私").font(ATMFont.font(.title2, weight: .semibold))
                     VStack(alignment: .leading, spacing: 14) {
                         // Turning this off is not a pause: it wipes the labels already
@@ -378,8 +371,7 @@ struct DesktopAIDayView: View {
                         Spacer()
                         Button("删除全部 AI Day 数据", role: .destructive) { confirmingDelete = true }
                     }
-                }.padding(28).frame(maxWidth: 760)
-            }
+            }.padding(28).frame(maxWidth: 760)
         } else { ProgressView() }
     }
 

@@ -8,7 +8,8 @@ final class ATMDesktopLayoutTests: XCTestCase {
     }
 
     func testDetailHeaderTabsAndContentShareTheSameLeadingEdge() {
-        XCTAssertEqual(ATMDetailLayout.surfaceInset, ATMSpacing.medium)
+        XCTAssertEqual(ATMDetailLayout.surfaceHorizontalInset, ATMDetailLayout.horizontalPadding)
+        XCTAssertEqual(ATMDetailLayout.surfaceVerticalInset, ATMSpacing.medium)
         XCTAssertEqual(ATMDetailLayout.tabsHorizontalPadding, ATMDetailLayout.horizontalPadding)
         XCTAssertEqual(ATMDetailLayout.contentMaxWidth, 880)
     }

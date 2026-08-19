@@ -627,7 +627,9 @@ struct DesktopCollectionView: View {
                 ATMEmptyState(
                     icon: "tray.2",
                     title: "还没有收集来源",
-                    detail: "在中栏点击添加来源后，这里会显示它的配置。"
+                    detail: "在中栏点击添加来源后，这里会显示它的配置。",
+                    size: .inline,
+                    minHeight: 180
                 )
             }
         } else if let item = selectedItem {
@@ -647,7 +649,9 @@ struct DesktopCollectionView: View {
             ATMDetailBodySurface {
                 ATMEmptyState(
                     icon: "doc.text.magnifyingglass",
-                    title: "选择一条处理记录"
+                    title: "选择一条处理记录",
+                    size: .inline,
+                    minHeight: 180
                 )
             }
         }
@@ -773,7 +777,6 @@ private struct CollectionSourceDetail: View {
                     header
                     Divider()
                     ATMDetailBodySurface {
-                        ScrollView {
                         VStack(alignment: .leading, spacing: 14) {
                             runCard
                             identityCard
@@ -784,7 +787,6 @@ private struct CollectionSourceDetail: View {
                         .padding(.vertical, 24)
                         .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        }
                     }
                 }
             }
@@ -1395,22 +1397,20 @@ private struct CollectionItemDetail: View {
 
     @ViewBuilder
     private var content: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
-                switch selectedTab {
-                case .decision:
-                    collectionDetailCard { sourceSummary }
-                    collectionDetailCard { decisionSummary }
-                    collectionDetailCard { outcomeSummary }
-                case .transcript:
-                    rawContextSummary
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            switch selectedTab {
+            case .decision:
+                collectionDetailSection(showsDivider: true) { sourceSummary }
+                collectionDetailSection(showsDivider: true) { decisionSummary }
+                collectionDetailSection { outcomeSummary }
+            case .transcript:
+                rawContextSummary
+                    .padding(.vertical, 20)
             }
-            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-            .padding(.vertical, 20)
-            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var transcriptTabTitle: String {
@@ -1786,13 +1786,18 @@ private struct CollectionItemDetail: View {
             .lineLimit(1)
     }
 
-    private func collectionDetailCard<Content: View>(
+    private func collectionDetailSection<Content: View>(
+        showsDivider: Bool = false,
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
-            .padding(16)
+            .padding(.vertical, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .atmWorkspaceCard()
+            .overlay(alignment: .bottom) {
+                if showsDivider {
+                    Divider()
+                }
+            }
     }
 }
 
@@ -2012,7 +2017,7 @@ private struct CollectionSourceEditor: View {
         Group {
             if presentation == .detail {
                 editorContent
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity)
             } else {
                 editorContent
                     // Editing has no connector picker, no search and no candidate list,
@@ -2042,16 +2047,14 @@ private struct CollectionSourceEditor: View {
 
     private var editorBody: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    sourceSection
-                    scopeSection
-                    processingSection
-                }
-                .padding(22)
-                .frame(maxWidth: 760, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 18) {
+                sourceSection
+                scopeSection
+                processingSection
             }
+            .padding(22)
+            .frame(maxWidth: 760, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
             Divider()
             footer
         }

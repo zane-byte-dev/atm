@@ -42,18 +42,23 @@ struct ATMDetailBodySurface<Content: View>: View {
     }
 
     var body: some View {
-        content
-            .environment(\.atmWorkspaceCardPresentation, .embeddedSection)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ATMTheme.elevated)
-            .clipShape(RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
-                    .stroke(ATMTheme.border, lineWidth: ATMStroke.regular)
-            }
-            .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
-            .padding(ATMDetailLayout.surfaceInset)
-            .background(ATMTheme.canvas)
+        ScrollView {
+            content
+                .environment(\.atmWorkspaceCardPresentation, .embeddedSection)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .background(ATMTheme.elevated)
+                .clipShape(RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
+                        .stroke(ATMTheme.border, lineWidth: ATMStroke.regular)
+                }
+                .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+                .padding(.horizontal, ATMDetailLayout.surfaceHorizontalInset)
+                .padding(.vertical, ATMDetailLayout.surfaceVerticalInset)
+        }
+        .atmHidesScrollBars()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(ATMTheme.canvas)
     }
 }
 
@@ -338,7 +343,7 @@ struct ATMDetailScaffold<Header: View, Notice: View, Tabs: View, Content: View>:
                     notice
                     content
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -378,7 +383,8 @@ struct ATMMetadataItem: Identifiable {
     }
 }
 
-/// 详情头下面的属性条。使用 adaptive grid，窄栏自动换行而不是挤成三条细缝。
+/// 详情正文顶部的属性条。使用 adaptive grid，窄栏自动换行而不是挤成三条细缝。
+/// 外层正文卡片统一提供 inset；这里不再给每个无背景单元重复加 padding。
 struct ATMMetadataStrip: View {
     let items: [ATMMetadataItem]
 
@@ -397,8 +403,6 @@ struct ATMMetadataStrip: View {
                         .foregroundStyle(item.valueColor)
                         .lineLimit(1)
                 }
-                .padding(.horizontal, 11)
-                .padding(.vertical, 9)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }

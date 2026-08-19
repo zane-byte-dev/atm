@@ -16,16 +16,14 @@ struct DesktopGuardSettingsView: View {
     @State private var confirmingRemoveRule: ATMGuardRule?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                card { intro }
-                ForEach(store.guardTools) { tool in
-                    card { toolSection(tool) }
-                }
-                card { addRuleSection }
+        VStack(alignment: .leading, spacing: 18) {
+            card { intro }
+            ForEach(store.guardTools) { tool in
+                card { toolSection(tool) }
             }
-            .padding(20)
+            card { addRuleSection }
         }
+        .padding(20)
         .onAppear { store.loadGuardConfiguration() }
         .confirmationDialog(
             "撤掉 \(confirmingUninstall?.tool ?? "") 的闸门？",

@@ -69,9 +69,12 @@ struct ATMDetailHeader<Eyebrow: View, Actions: View, Meta: View>: View {
 /// 右栏的横向节奏。头部、分页条和正文列必须共用同一条左边界，标题才不会比它解释的正文
 /// 缩进浅一档。
 enum ATMDetailLayout {
-    /// The canvas shows one continuous detail card with a quiet gutter around it.
-    static let surfaceInset: CGFloat = ATMSpacing.medium
     static let horizontalPadding: CGFloat = 24
+    /// The body card follows the same leading and trailing guides as the fixed
+    /// header and tabs. A smaller, independent vertical gutter keeps it visually
+    /// attached to the tab row without making the card touch it.
+    static let surfaceHorizontalInset: CGFloat = horizontalPadding
+    static let surfaceVerticalInset: CGFloat = ATMSpacing.medium
     /// Object details share one readable measure; only the information structure
     /// inside the column changes from tab to tab.
     static let contentMaxWidth: CGFloat = 880
