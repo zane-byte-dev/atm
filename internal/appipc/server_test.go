@@ -63,11 +63,16 @@ func TestNamesAreTheDeclaredDesktopSet(t *testing.T) {
 		"session.search",
 		"session.show",
 		"session.timeline",
+		"todo.archive",
 		"todo.create",
+		"todo.delete",
 		"todo.doc",
+		"todo.done",
 		"todo.list",
 		"todo.refine",
+		"todo.restore",
 		"todo.show",
+		"todo.start",
 		"todo.update",
 	}
 	got := New(Dependencies{}).Names()

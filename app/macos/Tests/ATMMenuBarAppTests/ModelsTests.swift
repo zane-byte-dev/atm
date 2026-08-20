@@ -2869,11 +2869,25 @@ final class ModelsTests: XCTestCase {
         )
         let todo = try JSONDecoder().decode(ATMTodo.self, from: data)
 
-        XCTAssertEqual(ATMCommandBuilder.arguments(for: .start, todo: todo), ["todo", "start", "t8"])
-        XCTAssertEqual(
-            ATMCommandBuilder.arguments(for: .complete, todo: todo),
-            ["todo", "done", "t8", "--reason", "通过 ATM 菜单栏完成"]
+        // Lifecycle went from fork/exec argv to typed IPC. What still has to hold
+        // is the payload each action sends, and the method it sends it to.
+        XCTAssertEqual(ATMTodoIPCCommand.start.verb, "todo.start")
+        XCTAssertEqual(ATMTodoIPCCommand.done.verb, "todo.done")
+        XCTAssertEqual(ATMTodoIPCCommand.archive.verb, "todo.archive")
+        XCTAssertEqual(ATMTodoIPCCommand.restore.verb, "todo.restore")
+        XCTAssertEqual(ATMTodoIPCCommand.delete.verb, "todo.delete")
+
+        let encoder = JSONEncoder()
+        func payload<T: Encodable>(_ value: T) throws -> [String: Any] {
+            try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(value)) as? [String: Any])
+        }
+
+        XCTAssertEqual(try payload(ATMTodoIDRequest(todoID: "t8"))["todo_id"] as? String, "t8")
+        let completed = try payload(
+            ATMTodoDoneRequest(todoID: "t8", reason: "通过 ATM 菜单栏\(todo.completionVerb)")
         )
+        XCTAssertEqual(completed["todo_id"] as? String, "t8")
+        XCTAssertEqual(completed["reason"] as? String, "通过 ATM 菜单栏完成")
         // Closing a todo that is waiting in review is an acceptance, and the
         // closing reason is the only place that distinction survives.
         let submitted = try JSONDecoder().decode(
@@ -2883,26 +2897,21 @@ final class ModelsTests: XCTestCase {
             )
         )
         XCTAssertEqual(
-            ATMCommandBuilder.arguments(for: .complete, todo: submitted),
-            ["todo", "done", "t9", "--reason", "通过 ATM 菜单栏验收"]
+            try payload(
+                ATMTodoDoneRequest(todoID: "t9", reason: "通过 ATM 菜单栏\(submitted.completionVerb)")
+            )["reason"] as? String,
+            "通过 ATM 菜单栏验收"
         )
+        // Archiving is a batch use case, so a single row is a batch of one.
         XCTAssertEqual(
-            ATMCommandBuilder.arguments(for: .archive, todo: todo),
-            ["todo", "archive", "t8"]
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.arguments(for: .restore, todo: todo),
-            ["todo", "restore", "t8"]
+            try payload(ATMTodoRetentionRequest("t8"))["todo_ids"] as? [String], ["t8"]
         )
         // Permanent deletion is only offered from the archive, after the App has
-        // confirmed it. The CLI still needs --yes because it has no stdin.
-        XCTAssertEqual(
-            ATMCommandBuilder.arguments(for: .delete, todo: todo),
-            ["todo", "delete", "t8", "--yes"]
-        )
-        // Non-waiting return-to-open is a typed todo.update request, so the
-        // ordinary command builder deliberately has no argv for this action.
-        XCTAssertNil(ATMCommandBuilder.arguments(for: .returnToOpen, todo: submitted))
+        // confirmed it; the request carries that confirmation rather than implying
+        // it, which is what `--yes` used to do on the command line.
+        let deletion = try payload(ATMTodoDeleteRequest("t8"))
+        XCTAssertEqual(deletion["todo_id"] as? String, "t8")
+        XCTAssertEqual(deletion["confirmed"] as? Bool, true)
         XCTAssertEqual(submitted.completionVerb, "验收")
         XCTAssertEqual(todo.completionVerb, "完成")
 
@@ -2944,9 +2953,12 @@ final class ModelsTests: XCTestCase {
             ATMTodoStatusActions.items(for: inProgress).map(\.title),
             ["标记完成", "回到待办"]
         )
-        // Not waiting, so typed todo.update applies; Work still owns the
+        // Return-to-open is a typed todo.update; Work still owns the
         // status-change unbind rule.
-        XCTAssertNil(ATMCommandBuilder.arguments(for: .returnToOpen, todo: inProgress))
+        XCTAssertEqual(
+            try payload(ATMTodoUpdateRequest(todoID: inProgress.id, status: "open"))["status"] as? String,
+            "open"
+        )
         let deferred = try JSONDecoder().decode(
             ATMTodo.self,
             from: Data(
@@ -2965,7 +2977,10 @@ final class ModelsTests: XCTestCase {
             ATMTodoStatusActions.primaryItems(for: deferred).map(\.title),
 			["标记完成", "回到待办"]
         )
-        XCTAssertNil(ATMCommandBuilder.arguments(for: .returnToOpen, todo: deferred))
+        XCTAssertEqual(
+            try payload(ATMTodoUpdateRequest(todoID: deferred.id, status: "open"))["todo_id"] as? String,
+            "t11"
+        )
         let closed = try JSONDecoder().decode(
             ATMTodo.self,
             from: Data(
@@ -2981,10 +2996,7 @@ final class ModelsTests: XCTestCase {
             ATMTodoStatusActions.primaryItems(for: closed).map(\.action),
             [.start]
         )
-        XCTAssertEqual(
-            ATMCommandBuilder.arguments(for: .start, todo: closed),
-            ["todo", "start", "t12"]
-        )
+        XCTAssertEqual(try payload(ATMTodoIDRequest(todoID: closed.id))["todo_id"] as? String, "t12")
 
         // Handoff carries no policy and no agent: it opens Codex and stops, so
         // there is nothing for the App to choose on the user's behalf.

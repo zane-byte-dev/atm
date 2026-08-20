@@ -175,6 +175,113 @@ final class TodoIPCTests: XCTestCase {
         XCTAssertNil(request["argv"])
     }
 
+    /// Lifecycle over typed IPC, against the real Go binary. These five used to be
+    /// fork/exec argv; what has to hold now is that each transition actually lands
+    /// in the database, that Work's human-acceptance and confirmation rules still
+    /// apply through this transport, and that the Swift response types decode.
+    func testRealGoTodoLifecycleOverTypedIPC() throws {
+        guard let executable = ProcessInfo.processInfo.environment["ATM_CONTRACT_EXECUTABLE"],
+              !executable.isEmpty else {
+            throw XCTSkip("ATM_CONTRACT_EXECUTABLE is set by the release contract check")
+        }
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atm-todo-lifecycle-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let encoder = JSONEncoder()
+        let create = try runGoIPC(
+            executable: executable, verb: "todo.create", home: home,
+            input: encoder.encode(ATMTodoCreateRequest(draft: ATMTodoDraft(
+                text: "Lifecycle over IPC", project: "atm", priority: "P1"
+            )))
+        )
+        XCTAssertEqual(create.status, 0, create.stderr)
+        let created = try JSONDecoder().decode(ATMIPCEnvelope<ATMTodo>.self, from: create.stdout).data
+        XCTAssertEqual(created.status, "open")
+
+        let started = try runGoIPC(
+            executable: executable, verb: "todo.start", home: home,
+            input: encoder.encode(ATMTodoIDRequest(todoID: created.id))
+        )
+        XCTAssertEqual(started.status, 0, started.stderr)
+        XCTAssertEqual(
+            try JSONDecoder().decode(ATMIPCEnvelope<ATMTodo>.self, from: started.stdout).data.status,
+            "in_progress"
+        )
+
+        // `_ipc` presents a human actor, so acceptance is allowed here; an Agent
+        // calling as an agent still has to use submit.
+        let done = try runGoIPC(
+            executable: executable, verb: "todo.done", home: home,
+            input: encoder.encode(ATMTodoDoneRequest(todoID: created.id, reason: "通过 ATM 菜单栏完成"))
+        )
+        XCTAssertEqual(done.status, 0, done.stderr)
+        XCTAssertEqual(
+            try JSONDecoder().decode(ATMIPCEnvelope<ATMTodo>.self, from: done.stdout).data.status,
+            "done"
+        )
+
+        let archived = try runGoIPC(
+            executable: executable, verb: "todo.archive", home: home,
+            input: encoder.encode(ATMTodoRetentionRequest(created.id))
+        )
+        XCTAssertEqual(archived.status, 0, archived.stderr)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                ATMIPCEnvelope<ATMTodoRetentionResponse>.self, from: archived.stdout
+            ).data.moved,
+            [created.id]
+        )
+        XCTAssertTrue(try todoList(executable: executable, home: home, status: "all").isEmpty)
+
+        let restored = try runGoIPC(
+            executable: executable, verb: "todo.restore", home: home,
+            input: encoder.encode(ATMTodoRetentionRequest(created.id))
+        )
+        XCTAssertEqual(restored.status, 0, restored.stderr)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                ATMIPCEnvelope<ATMTodoRetentionResponse>.self, from: restored.stdout
+            ).data.moved,
+            [created.id]
+        )
+        XCTAssertEqual(
+            try todoList(executable: executable, home: home, status: "all").map(\.id), [created.id]
+        )
+
+        // Deletion without confirmation is refused, and refusing it must not
+        // delete anything.
+        let unconfirmed = try runGoIPC(
+            executable: executable, verb: "todo.delete", home: home,
+            input: Data("{\"todo_id\":\"\(created.id)\",\"confirmed\":false}".utf8)
+        )
+        // Read the envelope's error half as raw JSON: the typed envelope only
+        // surfaces `data`, and a refusal deliberately carries none.
+        let refusal = try object(unconfirmed.stdout)
+        XCTAssertEqual(
+            (refusal["error"] as? [String: Any])?["code"] as? String,
+            "forbidden",
+            unconfirmed.stderr
+        )
+        XCTAssertEqual(
+            try todoList(executable: executable, home: home, status: "all").map(\.id), [created.id]
+        )
+
+        let deleted = try runGoIPC(
+            executable: executable, verb: "todo.delete", home: home,
+            input: encoder.encode(ATMTodoDeleteRequest(created.id))
+        )
+        XCTAssertEqual(deleted.status, 0, deleted.stderr)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                ATMIPCEnvelope<ATMTodoDeleteResponse>.self, from: deleted.stdout
+            ).data.deleted,
+            [created.id]
+        )
+        XCTAssertTrue(try todoList(executable: executable, home: home, status: "all").isEmpty)
+    }
+
     func testRealGoTodoJSONDecodesInSwiftIncludingWorkingAndTrashLists() throws {
         guard let executable = ProcessInfo.processInfo.environment["ATM_CONTRACT_EXECUTABLE"],
               !executable.isEmpty else {

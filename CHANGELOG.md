@@ -45,6 +45,19 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **Todo 生命周期改走 typed IPC，App 少了 5 条 fork/exec 契约。** `start`、`done`、`archive`、
+  `restore`、`delete` 从散在 Swift 里的 argv 数组变成 `todo.start` / `todo.done` /
+  `todo.archive` / `todo.restore` / `todo.delete` 五个 typed method，直接调用既有的 Work
+  use case，并交付生命周期提交的 durable effects（否则 Todo 的 Markdown 投影会落后于数据库，
+  直到某条后续命令碰巧刷新它）。`todo.update` 接不了这些：它的 Status 走 `Work.Edit`，而
+  `edit --status` 只把工作退回 open；归档和永久删除也不是元数据补丁。删除请求必须显式带
+  `confirmed`，对应 CLI 的 `--yes`——桌面的确认弹窗是它前面唯一的东西。App 的普通契约由 24 降到 19。
+
+  Guard 的 9 条**故意不迁**：`Decide` 和五个管理动作在服务层硬拒绝 `OriginIPC`，因为 `_ipc`
+  可以从终端重放、也不能证明是 ATM.app 而不是 Agent 启动的。把 `human@ipc` 当成 Guard 授权，
+  等于让 Agent 批准自己要发的消息。生命周期能迁是因为传输本身升不了权：`atm todo done` 本来就是
+  Agent 在普通终端里能跑的命令。
+
 - **`atm todo --help` 分了组，主流程写在最前面。** 21 条子命令以前是一张按字母排的平铺列表，
   每天都用的那四步和一个月用一次的命令挤在一起。现在分成 Lifecycle / Reading and content /
   Collaboration and relations / Batch and permanent removal / Diagnostics 五组，帮助正文顶部

@@ -1,7 +1,7 @@
 import Foundation
 
-/// Typed desktop methods for Todo metadata and read models. Lifecycle,
-/// retention, dependency, Plan and task-run workflows keep their own surfaces.
+/// Typed desktop methods for Todo metadata, read models, lifecycle and
+/// retention. Dependency and Plan workflows keep their own surfaces.
 enum ATMTodoIPCCommand {
     static let list = ATMIPCMethod<ATMTodoListRequest, [ATMTodo]>(
         "todo.list",
@@ -28,6 +28,71 @@ enum ATMTodoIPCCommand {
         timeout: 180,
         responseKeyDecoding: .useDefault
     )
+    static let start = ATMIPCMethod<ATMTodoIDRequest, ATMTodo>(
+        "todo.start",
+        responseKeyDecoding: .useDefault
+    )
+    static let done = ATMIPCMethod<ATMTodoDoneRequest, ATMTodo>(
+        "todo.done",
+        responseKeyDecoding: .useDefault
+    )
+    static let archive = ATMIPCMethod<ATMTodoRetentionRequest, ATMTodoRetentionResponse>(
+        "todo.archive",
+        responseKeyDecoding: .useDefault
+    )
+    static let restore = ATMIPCMethod<ATMTodoRetentionRequest, ATMTodoRetentionResponse>(
+        "todo.restore",
+        responseKeyDecoding: .useDefault
+    )
+    static let delete = ATMIPCMethod<ATMTodoDeleteRequest, ATMTodoDeleteResponse>(
+        "todo.delete",
+        responseKeyDecoding: .useDefault
+    )
+}
+
+struct ATMTodoDoneRequest: Encodable, Equatable {
+    let todoID: String
+    let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case reason
+        case todoID = "todo_id"
+    }
+}
+
+struct ATMTodoRetentionRequest: Encodable, Equatable {
+    let todoIDs: [String]
+
+    enum CodingKeys: String, CodingKey { case todoIDs = "todo_ids" }
+
+    init(_ todoID: String) { todoIDs = [todoID] }
+}
+
+struct ATMTodoRetentionResponse: Decodable, Equatable {
+    let moved: [String]
+    let unchanged: [String]?
+}
+
+/// Confirmed is sent explicitly rather than implied by calling this at all:
+/// deletion is irreversible and the desktop's confirmation dialog is what stands
+/// in front of it.
+struct ATMTodoDeleteRequest: Encodable, Equatable {
+    let todoID: String
+    let confirmed: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case confirmed
+        case todoID = "todo_id"
+    }
+
+    init(_ todoID: String) {
+        self.todoID = todoID
+        confirmed = true
+    }
+}
+
+struct ATMTodoDeleteResponse: Decodable, Equatable {
+    let deleted: [String]
 }
 
 struct ATMTodoListRequest: Encodable, Equatable {
@@ -245,5 +310,28 @@ struct ATMTodoIPCClient: Sendable {
 
     func refine(_ request: ATMTodoRefineRequest) async throws -> ATMTodoRefineResponse {
         try await ipc.call(ATMTodoIPCCommand.refine, request: request)
+    }
+
+    func start(_ todoID: String) async throws -> ATMTodo {
+        try await ipc.call(ATMTodoIPCCommand.start, request: ATMTodoIDRequest(todoID: todoID))
+    }
+
+    func done(_ todoID: String, reason: String) async throws -> ATMTodo {
+        try await ipc.call(
+            ATMTodoIPCCommand.done,
+            request: ATMTodoDoneRequest(todoID: todoID, reason: reason)
+        )
+    }
+
+    func archive(_ todoID: String) async throws -> ATMTodoRetentionResponse {
+        try await ipc.call(ATMTodoIPCCommand.archive, request: ATMTodoRetentionRequest(todoID))
+    }
+
+    func restore(_ todoID: String) async throws -> ATMTodoRetentionResponse {
+        try await ipc.call(ATMTodoIPCCommand.restore, request: ATMTodoRetentionRequest(todoID))
+    }
+
+    func delete(_ todoID: String) async throws -> ATMTodoDeleteResponse {
+        try await ipc.call(ATMTodoIPCCommand.delete, request: ATMTodoDeleteRequest(todoID))
     }
 }

@@ -34,12 +34,7 @@ quota --json
 session status --json
 stats --agent-session --by --days --json
 sync
-todo delete --yes
-todo archive
-todo done --reason
 todo handoff --copy --json
-todo restore
-todo start
 version
 
 # `atm _ipc <verb>` 是 App 专用的隐藏协议：整个面共用 contract.IPCProtocolVersion 一个
@@ -98,6 +93,11 @@ todo.doc
 todo.list
 todo.refine
 todo.show
+todo.start
+todo.archive
+todo.delete
+todo.done
+todo.restore
 todo.update
 
 # App 读写的配置键。CLI 侧的可设置键表改名会让设置页静默失效，所以一起钉住。

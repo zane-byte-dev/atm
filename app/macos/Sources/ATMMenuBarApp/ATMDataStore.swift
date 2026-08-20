@@ -668,25 +668,6 @@ enum ATMCommandBuilder {
         return arguments
     }
 
-    static func arguments(for action: ATMTodoAction, todo: ATMTodo) -> [String]? {
-        switch action {
-        case .start:
-            return ["todo", "start", todo.id]
-        case .complete:
-            return ["todo", "done", todo.id, "--reason", "通过 ATM 菜单栏\(todo.completionVerb)"]
-        case .archive:
-            return ["todo", "archive", todo.id]
-        case .restore:
-            return ["todo", "restore", todo.id]
-        case .delete:
-            // Permanent deletion exists only inside the archive, after the desktop
-            // confirmation dialog. The CLI has no interactive stdin.
-            return ["todo", "delete", todo.id, "--yes"]
-        case .returnToOpen:
-            return nil
-        }
-    }
-
     static func handoffTodo(id: String) -> [String] {
         ["todo", "handoff", id, "--json"]
     }
@@ -2392,11 +2373,25 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { isActing = false }
             do {
-                if let arguments = ATMCommandBuilder.arguments(for: action, todo: todo) {
-                    let runner = try ATMCommandRunner()
-                    _ = try await runner.run(arguments)
-                } else {
-                    _ = try await makeTodoIPCClient().update(
+                let client = try makeTodoIPCClient()
+                switch action {
+                case .start:
+                    _ = try await client.start(todo.id)
+                case .complete:
+                    _ = try await client.done(
+                        todo.id,
+                        reason: "通过 ATM 菜单栏\(todo.completionVerb)"
+                    )
+                case .archive:
+                    _ = try await client.archive(todo.id)
+                case .restore:
+                    _ = try await client.restore(todo.id)
+                case .delete:
+                    // Already behind the desktop confirmation dialog; the request
+                    // carries that confirmation explicitly.
+                    _ = try await client.delete(todo.id)
+                case .returnToOpen:
+                    _ = try await client.update(
                         ATMTodoUpdateRequest(todoID: todo.id, status: "open")
                     )
                 }

@@ -60,6 +60,44 @@ type TodoUpdateRequest struct {
 	Source        *string `json:"source,omitempty"`
 }
 
+// Lifecycle and retention methods. `todo.update` deliberately refuses these:
+// its Status field goes through Work.Edit, which only returns work to open, and
+// retention and permanent deletion are not metadata patches.
+//
+// Unlike Guard's decision path, these admit OriginIPC. The distinction is what
+// the transport can escalate: `atm todo done` is already something an Agent may
+// run from a plain terminal, so a replayable `_ipc` adds no authority. Guard's
+// approve exists precisely to require a human the Agent cannot impersonate, and
+// therefore stays CLI-only.
+type TodoStartRequest struct {
+	TodoID string `json:"todo_id"`
+}
+
+// TodoDoneRequest carries the human acceptance decision. Work still enforces
+// that the actor is human; an Agent must use submit.
+type TodoDoneRequest struct {
+	TodoID string `json:"todo_id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// TodoRetentionRequest takes a list because archiving is a batch use case, and a
+// single-ID caller is just a batch of one.
+type TodoRetentionRequest struct {
+	TodoIDs []string `json:"todo_ids"`
+}
+
+// TodoDeleteRequest requires Confirmed rather than inferring intent from the
+// call itself: deletion is irreversible, and the desktop's confirmation dialog is
+// the only thing standing in front of it. This mirrors the CLI's `--yes`.
+type TodoDeleteRequest struct {
+	TodoID    string `json:"todo_id"`
+	Confirmed bool   `json:"confirmed"`
+}
+
+type TodoDeleteResponse struct {
+	Deleted []string `json:"deleted"`
+}
+
 // TodoRefineRequest is the complete, bounded refinement policy available to
 // the App. It cannot choose a model endpoint, timeout, arbitrary argv or an
 // executor; Work owns those details and validates the graph fan-out.
@@ -226,6 +264,85 @@ func registerTodo(registry *ipc.Registry, dependencies Dependencies) {
 		}
 		return response, nil
 	})
+	bind(registry, "todo.start", func(
+		ctx context.Context,
+		call application.Call,
+		input TodoStartRequest,
+	) (work.Todo, error) {
+		result, err := dependencies.Work.Start(ctx, call, work.StartInput{TodoID: input.TodoID})
+		if err != nil {
+			return work.Todo{}, err
+		}
+		if err := deliverTodoEffects(ctx, call, dependencies, result.Effects); err != nil {
+			return work.Todo{}, err
+		}
+		return result.Todo, nil
+	})
+	bind(registry, "todo.done", func(
+		ctx context.Context,
+		call application.Call,
+		input TodoDoneRequest,
+	) (work.Todo, error) {
+		result, err := dependencies.Work.Done(ctx, call, work.CloseInput{
+			TodoID: input.TodoID, Reason: input.Reason,
+		})
+		if err != nil {
+			return work.Todo{}, err
+		}
+		if err := deliverTodoEffects(ctx, call, dependencies, result.Effects); err != nil {
+			return work.Todo{}, err
+		}
+		return result.Todo, nil
+	})
+	bind(registry, "todo.archive", func(
+		ctx context.Context,
+		call application.Call,
+		input TodoRetentionRequest,
+	) (work.RetentionResult, error) {
+		return dependencies.Work.Archive(ctx, call, work.RetentionInput{TodoIDs: input.TodoIDs})
+	})
+	bind(registry, "todo.restore", func(
+		ctx context.Context,
+		call application.Call,
+		input TodoRetentionRequest,
+	) (work.RetentionResult, error) {
+		return dependencies.Work.Restore(ctx, call, work.RetentionInput{TodoIDs: input.TodoIDs})
+	})
+	bind(registry, "todo.delete", func(
+		ctx context.Context,
+		call application.Call,
+		input TodoDeleteRequest,
+	) (TodoDeleteResponse, error) {
+		// Planned and then deleted, the same two steps the CLI takes: the plan is
+		// what turns one ID into the exact set of rows, and Work refuses to act on
+		// a plan it did not just produce.
+		plan, err := dependencies.Work.PlanDelete(ctx, call, work.DeleteSelector{TodoID: input.TodoID})
+		if err != nil {
+			return TodoDeleteResponse{}, err
+		}
+		result, err := dependencies.Work.Delete(ctx, call, work.DeleteInput{
+			Plan: plan, Confirmed: input.Confirmed,
+		})
+		if err != nil {
+			return TodoDeleteResponse{}, err
+		}
+		return TodoDeleteResponse{Deleted: append([]string{}, result.Deleted...)}, nil
+	})
+}
+
+// deliverTodoEffects runs the durable outbox entries a lifecycle transition
+// committed. Skipping this would leave the Todo's markdown projection behind the
+// database until some later command happened to flush it.
+func deliverTodoEffects(
+	ctx context.Context,
+	call application.Call,
+	dependencies Dependencies,
+	effects []work.Effect,
+) error {
+	if len(effects) == 0 {
+		return nil
+	}
+	return dependencies.Work.DeliverEffects(ctx, call, effects, dependencies.WorkEffects)
 }
 
 func todoRefineProposal(proposal refine.Proposal) TodoRefineProposal {
