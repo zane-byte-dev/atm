@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -31,6 +33,21 @@ type batchItem struct {
 	Project  string `yaml:"project" json:"project"`
 	Source   string `yaml:"source" json:"source"`
 	Creator  string `yaml:"creator" json:"creator"`
+}
+
+// batchGrammarMessage keeps the decoder's line numbers, which are the useful
+// part of a rejected batch, while naming the grammar the way the file's author
+// sees it. Unmodified, KnownFields reports the Go type — "field status not found
+// in type cmd.batchItem" tells a reader nothing they can act on.
+func batchGrammarMessage(err error) string {
+	message := strings.TrimPrefix(err.Error(), "yaml: unmarshal errors:\n")
+	for typeName, grammarName := range map[string]string{
+		"cmd.batchItem":  "a batch item (title, desc, priority, project, source, creator)",
+		"cmd.batchInput": "batch input (project, source, creator, priority, items)",
+	} {
+		message = strings.ReplaceAll(message, "in type "+typeName, "in "+grammarName)
+	}
+	return strings.TrimSpace(message)
 }
 
 func runTodoAdd(cmd *cobra.Command, args []string) error {
@@ -121,9 +138,18 @@ func runTodoBatchAdd(cmd *cobra.Command) error {
 		return fmt.Errorf("no input from stdin")
 	}
 
+	// KnownFields, so a key this grammar does not have is an error rather than a
+	// silent omission. `status:` and `wake:` used to be accepted here; creation is
+	// fixed to open now, and quietly dropping them would turn an old batch file
+	// into a pile of plain open Todos that looks like it worked.
 	var batch batchInput
-	if err := yaml.Unmarshal(data, &batch); err != nil {
-		return fmt.Errorf("parsing batch input: %w", err)
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&batch); err != nil {
+		if errors.Is(err, io.EOF) {
+			return fmt.Errorf("no input from stdin")
+		}
+		return fmt.Errorf("parsing batch input: %s", batchGrammarMessage(err))
 	}
 	if len(batch.Items) == 0 {
 		return fmt.Errorf("no items in batch input")

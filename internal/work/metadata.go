@@ -276,6 +276,17 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 			if *patch.MaintenanceLimit == 0 {
 				todo.Tags = withoutTodoTag(todo.Tags, store.TodoTagMaintenance)
 			} else {
+				// maintenance is a scope tag on work that is still being done, so a
+				// closed Todo cannot take one. Clearing it (limit 0) stays allowed,
+				// because tidying a tag off finished work is not the same claim.
+				// This rule came from the `todo maintain` use case, which this field
+				// replaced; the merge is meant to keep its rules, not drop them.
+				if !store.TodoIsActive(*todo) {
+					return metadataConflict(
+						fmt.Sprintf("cannot set a maintenance limit on todo %s with status %s", todo.ID, todo.Status),
+						todo.ID, todo.Status,
+					)
+				}
 				store.AddTodoTag(todo, store.TodoTagMaintenance)
 			}
 		}
@@ -601,6 +612,12 @@ func metadataBatchItemError(index int, title string, err error) error {
 func metadataTodoNotFound(id string, cause error) *application.Error {
 	err := application.WrapError(application.CodeNotFound, cause.Error(), cause)
 	err.Details = map[string]any{"todo_id": store.NormalizeTodoID(id)}
+	return err
+}
+
+func metadataConflict(message, todoID, currentStatus string) *application.Error {
+	err := application.NewError(application.CodeConflict, message)
+	err.Details = map[string]any{"todo_id": todoID, "current_status": currentStatus}
 	return err
 }
 

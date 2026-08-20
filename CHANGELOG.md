@@ -32,6 +32,17 @@ a database from a much older version. `atm backup` exists for exactly that case.
   `ATM_RUN_ID` 那条溯源链也一并拆掉（`Actor.RunID`、`session bind` 的 run 关联及其
   `BindWarning` 机制、`artifact --run-id`）：设置这个变量的只有已经删掉的 controller。
 
+- **批量创建的未知键现在整批报错，不再静默忽略。** `add --batch` 的 YAML/JSON 只认
+  `project/source/creator/priority/items`，以及 item 的
+  `title/desc/priority/project/source/creator`。写错的键和已经退役的 `status:`/`wake:` 都会带
+  行号报错，整批不写入。之前解码器默认忽略未知键，于是创建固定为 `open` 之后，一份旧的批量文件
+  会安静地建出一堆普通待办、还报告成功——这种失败没有任何迹象。
+
+- **`todo maintain` 的 use case 删掉。** `work.Maintain` 的能力已经并入
+  `todo edit --maintenance-limit`，独立入口没有调用方。它那条「维护只是还在做的活上的范围标签」
+  的规则跟着搬进 `edit`：给已完成的任务设维护上限报冲突，清零（`--maintenance-limit 0`）仍然
+  允许，因为把标签从做完的事上摘掉是另一回事。
+
 ### Added
 
 - **新建任务可以带图片。** macOS 新建任务支持选择、拖拽和直接粘贴截图，创建前显示可移除的缩略图；

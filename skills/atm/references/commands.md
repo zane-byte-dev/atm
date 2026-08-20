@@ -73,6 +73,8 @@ atm todo add "<title>" --project <repo> --priority P1 --status open --desc "<des
 atm todo add "<title>" --desc-file <path>  # use - to read a multiline description from stdin
 atm todo add "<title>" --image <path>       # repeatable local image: PNG/JPEG/WebP/GIF/HEIC, 10 MB each, 10 total
 atm todo add --batch                       # read YAML/JSON items from stdin; see --help for an example
+# batch 只认 project/source/creator/priority/items 和 item 的 title/desc/priority/project/source/creator；
+# 未知键（含旧的 status/wake）整批报错，不会静默忽略
 atm todo add "<title>" --creator codex     # override the detected creator; default: agent in env, else me
 atm todo add "<title>" --refine            # create, then polish / split with ATM's built-in DeepSeek text model
 atm config test-text-model                 # validate DeepSeek credentials/endpoint/model without touching a Todo

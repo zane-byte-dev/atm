@@ -143,6 +143,50 @@ func TestBatchAddIsAtomicAndAllocatesIDsInOneTransaction(t *testing.T) {
 	}
 }
 
+// `todo maintain` was merged into `edit --maintenance-limit`, so its one rule
+// has to survive the merge: maintenance is a scope tag on work still being done.
+// Clearing the tag off finished work is a different claim and stays allowed.
+func TestEditRefusesAMaintenanceLimitOnClosedWorkButStillClearsIt(t *testing.T) {
+	withTempWorkStore(t)
+	seedWorkTodos(t,
+		store.Todo{ID: "t1", Title: "Bounded upkeep", Priority: "P1", Status: store.TodoStatusOpen, Created: store.Today()},
+		store.Todo{
+			ID: "t2", Title: "Closed upkeep", Priority: "P1", Status: store.TodoStatusDone,
+			Tags: []string{store.TodoTagMaintenance}, MaintenanceLimit: 2, Created: store.Today(),
+		},
+	)
+	call := metadataTestCall(application.ActorHuman, "")
+
+	active, err := Default.Edit(context.Background(), call, EditInput{
+		TodoID: "t1", Patch: EditPatch{MaintenanceLimit: intPointerForTest(3)},
+	})
+	if err != nil || active.Todo.MaintenanceLimit != 3 ||
+		!store.TodoHasTag(active.Todo, store.TodoTagMaintenance) {
+		t.Fatalf("active todo = %+v, err=%v", active.Todo, err)
+	}
+
+	if _, err := Default.Edit(context.Background(), call, EditInput{
+		TodoID: "t2", Patch: EditPatch{MaintenanceLimit: intPointerForTest(4)},
+	}); !errors.Is(err, application.ErrConflict) {
+		t.Fatalf("closed todo error = %v, want conflict", err)
+	}
+	todos, loadErr := store.LoadTodosReadOnly()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if todo := store.FindTodo(todos, "t2"); todo == nil || todo.MaintenanceLimit != 2 {
+		t.Fatalf("rejected edit changed the closed todo: %+v", todo)
+	}
+
+	cleared, err := Default.Edit(context.Background(), call, EditInput{
+		TodoID: "t2", Patch: EditPatch{MaintenanceLimit: intPointerForTest(0)},
+	})
+	if err != nil || cleared.Todo.MaintenanceLimit != 0 ||
+		store.TodoHasTag(cleared.Todo, store.TodoTagMaintenance) {
+		t.Fatalf("cleared todo = %+v, err=%v", cleared.Todo, err)
+	}
+}
+
 func TestEditCommitsStatusAndBindingPolicyThenSyncsDocument(t *testing.T) {
 	withTempWorkStore(t)
 	todo := store.Todo{
@@ -295,5 +339,9 @@ func TestAddCleansImportedImagesWhenDatabaseCommitFails(t *testing.T) {
 }
 
 func stringPointerForTest(value string) *string {
+	return &value
+}
+
+func intPointerForTest(value int) *int {
 	return &value
 }
