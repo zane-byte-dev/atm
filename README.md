@@ -65,6 +65,7 @@ atm todo start <id>                     # 进入工作中
 atm todo prompt <id> --copy             # 复制一行提示，粘贴进新的 Agent 会话
 atm todo run <id>                       # 后台派发给 Codex（默认沙箱受限）
 atm todo tail <id> -f                   # 跟随派发日志
+atm todo plan set [id] --file -         # 原子替换结构化执行计划快照
 atm todo submit <id> --reason "实现及证据" # 提交待确认
 atm todo done <id>                      # 验收完成
 atm todo trash <id>                     # 移到回收站（可恢复）
@@ -85,17 +86,15 @@ atm restore <archive>                   # 从归档恢复
 **AI Day**
 
 ```bash
-atm day today                           # 生成今天的概念、徽章和证据
-atm day atlas                           # 查看 12 枚徽章与等级进度
-atm day history --days 90               # 查看历史日历
-atm day feedback 2026-08-15 --verdict corrected --badge code_architect
-atm day privacy show                    # 检查语义分类、保留期与来源权限
-atm day sources pause codex             # 暂停一个来源
-atm day export --json > ai-day.json     # 导出全部衍生数据（不含原文）
+atm day rebuild --from 2026-08-01 --to 2026-08-15 # 显式重建损坏或过期的投影
+atm day badge code_architect --json               # 诊断单枚徽章的进度和证据
+atm day sources list --json                       # 检查来源权限与衍生事件数
+atm day export > ai-day.json                      # 导出全部衍生数据（不含原文）
 ```
 
 AI Day 在本机把会话镜像归一化为不含原文的事件，按最近 30 个有效日生成每日唯一结果。完整的数据模型、
-12 枚徽章、评分规则、隐私与删除命令见 [AI Day 说明](docs/ai-day.md)。
+12 枚徽章、评分规则与隐私行为见 [AI Day 说明](docs/ai-day.md)。日常查看、纠正、来源与隐私管理由
+macOS App 提供；公开 CLI 只保留人工修复、诊断和数据导出，不镜像 App 的每个动作。
 
 **知识与记忆**
 

@@ -22,7 +22,7 @@ func init() {
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync session data to local database",
-	Args:  cobra.NoArgs,
+	Args:  noSubcommandArgs,
 	RunE:  runSync,
 }
 

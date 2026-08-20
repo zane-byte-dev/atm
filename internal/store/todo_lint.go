@@ -89,6 +89,13 @@ func ValidateTodoLogMessage(message, section string) error {
 			todoDocGeneratedSection,
 		)
 	}
+	if section == todoDocPlanGeneratedSection {
+		return fmt.Errorf(
+			"section %s is generated from the latest plan revision and would be overwritten; "+
+				"use `atm todo plan set [id] --file -` to replace the structured plan",
+			todoDocPlanGeneratedSection,
+		)
+	}
 	if section != "" && section != "进展" {
 		return nil
 	}

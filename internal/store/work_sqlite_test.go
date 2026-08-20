@@ -105,6 +105,125 @@ func TestMigrateRejectsUnsupportedSchemaVersions(t *testing.T) {
 	}
 }
 
+func TestFreshSchemaIncludesWorkEffectOutbox(t *testing.T) {
+	db := openTempDB(t)
+	var version, tables, columns int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='work_effect_outbox'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('work_effect_outbox')`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || tables != 1 || columns != 10 {
+		t.Fatalf("fresh outbox: version=%d tables=%d columns=%d", version, tables, columns)
+	}
+}
+
+func TestMigrateV48ToV49AddsWorkEffectOutbox(t *testing.T) {
+	db := openTempDB(t)
+	for _, statement := range []string{
+		`DROP TABLE work_effect_outbox`,
+		`UPDATE schema_version SET version = 48`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("prepare v48 (%s): %v", statement, err)
+		}
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate v48→v49: %v", err)
+	}
+	var version, tables int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='work_effect_outbox'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || tables != 1 {
+		t.Fatalf("migrated outbox: version=%d tables=%d", version, tables)
+	}
+}
+
+func TestFreshSchemaAndV49MigrationIncludeTodoPlanRevisions(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare bool
+	}{
+		{name: "fresh"},
+		{name: "migrate v49", prepare: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := openTempDB(t)
+			if test.prepare {
+				for _, statement := range []string{
+					`DROP TABLE todo_plan_revisions`,
+					`UPDATE schema_version SET version = 49`,
+				} {
+					if _, err := db.Exec(statement); err != nil {
+						t.Fatalf("prepare v49 (%s): %v", statement, err)
+					}
+				}
+				if err := migrate(db); err != nil {
+					t.Fatalf("migrate v49→v50: %v", err)
+				}
+			}
+			var version, tables, columns int
+			if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+				WHERE type='table' AND name='todo_plan_revisions'`).Scan(&tables); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('todo_plan_revisions')`).Scan(&columns); err != nil {
+				t.Fatal(err)
+			}
+			if version != SchemaVersion || tables != 1 || columns != 13 {
+				t.Fatalf("plan schema: version=%d tables=%d columns=%d", version, tables, columns)
+			}
+		})
+	}
+}
+
+func TestWorkEffectOutboxTracksFailureAndAcknowledgement(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "Durable effect"))
+	effect := WorkEffectRecord{
+		ID: "we_test", RequestID: "request-1", TodoID: "t1", Kind: "todo_waiting",
+		PayloadJSON: `{"todo":{"id":"t1"}}`, CreatedAt: 1,
+	}
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		return state.EnqueueWorkEffect(effect)
+	}); err != nil {
+		t.Fatalf("enqueue effect: %v", err)
+	}
+	if err := FailWorkEffect(effect.ID, "injected projection failure"); err != nil {
+		t.Fatalf("FailWorkEffect: %v", err)
+	}
+	pending, err := ListPendingWorkEffects("t1")
+	if err != nil || len(pending) != 1 || pending[0].AttemptCount != 1 ||
+		pending[0].LastAttemptAt == nil || pending[0].LastError != "injected projection failure" {
+		t.Fatalf("pending after failure = %+v, err=%v", pending, err)
+	}
+	if err := CompleteWorkEffect(effect.ID); err != nil {
+		t.Fatalf("CompleteWorkEffect: %v", err)
+	}
+	if err := CompleteWorkEffect(effect.ID); err != nil {
+		t.Fatalf("idempotent CompleteWorkEffect: %v", err)
+	}
+	if pending, err = ListPendingWorkEffects("t1"); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after acknowledgement = %+v, err=%v", pending, err)
+	}
+	if err := CompleteWorkEffect("we_missing"); !errors.Is(err, ErrWorkEffectNotFound) {
+		t.Fatalf("unknown CompleteWorkEffect error = %v", err)
+	}
+}
+
 func TestMigrateV21ToV22AddsUsageEventDuration(t *testing.T) {
 	db := openTempDB(t)
 	// Simulate a v21 database: drop the v22 column and pin the version.

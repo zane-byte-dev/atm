@@ -1,17 +1,13 @@
 package cmd
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
-	"time"
-	"unicode/utf8"
-
-	"github.com/zane-byte-dev/atm/internal/config"
-	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/store"
 
 	"github.com/spf13/cobra"
+
+	"github.com/zane-byte-dev/atm/internal/output"
+	sessionapp "github.com/zane-byte-dev/atm/internal/session"
 )
 
 const (
@@ -30,7 +26,7 @@ var (
 
 func init() {
 	searchCmd.Flags().IntVar(&searchLimitFlag, "limit", defaultSearchLimit, "maximum number of message matches to return")
-	searchCmd.Flags().StringVar(&searchProjectFlag, "project", "", "filter by project name (substring match)")
+	searchCmd.Flags().StringVar(&searchProjectFlag, "project", "", "filter by project name (case-insensitive substring)")
 	searchCmd.Flags().StringVar(&searchSinceFlag, "since", "", "search messages since RFC3339 timestamp or YYYY-MM-DD")
 	searchCmd.Flags().IntVar(&searchDaysFlag, "days", 0, "search today plus the previous N-1 days")
 	searchCmd.Flags().StringVar(&searchRoleFlag, "role", "", "filter by message role: user or assistant")
@@ -47,225 +43,80 @@ var searchCmd = &cobra.Command{
 }
 
 func runSearch(cmd *cobra.Command, args []string) error {
-	keyword := args[0]
 	agent, err := resolveAgent()
 	if err != nil {
 		return err
 	}
-	if searchLimitFlag < 1 {
-		return fmt.Errorf("--limit must be at least 1")
-	}
-	if searchSnippetFlag < 1 {
-		return fmt.Errorf("--snippet must be at least 1")
-	}
-	if strings.TrimSpace(searchSinceFlag) != "" && searchDaysFlag != 0 {
-		return fmt.Errorf("--since and --days are mutually exclusive")
-	}
-	role := strings.ToLower(strings.TrimSpace(searchRoleFlag))
-	if role != "" && role != "user" && role != "assistant" {
-		return fmt.Errorf("invalid --role %q: use user or assistant", searchRoleFlag)
-	}
-	var sinceTS int64
-	if searchSinceFlag != "" {
-		since, err := parseSessionSince(searchSinceFlag)
-		if err != nil {
-			return err
-		}
-		sinceTS = since.Unix()
-	} else if searchDaysFlag != 0 {
-		if searchDaysFlag < 1 {
-			return fmt.Errorf("--days must be at least 1")
-		}
-		sinceTS = startOfDayWindow(time.Now().In(config.Loc), searchDaysFlag).Unix()
-	}
-
-	return withDB(true, func(db *sql.DB) error {
-		matches, err := store.SearchMessagesWithOptions(db, keyword, store.SearchOptions{
-			Agent:   agent,
-			Project: strings.TrimSpace(searchProjectFlag),
-			Role:    role,
-			SinceTS: sinceTS,
-			Limit:   searchLimitFlag,
-			// Boilerplate the reader never asked for should not consume the page,
-			// and it should not inflate the total either.
-			Keep: func(content string) bool { return cleanMsg(content) != "" },
-		})
-		if err != nil {
-			return fmt.Errorf("query error: %w", err)
-		}
-		results := matches.Hits
-
-		if jsonOutput {
-			type jsonHit struct {
-				ID               string `json:"id"`
-				ShortID          string `json:"short_id"`
-				Agent            string `json:"agent"`
-				Project          string `json:"project"`
-				CreatedAt        string `json:"created_at"`
-				Role             string `json:"role"`
-				Content          string `json:"content"`
-				SnippetTruncated bool   `json:"snippet_truncated,omitempty"`
-			}
-			// An envelope, not a bare array: a caller that reads len(matches) off
-			// an array has no way to learn the limit hid the other 1070 hits.
-			type searchPayload struct {
-				Keyword   string    `json:"keyword"`
-				Total     int       `json:"total"`
-				Returned  int       `json:"returned"`
-				Truncated bool      `json:"truncated"`
-				Limit     int       `json:"limit"`
-				Matches   []jsonHit `json:"matches"`
-			}
-			hits := make([]jsonHit, 0, len(results))
-			for _, r := range results {
-				snippet, truncated := matchSnippet(cleanMsg(r.Content), keyword, searchSnippetFlag)
-				hits = append(hits, jsonHit{
-					ID:               r.FullID,
-					ShortID:          r.ShortID,
-					Agent:            r.Agent,
-					Project:          r.Project,
-					CreatedAt:        searchCreatedAt(r),
-					Role:             r.Role,
-					Content:          snippet,
-					SnippetTruncated: truncated,
-				})
-			}
-			output.JSON(searchPayload{
-				Keyword:   keyword,
-				Total:     matches.Total,
-				Returned:  len(hits),
-				Truncated: matches.Truncated,
-				Limit:     searchLimitFlag,
-				Matches:   hits,
-			})
-			return nil
-		}
-
-		if matches.Truncated {
-			fmt.Printf("Search: \"%s\"  (%d of %d matches; raise --limit for more)\n", keyword, len(results), matches.Total)
-		} else {
-			fmt.Printf("Search: \"%s\"  (%d matches)\n", keyword, matches.Total)
-		}
-		fmt.Println(strings.Repeat("=", 60))
-
-		if len(results) == 0 {
-			fmt.Println("\nNo matches found.")
-			return nil
-		}
-
-		keys := make([]string, 0, len(results))
-		grouped := make(map[string][]store.SearchHit, len(results))
-		for _, r := range results {
-			key := fmt.Sprintf("%s | %s | %s | %s", r.ShortID, r.CreatedAt, r.Agent, r.Project)
-			if _, ok := grouped[key]; !ok {
-				keys = append(keys, key)
-			}
-			grouped[key] = append(grouped[key], r)
-		}
-
-		for _, key := range keys {
-			group := grouped[key]
-			shortID := strings.SplitN(key, " | ", 2)[0]
-			fmt.Printf("\n%s  (%d matches)  → atm session show %s\n", key, len(group), shortID)
-			fmt.Println(strings.Repeat("-", 50))
-			seen := map[string]bool{}
-			for _, m := range group {
-				snippet, _ := matchSnippet(cleanMsg(m.Content), keyword, searchSnippetFlag)
-				firstLine := strings.Join(strings.Fields(snippet), " ")
-				dedupKey := firstLine
-				dedupKey = truncLine(dedupKey, 60)
-				if seen[dedupKey] {
-					continue
-				}
-				seen[dedupKey] = true
-				roleTag := "A"
-				if m.Role == "user" {
-					roleTag = "Q"
-				}
-				fmt.Printf("  [%s] %s\n", roleTag, firstLine)
-			}
-		}
-		return nil
+	result, err := currentSessionService().Search(cmd.Context(), sessionapp.SearchInput{
+		Keyword: args[0], Agent: agent, Project: searchProjectFlag,
+		Since: searchSinceFlag, Days: searchDaysFlag, Role: searchRoleFlag,
+		Limit: searchLimitFlag, Snippet: searchSnippetFlag, SyncBeforeRead: syncBeforeRead,
 	})
-}
-
-func searchCreatedAt(hit store.SearchHit) string {
-	if hit.CreatedTS > 0 {
-		return time.Unix(hit.CreatedTS, 0).In(config.Loc).Format(time.RFC3339)
+	if err != nil {
+		return err
 	}
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-		if parsed, err := time.Parse(layout, hit.CreatedAt); err == nil {
-			return parsed.Format(time.RFC3339)
+	renderSessionReadMeta(result.Meta)
+
+	if jsonOutput {
+		payload := struct {
+			Keyword   string                 `json:"keyword"`
+			Total     int                    `json:"total"`
+			Returned  int                    `json:"returned"`
+			Truncated bool                   `json:"truncated"`
+			Limit     int                    `json:"limit"`
+			Matches   []sessionapp.SearchHit `json:"matches"`
+		}{
+			Keyword: result.Keyword, Total: result.Total, Returned: result.Returned,
+			Truncated: result.Truncated, Limit: result.Limit, Matches: result.Matches,
 		}
-	}
-	return ""
-}
-
-func matchSnippet(content, keyword string, maxChars int) (string, bool) {
-	contentRunes := []rune(content)
-	if len(contentRunes) <= maxChars {
-		return content, false
-	}
-	if maxChars == 1 {
-		return "…", true
+		output.JSON(payload)
+		return nil
 	}
 
-	lowerContent := strings.ToLower(content)
-	lowerKeyword := strings.ToLower(keyword)
-	matchAt := runeIndex(lowerContent, lowerKeyword)
-	if matchAt < 0 {
-		matchAt = 0
+	if result.Truncated {
+		fmt.Printf("Search: \"%s\"  (%d of %d matches; raise --limit for more)\n",
+			result.Keyword, result.Returned, result.Total)
+	} else {
+		fmt.Printf("Search: \"%s\"  (%d matches)\n", result.Keyword, result.Total)
 	}
-	center := matchAt + utf8.RuneCountInString(lowerKeyword)/2
-	start := center - maxChars/2
-	if start < 0 {
-		start = 0
-	}
-	end := start + maxChars
-	if end > len(contentRunes) {
-		end = len(contentRunes)
-		start = end - maxChars
+	fmt.Println(strings.Repeat("=", 60))
+	if len(result.Matches) == 0 {
+		fmt.Println("\nNo matches found.")
+		return nil
 	}
 
-	for {
-		indicators := 0
-		if start > 0 {
-			indicators++
+	keys := make([]string, 0, len(result.Matches))
+	grouped := make(map[string][]sessionapp.SearchHit, len(result.Matches))
+	for _, hit := range result.Matches {
+		created := hit.IndexedCreated
+		if created == "" {
+			created = hit.CreatedAt
 		}
-		if end < len(contentRunes) {
-			indicators++
+		key := fmt.Sprintf("%s | %s | %s | %s", hit.ShortID, created, hit.Agent, hit.Project)
+		if _, ok := grouped[key]; !ok {
+			keys = append(keys, key)
 		}
-		allowed := maxChars - indicators
-		if end-start <= allowed {
-			break
-		}
-		start = center - allowed/2
-		if start < 0 {
-			start = 0
-		}
-		end = start + allowed
-		if end > len(contentRunes) {
-			end = len(contentRunes)
-			start = end - allowed
+		grouped[key] = append(grouped[key], hit)
+	}
+	for _, key := range keys {
+		group := grouped[key]
+		shortID := strings.SplitN(key, " | ", 2)[0]
+		fmt.Printf("\n%s  (%d matches)  → atm session show %s\n", key, len(group), shortID)
+		fmt.Println(strings.Repeat("-", 50))
+		seen := map[string]bool{}
+		for _, match := range group {
+			firstLine := strings.Join(strings.Fields(match.Content), " ")
+			dedupKey := truncLine(firstLine, 60)
+			if seen[dedupKey] {
+				continue
+			}
+			seen[dedupKey] = true
+			roleTag := "A"
+			if match.Role == "user" {
+				roleTag = "Q"
+			}
+			fmt.Printf("  [%s] %s\n", roleTag, firstLine)
 		}
 	}
-
-	var snippet strings.Builder
-	if start > 0 {
-		snippet.WriteRune('…')
-	}
-	snippet.WriteString(string(contentRunes[start:end]))
-	if end < len(contentRunes) {
-		snippet.WriteRune('…')
-	}
-	return snippet.String(), true
-}
-
-// runeIndex returns the rune offset of the first occurrence of needle, or -1.
-func runeIndex(haystack, needle string) int {
-	byteAt := strings.Index(haystack, needle)
-	if byteAt < 0 {
-		return -1
-	}
-	return utf8.RuneCountInString(haystack[:byteAt])
+	return nil
 }

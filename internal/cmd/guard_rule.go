@@ -9,7 +9,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/guard"
 	"github.com/zane-byte-dev/atm/internal/output"
 )
@@ -23,7 +22,7 @@ registering a CLI means adding at least one rule as well as installing the shim.
 ATM ships rules for the outbound-communication commands its own skills tell agents
 to run. Those can be switched off but not deleted; anything you add here can be
 edited or removed.`,
-	Args: cobra.NoArgs,
+	Args: noSubcommandArgs,
 	RunE: showHelp,
 }
 
@@ -32,14 +31,15 @@ var guardRuleListCmd = &cobra.Command{
 	Short: "List rules, including the ones switched off",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		tools := guard.ToolNames()
+		input := guard.ListRulesInput{}
 		if len(args) == 1 {
-			tools = []string{args[0]}
+			input.Tool = &args[0]
 		}
-		views := []guard.RuleView{}
-		for _, tool := range tools {
-			views = append(views, guard.RuleViews(tool)...)
+		result, err := guard.Default.ListRules(cmd.Context(), guardCLICall(), input)
+		if err != nil {
+			return err
 		}
+		views := result.Rules
 		if jsonOutput {
 			output.JSON(views)
 			return nil
@@ -92,37 +92,21 @@ path the settings UI uses. Switching a built-in off needs only its id:
 		if len(strings.TrimSpace(string(payload))) == 0 {
 			return fmt.Errorf("no rule on stdin")
 		}
-		var rule config.GuardRule
+		var rule guard.Rule
 		decoder := json.NewDecoder(strings.NewReader(string(payload)))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&rule); err != nil {
 			return fmt.Errorf("rule is not valid: %w", err)
 		}
-		if strings.TrimSpace(rule.ID) == "" {
-			return fmt.Errorf("rule needs an id")
-		}
 		tool := strings.TrimSpace(args[0])
-		// A rule with no matcher is only meaningful as a patch onto a built-in of
-		// the same id. Accepting one for an id nothing ships would store something
-		// that can never match and would make every call to that tool fail closed.
-		if !rule.HasMatcher() {
-			known := false
-			for _, view := range guard.RuleViews(tool) {
-				if view.ID == rule.ID && view.Builtin {
-					known = true
-					break
-				}
-			}
-			if !known {
-				return fmt.Errorf(
-					"rule %q has no path or argv_pattern, and there is no built-in %q to patch",
-					rule.ID, rule.ID)
-			}
-		}
-		if err := config.SaveGuardRule(tool, rule); err != nil {
+		result, err := guard.Default.SetRule(cmd.Context(), guardCLICall(), guard.SetRuleInput{
+			Tool: tool,
+			Rule: rule,
+		})
+		if err != nil {
 			return err
 		}
-		return guardReportRules(tool)
+		return guardReportRules(tool, result.Rules)
 	},
 }
 
@@ -133,21 +117,13 @@ var guardRuleRemoveCmd = &cobra.Command{
 	Args:    cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		tool, ruleID := strings.TrimSpace(args[0]), strings.TrimSpace(args[1])
-		// Removing an override of a built-in restores the built-in, which is not
-		// what someone who wants the action to stop being gated means. Say so rather
-		// than let them find out by having it keep firing.
-		for _, view := range guard.RuleViews(tool) {
-			if view.ID == ruleID && view.Builtin && !view.Overridden {
-				return fmt.Errorf(
-					"%s/%s is built in and cannot be removed; switch it off instead: "+
-						`echo '{"id":%q,"enabled":false}' | atm guard rule set %s`,
-					tool, ruleID, ruleID, tool)
-			}
-		}
-		if err := config.RemoveGuardRule(tool, ruleID); err != nil {
+		result, err := guard.Default.RemoveRule(cmd.Context(), guardCLICall(), guard.RemoveRuleInput{
+			Tool: tool, RuleID: ruleID,
+		})
+		if err != nil {
 			return err
 		}
-		return guardReportRules(tool)
+		return guardReportRules(tool, result.Rules)
 	},
 }
 
@@ -160,30 +136,22 @@ It does not touch the filesystem. Uninstall the shim first — forgetting where 
 shim is while leaving it in place is worse than either on its own.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		tool := strings.TrimSpace(args[0])
-		binPath, err := guard.Resolve(tool, "")
-		if err == nil {
-			state, statusErr := guard.Status(tool, binPath)
-			if statusErr == nil && state.Installed {
-				return fmt.Errorf(
-					"%s still has a shim at %s; run `atm guard uninstall %s` first",
-					tool, state.BinPath, tool)
-			}
-		}
-		if err := config.RemoveGuardTool(tool); err != nil {
+		result, err := guard.Default.ForgetTool(cmd.Context(), guardCLICall(), guard.ForgetToolInput{
+			Tool: args[0],
+		})
+		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			output.JSON(map[string]any{"tool": tool, "forgotten": true})
+			output.JSON(map[string]any{"tool": result.Tool, "forgotten": result.Forgotten})
 			return nil
 		}
-		fmt.Printf("已忘记 %s（配置里的规则和安装位置都清掉了）\n", tool)
+		fmt.Printf("已忘记 %s（配置里的规则和安装位置都清掉了）\n", result.Tool)
 		return nil
 	},
 }
 
-func guardReportRules(tool string) error {
-	views := guard.RuleViews(tool)
+func guardReportRules(tool string, views []guard.RuleView) error {
 	if jsonOutput {
 		output.JSON(views)
 		return nil

@@ -121,7 +121,7 @@ type Badge struct {
 	Evidence       []Evidence `json:"evidence,omitempty"`
 }
 
-// Result is the versioned public contract returned by `atm day`.
+// Result is the versioned application contract returned by AI Day read models.
 type Result struct {
 	SchemaVersion int      `json:"schema_version"`
 	Day           string   `json:"day"`
@@ -137,11 +137,11 @@ type Result struct {
 	Percentiles map[string]float64 `json:"percentiles,omitempty"`
 	// Provisional marks a day that has not finished in the user's timezone. Its
 	// conclusion is the best read of the data so far and is expected to change.
-	Provisional bool      `json:"provisional"`
-	Coverage    *Coverage `json:"coverage,omitempty"`
-	Feedback    *Feedback `json:"feedback,omitempty"`
-	GeneratedAt   int64 `json:"generated_at"`
-	EngineVersion int   `json:"engine_version"`
+	Provisional   bool      `json:"provisional"`
+	Coverage      *Coverage `json:"coverage,omitempty"`
+	Feedback      *Feedback `json:"feedback,omitempty"`
+	GeneratedAt   int64     `json:"generated_at"`
+	EngineVersion int       `json:"engine_version"`
 }
 
 type Atlas struct {

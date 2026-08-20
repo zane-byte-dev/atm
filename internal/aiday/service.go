@@ -43,8 +43,8 @@ func Rebuild(ctx context.Context, db *sql.DB, from, to time.Time, loc *time.Loca
 	return summary, nil
 }
 
-// Refresh is the zero-configuration entry point used by `atm day today` and the
-// desktop dashboard. It fills in any missing day in the baseline window and
+// Refresh is the zero-configuration entry point used by the desktop AI Day
+// snapshot. It fills in any missing day in the baseline window and
 // always rebuilds the current day, but leaves already-built past days alone.
 // Rebuilding the whole window on every read meant opening the app could silently
 // rewrite last month's badges; changing history stays an explicit `day rebuild`.

@@ -3,10 +3,9 @@ package cmd
 import (
 	"fmt"
 	"strings"
-	"time"
 
-	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
+	workapp "github.com/zane-byte-dev/atm/internal/work"
 
 	"github.com/spf13/cobra"
 )
@@ -47,7 +46,6 @@ var (
 	todoDeleteProjectFlag  string
 	todoDeleteYesFlag      bool
 	todoOnDoneFlag         string
-	todoCaptureProjectFlag string
 	todoPromptCopyFlag     bool
 	todoHandoffCWDFlag     string
 	todoHandoffPrintFlag   bool
@@ -66,7 +64,7 @@ var (
 func init() {
 	todoListCmd.Flags().StringVar(&todoListPriorityFlag, "priority", "", "filter by priority: P0, P1, P2")
 	todoListCmd.Flags().StringVar(&todoStatusFlag, "status", "", "filter by status: open, in_progress, waiting, review, blocked, done, dropped, archived, trashed, all (default: active)")
-	todoListCmd.Flags().StringVar(&todoProjectFlag, "project", "", "filter by project name")
+	todoListCmd.Flags().StringVar(&todoProjectFlag, "project", "", "filter by project name (case-insensitive substring)")
 	todoListCmd.Flags().StringVar(&todoListQueryFlag, "query", "", "filter by id, title, description, project, source, or todo document")
 	todoListCmd.Flags().StringVar(&todoListCreatorFlag, "creator", "", "filter by creator: "+strings.Join(store.TodoCreatorVocabulary, ", "))
 	todoListCmd.Flags().IntVar(&todoListLimitFlag, "limit", 0, "maximum number of todos (0 means all)")
@@ -109,12 +107,10 @@ func init() {
 	todoLogCmd.Flags().StringVar(&todoLogMessageFileFlag, "message-file", "", "read the entry from a file (use - for stdin)")
 	todoDocCmd.Flags().BoolVar(&todoDocInitFlag, "init", false, "create doc from template")
 
-	todoDeleteCmd.Flags().StringVar(&todoDeleteProjectFlag, "project", "", "delete all todos in a project")
+	todoDeleteCmd.Flags().StringVar(&todoDeleteProjectFlag, "project", "", "delete all todos in a project (exact name; unlike the list filters this is not a substring match)")
 	todoDeleteCmd.Flags().BoolVarP(&todoDeleteYesFlag, "yes", "y", false, "skip the confirmation prompt")
 
 	todoAddCmd.Flags().StringVar(&todoOnDoneFlag, "on-done", "", "command to execute when todo is done")
-
-	todoCaptureCmd.Flags().StringVar(&todoCaptureProjectFlag, "project", "", "project name (default: cwd basename)")
 
 	todoPromptCmd.Flags().BoolVar(&todoPromptCopyFlag, "copy", false, "copy the prompt to the clipboard")
 	todoHandoffCmd.Flags().StringVar(&todoHandoffCWDFlag, "cwd", "", "working directory to open in Codex (defaults from Todo bindings or project)")
@@ -128,21 +124,23 @@ func init() {
 	todoWaitCmd.Flags().StringVar(&todoWaitWakeFlag, "wake", "", "condition that should wake the todo")
 	todoWaitCmd.Flags().StringVar(&todoWaitReviewAtFlag, "review-at", "", "next review date (YYYY-MM-DD)")
 	todoMaintainCmd.Flags().IntVar(&todoMaintainLimitFlag, "limit", 3, "maximum items in this maintenance batch")
-	for _, contextCmd := range []*cobra.Command{todoContextCmd, todoReviewContextCmd} {
+	for _, contextCmd := range []*cobra.Command{todoContextCmd} {
 		contextCmd.Flags().StringVar(&todoContextCWD, "cwd", "", "Git worktree to inspect (required when active todo bindings use multiple worktrees)")
 	}
 
-	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoReviewContextCmd, todoPromptCmd, todoHandoffCmd, todoRunCmd, todoRunsCmd, todoRunInterruptCmd, todoRunTailCmd, todoRunControllerCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoCaptureCmd, todoFocusCmd, todoWaitCmd, todoMaintainCmd)
+	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoPromptCmd, todoHandoffCmd, todoRunCmd, todoRunsCmd, todoRunInterruptCmd, todoRunTailCmd, todoRunControllerCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoWaitCmd, todoMaintainCmd)
 	rootCmd.AddCommand(todoCmd)
 }
 
 var todoCmd = &cobra.Command{
 	Use:   "todo",
 	Short: "Manage work items",
-	// NoArgs so an unknown subcommand (e.g. `atm todo add-progress ...`) errors
-	// loudly instead of silently falling through to the default list action.
-	// `atm todo` with no args still lists (len(args)==0 passes NoArgs).
-	Args: cobra.NoArgs,
+	// Rejecting args so an unknown subcommand (e.g. `atm todo add-progress ...`)
+	// errors loudly instead of silently falling through to the default list action.
+	// `atm todo` with no args still lists. noSubcommandArgs rather than
+	// cobra.NoArgs because this group has thirty-odd subcommands, which is exactly
+	// where a "did you mean" is worth having.
+	Args: noSubcommandArgs,
 	RunE: runTodoList,
 }
 
@@ -173,7 +171,8 @@ var todoAddCmd = &cobra.Command{
 
 var todoDoneCmd = &cobra.Command{
 	Use:   "done [id]",
-	Short: "Mark a todo as done",
+	Short: "Accept a todo as done (human only; agents use submit)",
+	Long:  "Accept completed work as done. This is the human review decision; Agent work must use `atm todo submit` instead.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runTodoDone,
 }
@@ -190,18 +189,15 @@ closes active session bindings, and never marks the Todo done.`,
 }
 
 var todoStartCmd = &cobra.Command{
-	Use:   "start <id>",
-	Short: "Start or reopen a todo (records start time for session linking)",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTodoStart,
-}
-
-var todoFocusCmd = &cobra.Command{
-	Use:        "focus <id>",
-	Short:      "Deprecated alias for start",
-	Deprecated: "focus is derived from the current session binding; use todo start",
+	Use: "start <id>",
+	// `todo focus` was a deprecated alias for this, removed once the --lane flag
+	// that was its only difference went away. Named here so the old spelling gets
+	// pointed at the new one instead of a bare "unknown command" — a stale skill
+	// file or a copied note is the likeliest source of it.
+	SuggestFor: []string{"focus"},
+	Short:      "Start or reopen a todo (records start time for session linking)",
 	Args:       cobra.ExactArgs(1),
-	RunE:       runTodoFocus,
+	RunE:       runTodoStart,
 }
 
 var todoWaitCmd = &cobra.Command{
@@ -295,8 +291,11 @@ var todoShowCmd = &cobra.Command{
 }
 
 var todoContextCmd = &cobra.Command{
-	Use:   "context [id]",
-	Short: "Build a read-only Todo, session, and Git context",
+	Use: "context [id]",
+	// `todo review-context` was a compatibility alias, removed because the name
+	// implied it advanced review state when it only ever took a read-only snapshot.
+	SuggestFor: []string{"review-context"},
+	Short:      "Build a read-only Todo, session, and Git context",
 	Long: `Build a compact, live context snapshot without changing Todo state.
 
 The result keeps work state, Git implementation state, reported milestones,
@@ -308,14 +307,6 @@ snapshot can be used to resume work, hand it off, or begin a review.`,
   atm todo context t89 --cwd /path/to/worktree`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runTodoContext,
-}
-
-var todoReviewContextCmd = &cobra.Command{
-	Use:        "review-context [id]",
-	Short:      "Deprecated alias for context",
-	Deprecated: "use todo context; context snapshots are not review state transitions",
-	Args:       cobra.MaximumNArgs(1),
-	RunE:       runTodoContext,
 }
 
 var todoEditCmd = &cobra.Command{
@@ -409,11 +400,5 @@ func validateWorkStatus(value string) error {
 }
 
 func validateReviewAt(value string) error {
-	if value == "" {
-		return nil
-	}
-	if _, err := time.ParseInLocation("2006-01-02", value, config.Loc); err != nil {
-		return fmt.Errorf("invalid review date %q (use YYYY-MM-DD)", value)
-	}
-	return nil
+	return workapp.ValidateReviewAt(value)
 }

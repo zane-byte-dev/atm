@@ -2,8 +2,8 @@ import Foundation
 
 /// One outbound action an agent tried to take, waiting on a decision.
 ///
-/// Decoded from `atm guard list --json`. Only the fields this UI actually renders
-/// are listed: the CLI is the record, and a column the panel never shows is a
+/// Decoded from `_ipc guard.list`. Only the fields this UI actually renders are
+/// listed: the service is the record, and a column the panel never shows is a
 /// column the panel should not claim to know about.
 struct ATMGuardApproval: Decodable, Identifiable, Equatable {
     let id: String
@@ -56,6 +56,24 @@ struct ATMGuardApproval: Decodable, Identifiable, Equatable {
     /// retry it — whether the action took effect is not recorded anywhere — so the
     /// UI's whole job here is to say so.
     var isExecutingWithUnknownOutcome: Bool { state == "running" }
+}
+
+/// Typed App contract for the read-only Guard list. List synchronization remains
+/// a CLI concern; human decisions intentionally stay outside replayable `_ipc`.
+struct ATMGuardListRequest: Encodable, Equatable {
+    let status: String
+    let limit: Int
+}
+
+struct ATMGuardListResponse: Decodable, Equatable {
+    let approvals: [ATMGuardApproval]
+}
+
+enum ATMGuardIPCCommand {
+    static let list = ATMIPCMethod<ATMGuardListRequest, ATMGuardListResponse>(
+        "guard.list",
+        responseKeyDecoding: .useDefault
+    )
 }
 
 /// The wire shape pushed over the notch socket the moment a request is created,

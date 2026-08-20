@@ -3,6 +3,7 @@ package textmodel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 )
 
@@ -58,6 +60,55 @@ func TestRunUsesDedicatedDeepSeekProtocol(t *testing.T) {
 	if len(captured.Messages) != 2 || !strings.Contains(captured.Messages[0].Content, testSchema) ||
 		captured.Messages[1].Content != "rewrite this" {
 		t.Fatalf("messages=%+v", captured.Messages)
+	}
+}
+
+func TestCheckConnectionUsesDraftValuesWithoutSavingCredential(t *testing.T) {
+	withCredentialDir(t)
+	t.Setenv(APIKeyEnv, "wrong-environment-key")
+	var captured chatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer unsaved-draft-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprint(w, `{"choices":[{"message":{"content":"{\"ok\":true}"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	result, err := CheckConnection(context.Background(), time.Second, ConnectionCheckInput{
+		APIKey:  "unsaved-draft-key",
+		BaseURL: server.URL + "/",
+		Model:   "draft-model",
+	})
+	if err != nil || !result.OK {
+		t.Fatalf("CheckConnection() = %+v, %v", result, err)
+	}
+	if captured.Model != "draft-model" {
+		t.Fatalf("model = %q", captured.Model)
+	}
+	configured, err := config.TextModelAPIKeyConfigured()
+	if err != nil || configured {
+		t.Fatalf("draft credential was persisted: configured=%v err=%v", configured, err)
+	}
+}
+
+func TestCheckConnectionValidatesTypedInputWithoutEchoingKey(t *testing.T) {
+	secret := strings.Repeat("s", config.MaxCredentialBytes+1)
+	for _, input := range []ConnectionCheckInput{
+		{APIKey: "key", BaseURL: "ftp://models.example", Model: "m"},
+		{APIKey: "key", BaseURL: "https://models.example", Model: "  "},
+		{APIKey: secret, BaseURL: "https://models.example", Model: "m"},
+	} {
+		_, err := CheckConnection(context.Background(), time.Second, input)
+		if !errors.Is(err, application.ErrInvalidArgument) {
+			t.Fatalf("CheckConnection() error = %v, want invalid_argument", err)
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Fatal("validation error leaked the draft credential")
+		}
 	}
 }
 
@@ -185,9 +236,33 @@ func TestRunReportsDeepSeekErrorWithoutLeakingKey(t *testing.T) {
 	t.Setenv(APIKeyEnv, "do-not-leak")
 	t.Setenv(BaseURLEnv, server.URL)
 	_, err := Run(context.Background(), TaskTodoRefine, time.Second, testSchema, "prompt")
-	if err == nil || !strings.Contains(err.Error(), "HTTP 401: invalid credentials") ||
+	if err == nil || !strings.Contains(err.Error(), "HTTP 401") ||
+		strings.Contains(err.Error(), "invalid credentials") ||
 		strings.Contains(err.Error(), "do-not-leak") {
 		t.Fatalf("API error=%v", err)
+	}
+}
+
+func TestCheckConnectionReturnsTypedSafeProviderFailure(t *testing.T) {
+	const secret = "sk-provider-echo"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprintf(w, `{"error":{"message":"Authorization: Bearer %s"}}`, secret)
+	}))
+	defer server.Close()
+
+	_, err := CheckConnection(context.Background(), time.Second, ConnectionCheckInput{
+		APIKey: secret, BaseURL: server.URL, Model: "draft-model",
+	})
+	if !errors.Is(err, application.ErrUnavailable) {
+		t.Fatalf("error = %v, want unavailable", err)
+	}
+	var appErr *application.Error
+	if !errors.As(err, &appErr) || appErr.Message != "text-model connection check failed" || !appErr.Retryable {
+		t.Fatalf("application error = %+v", appErr)
+	}
+	if strings.Contains(appErr.Message, secret) || strings.Contains(appErr.Message, "Authorization") {
+		t.Fatalf("public message leaked provider payload: %q", appErr.Message)
 	}
 }
 

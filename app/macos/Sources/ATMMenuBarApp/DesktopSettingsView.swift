@@ -1018,7 +1018,7 @@ struct DesktopSettingsView: View {
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onAppear { store.loadTodoRefineOnAddSetting() }
+        .onAppear { store.loadSettings() }
     }
 
     private var textModelSettings: some View {
@@ -1178,7 +1178,7 @@ struct DesktopSettingsView: View {
             textModelSourceDraft = store.textModelSource
             todoRefinePromptDraft = store.todoRefinePrompt
             textModelFieldsDirty = false
-            store.loadTextModelSettings()
+            store.loadSettings()
         }
         .onChange(of: store.textModelBaseURL) { value in
             if !textModelFieldsDirty { textModelBaseURLDraft = value }

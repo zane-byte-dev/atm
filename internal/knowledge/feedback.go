@@ -1,7 +1,7 @@
 package knowledge
 
 import (
-	"fmt"
+	"context"
 	"sort"
 	"strings"
 	"time"
@@ -10,31 +10,8 @@ import (
 )
 
 func RecordFeedback(dataDir string, input FeedbackInput) (*FeedbackEvent, error) {
-	input.DocumentID = strings.TrimSpace(input.DocumentID)
-	input.SessionID = strings.TrimSpace(input.SessionID)
-	input.Query = strings.TrimSpace(input.Query)
-	input.Outcome = strings.TrimSpace(input.Outcome)
-	input.Note = strings.TrimSpace(input.Note)
-	if input.DocumentID == "" || input.SessionID == "" {
-		return nil, fmt.Errorf("document id and session id are required")
-	}
-	if !validFeedbackOutcome(input.Outcome) || input.Outcome == "retrieved" {
-		return nil, fmt.Errorf("invalid feedback outcome %q: use adopted, corrected, or rejected", input.Outcome)
-	}
-	if _, err := Get(dataDir, input.DocumentID); err != nil {
-		return nil, err
-	}
-	event := FeedbackEvent{
-		SchemaVersion: FeedbackSchemaVersion,
-		ID:            newID("feedback"),
-		DocumentID:    input.DocumentID,
-		SessionID:     input.SessionID,
-		Query:         input.Query,
-		Outcome:       input.Outcome,
-		Note:          input.Note,
-		CreatedAt:     time.Now().UTC(),
-	}
-	if err := store.RecordKnowledgeFeedback([]store.KnowledgeFeedbackEvent{feedbackRow(event)}); err != nil {
+	event, err := NewService(ServiceOptions{DataDir: dataDir}).Feedback(context.Background(), input)
+	if err != nil {
 		return nil, err
 	}
 	return &event, nil
@@ -43,6 +20,10 @@ func RecordFeedback(dataDir string, input FeedbackInput) (*FeedbackEvent, error)
 // RecordRetrievals takes no data directory: the hits already carry the document
 // IDs, so nothing needs to be read back from the corpus.
 func RecordRetrievals(sessionID, query string, hits []SearchHit) error {
+	return (sqliteFeedbackStore{}).Record(retrievalFeedbackEvents(time.Now(), sessionID, query, hits))
+}
+
+func retrievalFeedbackEvents(now time.Time, sessionID, query string, hits []SearchHit) []FeedbackEvent {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" || len(hits) == 0 {
 		return nil
@@ -57,14 +38,10 @@ func RecordRetrievals(sessionID, query string, hits []SearchHit) error {
 		events = append(events, FeedbackEvent{
 			SchemaVersion: FeedbackSchemaVersion,
 			ID:            newID("feedback"), DocumentID: hit.DocumentID, SessionID: sessionID,
-			Query: strings.TrimSpace(query), Outcome: "retrieved", CreatedAt: time.Now().UTC(),
+			Query: strings.TrimSpace(query), Outcome: "retrieved", CreatedAt: now.UTC(),
 		})
 	}
-	rows := make([]store.KnowledgeFeedbackEvent, 0, len(events))
-	for _, event := range events {
-		rows = append(rows, feedbackRow(event))
-	}
-	return store.RecordKnowledgeFeedback(rows)
+	return events
 }
 
 func feedbackRow(event FeedbackEvent) store.KnowledgeFeedbackEvent {
@@ -87,10 +64,14 @@ func KnowledgeQualities(dataDir string) ([]KnowledgeQuality, error) {
 // does not walk and parse the corpus a second time just to rank it. The tallies
 // come from one GROUP BY instead of replaying and deduping an event log.
 func knowledgeQualities(dataDir string, documents []Document) ([]KnowledgeQuality, error) {
-	totals, err := store.KnowledgeFeedbackByDocument()
+	totals, err := (sqliteFeedbackStore{}).Totals()
 	if err != nil {
 		return nil, err
 	}
+	return knowledgeQualitiesFromTallies(documents, totals), nil
+}
+
+func knowledgeQualitiesFromTallies(documents []Document, totals map[string]FeedbackTally) []KnowledgeQuality {
 	values := make(map[string]*KnowledgeQuality, len(documents))
 	for _, document := range documents {
 		quality := &KnowledgeQuality{
@@ -102,8 +83,8 @@ func knowledgeQualities(dataDir string, documents []Document) ([]KnowledgeQualit
 			quality.Adopted = total.Adopted
 			quality.Corrected = total.Corrected
 			quality.Rejected = total.Rejected
-			if last, parseErr := time.Parse(time.RFC3339Nano, total.LastFeedback); parseErr == nil {
-				value := last.UTC()
+			if total.LastFeedback != nil {
+				value := total.LastFeedback.UTC()
 				quality.LastFeedback = &value
 			}
 		}
@@ -121,7 +102,7 @@ func knowledgeQualities(dataDir string, documents []Document) ([]KnowledgeQualit
 		}
 		return result[i].DocumentID < result[j].DocumentID
 	})
-	return result, nil
+	return result
 }
 
 func knowledgeQualityIndex(dataDir string, documents []Document) map[string]float64 {
@@ -129,6 +110,14 @@ func knowledgeQualityIndex(dataDir string, documents []Document) map[string]floa
 	if err != nil {
 		return nil
 	}
+	return qualityIndexFromQualities(qualities)
+}
+
+func qualityIndexFromTallies(documents []Document, totals map[string]FeedbackTally) map[string]float64 {
+	return qualityIndexFromQualities(knowledgeQualitiesFromTallies(documents, totals))
+}
+
+func qualityIndexFromQualities(qualities []KnowledgeQuality) map[string]float64 {
 	result := make(map[string]float64, len(qualities))
 	for _, quality := range qualities {
 		result[quality.DocumentID] = quality.Score

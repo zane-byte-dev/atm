@@ -61,7 +61,12 @@ import (
 // behaviour every source had before. v47 adds collection_items.archived_at so a
 // person can settle a collected result without deleting its audit trail or
 // releasing its messages for collection again. v48 adds todo_images, the
-// normalized metadata for locally managed Todo image files.
+// normalized metadata for locally managed Todo image files. v49 adds the Work
+// effect outbox: lifecycle transitions and their filesystem/UI effects are
+// committed together, so a process crash cannot make a successful transition
+// permanently lose its follow-up work. v50 adds append-only Todo plan revisions.
+// A plan is execution state, not Todo lifecycle: completing every item never
+// submits or closes the Todo.
 //
 // Keep the minimum at 21 while those upgrade steps exist; after the live database
 // has been upgraded, raise this to SchemaVersion and delete the steps. Note what a
@@ -70,7 +75,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 48
+	SchemaVersion        = 50
 	minUpgradableVersion = 21
 )
 
@@ -463,6 +468,45 @@ func createSchema(tx *sql.Tx) error {
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		)`,
+		// Lifecycle state is authoritative in SQLite, while Todo documents and UI
+		// notifications live outside it. Each row is a durable request to bring
+		// those projections up to date after the surrounding WorkStateTx commits.
+		// Delivery is at-least-once: completed_at is written only after the adapter
+		// successfully applies the whole effect.
+		`CREATE TABLE work_effect_outbox (
+			id              TEXT PRIMARY KEY,
+			request_id      TEXT NOT NULL,
+			todo_id         TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			kind            TEXT NOT NULL,
+			payload_json    TEXT NOT NULL,
+			created_at      INTEGER NOT NULL,
+			completed_at    INTEGER,
+			attempt_count   INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+			last_attempt_at INTEGER,
+			last_error      TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX idx_work_effect_outbox_pending
+			ON work_effect_outbox(todo_id, created_at, id) WHERE completed_at IS NULL`,
+		// Plans are immutable snapshots. The composite primary key gives each Todo
+		// its own monotonic revision stream; snapshot_hash makes retry idempotency
+		// cheap without normalizing short-lived steps into permanent Todo rows.
+		`CREATE TABLE todo_plan_revisions (
+			todo_id       TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			revision      INTEGER NOT NULL CHECK (revision >= 1),
+			base_revision INTEGER NOT NULL CHECK (base_revision >= 0),
+			snapshot_json TEXT NOT NULL,
+			snapshot_hash TEXT NOT NULL,
+			request_id    TEXT NOT NULL,
+			actor_kind    TEXT NOT NULL,
+			origin        TEXT NOT NULL,
+			session_id    TEXT NOT NULL DEFAULT '',
+			binding_id    INTEGER,
+			run_id        TEXT NOT NULL DEFAULT '',
+			agent         TEXT NOT NULL DEFAULT '',
+			created_at    INTEGER NOT NULL,
+			PRIMARY KEY (todo_id, revision)
+		)`,
+		`CREATE INDEX idx_todo_plan_latest ON todo_plan_revisions(todo_id, revision DESC)`,
 
 		// --- outbound action gate: what an agent tried to send, and what you decided ---
 		// One row per gated command attempt. This table is the only place in the

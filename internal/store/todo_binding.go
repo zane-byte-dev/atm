@@ -9,6 +9,7 @@ import (
 // BoundAt/UnboundAt are epoch seconds; an open binding has UnboundAt == nil, and
 // a unique partial index keeps at most one of those per session.
 type TodoSessionBinding struct {
+	ID        int64  `json:"-"`
 	SessionID string `json:"session_id"`
 	TodoID    string `json:"todo_id"`
 	Agent     string `json:"agent,omitempty"`
@@ -42,6 +43,21 @@ func CurrentTodoBinding(sessionID string) (*TodoSessionBinding, error) {
 	}
 	defer db.Close()
 	return currentTodoBinding(db, sessionID)
+}
+
+func latestTodoSessionBinding(q sqlQueryer, sessionID string) (*TodoSessionBinding, error) {
+	var binding TodoSessionBinding
+	err := q.QueryRow(`SELECT id,session_id,todo_id,agent,project,cwd,bound_at,unbound_at,reason
+		FROM todo_session_bindings WHERE session_id=? ORDER BY id DESC LIMIT 1`, sessionID).Scan(
+		&binding.ID, &binding.SessionID, &binding.TodoID, &binding.Agent, &binding.Project,
+		&binding.CWD, &binding.BoundAt, &binding.UnboundAt, &binding.Reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &binding, nil
 }
 
 func ListActiveTodoSessionBindings() ([]TodoSessionBinding, error) {
@@ -82,10 +98,10 @@ func insertTodoBinding(exec sqlExecer, binding TodoSessionBinding) (sql.Result, 
 
 func currentTodoBinding(q sqlQueryer, sessionID string) (*TodoSessionBinding, error) {
 	var binding TodoSessionBinding
-	err := q.QueryRow(`SELECT session_id,todo_id,agent,project,cwd,bound_at,unbound_at,reason
+	err := q.QueryRow(`SELECT id,session_id,todo_id,agent,project,cwd,bound_at,unbound_at,reason
 		FROM todo_session_bindings WHERE session_id=? AND unbound_at IS NULL
 		ORDER BY id DESC LIMIT 1`, sessionID).Scan(
-		&binding.SessionID, &binding.TodoID, &binding.Agent, &binding.Project,
+		&binding.ID, &binding.SessionID, &binding.TodoID, &binding.Agent, &binding.Project,
 		&binding.CWD, &binding.BoundAt, &binding.UnboundAt, &binding.Reason)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -106,7 +122,7 @@ func listTodoBindings(todoID string, activeOnly bool) ([]TodoSessionBinding, err
 }
 
 func queryTodoBindings(q sqlQueryer, todoID string, activeOnly bool) ([]TodoSessionBinding, error) {
-	query := `SELECT session_id,todo_id,agent,project,cwd,bound_at,unbound_at,reason
+	query := `SELECT id,session_id,todo_id,agent,project,cwd,bound_at,unbound_at,reason
 		FROM todo_session_bindings WHERE 1=1`
 	args := []any{}
 	if todoID != "" {
@@ -127,7 +143,7 @@ func queryTodoBindings(q sqlQueryer, todoID string, activeOnly bool) ([]TodoSess
 	bindings := []TodoSessionBinding{}
 	for rows.Next() {
 		var binding TodoSessionBinding
-		if err := rows.Scan(&binding.SessionID, &binding.TodoID, &binding.Agent, &binding.Project,
+		if err := rows.Scan(&binding.ID, &binding.SessionID, &binding.TodoID, &binding.Agent, &binding.Project,
 			&binding.CWD, &binding.BoundAt, &binding.UnboundAt, &binding.Reason); err != nil {
 			return nil, err
 		}

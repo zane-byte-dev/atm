@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,12 +63,12 @@ func TestCappedBufferBoundsConnectorOutput(t *testing.T) {
 	}
 }
 
-func TestCommandConnectorImplementsVersionedCapabilities(t *testing.T) {
+func TestCommandConnectorImplementsVersionedProtocol(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "connector")
 	body := `#!/bin/sh
 read request
 case "$1" in
-  fetch) printf '%s\n' '{"messages":[{"id":"m1","conversation_id":"C1","sender":"alice","created_at":42,"content":"hello"}],"cursor":50}' ;;
+  fetch) printf '%s\n' '{"messages":[{"id":"m1","conversation_id":"C1","sender":"alice","created_at":42,"content":"hello","external_states_cover_message":true,"external_states":[{"kind":"code_review","reference":"https://code.example/review/42","state":"pending_review","disposition":"actionable","checked_at":43}]}],"cursor":50}' ;;
   history) printf '%s\n' '{"messages":[{"id":"h1","conversation_id":"C1","created_at":7,"content":"old"}]}' ;;
   search) printf '%s\n' '{"candidates":[{"kind":"channel","external_id":"C1","name":"general"}]}' ;;
   *) printf '%s\n' '{"error":"unsupported operation"}' ;;
@@ -76,10 +77,12 @@ esac
 	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
 		t.Fatal(err)
 	}
-	connector := CommandConnector{ConnectorID: "slack", Command: script, Timeout: time.Second}
+	connector := CommandConnector{ConnectorID: "slack", Command: script, Timeout: 5 * time.Second}
 	source := store.CollectionSource{Connector: "slack", Kind: "channel", ExternalID: "C1"}
 	messages, cursor, err := connector.Fetch(context.Background(), source, 10)
-	if err != nil || len(messages) != 1 || messages[0].ID != "m1" || cursor != 50 {
+	if err != nil || len(messages) != 1 || messages[0].ID != "m1" || cursor != 50 ||
+		len(messages[0].ExternalStates) != 1 ||
+		messages[0].ExternalStates[0].Disposition != ExternalDispositionActionable {
 		t.Fatalf("fetch messages=%+v cursor=%d err=%v", messages, cursor, err)
 	}
 	history, err := connector.History(context.Background(), source, HistoryOptions{Limit: 5})
@@ -89,6 +92,42 @@ esac
 	candidates, err := connector.Search(context.Background(), "channel", "gen", 5)
 	if err != nil || len(candidates) != 1 || candidates[0].ExternalID != "C1" {
 		t.Fatalf("candidates=%+v err=%v", candidates, err)
+	}
+}
+
+func TestCommandConnectorRejectsCoverageWithoutExternalState(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "connector")
+	body := `#!/bin/sh
+read request
+printf '%s\n' '{"messages":[{"id":"m1","conversation_id":"C1","created_at":42,"content":"hello","external_states_cover_message":true}]}'
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+	connector := CommandConnector{ConnectorID: "slack", Command: script, Timeout: 5 * time.Second}
+	_, _, err := connector.Fetch(context.Background(), store.CollectionSource{
+		Connector: "slack", Kind: "channel", ExternalID: "C1",
+	}, 10)
+	if err == nil || !strings.Contains(err.Error(), "covered by no external states") {
+		t.Fatalf("invalid coverage err=%v", err)
+	}
+}
+
+func TestCommandConnectorRejectsInvalidExternalDisposition(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "connector")
+	body := `#!/bin/sh
+read request
+printf '%s\n' '{"messages":[{"id":"m1","conversation_id":"C1","created_at":42,"content":"hello","external_states":[{"kind":"code_review","reference":"review-42","state":"done","disposition":"probably","checked_at":43}]}]}'
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatal(err)
+	}
+	connector := CommandConnector{ConnectorID: "slack", Command: script, Timeout: 5 * time.Second}
+	_, _, err := connector.Fetch(context.Background(), store.CollectionSource{
+		Connector: "slack", Kind: "channel", ExternalID: "C1",
+	}, 10)
+	if err == nil || !strings.Contains(err.Error(), "invalid external disposition") {
+		t.Fatalf("invalid disposition err=%v", err)
 	}
 }
 

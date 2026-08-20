@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,10 +15,14 @@ import (
 
 	"github.com/zane-byte-dev/atm/internal/refine"
 	"github.com/zane-byte-dev/atm/internal/store"
+	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
 func TestApplyTodoRefineSplitsOpenParent(t *testing.T) {
 	withIsolatedCommandEnv(t)
+	oldJSON := jsonOutput
+	t.Cleanup(func() { jsonOutput = oldJSON })
+	jsonOutput = false
 	parent := store.Todo{
 		ID: "t1", Title: "做完整的收集闭环", Priority: "P1", Status: store.TodoStatusOpen,
 		Project: "atm", Created: store.Today(), Creator: store.TodoCreatorMe,
@@ -29,22 +34,34 @@ func TestApplyTodoRefineSplitsOpenParent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updated, children, err := applyTodoRefine(parent, refine.Prepared{
-		Title:        "实现收集闭环",
-		Description:  "目标：从聊天到 Todo 可回放。",
-		TitleChanged: true,
-		DescChanged:  true,
-		Complexity:   refine.ComplexityComplex,
-		Reason:       "三块独立工作",
-		Plan:         "按依赖顺序做。",
-		Split:        true,
+	undo := refineSwapRunModel(t, refine.Proposal{
+		Title:       "实现收集闭环",
+		Description: "目标：从聊天到 Todo 可回放。",
+		Complexity:  refine.ComplexityComplex,
+		Reason:      "三块独立工作",
+		Plan:        "按依赖顺序做。",
 		Children: []refine.Child{
 			{Title: "写分类器契约", Description: "schema 与 prompt"},
 			{Title: "实现落地路径", Description: "create/append", DependsOnIndexes: []int{0}},
 		},
 	})
+	defer undo()
+	todoRefineCmd.SetErr(io.Discard)
+	var err error
+	captureStdout(t, func() {
+		err = refineTodoByID(todoRefineCmd, parent.ID, refine.Options{AllowSplit: true}, false)
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := store.FindTodo(todos, parent.ID)
+	children := refine.ExistingChildren(todos, parent.ID)
+	if updated == nil {
+		t.Fatal("refined parent missing")
 	}
 	if updated.Title != "实现收集闭环" || updated.Status != store.TodoStatusWaiting {
 		t.Fatalf("parent = %+v", updated)
@@ -68,6 +85,45 @@ func TestApplyTodoRefineSplitsOpenParent(t *testing.T) {
 	}
 	if !strings.Contains(doc, "实现收集闭环") || !strings.Contains(doc, children[0].ID) || !strings.Contains(doc, "模型整理") {
 		t.Fatalf("doc = %s", doc)
+	}
+}
+
+func TestRefineProjectionAdapterIsIdempotent(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	parent := store.Todo{
+		ID: "t1", Title: "整理发布检查任务", Priority: "P1", Status: store.TodoStatusOpen, Created: store.Today(),
+	}
+	if err := seedTodos(parent); err != nil {
+		t.Fatal(err)
+	}
+	undo := refineSwapRunModel(t, refine.Proposal{
+		Title: "修复发布检查失败", Description: "目标：发布检查恢复绿色。",
+		Complexity: refine.ComplexitySimple, Plan: "运行回归测试。", Reason: "单一交付",
+	})
+	defer undo()
+	call := todoWorkflowCLICall("refine-projection-test")
+	result, err := workapp.Default.Refine(context.Background(), call, workapp.RefineInput{
+		TodoID: "t1", AllowSplit: false,
+	})
+	if err != nil || len(result.Effects) != 1 {
+		t.Fatalf("Refine = %+v, err=%v", result, err)
+	}
+	executor := localWorkEffectExecutor{}
+	if err := executor.ApplyWorkEffect(result.Effects[0]); err != nil {
+		t.Fatalf("first projection: %v", err)
+	}
+	if err := executor.ApplyWorkEffect(result.Effects[0]); err != nil {
+		t.Fatalf("retry projection: %v", err)
+	}
+	doc, err := store.ReadTodoDoc("t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := strings.Count(doc, "模型整理（simple）"); count != 1 {
+		t.Fatalf("analysis count = %d, want 1:\n%s", count, doc)
+	}
+	if !strings.Contains(doc, "<!-- atm-refine:") || !strings.Contains(doc, "修复发布检查失败") {
+		t.Fatalf("projection missing metadata or idempotency marker:\n%s", doc)
 	}
 }
 
@@ -277,32 +333,15 @@ func refineCaptureRequest(t *testing.T, sent *string, proposal refine.Proposal) 
 
 func refineSwapRunModel(t *testing.T, proposal refine.Proposal) func() {
 	t.Helper()
-	// Analyze is in the refine package; command tests exercise its production
-	// HTTP boundary with a tiny stand-in for the DeepSeek endpoint.
-	body, err := json.Marshal(proposal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		encoded, _ := json.Marshal(string(body))
-		fmt.Fprintf(w, `{"choices":[{"message":{"content":%s},"finish_reason":"stop"}]}`, encoded)
-	}))
-	oldKey, keyPresent := os.LookupEnv("ATM_TEXT_MODEL_API_KEY")
-	oldURL, urlPresent := os.LookupEnv("ATM_TEXT_MODEL_BASE_URL")
-	os.Setenv("ATM_TEXT_MODEL_API_KEY", "test-key")
-	os.Setenv("ATM_TEXT_MODEL_BASE_URL", server.URL)
+	previous := workapp.Default.RefinementModel
+	workapp.Default.RefinementModel = workapp.RefinementModelFunc(func(
+		_ context.Context,
+		_ workapp.RefinementModelInput,
+	) (workapp.RefinementModelOutput, error) {
+		return workapp.RefinementModelOutput{Proposal: proposal, Source: "test model"}, nil
+	})
 	return func() {
-		server.Close()
-		if keyPresent {
-			os.Setenv("ATM_TEXT_MODEL_API_KEY", oldKey)
-		} else {
-			os.Unsetenv("ATM_TEXT_MODEL_API_KEY")
-		}
-		if urlPresent {
-			os.Setenv("ATM_TEXT_MODEL_BASE_URL", oldURL)
-		} else {
-			os.Unsetenv("ATM_TEXT_MODEL_BASE_URL")
-		}
+		workapp.Default.RefinementModel = previous
 	}
 }
 

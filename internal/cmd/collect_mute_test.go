@@ -13,6 +13,7 @@ import (
 // source collecting, and `collect status` still says the source is enabled.
 func TestCollectSourceMuteSilencesNotificationsWithoutPausingCollection(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCollectionCLI(t)
 	oldJSON, oldLimit := jsonOutput, collectLimit
 	t.Cleanup(func() { jsonOutput, collectLimit = oldJSON, oldLimit })
 

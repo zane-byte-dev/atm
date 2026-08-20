@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/store"
+	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
 func TestSessionBindCreatesMissingTodoDoc(t *testing.T) {
@@ -307,5 +308,68 @@ func TestSessionCurrentSurfacesStaleBindingState(t *testing.T) {
 	}
 	if result.Bound || result.State != sessionBindingStateTodoNotInProgress {
 		t.Fatalf("current = %#v", result)
+	}
+}
+
+func TestTodoMatchAdapterPreservesCandidateAndDedupJSON(t *testing.T) {
+	withTempAtmDir(t)
+	oldSession, oldJSON := sessionIDFlag, jsonOutput
+	oldProject, oldLimit := todoMatchProjectFlag, todoMatchLimitFlag
+	oldPrompt, oldDedup, oldMin := todoMatchPromptFlag, todoMatchDedupFlag, todoMatchMinQueryScoreFlag
+	t.Cleanup(func() {
+		sessionIDFlag, jsonOutput = oldSession, oldJSON
+		todoMatchProjectFlag, todoMatchLimitFlag = oldProject, oldLimit
+		todoMatchPromptFlag, todoMatchDedupFlag, todoMatchMinQueryScoreFlag = oldPrompt, oldDedup, oldMin
+	})
+	sessionIDFlag = "match-json-session"
+	jsonOutput = true
+	todoMatchProjectFlag = "atm"
+	todoMatchLimitFlag = 3
+	todoMatchPromptFlag = false
+	todoMatchDedupFlag = false
+	todoMatchMinQueryScoreFlag = workapp.DefaultDedupMinQueryScore
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Typed match candidate", Priority: "P1",
+		Status: store.TodoStatusOpen, Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runTodoMatch(todoMatchCmd, []string{"typed", "match"}); err != nil {
+			t.Fatalf("match: %v", err)
+		}
+	})
+	var candidates struct {
+		Project    string                   `json:"project"`
+		Bound      bool                     `json:"bound"`
+		Candidates []workapp.MatchCandidate `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(out), &candidates); err != nil {
+		t.Fatalf("decode candidates: %v\n%s", err, out)
+	}
+	if candidates.Project != "atm" || candidates.Bound || len(candidates.Candidates) != 1 ||
+		candidates.Candidates[0].ID != "t1" {
+		t.Fatalf("candidate payload = %+v", candidates)
+	}
+
+	todoMatchDedupFlag = true
+	dedupOut := captureStdout(t, func() {
+		if err := runTodoMatch(todoMatchCmd, []string{"typed", "match", "candidate"}); err != nil {
+			t.Fatalf("dedup: %v", err)
+		}
+	})
+	var dedup struct {
+		Query         string                   `json:"query"`
+		MinQueryScore int                      `json:"min_query_score"`
+		Duplicate     bool                     `json:"duplicate"`
+		Candidates    []workapp.MatchCandidate `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(dedupOut), &dedup); err != nil {
+		t.Fatalf("decode dedup: %v\n%s", err, dedupOut)
+	}
+	if !dedup.Duplicate || dedup.Query != "typed match candidate" ||
+		dedup.MinQueryScore != workapp.DefaultDedupMinQueryScore || len(dedup.Candidates) != 1 {
+		t.Fatalf("dedup payload = %+v", dedup)
 	}
 }

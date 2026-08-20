@@ -2,12 +2,9 @@ package cmd
 
 import (
 	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/guard"
 	"github.com/zane-byte-dev/atm/internal/output"
 )
@@ -57,84 +54,29 @@ MCP tool rather than a command is invisible to it.`,
 }
 
 func runGuardShim(cmd *cobra.Command, args []string, mode string) error {
-	if !guardExecSupported() {
-		return fmt.Errorf("the outbound action gate is not supported on this platform")
+	input := guard.ShimInput{Tools: args, Bin: guardInstallBin}
+	var result guard.ShimResult
+	var err error
+	switch mode {
+	case "install":
+		result, err = guard.Default.InstallTools(cmd.Context(), guardCLICall(), input)
+	case "uninstall":
+		result, err = guard.Default.UninstallTools(cmd.Context(), guardCLICall(), input)
+	case "status":
+		result, err = guard.Default.StatusTools(cmd.Context(), guardCLICall(), input)
+	default:
+		return fmt.Errorf("unknown Guard shim operation: %s", mode)
 	}
-	tools := args
-	if len(tools) == 0 {
-		for tool, toolConfig := range guard.Tools() {
-			if len(toolConfig.Rules) > 0 {
-				tools = append(tools, tool)
-			}
+	// The service can return successful states alongside per-tool failures. Keep
+	// rendering that useful partial result before Cobra reports the typed error.
+	if result.States != nil {
+		if jsonOutput {
+			output.JSON(result.States)
+		} else {
+			printGuardStates(result.States, mode)
 		}
-		sort.Strings(tools)
 	}
-	if len(tools) == 0 {
-		return fmt.Errorf("no tools have guard rules")
-	}
-	if guardInstallBin != "" && len(tools) != 1 {
-		return fmt.Errorf("--bin applies to one tool at a time")
-	}
-
-	atmPath := ""
-	if mode == "install" {
-		resolved, err := atmExecutablePath()
-		if err != nil {
-			return err
-		}
-		atmPath = resolved
-	}
-
-	states := []guard.ShimState{}
-	var failures []string
-	for _, tool := range tools {
-		binPath, err := guard.Resolve(tool, guardInstallBin)
-		if err != nil {
-			// status describes what is there; install and uninstall were asked to do
-			// something they cannot. Only the latter is a failure.
-			if mode == "status" {
-				states = append(states, guard.ShimState{Tool: tool, Rules: len(guard.Rules(tool))})
-				continue
-			}
-			failures = append(failures, fmt.Sprintf("%s: %v", tool, err))
-			continue
-		}
-		var state guard.ShimState
-		switch mode {
-		case "install":
-			state, err = guard.Install(tool, binPath, atmPath)
-		case "uninstall":
-			state, err = guard.Uninstall(tool, binPath)
-		default:
-			state, err = guard.Status(tool, binPath)
-		}
-		if err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", tool, err))
-			continue
-		}
-		if mode == "install" && state.Installed {
-			// Remember where it went, or a tool that is not on PATH becomes invisible
-			// to status and doctor the moment this process exits — and with it the
-			// checks for a shim that was overwritten or is being walked around.
-			if err := config.SaveGuardToolBin(tool, binPath); err != nil {
-				failures = append(failures, fmt.Sprintf(
-					"%s: 闸门装好了，但没能把安装位置写进 %s（%v）；"+
-						"status 和 doctor 之后看不到它，请手工补 guard.tools.%s.bin",
-					tool, config.ConfigPath, err, tool))
-			}
-		}
-		states = append(states, state)
-	}
-
-	if jsonOutput {
-		output.JSON(states)
-	} else {
-		printGuardStates(states, mode)
-	}
-	if len(failures) > 0 {
-		return fmt.Errorf("%s", strings.Join(failures, "; "))
-	}
-	return nil
+	return err
 }
 
 func printGuardStates(states []guard.ShimState, mode string) {

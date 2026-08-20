@@ -79,16 +79,11 @@ final class CollectionMuteNotificationTests: XCTestCase {
         )
     }
 
-    func testMuteCommandTargetsTheNotificationNotTheSchedule() {
-        // The App drives mute through the CLI, so the verb is part of the contract:
-        // reaching for `disable` here would stop the collecting instead.
-        XCTAssertEqual(
-            ATMCollectionSourceMuteCommand.arguments(sourceID: "cs-quiet", muted: true),
-            ["collect", "source", "mute", "cs-quiet", "--json"]
-        )
-        XCTAssertEqual(
-            ATMCollectionSourceMuteCommand.arguments(sourceID: "cs-quiet", muted: false),
-            ["collect", "source", "unmute", "cs-quiet", "--json"]
+    func testMuteUsesItsOwnTypedStateMethod() {
+        XCTAssertEqual(ATMCollectionIPCCommand.setSourceMuted.verb, "collect.source.muted")
+        XCTAssertNotEqual(
+            ATMCollectionIPCCommand.setSourceMuted.verb,
+            ATMCollectionIPCCommand.setSourceEnabled.verb
         )
     }
 

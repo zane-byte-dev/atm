@@ -148,23 +148,130 @@ struct ATMAIDayDashboard: Codable {
     let privacy: ATMAIDayPrivacy
 }
 
+struct ATMAIDayShowRequest: Encodable {
+    let day: String
+}
+
+struct ATMAIDayFeedbackRequest: Encodable {
+    let day: String
+    let verdict: String?
+    let correctedBadgeID: String?
+    let semanticLabels: [String]?
+    let clear: Bool?
+
+    init(
+        day: String,
+        verdict: String? = nil,
+        correctedBadgeID: String? = nil,
+        semanticLabels: [String]? = nil,
+        clear: Bool? = nil
+    ) {
+        self.day = day
+        self.verdict = verdict
+        self.correctedBadgeID = correctedBadgeID
+        self.semanticLabels = semanticLabels
+        self.clear = clear
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case day
+        case verdict
+        case correctedBadgeID = "corrected_badge_id"
+        case semanticLabels = "semantic_labels"
+        case clear
+    }
+}
+
+struct ATMAIDaySourceSetRequest: Encodable {
+    let source: String
+    let enabled: Bool
+    let semanticEnabled: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case source
+        case enabled
+        case semanticEnabled = "semantic_enabled"
+    }
+}
+
+struct ATMAIDaySourceDeleteRequest: Encodable {
+    let source: String
+    let confirmed: Bool
+}
+
+struct ATMAIDayPrivacyPatch: Encodable {
+    let semanticEnabled: Bool?
+    let retentionDays: Int?
+
+    init(semanticEnabled: Bool? = nil, retentionDays: Int? = nil) {
+        self.semanticEnabled = semanticEnabled
+        self.retentionDays = retentionDays
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case semanticEnabled = "semantic_enabled"
+        case retentionDays = "retention_days"
+    }
+}
+
+struct ATMAIDayDeleteRequest: Encodable {
+    let all: Bool?
+    let from: String?
+    let to: String?
+    let confirmed: Bool
+
+    init(all: Bool? = nil, from: String? = nil, to: String? = nil, confirmed: Bool) {
+        self.all = all
+        self.from = from
+        self.to = to
+        self.confirmed = confirmed
+    }
+}
+
+struct ATMAIDaySourceDeleteResult: Decodable {
+    let source: String
+    let eventsDeleted: Int64
+    let paused: Bool
+}
+
+struct ATMAIDayDeleteSummary: Decodable {
+    let from: String
+    let to: String
+    let eventsDeleted: Int64
+    let projectionsDeleted: Int64
+    let feedbackDeleted: Int64
+}
+
+/// The complete AI Day surface consumed by the App. These are typed IPC methods,
+/// not human CLI argv builders; adding a screen operation requires adding one
+/// descriptor here and one registered Go verb.
 enum ATMAIDayCommand {
-    static let dashboard = ["day", "dashboard", "--days", "180", "--json"]
-    static let today = ["day", "today", "--json"]
-    static let atlas = ["day", "atlas", "--json"]
-    static let history = ["day", "history", "--days", "180", "--json"]
-    static let privacy = ["day", "privacy", "show", "--json"]
-    static func feedback(day: String, verdict: String, badge: String? = nil) -> [String] {
-        var args = ["day", "feedback", day, "--verdict", verdict]
-        if let badge { args += ["--badge", badge] }
-        return args + ["--json"]
-    }
-    static func clearFeedback(day: String) -> [String] {
-        ["day", "feedback", day, "--clear", "--json"]
-    }
-    static func show(day: String) -> [String] {
-        ["day", "show", day, "--json"]
-    }
+    static let snapshot = ATMIPCMethod<ATMIPCNoRequest, ATMAIDayDashboard>(
+        "day.snapshot",
+        timeout: 60
+    )
+    static let show = ATMIPCMethod<ATMAIDayShowRequest, ATMAIDayResult>("day.show")
+    static let feedback = ATMIPCMethod<ATMAIDayFeedbackRequest, ATMAIDayResult>(
+        "day.feedback",
+        timeout: 60
+    )
+    static let setSource = ATMIPCMethod<ATMAIDaySourceSetRequest, ATMAIDayPrivacy>("day.source.set")
+    static let deleteSource = ATMIPCMethod<ATMAIDaySourceDeleteRequest, ATMAIDaySourceDeleteResult>(
+        "day.source.delete",
+        timeout: 60
+    )
+    static let setPrivacy = ATMIPCMethod<ATMAIDayPrivacyPatch, ATMAIDayPrivacy>("day.privacy.set")
+    static let deleteData = ATMIPCMethod<ATMAIDayDeleteRequest, ATMAIDayDeleteSummary>(
+        "day.data.delete",
+        timeout: 60
+    )
+    // Keep the export payload as a JSON tree rather than decoding through the
+    // App's current model. Export is a user-owned backup format and must retain
+    // fields a newer CLI knows even if this App version does not display them.
+    static let exportData = ATMIPCMethod<ATMIPCNoRequest, ATMJSONValue>(
+        "day.data.export",
+        timeout: 60
+    )
 }
 
 @MainActor
@@ -197,20 +304,12 @@ final class ATMAIDayStore: ObservableObject {
         return now.timeIntervalSince(lastRefreshed) >= autoRefreshInterval
     }
 
-    private let decoder: JSONDecoder = {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return decoder
-    }()
-
     func refresh() {
         guard !isLoading else { return }
         isLoading = true
         Task {
             do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(ATMAIDayCommand.dashboard)
-                let dashboard = try decoder.decode(ATMAIDayDashboard.self, from: data)
+                let dashboard = try await ATMIPCClient().call(ATMAIDayCommand.snapshot)
                 today = dashboard.today
                 atlas = dashboard.atlas
                 history = dashboard.history
@@ -244,42 +343,75 @@ final class ATMAIDayStore: ObservableObject {
 
     /// Loads one past day in full, for the history drill-down.
     func loadDay(_ day: String) async throws -> ATMAIDayResult {
-        let data = try await ATMCommandRunner().run(ATMAIDayCommand.show(day: day))
-        return try decoder.decode(ATMAIDayResult.self, from: data)
+        try await ATMIPCClient().call(
+            ATMAIDayCommand.show,
+            request: ATMAIDayShowRequest(day: day)
+        )
     }
 
     func submitFeedback(verdict: String, badge: String? = nil) {
         guard let day = today?.day else { return }
-        mutate(ATMAIDayCommand.feedback(day: day, verdict: verdict, badge: badge))
+        mutate(
+            ATMAIDayCommand.feedback,
+            request: ATMAIDayFeedbackRequest(
+                day: day,
+                verdict: verdict,
+                correctedBadgeID: badge
+            )
+        )
     }
 
     /// Undo for the feedback buttons: a correction overrides the engine for that
     /// day indefinitely and is one click away, so it has to be one click back.
     func clearFeedback() {
         guard let day = today?.day else { return }
-        mutate(ATMAIDayCommand.clearFeedback(day: day))
+        mutate(
+            ATMAIDayCommand.feedback,
+            request: ATMAIDayFeedbackRequest(day: day, clear: true)
+        )
     }
 
     func setSource(_ source: ATMAIDaySource, enabled: Bool) {
-        mutate(["day", "sources", enabled ? "resume" : "pause", source.source, "--json"])
+        mutate(
+            ATMAIDayCommand.setSource,
+            request: ATMAIDaySourceSetRequest(
+                source: source.source,
+                enabled: enabled,
+                // The old pause/resume commands changed both switches together:
+                // resume opted semantic classification back in; pause opted out.
+                semanticEnabled: enabled
+            )
+        )
     }
 
     func deleteSource(_ source: ATMAIDaySource) {
-        mutate(["day", "sources", "delete", source.source, "--yes", "--json"])
+        mutate(
+            ATMAIDayCommand.deleteSource,
+            request: ATMAIDaySourceDeleteRequest(source: source.source, confirmed: true)
+        )
     }
 
     func setSemantic(_ enabled: Bool) {
-        mutate(["day", "privacy", "set", "--semantic", enabled ? "on" : "off", "--json"])
+        mutate(
+            ATMAIDayCommand.setPrivacy,
+            request: ATMAIDayPrivacyPatch(semanticEnabled: enabled)
+        )
     }
 
     func setRetention(_ days: Int) {
-        mutate(["day", "privacy", "set", "--retention", String(days), "--json"])
+        mutate(
+            ATMAIDayCommand.setPrivacy,
+            request: ATMAIDayPrivacyPatch(retentionDays: days)
+        )
     }
 
     func deleteAll() {
         Task {
             do {
-                _ = try await ATMCommandRunner().run(["day", "delete", "--all", "--yes", "--json"])
+                _ = try await ATMIPCClient().call(
+                    ATMAIDayCommand.deleteData,
+                    request: ATMAIDayDeleteRequest(all: true, confirmed: true)
+                )
                 today = nil
                 atlas = nil
                 history = nil
@@ -289,12 +421,18 @@ final class ATMAIDayStore: ObservableObject {
     }
 
     func exportData() async throws -> Data {
-        try await ATMCommandRunner().run(["day", "export", "--json"])
+        try await ATMIPCClient().callRawPayload(ATMAIDayCommand.exportData)
     }
 
-    private func mutate(_ arguments: [String]) {
+    private func mutate<Request: Encodable, Response: Decodable>(
+        _ method: ATMIPCMethod<Request, Response>,
+        request: Request
+    ) {
         Task {
-            do { _ = try await ATMCommandRunner().run(arguments); refresh() }
+            do {
+                _ = try await ATMIPCClient().call(method, request: request)
+                refresh()
+            }
             catch { errorMessage = error.localizedDescription }
         }
     }

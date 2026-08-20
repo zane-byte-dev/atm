@@ -16,10 +16,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 )
 
@@ -91,6 +93,15 @@ var tasks = map[string]task{
 type CheckResult struct {
 	OK        bool  `json:"ok"`
 	LatencyMS int64 `json:"latency_ms"`
+}
+
+// ConnectionCheckInput carries unsaved settings from the desktop form. The key
+// travels on IPC stdin, never argv or the child environment, and is used only
+// for this request. An empty APIKey falls back to the saved/env credential.
+type ConnectionCheckInput struct {
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url"`
+	Model   string `json:"model"`
 }
 
 type chatMessage struct {
@@ -177,8 +188,24 @@ type callRecord struct {
 // model's answer and nothing else: validating that it says something ATM is
 // willing to act on stays with the caller.
 func Run(ctx context.Context, taskName string, timeout time.Duration, schema, prompt string) ([]byte, error) {
+	return runRecorded(ctx, taskName, timeout, schema, prompt, connectionOverrides{})
+}
+
+type connectionOverrides struct {
+	apiKey  string
+	baseURL string
+	model   string
+}
+
+func runRecorded(
+	ctx context.Context,
+	taskName string,
+	timeout time.Duration,
+	schema, prompt string,
+	connection connectionOverrides,
+) ([]byte, error) {
 	record := callRecord{call: Call{Task: taskName, StartedAt: time.Now()}}
-	data, err := run(ctx, taskName, timeout, schema, prompt, &record)
+	data, err := run(ctx, taskName, timeout, schema, prompt, &record, connection)
 	if err != nil {
 		record.call.Err = err.Error()
 	}
@@ -197,23 +224,34 @@ func run(
 	timeout time.Duration,
 	schema, prompt string,
 	record *callRecord,
+	connection connectionOverrides,
 ) ([]byte, error) {
 	spec, ok := tasks[taskName]
 	if !ok {
 		return nil, fmt.Errorf("built-in text model does not support task %q", taskName)
 	}
-	apiKey, err := APIKey()
-	if err != nil {
-		return nil, err
+	apiKey := strings.TrimSpace(connection.apiKey)
+	if apiKey == "" {
+		var err error
+		apiKey, err = APIKey()
+		if err != nil {
+			return nil, err
+		}
 	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("built-in DeepSeek text model is unavailable: configure Settings > Model in ATM.app or set %s", DeepSeekAPIKeyEnv)
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv(BaseURLEnv)), "/")
+	baseURL := strings.TrimRight(strings.TrimSpace(connection.baseURL), "/")
+	if baseURL == "" {
+		baseURL = strings.TrimRight(strings.TrimSpace(os.Getenv(BaseURLEnv)), "/")
+	}
 	if baseURL == "" {
 		baseURL = config.TextModelBaseURL
 	}
-	model := strings.TrimSpace(os.Getenv(ModelEnv))
+	model := strings.TrimSpace(connection.model)
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv(ModelEnv))
+	}
 	if model == "" {
 		model = config.TextModelName
 	}
@@ -287,11 +325,10 @@ func run(
 		),
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message := strings.TrimSpace(decoded.Error.Message)
-		if message == "" {
-			message = http.StatusText(resp.StatusCode)
-		}
-		return nil, fmt.Errorf("DeepSeek text model returned HTTP %d: %s", resp.StatusCode, message)
+		// Provider error bodies are untrusted and occasionally echo request
+		// headers. The status is sufficient for diagnosis and cannot disclose the
+		// credential used for this call.
+		return nil, fmt.Errorf("DeepSeek text model returned HTTP %d", resp.StatusCode)
 	}
 	if len(decoded.Choices) == 0 {
 		return nil, fmt.Errorf("DeepSeek text model returned no choices")
@@ -327,9 +364,53 @@ func trimJSONFences(data []byte) []byte {
 // Check verifies the same credentials, endpoint, model and JSON response path
 // the real tasks use, without reading or mutating any user data.
 func Check(ctx context.Context, timeout time.Duration) (CheckResult, error) {
+	return check(ctx, timeout, connectionOverrides{})
+}
+
+// CheckConnection verifies unsaved App settings without mutating config or
+// credentials. It shares the exact request/response path used by Check and the
+// production text-model tasks.
+func CheckConnection(ctx context.Context, timeout time.Duration, input ConnectionCheckInput) (CheckResult, error) {
+	if len(input.APIKey) > config.MaxCredentialBytes {
+		err := application.NewError(application.CodeInvalidArgument, "DeepSeek API Key exceeds the maximum size")
+		err.Details = map[string]any{"field": "api_key", "max_bytes": config.MaxCredentialBytes}
+		return CheckResult{}, err
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(input.BaseURL), "/")
+	endpoint, err := url.Parse(baseURL)
+	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" ||
+		(endpoint.Scheme != "http" && endpoint.Scheme != "https") {
+		appErr := application.NewError(application.CodeInvalidArgument, "text-model base URL must be a valid http or https URL")
+		appErr.Details = map[string]any{"field": "base_url"}
+		return CheckResult{}, appErr
+	}
+	model := strings.TrimSpace(input.Model)
+	if model == "" {
+		appErr := application.NewError(application.CodeInvalidArgument, "text-model name must not be empty")
+		appErr.Details = map[string]any{"field": "model"}
+		return CheckResult{}, appErr
+	}
+	result, checkErr := check(ctx, timeout, connectionOverrides{
+		apiKey:  input.APIKey,
+		baseURL: baseURL,
+		model:   model,
+	})
+	if checkErr != nil {
+		appErr := application.WrapError(
+			application.CodeUnavailable,
+			"text-model connection check failed",
+			checkErr,
+		)
+		appErr.Retryable = true
+		return CheckResult{}, appErr
+	}
+	return result, nil
+}
+
+func check(ctx context.Context, timeout time.Duration, connection connectionOverrides) (CheckResult, error) {
 	started := time.Now()
-	data, err := Run(ctx, TaskCheck, timeout, checkSchema,
-		`Return {"ok":true} to confirm this text-model connection.`)
+	data, err := runRecorded(ctx, TaskCheck, timeout, checkSchema,
+		`Return {"ok":true} to confirm this text-model connection.`, connection)
 	if err != nil {
 		return CheckResult{}, err
 	}

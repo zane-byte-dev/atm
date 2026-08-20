@@ -21,6 +21,7 @@ func TestPaginateValidatesAndSlices(t *testing.T) {
 
 func TestTodoListQueryPaginationAndBulkWake(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	oldJSON := jsonOutput
 	oldQuery, oldLimit, oldOffset, oldStatus := todoListQueryFlag, todoListLimitFlag, todoListOffsetFlag, todoStatusFlag
 	oldBulkReason := todoBulkReasonFlag

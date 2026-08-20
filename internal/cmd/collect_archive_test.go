@@ -9,6 +9,7 @@ import (
 
 func TestCollectItemArchiveAndUnarchiveRoundTrip(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCollectionCLI(t)
 	oldJSON := jsonOutput
 	t.Cleanup(func() { jsonOutput = oldJSON })
 	db, err := store.Open()

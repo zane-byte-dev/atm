@@ -4,36 +4,88 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
+// collectionCommandTodoDispatcher is the temporary CLI process adapter for
+// Collector's task-dispatch port. Process construction and project-directory
+// discovery stay here at the delivery edge; the Collector service has no
+// dependency on ATM's command namespace.
+type collectionCommandTodoDispatcher struct {
+	executable string
+}
+
+func (dispatcher collectionCommandTodoDispatcher) Dispatch(ctx context.Context, todoID, project string) error {
+	if strings.TrimSpace(dispatcher.executable) == "" {
+		return fmt.Errorf("ATM executable is unavailable for automatic dispatch")
+	}
+	workDir, err := collectionProjectWorkDir(project)
+	if err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, dispatcher.executable,
+		"todo", "run", todoID, "--cwd", workDir, "--json")
+	command.Env = append(os.Environ(), "ATM_SKIP_LOCAL_NOTIFICATION=1")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(output))
+		if detail == "" {
+			return fmt.Errorf("dispatch todo %s: %w", todoID, err)
+		}
+		return fmt.Errorf("dispatch todo %s: %w: %s", todoID, err, detail)
+	}
+	return nil
+}
+
+func defaultCollectorService() collector.Service {
+	service := collector.DefaultService()
+	executable, _ := os.Executable()
+	service.Dispatcher = collectionCommandTodoDispatcher{executable: executable}
+	return service
+}
+
+func collectionProjectWorkDir(project string) (string, error) {
+	project = strings.TrimSpace(project)
+	if project == "" {
+		return "", fmt.Errorf("automatic dispatch requires a Todo project")
+	}
+	candidates := []string{}
+	if filepath.IsAbs(project) {
+		candidates = append(candidates, project)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, "mox", project),
+			filepath.Join(home, "work", project),
+			filepath.Join(home, project),
+		)
+	}
+	for _, candidate := range candidates {
+		info, err := os.Stat(candidate)
+		if err == nil && info.IsDir() {
+			absolute, err := filepath.Abs(candidate)
+			if err != nil {
+				return "", err
+			}
+			return absolute, nil
+		}
+	}
+	return "", fmt.Errorf("cannot resolve project directory for %q", project)
+}
+
 var (
-	collectSourceKind       string
-	collectSourceConnector  string
-	collectSourceExternalID string
-	collectSourceName       string
-	collectSourceProject    string
-	collectSourceExclude    string
-	collectSourceFocus      string
-	collectSourceKnowledge  string
-	collectSourceStrategy   string
-	collectSourceUnit       string
-	collectSourceInterval   int
-	collectSourcePriority   string
-	collectSourceAutoRun    bool
-	collectSourceDisabled   bool
 	collectSourceID         string
-	collectSearchKind       string
-	collectSearchConnector  string
-	collectSearchLimit      int
 	collectHistoryKind      string
 	collectHistoryConnector string
 	collectHistorySince     string
@@ -62,15 +114,6 @@ var (
 )
 
 func init() {
-	collectSourceAddCmd.Flags().StringVar(&collectSourceConnector, "connector", "",
-		"registered connector id")
-	collectSourceSearchCmd.Flags().StringVar(&collectSearchConnector, "connector", "",
-		"registered connector id")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceKind, "kind", "", "connector-defined source kind")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceExternalID, "id", "", "connector source identifier")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceName, "name", "", "human-readable source name")
-	collectSourceSearchCmd.Flags().StringVar(&collectSearchKind, "kind", "all", "search kind: group, user, or all")
-	collectSourceSearchCmd.Flags().IntVar(&collectSearchLimit, "limit", 10, "maximum candidates to return")
 	collectHistoryCmd.Flags().StringVar(&collectHistoryKind, "kind", "all", "name lookup kind: group, user, or all")
 	collectHistoryCmd.Flags().StringVar(&collectHistoryConnector, "connector", "",
 		"connector used when the argument is not an added source")
@@ -94,24 +137,6 @@ func init() {
 		"analyse only messages already synced, without calling the connector")
 	collectAnalyzeCmd.Flags().BoolVar(&collectAnalyzeApply, "apply", false,
 		"create Todos instead of holding the decisions for confirmation")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceProject, "project", "", "default ATM project for extracted work")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceExclude, "exclude", "", "comma-separated message keywords to ignore")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceFocus, "instruction", "",
-		"what to watch this source for, in your own words (e.g. 只关注 MR 和需求)")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceKnowledge, "knowledge-collection", "",
-		"default knowledge collection for explicitly saved conclusions (default: "+
-			config.CollectionDigestCollection+")")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceStrategy, "strategy", store.CollectionStrategyTasks,
-		"processing strategy: tasks (may create Todos) or observe (conclusions only)")
-	collectSourceAddCmd.Flags().StringVar(&collectSourceUnit, "decision-unit", store.CollectionDecisionUnitWindow,
-		"what one decision covers: window (messages within 15 minutes) or message "+
-			"(each message on its own — for notification feeds)")
-	collectSourceAddCmd.Flags().IntVar(&collectSourceInterval, "interval", 0,
-		"source collection interval in minutes (default: tasks 5, observe 60)")
-	collectSourceAddCmd.Flags().StringVar(&collectSourcePriority, "priority", "P2", "default priority: P0, P1, P2, P3")
-	collectSourceAddCmd.Flags().BoolVar(&collectSourceAutoRun, "auto-dispatch", false,
-		"dispatch newly created Todos to Codex (tasks strategy only)")
-	collectSourceAddCmd.Flags().BoolVar(&collectSourceDisabled, "disabled", false, "add the source disabled")
 	collectRunCmd.Flags().StringVar(&collectSourceID, "source", "", "run one source id instead of every enabled source")
 	collectRunCmd.Flags().BoolVar(&collectRunDue, "due", false, "run only sources whose own interval is due")
 	collectDigestCmd.Flags().StringVar(&collectSourceID, "source", "", "digest one source id instead of every enabled source")
@@ -121,7 +146,6 @@ func init() {
 	collectDigestCmd.Flags().BoolVar(&collectDigestDryRun, "dry-run", false,
 		"print the digest without writing it to the knowledge base")
 	collectStatusCmd.Flags().IntVar(&collectLimit, "limit", 100, "maximum recent collection items")
-	collectSourceDeleteCmd.Flags().BoolVarP(&collectYes, "yes", "y", false, "skip confirmation")
 	for _, command := range []*cobra.Command{collectItemPromoteCmd, collectItemCorrectCmd} {
 		command.Flags().StringVar(&collectItemTitle, "title", "", "corrected Todo title")
 		command.Flags().StringVar(&collectItemProject, "project", "", "corrected ATM project (empty clears it)")
@@ -150,7 +174,7 @@ func init() {
 var collectCmd = &cobra.Command{
 	Use:   "collect",
 	Short: "Automatically collect work from external connectors",
-	Args:  cobra.NoArgs,
+	Args:  noSubcommandArgs,
 	RunE:  showHelp,
 }
 
@@ -159,69 +183,45 @@ var collectStatusCmd = &cobra.Command{
 	Short: "Show connector health, sources, runs, and recent decisions",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Status is commonly the first collection command run after an upgrade.
-		// Open writable so pending schema migrations happen before its queries.
-		return withDB(false, func(db *sql.DB) error {
-			overview, err := store.LoadCollectionOverview(db, collectLimit)
-			if err != nil {
-				return err
-			}
-			archive, err := store.CollectionMessageStatsFor(db)
-			if err != nil {
-				return err
-			}
-			value := struct {
-				Enabled         bool                         `json:"enabled"`
-				IntervalMinutes int                          `json:"interval_minutes"`
-				LookbackMinutes int                          `json:"lookback_minutes"`
-				RetentionDays   int                          `json:"message_retention_days"`
-				Model           string                       `json:"model"`
-				ConnectorHealth []collectionConnectorHealth  `json:"connector_health"`
-				Messages        store.CollectionMessageStats `json:"messages"`
-				store.CollectionOverview
-			}{config.CollectionEnabled, config.CollectionIntervalMinutes,
-				config.CollectionLookbackMinutes, config.CollectionMessageRetentionDays,
-				config.TextModelName,
-				collectionHealth(overview), archive, overview}
-			if jsonOutput {
-				output.JSON(value)
-				return nil
-			}
-			fmt.Printf("Automatic collection: %v · every %dm · %d/%d sources enabled\n",
-				value.Enabled, value.IntervalMinutes, value.Summary.Enabled, value.Summary.Sources)
-			fmt.Printf("Today: fetched %d · created %d · appended %d · insight %d · ignored %d · failed %d\n",
-				value.Summary.Fetched, value.Summary.Created, value.Summary.Appended,
-				value.Summary.Insight, value.Summary.Ignored, value.Summary.Failed)
-			for _, digest := range collectionTodaysDigests(value.Digests) {
-				fmt.Printf("Digest %s: %s · %s（%d 条）\n", digest.DigestDate,
-					emptyAs(digest.Title, digest.DocumentID), digest.Collection, digest.ItemCount)
-			}
-			fmt.Printf("Synced chat: %d messages · %d conversations%s · %s\n",
-				value.Messages.Total, value.Messages.Conversations,
-				collectionArchiveSpan(value.Messages), collectionRetentionText(value.RetentionDays))
-			if value.Summary.Followups > 0 {
-				// A record that filed a Todo is only really finished when that Todo
-				// is: the whole point of collecting was to get it done.
-				fmt.Printf("Filed Todos: %d · %d still open\n", value.Summary.Followups,
-					value.Summary.Followups-value.Summary.FollowupsClosed)
-			}
-			if pending := collectionPendingProposals(value.Items); pending > 0 {
-				// Proposals wait on a person; without a count they are easy to forget.
-				fmt.Printf("Awaiting confirmation: %d · atm collect item promote <item-id>\n", pending)
-			}
-			if value.Summary.Unread > 0 {
-				fmt.Printf("Unread collection results: %d · atm collect item read --all\n", value.Summary.Unread)
-			}
-			// Otherwise a muted source is a silent setting explaining a silence:
-			// someone wondering why a group stopped notifying has nowhere to look.
-			if muted := collectionMutedSources(value.Sources); muted > 0 {
-				fmt.Printf("Muted sources: %d · still collected and counted as unread · atm collect source unmute <source-id>\n", muted)
-			}
-			for _, health := range value.ConnectorHealth {
-				fmt.Printf("%s: %s\n", health.Connector, collectionHealthLine(health))
-			}
+		value, err := defaultCollectorService().Snapshot(
+			cmd.Context(), collectionCLICall("snapshot"), collector.SnapshotInput{ItemLimit: collectLimit},
+		)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			output.JSON(value)
 			return nil
-		})
+		}
+		fmt.Printf("Automatic collection: %v · every %dm · %d/%d sources enabled\n",
+			value.Enabled, value.IntervalMinutes, value.Summary.Enabled, value.Summary.Sources)
+		fmt.Printf("Today: fetched %d · created %d · appended %d · insight %d · ignored %d · failed %d\n",
+			value.Summary.Fetched, value.Summary.Created, value.Summary.Appended,
+			value.Summary.Insight, value.Summary.Ignored, value.Summary.Failed)
+		for _, digest := range collectionTodaysDigests(value.Digests) {
+			fmt.Printf("Digest %s: %s · %s（%d 条）\n", digest.DigestDate,
+				emptyAs(digest.Title, digest.DocumentID), digest.Collection, digest.ItemCount)
+		}
+		fmt.Printf("Synced chat: %d messages · %d conversations%s · %s\n",
+			value.Messages.Total, value.Messages.Conversations,
+			collectionArchiveSpan(value.Messages), collectionRetentionText(value.RetentionDays))
+		if value.Summary.Followups > 0 {
+			fmt.Printf("Filed Todos: %d · %d still open\n", value.Summary.Followups,
+				value.Summary.Followups-value.Summary.FollowupsClosed)
+		}
+		if pending := collectionPendingProposals(value.Items); pending > 0 {
+			fmt.Printf("Awaiting confirmation: %d · atm collect item promote <item-id>\n", pending)
+		}
+		if value.Summary.Unread > 0 {
+			fmt.Printf("Unread collection results: %d · atm collect item read --all\n", value.Summary.Unread)
+		}
+		if muted := collectionMutedSources(value.Sources); muted > 0 {
+			fmt.Printf("Muted sources: %d · still collected and counted as unread · atm collect source unmute <source-id>\n", muted)
+		}
+		for _, health := range value.ConnectorHealth {
+			fmt.Printf("%s: %s\n", health.Connector, collectionHealthLine(health))
+		}
+		return nil
 	},
 }
 
@@ -274,86 +274,10 @@ func collectionRetentionText(days int) string {
 	return fmt.Sprintf("kept %d days", days)
 }
 
-type collectionConnectorHealth struct {
-	Connector string `json:"connector"`
-	Status    string `json:"status"`
-	Error     string `json:"error,omitempty"`
-	CheckedAt int64  `json:"checked_at,omitempty"`
-	// ConsecutiveFailures counts the unbroken run of failures ending at the most
-	// recent attempt. This, rather than the last run alone, is what says whether a
-	// connector is broken: these APIs return the occasional business error, and one
-	// of those between successes is noise that fixes itself in five minutes.
-	ConsecutiveFailures int `json:"consecutive_failures,omitempty"`
-	RecentRuns          int `json:"recent_runs,omitempty"`
-	RecentFailures      int `json:"recent_failures,omitempty"`
-}
+type collectionConnectorHealth = collector.ConnectorHealth
 
 func collectionHealth(overview store.CollectionOverview) []collectionConnectorHealth {
-	connectorIDs := map[string]bool{}
-	if registry, err := collector.DefaultRegistry(); err == nil {
-		for _, id := range registry.IDs() {
-			connectorIDs[id] = true
-		}
-	}
-	for _, source := range overview.Sources {
-		connectorIDs[source.Connector] = true
-	}
-	for _, run := range overview.Runs {
-		connectorIDs[run.Connector] = true
-	}
-	healthByID := map[string]collectionConnectorHealth{}
-	for id := range connectorIDs {
-		healthByID[id] = collectionConnectorHealth{Connector: id, Status: "not_checked"}
-	}
-	// Runs arrive newest first. Walk all of them so a connector is judged by a
-	// streak instead of by whichever single attempt happened to be last.
-	streakOpen := map[string]bool{}
-	for id := range healthByID {
-		streakOpen[id] = true
-	}
-	for _, run := range overview.Runs {
-		health, ok := healthByID[run.Connector]
-		if !ok || run.Status == "running" {
-			continue
-		}
-		health.RecentRuns++
-		failed := run.Status != "succeeded"
-		if failed {
-			health.RecentFailures++
-		}
-		if health.CheckedAt == 0 {
-			// The most recent attempt still supplies the timestamp and the message a
-			// human would act on.
-			health.CheckedAt = run.FinishedAt
-			if failed {
-				health.Error = run.Error
-			}
-		}
-		if streakOpen[run.Connector] {
-			if failed {
-				health.ConsecutiveFailures++
-			} else {
-				streakOpen[run.Connector] = false
-			}
-		}
-		healthByID[run.Connector] = health
-	}
-	for id, health := range healthByID {
-		if health.RecentRuns == 0 {
-			continue
-		}
-		healthByID[id] = collectionResolveHealth(health)
-	}
-	ids := make([]string, 0, len(healthByID))
-	for id := range healthByID {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	health := make([]collectionConnectorHealth, 0, len(ids))
-	for _, id := range ids {
-		health = append(health, healthByID[id])
-	}
-	return health
+	return defaultCollectorService().ConnectorHealthFor(overview)
 }
 
 // collectionHealthLine is the human line for one connector. A flaky connector
@@ -403,37 +327,11 @@ func collectionHealthWhen(ts int64) string {
 // success behind it is reported as `flaky`, which says "nothing to do" without
 // pretending nothing happened.
 func collectionResolveHealth(health collectionConnectorHealth) collectionConnectorHealth {
-	if health.ConsecutiveFailures == 0 {
-		health.Status = "ready"
-		// Keep no message: the connector is working, and a stale error line beside
-		// "ready" is exactly what made one hiccup look like a breakage.
-		health.Error = ""
-		return health
-	}
-	classified := collectionFailureStatus(health.Error)
-	if classified != "error" {
-		health.Status = classified
-		return health
-	}
-	if health.ConsecutiveFailures == 1 && health.RecentRuns > 1 {
-		health.Status = "flaky"
-		return health
-	}
-	health.Status = "error"
-	return health
+	return collector.ResolveConnectorHealth(health)
 }
 
 func collectionFailureStatus(message string) string {
-	lower := strings.ToLower(message)
-	if strings.Contains(lower, "not_authenticated") || strings.Contains(lower, "auth login") ||
-		strings.Contains(lower, "未登录") || strings.Contains(lower, "登录失效") {
-		return "auth_required"
-	}
-	if strings.Contains(lower, "permission") || strings.Contains(lower, "forbidden") ||
-		strings.Contains(lower, "权益") || strings.Contains(lower, "权限") {
-		return "permission_required"
-	}
-	return "error"
+	return collector.CollectionFailureStatus(message)
 }
 
 var collectRunCmd = &cobra.Command{
@@ -441,14 +339,10 @@ var collectRunCmd = &cobra.Command{
 	Short: "Run enabled collectors once",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		service := collector.DefaultService()
-		var report collector.RunReport
-		var err error
-		if collectRunDue {
-			report, err = service.RunDue(context.Background(), collectSourceID)
-		} else {
-			report, err = service.Run(context.Background(), collectSourceID)
-		}
+		report, err := defaultCollectorService().RunCollection(
+			cmd.Context(), collectionCLICall("run"),
+			collector.RunInput{SourceID: collectSourceID, DueOnly: collectRunDue},
+		)
 		if jsonOutput {
 			output.JSON(report)
 		}
@@ -478,7 +372,7 @@ var collectDigestCmd = &cobra.Command{
 		"arrive, so running this repeatedly never files a second document for the same day.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		report, err := collector.DefaultService().Digest(context.Background(), collectSourceID,
+		report, err := defaultCollectorService().Digest(context.Background(), collectSourceID,
 			collector.DigestOptions{Date: collectDigestDate, DueOnly: collectDigestDue,
 				DryRun: collectDigestDryRun})
 		if jsonOutput {
@@ -530,285 +424,16 @@ var collectDisableCmd = &cobra.Command{
 }
 
 func setCollectionEnabled(enabled bool) error {
-	if err := config.SetConfigValue("collection_enabled", enabled); err != nil {
+	settings, err := config.Default.Apply(config.SettingsPatch{CollectionEnabled: &enabled})
+	if err != nil {
 		return err
 	}
-	config.CollectionEnabled = enabled
 	if jsonOutput {
-		output.JSON(map[string]any{"enabled": enabled})
+		output.JSON(map[string]any{"enabled": settings.CollectionEnabled})
 	} else {
-		fmt.Printf("Automatic collection enabled = %v\n", enabled)
+		fmt.Printf("Automatic collection enabled = %v\n", settings.CollectionEnabled)
 	}
 	return nil
-}
-
-var collectSourceCmd = &cobra.Command{
-	Use:   "source",
-	Short: "Manage connector sources",
-	Args:  cobra.NoArgs,
-	RunE:  showHelp,
-}
-
-var collectSourceListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List collection sources",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return withDB(true, func(db *sql.DB) error {
-			sources, err := store.ListCollectionSources(db, "", false)
-			if err != nil {
-				return err
-			}
-			if jsonOutput {
-				output.JSON(sources)
-				return nil
-			}
-			for _, source := range sources {
-				fmt.Printf("%-20s %-8s %-5s %-24s strategy=%-7s every=%4dm project=%-12s knowledge=%-12s enabled=%v %s\n",
-					source.ID, source.Connector, source.Kind, source.ExternalID,
-					source.Strategy, source.IntervalMinutes, emptyAs(source.Project, "-"),
-					emptyAs(source.KnowledgeCollection, config.CollectionDigestCollection),
-					source.Enabled, source.Name)
-				if source.AutoDispatch {
-					fmt.Printf("%-20s 新 Todo 自动交给 Codex\n", "")
-				}
-				// Printed only when muted: a line on every other row would just
-				// repeat the default. Says what mute does not cover, because the
-				// question a muted source raises is "why no banner", not "why no
-				// unread".
-				if source.Muted {
-					fmt.Printf("%-20s 桌面通知已静默，仍照常收集并计入未读\n", "")
-				}
-				// Printed only when it deviates: a column reading "window" on
-				// every row would just widen an already wide line.
-				if source.DecisionUnit == store.CollectionDecisionUnitMessage {
-					fmt.Printf("%-20s 每条消息单独判定，同一时段的其他消息只作上下文\n", "")
-				}
-				if source.Instruction != "" {
-					fmt.Printf("%-20s 关注：%s\n", "", source.Instruction)
-				}
-			}
-			return nil
-		})
-	},
-}
-
-var collectSourceSearchCmd = &cobra.Command{
-	Use:   "search <keyword>",
-	Short: "Find connector sources by name before adding them",
-	Long:  "Ask a registered connector to find collection source candidates by name.",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		searcher, err := collectionSearchConnectorFor(collectSearchConnector)
-		if err != nil {
-			return err
-		}
-		candidates, err := searcher.Search(context.Background(), collectSearchKind, args[0], collectSearchLimit)
-		if err != nil {
-			return err
-		}
-		if jsonOutput {
-			output.JSON(map[string]any{"candidates": candidates})
-			return nil
-		}
-		if len(candidates) == 0 {
-			fmt.Printf("没有找到匹配「%s」的来源。%s\n", args[0], collectionSearchHint)
-			return nil
-		}
-		fmt.Print(collectionCandidateList(candidates))
-		return nil
-	},
-}
-
-const collectionSearchHint = "换个更短、连续且能区分来源的关键词试试。"
-
-func collectionCandidateList(candidates []collector.Candidate) string {
-	var builder strings.Builder
-	for index, candidate := range candidates {
-		parts := []string{candidate.Name}
-		if candidate.Detail != "" {
-			parts = append(parts, candidate.Detail)
-		}
-		parts = append(parts, candidate.ExternalID)
-		fmt.Fprintf(&builder, "%d. [%s] %s\n", index+1,
-			collectionKindLabel(candidate.Kind), strings.Join(parts, " · "))
-	}
-	return builder.String()
-}
-
-func collectionKindLabel(kind string) string {
-	switch kind {
-	case "group":
-		return "群聊"
-	case "user", "contact":
-		return "联系人"
-	case "", collector.DirectoryKindAll:
-		return "来源"
-	}
-	return kind
-}
-
-var collectSourceAddCmd = &cobra.Command{
-	Use:   "add",
-	Short: "Add or update a connector source",
-	Long:  "Add or update a collection source using its connector-defined kind and identifier.",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		target, err := collectionSourceTarget(context.Background())
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(collectSourceName) != "" {
-			target.Name = collectSourceName
-		}
-		return withDB(false, func(db *sql.DB) error {
-			source, err := store.UpsertCollectionSource(db, store.CollectionSource{
-				Connector: strings.ToLower(strings.TrimSpace(collectSourceConnector)), Kind: target.Kind,
-				ExternalID: target.ExternalID, Name: target.Name,
-				Project: collectSourceProject, ExcludePattern: collectSourceExclude,
-				Instruction: collectSourceFocus, KnowledgeCollection: collectSourceKnowledge,
-				Strategy: collectSourceStrategy, DecisionUnit: collectSourceUnit,
-				IntervalMinutes: collectSourceInterval, Priority: collectSourcePriority,
-				AutoDispatch: collectSourceAutoRun,
-				Enabled:      !collectSourceDisabled,
-			})
-			if err != nil {
-				return err
-			}
-			if jsonOutput {
-				output.JSON(source)
-			} else {
-				fmt.Printf("Saved %s: %s\n", source.ID, emptyAs(source.Name, source.ExternalID))
-			}
-			return nil
-		})
-	},
-}
-
-// collectionSourceTarget validates the exact connector identity to persist.
-// Discovery is deliberately separate (`source search`), so ATM never guesses
-// what connector-specific names or identifiers mean.
-func collectionSourceTarget(ctx context.Context) (collector.Candidate, error) {
-	connectorID := strings.ToLower(strings.TrimSpace(collectSourceConnector))
-	if connectorID == "" {
-		return collector.Candidate{}, fmt.Errorf("pass --connector <id>")
-	}
-	if _, err := collectionConnector(connectorID); err != nil {
-		return collector.Candidate{}, err
-	}
-	kind, externalID := strings.TrimSpace(collectSourceKind), strings.TrimSpace(collectSourceExternalID)
-	if kind == "" || externalID == "" {
-		return collector.Candidate{}, fmt.Errorf("pass both --kind and --id")
-	}
-	return collector.Candidate{Kind: kind, ExternalID: externalID, Name: collectSourceName}, nil
-}
-
-func resolveCollectionCandidateFor(ctx context.Context, connectorID, searchKind, value string) (collector.Candidate, error) {
-	if strings.TrimSpace(connectorID) == "" {
-		return collector.Candidate{}, fmt.Errorf("pass --connector <id>")
-	}
-	searcher, err := collectionSearchConnectorFor(connectorID)
-	if err != nil {
-		return collector.Candidate{}, err
-	}
-	candidates, err := searcher.Search(ctx, searchKind, value, 10)
-	if err != nil {
-		return collector.Candidate{}, err
-	}
-	if len(candidates) == 0 {
-		return collector.Candidate{}, fmt.Errorf("没有找到匹配「%s」的%s。%s",
-			value, collectionKindLabel(searchKind), collectionSearchHint)
-	}
-	// Connectors can match metadata beyond the returned display name. Narrowing
-	// to results that carry the keyword in their own name is exact, not a guess —
-	// two of those are still genuinely ambiguous.
-	named := []collector.Candidate{}
-	for _, candidate := range candidates {
-		if collector.MatchesName(candidate, value) {
-			named = append(named, candidate)
-		}
-	}
-	if len(named) == 1 {
-		return named[0], nil
-	}
-	if len(candidates) == 1 {
-		return candidates[0], nil
-	}
-	if len(named) > 1 {
-		candidates = named
-	}
-	return collector.Candidate{}, fmt.Errorf("「%s」匹配到 %d 个结果，请用更精确的名字，或直接用 ID：\n%s",
-		value, len(candidates), collectionCandidateList(candidates))
-}
-
-var collectSourceEnableCmd = collectionSourceToggleCommand("enable", true)
-var collectSourceDisableCmd = collectionSourceToggleCommand("disable", false)
-
-func collectionSourceToggleCommand(name string, enabled bool) *cobra.Command {
-	return &cobra.Command{
-		Use:   name + " <source-id>",
-		Short: strings.Title(name) + " a collection source",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return withDB(false, func(db *sql.DB) error {
-				if err := store.SetCollectionSourceEnabled(db, args[0], enabled); err != nil {
-					return err
-				}
-				if jsonOutput {
-					output.JSON(map[string]any{"id": args[0], "enabled": enabled})
-				}
-				return nil
-			})
-		},
-	}
-}
-
-var collectSourceMuteCmd = collectionSourceMuteCommand("mute", true)
-var collectSourceUnmuteCmd = collectionSourceMuteCommand("unmute", false)
-
-// collectionSourceMuteCommand builds the pair that takes one source in or out of
-// the desktop notifications. Kept apart from enable/disable on purpose: pausing a
-// source stops the collecting, muting one only stops the banner — the results
-// still arrive and still count as unread.
-func collectionSourceMuteCommand(name string, muted bool) *cobra.Command {
-	short := "Stop desktop notifications for one collection source"
-	if !muted {
-		short = "Resume desktop notifications for one collection source"
-	}
-	return &cobra.Command{
-		Use:   name + " <source-id>",
-		Short: short,
-		Long: short + ". Collection itself is unaffected: a muted source keeps " +
-			"collecting, its results keep counting as unread and the sidebar and " +
-			"menubar badges still rise. Use `collect source disable` to stop collecting.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return withDB(false, func(db *sql.DB) error {
-				if err := store.SetCollectionSourceMuted(db, args[0], muted); err != nil {
-					return err
-				}
-				if jsonOutput {
-					output.JSON(map[string]any{"id": args[0], "muted": muted})
-				}
-				return nil
-			})
-		},
-	}
-}
-
-var collectSourceDeleteCmd = &cobra.Command{
-	Use:   "delete <source-id>",
-	Short: "Delete a collection source while retaining its audit history",
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		confirmed, err := confirmDestructive(cmd, collectYes, "Delete collection source "+args[0]+"?")
-		if err != nil || !confirmed {
-			return err
-		}
-		return withDB(false, func(db *sql.DB) error {
-			return store.DeleteCollectionSource(db, args[0])
-		})
-	},
 }
 
 var collectHistoryCmd = &cobra.Command{
@@ -821,34 +446,34 @@ var collectHistoryCmd = &cobra.Command{
 		"what is already stored.",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		source, err := collectionHistorySource(context.Background(), args[0])
+		var sinceUnix int64
+		if since := strings.TrimSpace(collectHistorySince); since != "" {
+			parsed, err := parseSessionSince(since)
+			if err != nil {
+				return err
+			}
+			sinceUnix = parsed.Unix()
+		}
+		read, err := defaultCollectorService().History(
+			cmd.Context(), collectionCLICall("history"), collector.HistoryInput{
+				Reference: args[0], Connector: collectHistoryConnector, Kind: collectHistoryKind,
+				SinceUnix: sinceUnix, Limit: collectHistoryLimit, Local: collectHistoryLocal,
+				Sync: syncBeforeRead,
+			},
+		)
 		if err != nil {
 			return err
 		}
-		options := collector.HistoryOptions{Limit: collectHistoryLimit}
-		if since := strings.TrimSpace(collectHistorySince); since != "" {
-			options.Since, err = parseSessionSince(since)
-			if err != nil {
-				return err
-			}
-		}
-		read := collectionHistoryRead{Source: collectionHistorySourceOf(source)}
-		if collectHistoryLocal {
-			read.Messages, err = collectionHistoryFromStore(source, options)
-			if err != nil {
-				return err
-			}
-		} else if read, err = collectionHistorySync(source, options); err != nil {
-			return err
-		}
-		// Any read of a conversation is a moment to enforce retention, --local
-		// included: it asks not to touch the network, not to skip housekeeping.
-		if err := collectionPruneMessages(); err != nil {
-			return err
+		if read.SyncedFiles > 0 && !jsonOutput {
+			output.Progress("Synced %d files.", read.SyncedFiles)
 		}
 		if jsonOutput {
 			output.JSON(read)
 			return nil
+		}
+		source := store.CollectionSource{
+			ID: read.Source.ID, Connector: read.Source.Connector, Kind: read.Source.Kind,
+			ExternalID: read.Source.ExternalID, Name: read.Source.Name,
 		}
 		if read.Error != "" {
 			// The messages below are real but possibly behind, and saying so is the
@@ -859,104 +484,6 @@ var collectHistoryCmd = &cobra.Command{
 		fmt.Print(collectionHistoryText(source, read.Messages))
 		return nil
 	},
-}
-
-// collectionHistoryRead is what one history read produced. Stale marks messages
-// served from the local archive because the connector could not be reached, so a caller
-// can tell "up to date" from "the best we still have".
-type collectionHistoryRead struct {
-	Source   collectionHistorySourceJSON `json:"source"`
-	Messages []collector.Message         `json:"messages"`
-	// Always reported, including zero: "nothing new was said" is an answer, and
-	// omitting it would leave a caller unable to tell it from "did not sync".
-	Synced int    `json:"synced"`
-	Stale  bool   `json:"stale,omitempty"`
-	Error  string `json:"error,omitempty"`
-}
-
-// collectionHistorySync reads from the source connector and stores what came
-// back. When it fails but the conversation was synced
-// before, the local copy is served instead of an error: an expired login should
-// not take away history already on disk.
-func collectionHistorySync(source store.CollectionSource,
-	options collector.HistoryOptions) (collectionHistoryRead, error) {
-	read := collectionHistoryRead{Source: collectionHistorySourceOf(source)}
-	connector, err := collectionConnector(source.Connector)
-	if err != nil {
-		return read, err
-	}
-	historian, ok := connector.(collector.HistoryConnector)
-	if !ok {
-		return read, fmt.Errorf("collection connector %s does not support history", source.Connector)
-	}
-	messages, err := historian.History(context.Background(), source, options)
-	if err != nil {
-		local, localErr := collectionHistoryFromStore(source, options)
-		if localErr != nil || len(local) == 0 {
-			return read, err
-		}
-		read.Messages, read.Stale, read.Error = local, true, compactCollectionError(err)
-		return read, nil
-	}
-	read.Messages = messages
-	writeErr := withDB(false, func(db *sql.DB) error {
-		synced, err := store.PutCollectionMessages(db, collector.CollectionMessagesFor(source, messages))
-		read.Synced = synced
-		return err
-	})
-	return read, writeErr
-}
-
-// collectionPruneMessages drops synced chat past its retention window. A zero
-// window keeps everything, and then this does nothing at all.
-func collectionPruneMessages() error {
-	cutoff := store.RetentionCutoff(config.CollectionMessageRetentionDays, time.Now())
-	if cutoff <= 0 {
-		return nil
-	}
-	return withDB(false, func(db *sql.DB) error {
-		_, err := store.PruneCollectionMessages(db, cutoff)
-		return err
-	})
-}
-
-func collectionHistoryFromStore(source store.CollectionSource,
-	options collector.HistoryOptions) ([]collector.Message, error) {
-	query := store.CollectionMessageQuery{Connector: source.Connector,
-		ConversationID: source.ExternalID, Limit: options.Limit}
-	if !options.Since.IsZero() {
-		query.SinceTS = options.Since.Unix()
-	}
-	var messages []collector.Message
-	err := withDB(true, func(db *sql.DB) error {
-		stored, err := store.ListCollectionMessages(db, query)
-		if err != nil {
-			return err
-		}
-		messages = make([]collector.Message, 0, len(stored))
-		for _, message := range stored {
-			messages = append(messages, collector.Message{ID: message.MessageID,
-				ConversationID: message.ConversationID, Sender: message.Sender,
-				CreatedAt: message.CreatedAt, Content: message.Content})
-		}
-		return nil
-	})
-	return messages, err
-}
-
-func collectionHistorySourceOf(source store.CollectionSource) collectionHistorySourceJSON {
-	return collectionHistorySourceJSON{ID: source.ID, Connector: source.Connector,
-		Kind: source.Kind, ExternalID: source.ExternalID, Name: source.Name}
-}
-
-// compactCollectionError keeps a connector failure to one line so it reads as a note
-// above the messages rather than a wall of JSON.
-func compactCollectionError(err error) string {
-	message := strings.TrimSpace(strings.SplitN(err.Error(), "\n", 2)[0])
-	if len(message) > 160 {
-		return message[:160] + "…"
-	}
-	return message
 }
 
 var collectSearchCmd = &cobra.Command{
@@ -1043,7 +570,7 @@ var collectAnalyzeCmd = &cobra.Command{
 		}); err != nil {
 			return err
 		}
-		report, err := collector.DefaultService().Analyze(context.Background(), source.ID, options)
+		report, err := defaultCollectorService().Analyze(context.Background(), source.ID, options)
 		if jsonOutput {
 			output.JSON(report)
 			if err != nil {
@@ -1149,82 +676,6 @@ func collectionStoredSource(db *sql.DB, value string) (store.CollectionSource, e
 		"没有这个来源：%s。用 atm collect source list 看已添加的来源，或直接传 openConversationId", value)
 }
 
-// collectionHistorySourceJSON identifies the conversation that was read.
-// Reading a chat does not touch source configuration, so it reports identity
-// only: a group resolved by name but never added has no id, priority, or
-// enabled state, and emitting those zero values would read as a disabled source.
-type collectionHistorySourceJSON struct {
-	ID         string `json:"id,omitempty"`
-	Connector  string `json:"connector"`
-	Kind       string `json:"kind"`
-	ExternalID string `json:"external_id"`
-	Name       string `json:"name,omitempty"`
-}
-
-// collectionHistorySource accepts whatever identifies a conversation, most
-// precise first: a source id, the name of an already added source, a raw
-// identifier, and finally a name the selected connector can look up. The
-// database lookup is best effort — reading a chat must work before any source
-// has been added, so a missing database just falls through to the search.
-func collectionHistorySource(ctx context.Context, value string) (store.CollectionSource, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return store.CollectionSource{}, fmt.Errorf("pass a source id, source name, or connector identifier")
-	}
-	var stored store.CollectionSource
-	found := false
-	_ = withDB(true, func(db *sql.DB) error {
-		if source, err := store.GetCollectionSource(db, value); err == nil {
-			stored, found = source, true
-			return nil
-		}
-		sources, err := store.ListCollectionSources(db, "", false)
-		if err != nil {
-			return err
-		}
-		for _, source := range sources {
-			if strings.EqualFold(strings.TrimSpace(source.Name), value) {
-				stored, found = source, true
-				return nil
-			}
-		}
-		return nil
-	})
-	if found {
-		return stored, nil
-	}
-	connectorID := strings.ToLower(strings.TrimSpace(collectHistoryConnector))
-	if connectorID == "" {
-		return store.CollectionSource{}, fmt.Errorf("source is not configured; pass --connector <id> to search externally")
-	}
-	candidate, err := resolveCollectionCandidateFor(ctx, connectorID, collectHistoryKind, value)
-	if err != nil {
-		return store.CollectionSource{}, err
-	}
-	return store.CollectionSource{Connector: connectorID,
-		Kind: candidate.Kind, ExternalID: candidate.ExternalID, Name: candidate.Name}, nil
-}
-
-func collectionConnector(id string) (collector.Connector, error) {
-	registry, err := collector.DefaultRegistry()
-	if err != nil {
-		return nil, err
-	}
-	return registry.Resolve(id)
-}
-
-func collectionSearchConnectorFor(id string) (collector.SearchConnector, error) {
-	connector, err := collectionConnector(id)
-	if err != nil {
-		return nil, err
-	}
-	searcher, ok := connector.(collector.SearchConnector)
-	if !ok {
-		return nil, fmt.Errorf("collection connector %s does not support search; pass --kind and --id", id)
-	}
-	return searcher, nil
-}
-
 func collectionHistoryText(source store.CollectionSource, messages []collector.Message) string {
 	var builder strings.Builder
 	title := emptyAs(source.Name, source.ExternalID)
@@ -1248,7 +699,7 @@ func collectionHistoryText(source store.CollectionSource, messages []collector.M
 var collectItemCmd = &cobra.Command{
 	Use:   "item",
 	Short: "Correct or retry collection decisions",
-	Args:  cobra.NoArgs,
+	Args:  noSubcommandArgs,
 	RunE:  showHelp,
 }
 
@@ -1257,11 +708,15 @@ var collectItemReprocessCmd = &cobra.Command{
 	Short: "Run extraction again for a failed, ignored or insight item",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		item, err := collector.DefaultService().Reprocess(context.Background(), args[0])
+		result, err := defaultCollectorService().Reprocess(
+			cmd.Context(),
+			collectionCLICall("reprocess"),
+			collector.ReprocessInput{ItemID: args[0]},
+		)
 		if err != nil {
 			return err
 		}
-		return printCollectionItem(item)
+		return printCollectionItem(result.Item)
 	},
 }
 
@@ -1270,11 +725,15 @@ var collectItemPromoteCmd = &cobra.Command{
 	Short: "Turn an ignored, insight or failed item into a Todo",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		item, err := collector.DefaultService().Promote(args[0], collectionItemCorrection(cmd))
+		result, err := defaultCollectorService().Promote(
+			cmd.Context(),
+			collectionCLICall("promote"),
+			collector.PromoteInput{ItemID: args[0], Correction: collectionItemCorrection(cmd)},
+		)
 		if err != nil {
 			return err
 		}
-		return printCollectionItem(item)
+		return printCollectionItem(result.Item)
 	},
 }
 
@@ -1283,11 +742,15 @@ var collectItemCorrectCmd = &cobra.Command{
 	Short: "Correct the title, project, or priority of an item and its Todo",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		item, err := collector.DefaultService().Correct(args[0], collectionItemCorrection(cmd))
+		result, err := defaultCollectorService().Correct(
+			cmd.Context(),
+			collectionCLICall("correct"),
+			collector.CorrectInput{ItemID: args[0], Correction: collectionItemCorrection(cmd)},
+		)
 		if err != nil {
 			return err
 		}
-		return printCollectionItem(item)
+		return printCollectionItem(result.Item)
 	},
 }
 
@@ -1296,11 +759,15 @@ var collectItemSaveCmd = &cobra.Command{
 	Short: "Save an insight conclusion to the knowledge base",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		item, err := collector.DefaultService().SaveConclusion(args[0], collectItemCollection)
+		result, err := defaultCollectorService().SaveConclusion(
+			cmd.Context(),
+			collectionCLICall("save"),
+			collector.SaveConclusionInput{ItemID: args[0], Collection: collectItemCollection},
+		)
 		if err != nil {
 			return err
 		}
-		return printCollectionItem(item)
+		return printCollectionItem(result.Item)
 	},
 }
 
@@ -1320,21 +787,15 @@ var collectItemReadCmd = &cobra.Command{
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return withDB(false, func(db *sql.DB) error {
-			if collectItemReadAll {
-				count, err := store.MarkAllCollectionItemsRead(db)
-				if err != nil {
-					return err
-				}
-				if jsonOutput {
-					output.JSON(map[string]any{"count": count, "read": true})
-				} else {
-					fmt.Printf("Marked %d collection results read\n", count)
-				}
-				return nil
-			}
-			return printCollectionReadChange(db, uniqueStrings(args), true)
-		})
+		result, err := defaultCollectorService().SetItemsRead(
+			cmd.Context(), collectionCLICall("items-read"), collector.SetItemsReadInput{
+				ItemIDs: uniqueStrings(args), All: collectItemReadAll, Read: true,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		return printCollectionReadChange(result)
 	},
 }
 
@@ -1343,9 +804,14 @@ var collectItemUnreadCmd = &cobra.Command{
 	Short: "Mark collection results as unread",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return withDB(false, func(db *sql.DB) error {
-			return printCollectionReadChange(db, uniqueStrings(args), false)
-		})
+		result, err := defaultCollectorService().SetItemsRead(
+			cmd.Context(), collectionCLICall("items-unread"),
+			collector.SetItemsReadInput{ItemIDs: uniqueStrings(args), Read: false},
+		)
+		if err != nil {
+			return err
+		}
+		return printCollectionReadChange(result)
 	},
 }
 
@@ -1357,9 +823,14 @@ var collectItemArchiveCmd = &cobra.Command{
 		"results can be restored with `atm collect item unarchive`.",
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return withDB(false, func(db *sql.DB) error {
-			return printCollectionArchiveChange(db, uniqueStrings(args), true)
-		})
+		result, err := defaultCollectorService().SetItemsArchived(
+			cmd.Context(), collectionCLICall("items-archive"),
+			collector.SetItemsArchivedInput{ItemIDs: uniqueStrings(args), Archived: true},
+		)
+		if err != nil {
+			return err
+		}
+		return printCollectionArchiveChange(result)
 	},
 }
 
@@ -1368,43 +839,40 @@ var collectItemUnarchiveCmd = &cobra.Command{
 	Short: "Reopen archived collection results",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return withDB(false, func(db *sql.DB) error {
-			return printCollectionArchiveChange(db, uniqueStrings(args), false)
-		})
+		result, err := defaultCollectorService().SetItemsArchived(
+			cmd.Context(), collectionCLICall("items-unarchive"),
+			collector.SetItemsArchivedInput{ItemIDs: uniqueStrings(args), Archived: false},
+		)
+		if err != nil {
+			return err
+		}
+		return printCollectionArchiveChange(result)
 	},
 }
 
-func printCollectionArchiveChange(db *sql.DB, ids []string, archived bool) error {
-	items, err := store.SetCollectionItemsArchived(db, ids, archived)
-	if err != nil {
-		return err
-	}
+func printCollectionArchiveChange(result collector.SetItemsArchivedResult) error {
 	if jsonOutput {
-		output.JSON(map[string]any{"items": items, "count": len(items), "archived": archived})
+		output.JSON(result)
 		return nil
 	}
 	verb := "Reopened"
-	if archived {
+	if result.Archived {
 		verb = "Archived"
 	}
-	fmt.Printf("%s %d collection results\n", verb, len(items))
+	fmt.Printf("%s %d collection results\n", verb, result.Count)
 	return nil
 }
 
-func printCollectionReadChange(db *sql.DB, ids []string, read bool) error {
-	items, err := store.SetCollectionItemsRead(db, ids, read)
-	if err != nil {
-		return err
-	}
+func printCollectionReadChange(result collector.SetItemsReadResult) error {
 	if jsonOutput {
-		output.JSON(map[string]any{"items": items, "count": len(items), "read": read})
+		output.JSON(result)
 		return nil
 	}
 	state := "unread"
-	if read {
+	if result.Read {
 		state = "read"
 	}
-	fmt.Printf("Marked %d collection results %s\n", len(items), state)
+	fmt.Printf("Marked %d collection results %s\n", result.Count, state)
 	return nil
 }
 
@@ -1417,12 +885,28 @@ var collectItemRevertCmd = &cobra.Command{
 		if err != nil || !confirmed {
 			return err
 		}
-		item, err := collector.DefaultService().Revert(args[0])
+		result, err := defaultCollectorService().Revert(
+			cmd.Context(),
+			collectionCLICall("revert"),
+			collector.RevertInput{ItemID: args[0], Confirmed: true},
+		)
 		if err != nil {
 			return err
 		}
-		return printCollectionItem(item)
+		return printCollectionItem(result.Item)
 	},
+}
+
+func collectionCLICall(operation string) application.Call {
+	return cliApplicationCall("collect-"+operation, "")
+}
+
+func collectionAgentFromEnvironment() string {
+	return cliAgentFromEnvironment()
+}
+
+func collectionSessionFromEnvironment() string {
+	return cliSessionFromEnvironment()
 }
 
 var collectItemDeleteCmd = &cobra.Command{
@@ -1447,37 +931,32 @@ var collectItemDeleteCmd = &cobra.Command{
 		if err != nil || !confirmed {
 			return err
 		}
-		return withDB(false, func(db *sql.DB) error {
-			items, err := store.DeleteCollectionItems(db, ids)
-			if err != nil {
-				return err
-			}
-			if jsonOutput {
-				deleted := make([]map[string]any, 0, len(items))
-				for _, item := range items {
-					deleted = append(deleted, map[string]any{"id": item.ID, "todo_id": item.TodoID})
-				}
-				output.JSON(map[string]any{"deleted": deleted, "count": len(deleted)})
-				return nil
-			}
-			if len(items) == 1 {
-				fmt.Printf("Deleted collection item %s\n", items[0].ID)
-			} else {
-				fmt.Printf("Deleted %d collection items\n", len(items))
-			}
-			// The Todos outliving their records is the one surprise here, so it is
-			// said out loud rather than left to be discovered.
-			kept := []string{}
-			for _, item := range items {
-				if item.TodoID != "" {
-					kept = append(kept, item.TodoID)
-				}
-			}
-			if len(kept) > 0 {
-				fmt.Printf("  todos kept: %s\n", strings.Join(kept, ", "))
-			}
+		result, err := defaultCollectorService().DeleteItems(
+			cmd.Context(), collectionCLICall("items-delete"),
+			collector.DeleteItemsInput{ItemIDs: ids, Confirmed: true},
+		)
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			output.JSON(result)
 			return nil
-		})
+		}
+		if result.Count == 1 {
+			fmt.Printf("Deleted collection item %s\n", result.Deleted[0].ID)
+		} else {
+			fmt.Printf("Deleted %d collection items\n", result.Count)
+		}
+		kept := []string{}
+		for _, item := range result.Deleted {
+			if item.TodoID != "" {
+				kept = append(kept, item.TodoID)
+			}
+		}
+		if len(kept) > 0 {
+			fmt.Printf("  todos kept: %s\n", strings.Join(kept, ", "))
+		}
+		return nil
 	},
 }
 

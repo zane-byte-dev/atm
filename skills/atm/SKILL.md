@@ -144,6 +144,13 @@ ATM 不代为启动任何会话。收到这样一行指针时，按它列出的�
 Todo 离开 `in_progress` 时 ATM 会先关闭 binding 再保存新状态。需要审计迁移时读取
 `atm todo show <id> --json` 的 `bindings[].unbound_at/reason`，不要用当前状态倒推历史。
 
+复杂任务需要跨轮维护执行计划时，用 `atm todo plan set [id] --file -` 提交整份 JSON 快照，
+不要用一组 add-step/complete-step 微命令，也不要把临时步骤批量转成永久 Todo。快照包含
+`base_revision`、可选 `explanation` 和 `items[{step,status}]`；status 只允许
+`pending/in_progress/completed`，且最多一个 `in_progress`。更新前从 `todo show --json`、
+`todo context --json` 或 `todo doc` 读取最新 revision，冲突时重新读取后合并。计划全部完成也不会
+自动 submit/done；只有可独立交付和验收的事项才另建 Todo 并用 `depend` 关联。
+
 ### 记录里程碑
 
 `atm todo log` 只记录已完成里程碑或进入外部等待，不记录调查过程、方案推演和操作流水。完成有意义的阶段后：
@@ -152,15 +159,15 @@ Todo 离开 `in_progress` 时 ATM 会先关闭 binding 再保存新状态。需�
 atm todo log "结果：<交付变化>；证据：<验证边界>；下一步：<唯一动作>"
 ```
 
-会话已绑定时，`log/show/doc/lint/done/wait/drop` 均可省略 ID；显式 ID 仍兼容。
+会话已绑定时，`log/show/doc/lint/submit/done/wait/drop` 均可省略 ID；显式 ID 仍兼容。
 
 进展日志必须遵守：
 
 - 每个阶段最多一条完成动态；中间准备状态不写，除非工作暂停在可观察的外部条件。
 - 单条不超过 400 个 Unicode 字符，只写一个段落。源码调查、架构映射、备选方案和列表写到
   `atm todo log <id> "<detail>" --section 分析`，不要塞进 `进展`。
-- 状态先结构化、后留痕：开始用 `start`，完成用 `done`，等待用 `wait`，其他状态用 `edit --status`，维护标签用 `maintain`，依赖用
-  `depend`。日志不能代替这些状态命令，也不能代替 description 中的真实清单更新。
+- 状态先结构化、后留痕：开始用 `start`，执行计划用 `plan set`，Agent 实现完成用 `submit`，人的最终验收用 `done`，等待用 `wait`，其他状态用 `edit --status`，维护标签用 `maintain`，依赖用
+  `depend`。日志不能代替这些状态命令，也不能代替 description 或 plan 中的真实清单更新。
 - 日志里提到的 `tNN` 必须已经创建且可由 `atm todo show <id>` 查到；不得先在自由文本中声称拆出了不存在的子任务。
 - 写完或接手历史任务时可运行 `atm todo lint <id>`，检查超长/多段动态、未知 todo 引用、重复阶段日志和 Markdown 元数据漂移。
 
@@ -175,7 +182,7 @@ atm todo submit --reason "<结果与证据>"
 `submit` 只把 `in_progress` 任务提交到 `review`，不会标记 `done`。Agent 后台 run 成功退出时也只能
 走这条提交路径；模型输出或进程退出码本身不是完成事实。
 
-全部完成且没有剩余必需工作时：
+人已完成验收且没有剩余必需工作时：
 
 ```bash
 atm todo done --reason "<最终结果>"
@@ -187,7 +194,7 @@ atm todo done --reason "<最终结果>"
 atm todo wait --wake "<可观察的唤醒条件>"
 ```
 
-`done`、`drop` 和 `wait` 会自动解除关联会话，避免下次启动沿用失效任务。
+`submit`、`done`、`drop` 和 `wait` 会自动解除关联会话，避免下次启动沿用失效任务。
 
 主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status` 或 `maintain`。不要只在回复里描述状态变化而不更新 ATM。
 
@@ -217,7 +224,7 @@ Todo 的 `review` 状态表示等待人审阅、验收或决策，不表示代�
 ### Review 流程
 
 1. 确认当前会话绑定的是本次代码任务；读取 Todo 的最新目标、约束、验收条件、未决事项和必要的少量历史。
-2. 优先运行 `atm todo context [id] --json` 取得即时、只读上下文；单一活跃 worktree 会自动选择，多个活跃 worktree 时必须用 `--cwd` 明确目标。该命令只汇总 Todo、Session 绑定、Git revision、staged/unstaged/untracked 文件和历史里程碑，不持久化 handoff、不输出完整 diff、不运行测试、不修改状态。`review-context` 只是兼容别名。
+2. 优先运行 `atm todo context [id] --json` 取得即时、只读上下文；单一活跃 worktree 会自动选择，多个活跃 worktree 时必须用 `--cwd` 明确目标。该命令只汇总 Todo、Session 绑定、Git revision、staged/unstaged/untracked 文件和历史里程碑，不持久化 handoff、不输出完整 diff、不运行测试、不修改状态。
 3. 继续检查 `git status --short`、`git diff` 和 `git diff --cached`，并按 context/status 读取相关 untracked 文件。上下文快照不能替代实际 diff；用户指定 commit、branch、MR/PR 或 base 时，以指定比较范围为准。
 4. 逐项对照需求检查本轮所有相关改动，覆盖行为正确性、回归风险、错误处理、安全与隐私边界、兼容性及测试缺口；不要只看风格，也不要只抽查部分 diff。
 5. 运行与风险相称的测试或静态检查，并准确记录命令、结果和未覆盖边界。`context.verification.status=not_run` 只表示该命令本身没有运行测试；历史里程碑中的测试结论仍是未独立核验的追溯证据。
@@ -233,7 +240,8 @@ Todo 的 `review` 状态表示等待人审阅、验收或决策，不表示代�
 - `artifact`：版本化产物，例如报告、方案和最终 Markdown。
 
 Knowledge collection 是 `~/.atm/knowledge/<id>/` 目录，不是文档 frontmatter 字段。集合级新建、
-编辑 manifest、重命名和删除使用 `atm knowledge collection`；删除非空集合必须明确 `--force`
+编辑 manifest、重命名和删除使用 `atm knowledge collection`；删除非空集合必须明确 `--force`，永久删除在
+非交互调用中还必须传 `--yes`（交互终端会先确认）
 或 `--move-to`，不要直接操作目录绕过冲突检查。
 
 读取请求不授权写入。新增、替换或遗忘长期记忆，导入知识，保存 artifact，都应符合用户当前目标，并保留来源、状态和可撤销路径。不要把临时推测写成长期事实。

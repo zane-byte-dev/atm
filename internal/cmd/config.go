@@ -5,14 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
@@ -83,99 +80,13 @@ Settable keys:
 	RunE:      runConfig,
 }
 
-// settableConfigKeys maps `atm config set` keys to a value parser. Kept
-// deliberately small: path-style settings should be edited in config.json
-// where the surrounding context is visible.
-var settableConfigKeys = map[string]func(string) (any, error){
-	"owner_name":                  parseNonEmptyStringValue,
-	"grok_live_quota":             parseBoolValue,
-	"collection_enabled":          parseBoolValue,
-	"collection_interval_minutes": parsePositiveIntValue,
-	"collection_lookback_minutes": parsePositiveIntValue,
-	// 0 is a real setting here: keep synced chat forever.
-	"collection_message_retention_days": parseNonNegativeIntValue,
-	"text_model_base_url":               parseHTTPURLValue,
-	"text_model_name":                   parseNonEmptyStringValue,
-	"text_model_source":                 parseTextModelSourceValue,
-	"todo_refine_prompt":                parseTodoRefinePromptValue,
-	"todo_refine_on_add":                parseBoolValue,
-}
-
-func parseTextModelSourceValue(s string) (any, error) {
-	value := strings.Join(strings.Fields(s), " ")
-	if value == "" {
-		return nil, fmt.Errorf("source label must not be empty")
-	}
-	if utf8.RuneCountInString(value) > 80 {
-		return nil, fmt.Errorf("source label must be at most 80 characters")
-	}
-	return value, nil
-}
-
-func parseTodoRefinePromptValue(s string) (any, error) {
-	value := strings.TrimSpace(s)
-	if utf8.RuneCountInString(value) > 4000 {
-		return nil, fmt.Errorf("todo refine prompt must be at most 4000 characters")
-	}
-	return value, nil
-}
-
-func parseHTTPURLValue(s string) (any, error) {
-	value := strings.TrimRight(strings.TrimSpace(s), "/")
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return nil, fmt.Errorf("expected an http or https URL, got %q", s)
-	}
-	return value, nil
-}
-
-func parseBoolValue(s string) (any, error) {
-	switch strings.ToLower(s) {
-	case "true", "1", "on", "yes":
-		return true, nil
-	case "false", "0", "off", "no":
-		return false, nil
-	}
-	return nil, fmt.Errorf("expected true or false, got %q", s)
-}
-
-func parsePositiveIntValue(s string) (any, error) {
-	value, err := strconv.Atoi(s)
-	if err != nil || value < 1 {
-		return nil, fmt.Errorf("expected a positive integer, got %q", s)
-	}
-	return value, nil
-}
-
-func parseNonNegativeIntValue(s string) (any, error) {
-	value, err := strconv.Atoi(s)
-	if err != nil || value < 0 {
-		return nil, fmt.Errorf("expected zero or a positive integer, got %q", s)
-	}
-	return value, nil
-}
-
-func parseNonEmptyStringValue(s string) (any, error) {
-	if strings.TrimSpace(s) == "" {
-		return nil, fmt.Errorf("value must not be empty")
-	}
-	return s, nil
-}
-
 var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Write one setting to ~/.atm/config.json",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		parse, ok := settableConfigKeys[args[0]]
-		if !ok {
-			return fmt.Errorf("unknown or non-settable key: %s (settable: %s)", args[0], strings.Join(settableKeyNames(), ", "))
-		}
-		value, err := parse(args[1])
+		value, err := config.Default.Set(args[0], args[1])
 		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w", args[0], err)
-		}
-		if err := config.SetConfigValue(args[0], value); err != nil {
 			return err
 		}
 		if jsonOutput {
@@ -192,32 +103,9 @@ var configGetCmd = &cobra.Command{
 	Short: "Read one setting (effective value, including env overrides)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var value any
-		switch args[0] {
-		case "owner_name":
-			value = config.OwnerName
-		case "grok_live_quota":
-			value = config.GrokLiveQuota
-		case "collection_enabled":
-			value = config.CollectionEnabled
-		case "collection_interval_minutes":
-			value = config.CollectionIntervalMinutes
-		case "collection_lookback_minutes":
-			value = config.CollectionLookbackMinutes
-		case "collection_message_retention_days":
-			value = config.CollectionMessageRetentionDays
-		case "text_model_base_url":
-			value = config.TextModelBaseURL
-		case "text_model_name":
-			value = config.TextModelName
-		case "text_model_source":
-			value = config.TextModelSource
-		case "todo_refine_prompt":
-			value = config.TodoRefinePrompt
-		case "todo_refine_on_add":
-			value = config.TodoRefineOnAdd
-		default:
-			return fmt.Errorf("unknown key: %s (readable: %s)", args[0], strings.Join(settableKeyNames(), ", "))
+		value, err := config.Default.Get(args[0])
+		if err != nil {
+			return err
 		}
 		if jsonOutput {
 			output.JSON(map[string]any{"key": args[0], "value": value})
@@ -249,7 +137,7 @@ var configTestTextModelCmd = &cobra.Command{
 var configCredentialCmd = &cobra.Command{
 	Use:   "credential",
 	Short: "Manage the local DeepSeek credential",
-	Args:  cobra.NoArgs,
+	Args:  noSubcommandArgs,
 	RunE:  showHelp,
 }
 
@@ -258,15 +146,15 @@ var configCredentialStatusCmd = &cobra.Command{
 	Short: "Report whether the DeepSeek credential is configured",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		configured, err := config.TextModelAPIKeyConfigured()
+		status, err := config.Default.CredentialStatus()
 		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			output.JSON(map[string]any{"configured": configured})
+			output.JSON(status)
 			return nil
 		}
-		if configured {
+		if status.Configured {
 			fmt.Println("DeepSeek API Key is configured")
 		} else {
 			fmt.Println("DeepSeek API Key is not configured")
@@ -280,19 +168,16 @@ var configCredentialSetCmd = &cobra.Command{
 	Short: "Read the DeepSeek API Key from stdin and save it privately",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		const maxCredentialBytes = 64 << 10
-		data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), maxCredentialBytes+1))
+		data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), config.MaxCredentialBytes+1))
 		if err != nil {
 			return fmt.Errorf("read DeepSeek API Key from stdin: %w", err)
 		}
-		if len(data) > maxCredentialBytes {
-			return fmt.Errorf("DeepSeek API Key exceeds %d bytes", maxCredentialBytes)
-		}
-		if err := config.SaveTextModelAPIKey(string(data)); err != nil {
+		status, err := config.Default.SaveCredential(config.CredentialSaveInput{APIKey: string(data)})
+		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			output.JSON(map[string]any{"configured": true})
+			output.JSON(status)
 			return nil
 		}
 		fmt.Printf("Saved DeepSeek API Key to %s\n", config.CredentialsPath())
@@ -305,25 +190,17 @@ var configCredentialDeleteCmd = &cobra.Command{
 	Short: "Delete the locally saved DeepSeek credential",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		if err := config.DeleteTextModelAPIKey(); err != nil {
+		status, err := config.Default.DeleteCredential()
+		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			output.JSON(map[string]any{"configured": false})
+			output.JSON(status)
 			return nil
 		}
 		fmt.Println("Deleted DeepSeek API Key")
 		return nil
 	},
-}
-
-func settableKeyNames() []string {
-	names := make([]string, 0, len(settableConfigKeys))
-	for name := range settableConfigKeys {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }
 
 var updatePricingCmd = &cobra.Command{

@@ -12,6 +12,7 @@ import (
 
 func TestCollectSourceAndStatusCommandsExposeAuditContract(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCollectionCLI(t)
 	oldJSON := jsonOutput
 	oldKind, oldExternalID, oldName := collectSourceKind, collectSourceExternalID, collectSourceName
 	oldProject, oldPriority, oldDisabled := collectSourceProject, collectSourcePriority, collectSourceDisabled

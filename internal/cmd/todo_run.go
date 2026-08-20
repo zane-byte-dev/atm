@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/agentevent"
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
+	workapp "github.com/zane-byte-dev/atm/internal/work"
 
 	"github.com/spf13/cobra"
 )
@@ -27,7 +29,6 @@ var (
 	resolveTaskRunAgentBinary = exec.LookPath
 	launchTaskRunController   = startTaskRunController
 	buildTaskRunAgentCommand  = buildTaskRunCommand
-	interruptTaskRunProcess   = terminateTaskRunProcess
 )
 
 func runTodoRun(cmd *cobra.Command, args []string) error {
@@ -72,11 +73,16 @@ func runTodoRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	todoFile, todo, err := startTodo(todo.ID)
+	startCall := todoWorkflowCLICall("run-start")
+	started, err := workapp.Default.Start(cmd.Context(), startCall, workapp.StartInput{TodoID: todo.ID})
 	if err != nil {
 		return err
 	}
-	if err := ensureTodoDocs(todoFile, todo.ID); err != nil {
+	if err := workapp.Default.DeliverEffects(cmd.Context(), startCall, started.Effects, localWorkEffectExecutor{}); err != nil {
+		return err
+	}
+	todo = &started.Todo
+	if _, err := store.EnsureTodoDoc(todo); err != nil {
 		return err
 	}
 
@@ -188,10 +194,14 @@ func startTaskRunController(run store.TaskRun) (int, error) {
 }
 
 func runTodoRunController(cmd *cobra.Command, args []string) error {
-	return executeTaskRun(args[0])
+	return executeTaskRunContext(cmd.Context(), args[0])
 }
 
 func executeTaskRun(runID string) error {
+	return executeTaskRunContext(context.Background(), runID)
+}
+
+func executeTaskRunContext(ctx context.Context, runID string) error {
 	var run *store.TaskRun
 	if err := withDB(false, func(db *sql.DB) error {
 		var err error
@@ -253,9 +263,18 @@ func executeTaskRun(runID string) error {
 	reportTaskRunSessionEnd(*run, codexOutput.sessionID)
 
 	if exitCode == 0 {
-		_, _, _, submitErr := submitTodo(run.TodoID, fmt.Sprintf("agent run %s completed", run.ID))
+		submitCall := taskRunSubmitCall(*run, codexOutput.sessionID)
+		submitResult, submitErr := workapp.Default.Submit(ctx, submitCall, workapp.SubmitInput{
+			TodoID: run.TodoID,
+			Reason: fmt.Sprintf("agent run %s completed", run.ID),
+		})
 		if submitErr != nil {
 			message += "; todo not submitted: " + submitErr.Error()
+		} else if effectErr := workapp.Default.DeliverEffects(ctx, submitCall, submitResult.Effects, localWorkEffectExecutor{}); effectErr != nil {
+			// The lifecycle transaction already committed. Keep the distinction in
+			// the durable run message so operators do not retry the Agent merely to
+			// repair a Markdown or notification side effect.
+			message += "; todo submitted but post-commit effects failed: " + effectErr.Error()
 		}
 	}
 	finished := time.Now().In(config.Loc)
@@ -263,6 +282,22 @@ func executeTaskRun(runID string) error {
 	return withDB(false, func(db *sql.DB) error {
 		return store.FinishTaskRun(db, run.ID, exitCode, finished.Unix(), message)
 	})
+}
+
+// taskRunSubmitCall is controller-owned provenance. Neither the child Agent's
+// output nor ordinary environment variables can change the actor kind, run ID,
+// or origin used for the automatic review transition.
+func taskRunSubmitCall(run store.TaskRun, sessionID string) application.Call {
+	return application.Call{
+		RequestID: "run:" + run.ID + ":submit",
+		Actor: application.Actor{
+			Kind:      application.ActorController,
+			Origin:    application.OriginController,
+			SessionID: strings.TrimSpace(sessionID),
+			RunID:     run.ID,
+			Agent:     run.Agent,
+		},
+	}
 }
 
 // reportTaskRunSessionEnd tells the App that this thread is gone.
@@ -541,182 +576,4 @@ func validateTaskRunCWD(value, source string) (string, string, error) {
 		return "", "", fmt.Errorf("run cwd is not a directory: %s", absolute)
 	}
 	return absolute, source, nil
-}
-
-func runTodoRuns(cmd *cobra.Command, args []string) error {
-	if _, _, err := loadTodoByID(args[0]); err != nil {
-		return err
-	}
-	return withDB(true, func(db *sql.DB) error {
-		runs, err := store.ListTaskRuns(db, args[0])
-		if err != nil {
-			return err
-		}
-		if jsonOutput {
-			output.JSON(runs)
-			return nil
-		}
-		if len(runs) == 0 {
-			fmt.Println("No runs recorded.")
-			return nil
-		}
-		for _, run := range runs {
-			age := time.Unix(run.StartTS, 0).In(config.Loc).Format("01-02 15:04:05")
-			session := "-"
-			if run.SessionID != nil {
-				session = *run.SessionID
-				if len(session) > 12 {
-					session = session[:12]
-				}
-			}
-			fmt.Printf("%-20s %-9s %-9s pid=%-7d session=%-12s %s\n",
-				age, run.Agent, run.Status, run.PID, session, run.Message)
-		}
-		return nil
-	})
-}
-
-func runTodoRunInterrupt(cmd *cobra.Command, args []string) error {
-	if _, _, err := loadTodoByID(args[0]); err != nil {
-		return err
-	}
-	var run *store.TaskRun
-	if err := withDB(true, func(db *sql.DB) error {
-		var err error
-		run, err = store.ActiveTaskRun(db, args[0])
-		return err
-	}); err != nil {
-		return err
-	}
-	if run == nil {
-		return fmt.Errorf("todo %s has no active agent run", args[0])
-	}
-	if run.PID <= 0 {
-		return fmt.Errorf("agent run %s is still starting; try again shortly", run.ID)
-	}
-	if err := interruptTaskRunProcess(run.PID); err != nil {
-		return fmt.Errorf("interrupt agent run %s: %w", run.ID, err)
-	}
-
-	finished := time.Now().In(config.Loc)
-	message := "interrupted by user"
-	if err := withDB(false, func(db *sql.DB) error {
-		return store.InterruptTaskRun(db, run.ID, finished.Unix(), message)
-	}); err != nil {
-		return err
-	}
-	if logFile, err := os.OpenFile(run.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600); err == nil {
-		fmt.Fprintf(logFile, "\nATM run interrupted by user at %s\n", finished.Format(time.RFC3339))
-		_ = logFile.Close()
-	}
-	// A killed Agent cannot report its own end, and interrupting one that was
-	// blocked on approval is exactly when a stale 等待授权 banner would outlive
-	// the process.
-	reportTaskRunSessionEnd(*run, store.ResumableThreadID(run.SessionID))
-	if err := withDB(true, func(db *sql.DB) error {
-		var err error
-		run, err = store.GetTaskRun(db, run.ID)
-		return err
-	}); err != nil {
-		return err
-	}
-	if jsonOutput {
-		output.JSON(map[string]any{"run": run})
-		return nil
-	}
-	fmt.Printf("Interrupted %s agent run %s\n", args[0], run.ID)
-	return nil
-}
-
-func runTodoRunTail(cmd *cobra.Command, args []string) error {
-	if todoRunTailBytesFlag < 0 {
-		return fmt.Errorf("tail bytes must be zero or greater")
-	}
-	if _, _, err := loadTodoByID(args[0]); err != nil {
-		return err
-	}
-	var run *store.TaskRun
-	if err := withDB(true, func(db *sql.DB) error {
-		var err error
-		run, err = store.LatestTaskRun(db, args[0])
-		return err
-	}); err != nil {
-		return err
-	}
-	if run == nil {
-		return fmt.Errorf("todo %s has no agent runs", args[0])
-	}
-	file, err := os.Open(run.LogPath)
-	if err != nil {
-		return fmt.Errorf("open run log: %w", err)
-	}
-	defer file.Close()
-	if err := copyTaskRunLogTail(cmd.OutOrStdout(), file, todoRunTailBytesFlag); err != nil {
-		return err
-	}
-	for {
-		if !todoRunTailFollowFlag {
-			return nil
-		}
-		var active bool
-		if err := withDB(true, func(db *sql.DB) error {
-			current, err := store.GetTaskRun(db, run.ID)
-			if err != nil {
-				return err
-			}
-			active = current != nil && (current.Status == store.TaskRunStarting || current.Status == store.TaskRunRunning)
-			return nil
-		}); err != nil {
-			return err
-		}
-		if !active {
-			_, err := io.Copy(cmd.OutOrStdout(), file)
-			return err
-		}
-		time.Sleep(500 * time.Millisecond)
-		if _, err := io.Copy(cmd.OutOrStdout(), file); err != nil {
-			return err
-		}
-	}
-}
-
-const taskRunLogTruncatedNotice = "[... earlier log truncated ...]\n"
-
-// copyTaskRunLogTail keeps App refreshes bounded without changing the CLI's
-// traditional full-log default. Seeking is constant-memory and skipping UTF-8
-// continuation bytes prevents a byte cap from producing invalid text.
-func copyTaskRunLogTail(out io.Writer, file *os.File, maxBytes int64) error {
-	if maxBytes <= 0 {
-		_, err := io.Copy(out, file)
-		return err
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if info.Size() <= maxBytes {
-		_, err = io.Copy(out, file)
-		return err
-	}
-	if _, err := file.Seek(info.Size()-maxBytes, io.SeekStart); err != nil {
-		return err
-	}
-	reader := bufio.NewReader(file)
-	for {
-		value, readErr := reader.ReadByte()
-		if readErr != nil {
-			return readErr
-		}
-		if value&0xc0 != 0x80 {
-			if err := reader.UnreadByte(); err != nil {
-				return err
-			}
-			break
-		}
-	}
-	if _, err := io.WriteString(out, taskRunLogTruncatedNotice); err != nil {
-		return err
-	}
-	_, err = io.Copy(out, reader)
-	return err
 }

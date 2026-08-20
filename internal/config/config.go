@@ -412,16 +412,15 @@ func applyEnvOverrides() {
 	}
 }
 
-// SetConfigValue rewrites one key in ~/.atm/config.json, preserving every
-// other field (including ones this build does not know about). Used by
-// `atm config set` so GUI toggles have a stable write path.
+// SetConfigValue is the typed compatibility entry point for callers that have
+// not moved to Service.Set or Service.Apply yet. Validation and persistence use
+// the same registry as both transports, and unknown config fields are preserved.
 func SetConfigValue(key string, value any) error {
-	raw, err := loadRawConfig()
+	normalized, err := normalizeSettings(map[string]any{key: value})
 	if err != nil {
 		return err
 	}
-	raw[key] = value
-	return saveRawConfig(raw)
+	return writeSettings(normalized)
 }
 
 // SaveGuardToolBin records where a tool's gate was installed.
@@ -436,27 +435,26 @@ func SetConfigValue(key string, value any) error {
 // a more useful answer than "not found", and it means a reinstall does not need
 // --bin again.
 func SaveGuardToolBin(tool, bin string) error {
-	raw, err := loadRawConfig()
+	err := mutateRawConfig(func(raw map[string]any) error {
+		guardRaw, _ := raw["guard"].(map[string]any)
+		if guardRaw == nil {
+			guardRaw = map[string]any{}
+		}
+		toolsRaw, _ := guardRaw["tools"].(map[string]any)
+		if toolsRaw == nil {
+			toolsRaw = map[string]any{}
+		}
+		toolRaw, _ := toolsRaw[tool].(map[string]any)
+		if toolRaw == nil {
+			toolRaw = map[string]any{}
+		}
+		toolRaw["bin"] = bin
+		toolsRaw[tool] = toolRaw
+		guardRaw["tools"] = toolsRaw
+		raw["guard"] = guardRaw
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	guardRaw, _ := raw["guard"].(map[string]any)
-	if guardRaw == nil {
-		guardRaw = map[string]any{}
-	}
-	toolsRaw, _ := guardRaw["tools"].(map[string]any)
-	if toolsRaw == nil {
-		toolsRaw = map[string]any{}
-	}
-	toolRaw, _ := toolsRaw[tool].(map[string]any)
-	if toolRaw == nil {
-		toolRaw = map[string]any{}
-	}
-	toolRaw["bin"] = bin
-	toolsRaw[tool] = toolRaw
-	guardRaw["tools"] = toolsRaw
-	raw["guard"] = guardRaw
-	if err := saveRawConfig(raw); err != nil {
 		return err
 	}
 	ReloadGuard()
@@ -520,22 +518,21 @@ func RemoveGuardRule(tool, ruleID string) error {
 // by `atm guard uninstall`, and silently leaving one in place while forgetting
 // where it is would be the worst of both.
 func RemoveGuardTool(tool string) error {
-	raw, err := loadRawConfig()
+	err := mutateRawConfig(func(raw map[string]any) error {
+		guardRaw, _ := raw["guard"].(map[string]any)
+		if guardRaw == nil {
+			return nil
+		}
+		toolsRaw, _ := guardRaw["tools"].(map[string]any)
+		if toolsRaw == nil {
+			return nil
+		}
+		delete(toolsRaw, tool)
+		guardRaw["tools"] = toolsRaw
+		raw["guard"] = guardRaw
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	guardRaw, _ := raw["guard"].(map[string]any)
-	if guardRaw == nil {
-		return nil
-	}
-	toolsRaw, _ := guardRaw["tools"].(map[string]any)
-	if toolsRaw == nil {
-		return nil
-	}
-	delete(toolsRaw, tool)
-	guardRaw["tools"] = toolsRaw
-	raw["guard"] = guardRaw
-	if err := saveRawConfig(raw); err != nil {
 		return err
 	}
 	ReloadGuard()
@@ -545,27 +542,26 @@ func RemoveGuardTool(tool string) error {
 // mutateGuardTool applies a change to one tool's entry, leaving every other
 // field in the file — including ones this build does not know about — untouched.
 func mutateGuardTool(tool string, apply func(toolRaw map[string]any)) error {
-	raw, err := loadRawConfig()
+	err := mutateRawConfig(func(raw map[string]any) error {
+		guardRaw, _ := raw["guard"].(map[string]any)
+		if guardRaw == nil {
+			guardRaw = map[string]any{}
+		}
+		toolsRaw, _ := guardRaw["tools"].(map[string]any)
+		if toolsRaw == nil {
+			toolsRaw = map[string]any{}
+		}
+		toolRaw, _ := toolsRaw[tool].(map[string]any)
+		if toolRaw == nil {
+			toolRaw = map[string]any{}
+		}
+		apply(toolRaw)
+		toolsRaw[tool] = toolRaw
+		guardRaw["tools"] = toolsRaw
+		raw["guard"] = guardRaw
+		return nil
+	})
 	if err != nil {
-		return err
-	}
-	guardRaw, _ := raw["guard"].(map[string]any)
-	if guardRaw == nil {
-		guardRaw = map[string]any{}
-	}
-	toolsRaw, _ := guardRaw["tools"].(map[string]any)
-	if toolsRaw == nil {
-		toolsRaw = map[string]any{}
-	}
-	toolRaw, _ := toolsRaw[tool].(map[string]any)
-	if toolRaw == nil {
-		toolRaw = map[string]any{}
-	}
-	apply(toolRaw)
-	toolsRaw[tool] = toolRaw
-	guardRaw["tools"] = toolsRaw
-	raw["guard"] = guardRaw
-	if err := saveRawConfig(raw); err != nil {
 		return err
 	}
 	ReloadGuard()
@@ -588,36 +584,6 @@ func ReloadGuard() {
 		return
 	}
 	Guard = cfg.Guard
-}
-
-// loadRawConfig reads the file as an untyped map so a write preserves every other
-// field, including ones this build does not know about.
-func loadRawConfig() (map[string]any, error) {
-	raw := map[string]any{}
-	if data, err := os.ReadFile(ConfigPath); err == nil {
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return nil, fmt.Errorf("config file %s is not valid JSON: %w", ConfigPath, err)
-		}
-	}
-	return raw, nil
-}
-
-func saveRawConfig(raw map[string]any) error {
-	if err := os.MkdirAll(AtmDir, 0700); err != nil {
-		return err
-	}
-	if err := os.Chmod(AtmDir, 0700); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(raw, "", "  ")
-	if err != nil {
-		return err
-	}
-	b = append(b, '\n')
-	if err := os.WriteFile(ConfigPath, b, 0600); err != nil {
-		return err
-	}
-	return os.Chmod(ConfigPath, 0600)
 }
 
 func expandHome(p string) string {

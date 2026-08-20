@@ -41,6 +41,7 @@ func withTempAtmDir(t *testing.T) {
 	t.Helper()
 	oldDir, oldDB, oldConfig := config.AtmDir, config.AtmDB, config.ConfigPath
 	oldGuard := config.Guard
+	oldIPCServer := ipcServer
 	dir := t.TempDir()
 	config.AtmDir = dir
 	config.AtmDB = filepath.Join(dir, "atm.db")
@@ -51,11 +52,16 @@ func withTempAtmDir(t *testing.T) {
 	// test does — and the gate then reports itself off for a tool it is guarding.
 	config.ConfigPath = filepath.Join(dir, "config.json")
 	config.Guard = config.GuardConfig{}
+	// appipc receives a concrete Knowledge service at composition time, so a
+	// test that changes the data root must rebuild that composition as well.
+	// Otherwise typed Knowledge calls escape into the developer's real ~/.atm.
+	ipcServer = newAppIPCServer()
 	t.Cleanup(func() {
 		config.AtmDir = oldDir
 		config.AtmDB = oldDB
 		config.ConfigPath = oldConfig
 		config.Guard = oldGuard
+		ipcServer = oldIPCServer
 	})
 }
 
@@ -68,9 +74,25 @@ func seedTodos(items ...store.Todo) error {
 	})
 }
 
+// withHumanCLI makes command-adapter authorization tests independent of the
+// Agent process running `go test`. An empty value is equivalent to an unset
+// value for cliAgentFromEnvironment and t.Setenv restores the outer process.
+//
+// The keys come from cliAttributionEnvironment rather than a list maintained
+// here: this suite is normally run from inside an Agent, so a key missing from
+// the reset would make these tests read that Agent's provenance instead of the
+// plain terminal they mean to stand in for.
+func withHumanCLI(t *testing.T) {
+	t.Helper()
+	for _, key := range cliAttributionEnvironment() {
+		t.Setenv(key, "")
+	}
+}
+
 func withIsolatedCommandEnv(t *testing.T) {
 	t.Helper()
 	oldDir, oldDB, oldConfigPath := config.AtmDir, config.AtmDB, config.ConfigPath
+	oldIPCServer := ipcServer
 	oldClaude, oldCodex, oldCopilot, oldPi := config.ClaudeProjects, config.CodexSessions, config.CopilotWorkspaces, config.PiSessions
 	oldQoder, oldQoderCLI, oldQoderWork := config.QoderDB, config.QoderCLIProjects, config.QoderWorkDB
 	oldGrok := config.GrokSessions
@@ -86,6 +108,7 @@ func withIsolatedCommandEnv(t *testing.T) {
 	config.QoderCLIProjects = filepath.Join(dir, "qodercli-projects")
 	config.QoderWorkDB = filepath.Join(dir, "qoderwork", "agents.db")
 	config.GrokSessions = filepath.Join(dir, "grok-sessions")
+	ipcServer = newAppIPCServer()
 	for _, p := range []string{config.ClaudeProjects, config.CodexSessions, config.CopilotWorkspaces, config.PiSessions, config.QoderCLIProjects, config.GrokSessions} {
 		if err := os.MkdirAll(p, 0755); err != nil {
 			t.Fatalf("mkdir %s: %v", p, err)
@@ -101,6 +124,7 @@ func withIsolatedCommandEnv(t *testing.T) {
 		config.PiSessions = oldPi
 		config.QoderDB, config.QoderCLIProjects, config.QoderWorkDB = oldQoder, oldQoderCLI, oldQoderWork
 		config.GrokSessions = oldGrok
+		ipcServer = oldIPCServer
 	})
 }
 
@@ -1212,9 +1236,9 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 
 	jsonOutput = true
 	var commandErr error
-	captureStdout(t, func() { commandErr = runTodoFocus(todoFocusCmd, []string{"t1"}) })
+	captureStdout(t, func() { commandErr = runTodoStart(todoStartCmd, []string{"t1"}) })
 	if commandErr != nil {
-		t.Fatalf("focus: %v", commandErr)
+		t.Fatalf("start: %v", commandErr)
 	}
 
 	todoWaitWakeFlag = "new business input"
@@ -1457,18 +1481,22 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 	oldKnowledgeLimit := knowledgeLimit
 	oldAddFile, oldAddProducer := knowledgeAddFile, knowledgeAddProducer
 	oldUpdateFile := knowledgeUpdateFile
+	oldDeleteYes := knowledgeDeleteYes
 	oldAddCollection := knowledgeAddCollection
 	oldRecallScope, oldWriteScope, oldMemoryLimit := memoryRecallScope, memoryWriteScope, memoryLimit
-	oldMemorySource := memorySource
+	oldMemorySource, oldMemoryWriteFile := memorySource, memoryWriteFile
+	oldMemoryTags := append([]string(nil), memoryTags...)
 	oldArtifactFile, oldProducer, oldRunID := artifactFile, artifactProducer, artifactRunID
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		knowledgeLimit = oldKnowledgeLimit
 		knowledgeAddFile, knowledgeAddProducer = oldAddFile, oldAddProducer
 		knowledgeUpdateFile = oldUpdateFile
+		knowledgeDeleteYes = oldDeleteYes
 		knowledgeAddCollection = oldAddCollection
 		memoryRecallScope, memoryWriteScope, memoryLimit = oldRecallScope, oldWriteScope, oldMemoryLimit
-		memorySource = oldMemorySource
+		memorySource, memoryWriteFile = oldMemorySource, oldMemoryWriteFile
+		memoryTags = oldMemoryTags
 		artifactFile, artifactProducer, artifactRunID = oldArtifactFile, oldProducer, oldRunID
 	})
 
@@ -1476,6 +1504,7 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 	knowledgeLimit = 5
 	knowledgeAddFile, knowledgeAddProducer = "", "test"
 	knowledgeAddCollection = "inbox"
+	knowledgeDeleteYes = true
 
 	var runErr error
 	addOut := captureStdout(t, func() {
@@ -1531,6 +1560,10 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 	if !strings.Contains(rememberOut, `"source": "session:test#turn:1"`) {
 		t.Fatalf("memory remember provenance missing: %q", rememberOut)
 	}
+	var remembered knowledge.MemoryEvent
+	if err := json.Unmarshal([]byte(rememberOut), &remembered); err != nil || remembered.ID == "" {
+		t.Fatalf("decode remembered memory = %q, err = %v", rememberOut, err)
+	}
 	memoryRecallScope = "project:mox"
 	memoryLimit = 5
 	recallOut := captureStdout(t, func() {
@@ -1538,6 +1571,29 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 	})
 	if runErr != nil || !strings.Contains(recallOut, "remember command marker") {
 		t.Fatalf("memory recall output = %q, err = %v", recallOut, runErr)
+	}
+
+	memoryTags = []string{" replacement ", "Decision", "decision"}
+	memorySource = " session:test#turn:2 "
+	supersedeOut := captureStdout(t, func() {
+		runErr = memorySupersedeCmd.RunE(memorySupersedeCmd, []string{remembered.ID, "superseded command marker"})
+	})
+	if runErr != nil {
+		t.Fatalf("memory supersede output = %q, err = %v", supersedeOut, runErr)
+	}
+	var superseded knowledge.MemoryEvent
+	if err := json.Unmarshal([]byte(supersedeOut), &superseded); err != nil {
+		t.Fatalf("decode superseded memory = %q, err = %v", supersedeOut, err)
+	}
+	if superseded.TargetID != remembered.ID || superseded.Content != "superseded command marker" ||
+		len(superseded.Tags) != 2 || superseded.Metadata["source"] != "session:test#turn:2" {
+		t.Fatalf("superseded memory = %#v", superseded)
+	}
+	recallOut = captureStdout(t, func() {
+		runErr = memoryRecallCmd.RunE(memoryRecallCmd, []string{"superseded command"})
+	})
+	if runErr != nil || !strings.Contains(recallOut, superseded.ID) || strings.Contains(recallOut, remembered.ID) {
+		t.Fatalf("memory recall after supersede output = %q, err = %v", recallOut, runErr)
 	}
 
 	artifactProducer, artifactRunID, artifactFile = "test", "run-test", ""

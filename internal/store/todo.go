@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -195,7 +196,7 @@ func NextTodoID(tf *TodoFile) string {
 // ArchivedStatus reports the closing status of an archived todo. The second
 // result distinguishes "archived" from "never existed".
 func ArchivedStatus(tf *TodoFile, id string) (string, bool) {
-	status, archived := tf.archived[id]
+	status, archived := tf.archived[NormalizeTodoID(id)]
 	return status, archived
 }
 
@@ -204,15 +205,57 @@ func ArchivedStatus(tf *TodoFile, id string) (string, bool) {
 // claiming it was never there.
 func TodoNotFoundError(tf *TodoFile, id string) error {
 	if status, archived := ArchivedStatus(tf, id); archived {
+		// The suggested command names the canonical id, not whatever spelling was
+		// typed: it is meant to be pasted, and `atm todo unarchive #275` would have
+		// worked but reads like a typo.
+		canonical := NormalizeTodoID(id)
 		return fmt.Errorf("todo %s is archived (%s): run `atm todo unarchive %s` to work on it again, "+
-			"or `atm todo list --status archived` to read it", id, status, id)
+			"or `atm todo list --status archived` to read it", canonical, status, canonical)
 	}
+	// Echoes what was typed rather than the normalised form: the reader is looking
+	// for their own input, and "todo not found: t7" after typing "007" reads as a
+	// different bug.
 	return fmt.Errorf("todo not found: %s", id)
 }
 
+// todoIDPattern matches the ways a todo gets referred to in practice. IDs
+// themselves are always `t<digits>` (see NextTodoID), but people and agents
+// write `#t65` when quoting a chat, `65` when reading it off a list, and `T65`
+// when the shell capitalised it. All three used to be "todo not found".
+var todoIDPattern = regexp.MustCompile(`^#?[tT]?([0-9]+)$`)
+
+// LooksLikeTodoID reports whether a string is a todo reference in any of its
+// written forms, without needing the todo to exist. Callers use it to tell an id
+// apart from prose when a positional argument could be either.
+func LooksLikeTodoID(s string) bool {
+	return todoIDPattern.MatchString(strings.TrimSpace(s))
+}
+
+// NormalizeTodoID turns the ways a todo is written into the one way it is
+// stored. An input that is not a todo reference at all comes back unchanged, so
+// callers still get "todo not found: <what they typed>" rather than a confusing
+// rewrite of it.
+func NormalizeTodoID(id string) string {
+	trimmed := strings.TrimSpace(id)
+	match := todoIDPattern.FindStringSubmatch(trimmed)
+	if match == nil {
+		return trimmed
+	}
+	// Leading zeros would make "t007" and "t7" different keys.
+	digits := strings.TrimLeft(match[1], "0")
+	if digits == "" {
+		return trimmed
+	}
+	return "t" + digits
+}
+
+// FindTodo resolves an id in any of its written forms. Every lookup in the
+// codebase funnels through here — including work.Transaction.Todo — so this is
+// the one place the normalisation has to happen.
 func FindTodo(tf *TodoFile, id string) *Todo {
+	wanted := NormalizeTodoID(id)
 	for i := range tf.Items {
-		if tf.Items[i].ID == id {
+		if tf.Items[i].ID == wanted {
 			return &tf.Items[i]
 		}
 	}
@@ -311,9 +354,10 @@ func EnsureTodoDoc(t *Todo) (string, error) {
 	return InitTodoDoc(t)
 }
 
-// todoDocGeneratedSection is the one section a metadata sync rewrites wholesale.
-// Named so the writer below and the guard in ValidateTodoLogMessage cannot drift.
+// Generated section names are shared with ValidateTodoLogMessage so a manual
+// append cannot report success and then disappear on the next projection sync.
 const todoDocGeneratedSection = "需求"
+const todoDocPlanGeneratedSection = "执行计划"
 
 // todoDocRequirementNotice labels the 需求 section as generated. The database is
 // the single source of truth for Description, and every metadata sync overwrites
@@ -390,7 +434,7 @@ func setTodoDocTitle(content, title string) string {
 // reported the card as drifting from the database, and the writer below replaced
 // only the text above that heading, leaving the rest of the old description in
 // place and adding another copy of the new one on every metadata sync.
-var todoDocSections = []string{"需求", "分析", "进展", "备注"}
+var todoDocSections = []string{"需求", "分析", "执行计划", "进展", "备注"}
 
 func isTodoDocSection(name string) bool {
 	for _, section := range todoDocSections {
@@ -436,6 +480,25 @@ func setTodoDocSection(content, section, value string) string {
 	value = strings.TrimSpace(value)
 	bodyStart, bodyEnd, found := todoDocSectionBody(content, section)
 	if !found {
+		// Insert before the next known card section so adding a generated section
+		// does not move 进展 or 备注 away from their stable positions.
+		sectionIndex := -1
+		for index, candidate := range todoDocSections {
+			if candidate == section {
+				sectionIndex = index
+				break
+			}
+		}
+		if sectionIndex >= 0 {
+			for _, candidate := range todoDocSections[sectionIndex+1:] {
+				marker := "\n## " + candidate + "\n"
+				if offset := strings.Index(content, marker); offset >= 0 {
+					head := strings.TrimRight(content[:offset], "\n")
+					tail := strings.TrimLeft(content[offset:], "\n")
+					return head + "\n\n## " + section + "\n\n" + value + "\n\n" + tail
+				}
+			}
+		}
 		return strings.TrimRight(content, "\n") + "\n\n## " + section + "\n\n" + value + "\n"
 	}
 	head := strings.TrimRight(content[:bodyStart], "\n")
@@ -444,6 +507,49 @@ func setTodoDocSection(content, section, value string) string {
 		return head + "\n\n" + value + "\n"
 	}
 	return head + "\n\n" + value + "\n\n" + tail
+}
+
+// TodoPlanDocumentItem is the presentation-neutral subset needed to mirror a
+// Work plan into the generated section of a Todo card.
+type TodoPlanDocumentItem struct {
+	Step   string
+	Status string
+}
+
+// SyncTodoDocPlan replaces the generated execution-plan section while leaving
+// requirements, analysis, progress and notes intact. The database plan stream
+// remains authoritative; this Markdown is a repairable reader projection.
+func SyncTodoDocPlan(todoID, explanation string, items []TodoPlanDocumentItem) error {
+	path := TodoDocPath(todoID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	const notice = "<!-- 由 atm 从最新 plan revision 生成,手工编辑会在下次 plan set/doc 同步时被覆盖 -->"
+	parts := []string{notice}
+	if explanation = strings.TrimSpace(explanation); explanation != "" {
+		quoted := strings.ReplaceAll(explanation, "\n", "\n> ")
+		parts = append(parts, "> "+quoted)
+	}
+	if len(items) == 0 {
+		parts = append(parts, "（空计划）")
+	} else {
+		lines := make([]string, 0, len(items))
+		for _, item := range items {
+			marker := " "
+			switch item.Status {
+			case "completed":
+				marker = "x"
+			case "in_progress":
+				marker = ">"
+			}
+			step := strings.ReplaceAll(strings.TrimSpace(item.Step), "\n", "\n  ")
+			lines = append(lines, fmt.Sprintf("- [%s] %s", marker, step))
+		}
+		parts = append(parts, strings.Join(lines, "\n"))
+	}
+	content := setTodoDocSection(string(data), todoDocPlanGeneratedSection, strings.Join(parts, "\n\n"))
+	return os.WriteFile(path, []byte(content), 0644)
 }
 
 func todoStatusDisplay(status string) string {

@@ -25,9 +25,6 @@ func Search(dataDir, query string, options SearchOptions) ([]SearchHit, error) {
 	if query == "" {
 		return nil, fmt.Errorf("query must not be empty")
 	}
-	if options.Limit <= 0 {
-		options.Limit = 10
-	}
 	// The corpus is read on every search. At this scale that costs about as much
 	// as the process start-up itself, and a chunk cache measurably cost more than
 	// it saved: serialising every chunk's text and tokens produced a file several
@@ -35,6 +32,21 @@ func Search(dataDir, query string, options SearchOptions) ([]SearchHit, error) {
 	documents, err := Discover(dataDir)
 	if err != nil {
 		return nil, err
+	}
+	tallies, tallyErr := (sqliteFeedbackStore{}).Totals()
+	if tallyErr != nil {
+		// Search historically remained useful when the optional quality ledger was
+		// unavailable. The application service is stricter because it promises the
+		// complete search-and-record use case; this compatibility function retains
+		// the old best-effort ranking behavior for lower-level callers.
+		tallies = nil
+	}
+	return searchDocuments(documents, query, options, qualityIndexFromTallies(documents, tallies)), nil
+}
+
+func searchDocuments(documents []Document, query string, options SearchOptions, qualityIndex map[string]float64) []SearchHit {
+	if options.Limit <= 0 {
+		options.Limit = 10
 	}
 	allChunks := chunkDocuments(documents)
 	var chunks []chunk
@@ -45,7 +57,7 @@ func Search(dataDir, query string, options SearchOptions) ([]SearchHit, error) {
 		chunks = append(chunks, candidate)
 	}
 	if len(chunks) == 0 {
-		return []SearchHit{}, nil
+		return []SearchHit{}
 	}
 
 	queryTokens := tokenize(query)
@@ -66,7 +78,6 @@ func Search(dataDir, query string, options SearchOptions) ([]SearchHit, error) {
 	}
 	averageLength := float64(totalTokens) / float64(len(chunks))
 	queryLower := strings.ToLower(query)
-	qualityIndex := knowledgeQualityIndex(dataDir, documents)
 	var hits []SearchHit
 	for _, candidate := range chunks {
 		// A query may contain alternative terms ("Skill 统计" should find a
@@ -128,7 +139,7 @@ func Search(dataDir, query string, options SearchOptions) ([]SearchHit, error) {
 	if len(hits) > options.Limit {
 		hits = hits[:options.Limit]
 	}
-	return hits, nil
+	return hits
 }
 
 func chunkDocuments(documents []Document) []chunk {
@@ -234,7 +245,15 @@ func Get(dataDir, documentID string) (*Document, error) {
 			return &documents[i], nil
 		}
 	}
-	return nil, fmt.Errorf("knowledge document not found: %s", documentID)
+	return nil, documentNotFoundError{DocumentID: documentID}
+}
+
+type documentNotFoundError struct {
+	DocumentID string
+}
+
+func (err documentNotFoundError) Error() string {
+	return fmt.Sprintf("knowledge document not found: %s", err.DocumentID)
 }
 
 func chunkDocument(document Document) []chunk {

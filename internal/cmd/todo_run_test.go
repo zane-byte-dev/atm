@@ -13,13 +13,29 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/zane-byte-dev/atm/internal/agentevent"
 	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/taskrun"
 )
+
+type taskRunTestProcess struct {
+	interrupt func(int) error
+	lookPath  func(string) (string, error)
+}
+
+func (process taskRunTestProcess) Interrupt(pid int) error {
+	return process.interrupt(pid)
+}
+
+func (process taskRunTestProcess) LookPath(binary string) (string, error) {
+	if process.lookPath != nil {
+		return process.lookPath(binary)
+	}
+	return "/fake/" + binary, nil
+}
 
 type flywheelFetcher struct {
 	message collector.Message
@@ -273,6 +289,7 @@ func TestTodoRunRefusesToContinueAnUnresumableSession(t *testing.T) {
 
 func TestTodoRunInterruptStopsControllerWithoutChangingTodoLifecycle(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	workDir := t.TempDir()
 	logPath := filepath.Join(workDir, "run.log")
 	if err := seedTodos(store.Todo{
@@ -295,13 +312,15 @@ func TestTodoRunInterruptStopsControllerWithoutChangingTodoLifecycle(t *testing.
 	}
 	db.Close()
 
-	oldInterrupt, oldJSON := interruptTaskRunProcess, jsonOutput
-	t.Cleanup(func() { interruptTaskRunProcess, jsonOutput = oldInterrupt, oldJSON })
+	oldService, oldJSON := taskRunManagementService, jsonOutput
+	t.Cleanup(func() { taskRunManagementService, jsonOutput = oldService, oldJSON })
 	interruptedPID := 0
-	interruptTaskRunProcess = func(pid int) error {
-		interruptedPID = pid
-		return nil
-	}
+	taskRunManagementService = taskrun.NewService(taskrun.Dependencies{Process: taskRunTestProcess{
+		interrupt: func(pid int) error {
+			interruptedPID = pid
+			return nil
+		},
+	}})
 	jsonOutput = false
 
 	var interruptErr error
@@ -740,54 +759,6 @@ func TestBuildCodexTaskRunCommandKeepsGuardedAndTrustedDistinct(t *testing.T) {
 	normalizedArgs := strings.Join(normalized.Args, " ")
 	if !strings.Contains(normalizedArgs, "resume "+resumeID+" -") || strings.Contains(normalizedArgs, "rollout-") {
 		t.Fatalf("rollout id was not normalized to a thread UUID: %q", normalizedArgs)
-	}
-}
-
-func TestCopyTaskRunLogTailBoundsOutputAndPreservesUTF8(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "run.log")
-	body := strings.Repeat("old event\n", 40) + "最新事件：任务仍在执行\n"
-	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
-		t.Fatal(err)
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-
-	var output bytes.Buffer
-	if err := copyTaskRunLogTail(&output, file, 37); err != nil {
-		t.Fatal(err)
-	}
-	got := output.String()
-	if !strings.HasPrefix(got, taskRunLogTruncatedNotice) {
-		t.Fatalf("missing truncation notice: %q", got)
-	}
-	if !strings.HasSuffix(got, "最新事件：任务仍在执行\n") {
-		t.Fatalf("tail lost latest event: %q", got)
-	}
-	if !utf8.ValidString(got) {
-		t.Fatalf("tail is not valid UTF-8: %q", got)
-	}
-}
-
-func TestCopyTaskRunLogTailKeepsSmallLogWhole(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "run.log")
-	if err := os.WriteFile(path, []byte("one\ntwo\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-
-	var output bytes.Buffer
-	if err := copyTaskRunLogTail(&output, file, 64); err != nil {
-		t.Fatal(err)
-	}
-	if got := output.String(); got != "one\ntwo\n" {
-		t.Fatalf("tail = %q", got)
 	}
 }
 

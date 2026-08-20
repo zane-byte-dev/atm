@@ -33,12 +33,15 @@ var rootCmd = &cobra.Command{
 Supported agents: claude, codex, pi, copilot, qoder, qodercli, qoderwork, grokbuild, antigravity
 
 Quick start:
-  atm session status             Show what AI tools are currently doing
-  atm session list [--days N]    List recent sessions
-  atm session search <keyword>   Search all AI session history
-  atm session show <session-id>  Show full Q/A for a session
   atm now                        Show current work by lifecycle status
   atm todo list                  List work items
+  atm session status             Show what AI tools are currently doing
+  atm session search <keyword>   Search all AI session history
+  atm knowledge search <query>   Search the central knowledge base
+  atm memory recall [query]      Recall shared memory
+  atm collect status             Show connector health and recent decisions
+  atm guard list                 List outbound actions waiting for a decision
+  atm stats [--days N]           Show token usage and cost
   atm report [date]              Generate daily report`,
 	SilenceErrors: true,
 	SilenceUsage:  true,
@@ -49,6 +52,8 @@ func SetVersion(v string) {
 }
 
 func Execute() {
+	refreshAppIPCServer()
+	applyCommandGroups()
 	bufferBuiltinModelCalls()
 	if err := rootCmd.Execute(); err != nil {
 		// 失败路径也要落账：一次超时的收集判定同样占了一次调用。os.Exit 不跑 defer，
@@ -84,12 +89,44 @@ func failedCommandPath() string {
 }
 
 // showHelp is the RunE for group commands (no own action). Combined with
-// Args: cobra.NoArgs it makes a bare `atm <group>` print help (exit 0) while an
+// noSubcommandArgs it makes a bare `atm <group>` print help (exit 0) while an
 // unknown subcommand like `atm <group> bogus` errors (exit 1). Without a RunE a
 // group is non-Runnable and cobra returns help before ever validating args, so
 // unknown subcommands would silently exit 0.
 func showHelp(cmd *cobra.Command, args []string) error {
 	return cmd.Help()
+}
+
+// noSubcommandArgs rejects a stray argument on a group, the way cobra.NoArgs
+// does, and adds the suggestions cobra.NoArgs leaves out.
+//
+// The root command gets suggestions for free — `atm statz` has always answered
+// "Did you mean this? stats" — because cobra's default arg validator appends
+// them. Groups opted out of that by declaring NoArgs, so `atm todo lst` said only
+// that "lst" was unknown, which is the case where a suggestion is worth most:
+// there are 30-odd subcommands under todo and the reader has to scan all of them.
+//
+// It also makes SuggestFor reachable, so a removed alias can point at what
+// replaced it instead of dead-ending.
+func noSubcommandArgs(cmd *cobra.Command, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	message := fmt.Sprintf("unknown command %q for %q", args[0], cmd.CommandPath())
+	// Cobra defaults this to 2 inside its own unexported suggestion path, but not
+	// in the exported SuggestionsFor, where a zero means "exact matches only" and
+	// quietly reduces the whole feature to prefix matching. Setting it here is what
+	// makes `todo lst` find `list`.
+	if cmd.SuggestionsMinimumDistance <= 0 {
+		cmd.SuggestionsMinimumDistance = 2
+	}
+	if suggestions := cmd.SuggestionsFor(args[0]); len(suggestions) > 0 {
+		message += "\n\nDid you mean this?\n"
+		for _, suggestion := range suggestions {
+			message += fmt.Sprintf("\t%s\n", suggestion)
+		}
+	}
+	return errors.New(message)
 }
 
 var versionCmd = &cobra.Command{
@@ -132,6 +169,19 @@ func startOfDayWindow(now time.Time, days int) time.Time {
 	}
 	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, config.Loc).
 		AddDate(0, 0, -(days - 1))
+}
+
+// parseSessionSince remains a shared flag parser for non-session adapters such
+// as collection history. Session list/search pass their raw flag values to the
+// session service, which owns those use cases' time-window validation.
+func parseSessionSince(value string) (time.Time, error) {
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return parsed.In(config.Loc), nil
+	}
+	if parsed, err := time.ParseInLocation("2006-01-02", value, config.Loc); err == nil {
+		return parsed, nil
+	}
+	return time.Time{}, fmt.Errorf("invalid --since %q: use RFC3339 or YYYY-MM-DD", value)
 }
 
 // formatShortDuration renders an elapsed span as Ns / Nm / NhNm, collapsing an

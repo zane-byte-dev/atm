@@ -5,10 +5,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/zane-byte-dev/atm/internal/config"
-	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/taskrun"
 )
 
 // TaskRunAgentInfo describes the dispatch target for the CLI and the macOS
@@ -19,27 +18,11 @@ import (
 // to describe differences — Pi had no sandbox ATM could enforce, so it was
 // trusted-only — and a single row makes each of them a constant that reads as if
 // a choice were still being made.
-type TaskRunAgentInfo struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Binary    string `json:"binary"`
-	Available bool   `json:"available"`
-	CostNote  string `json:"cost_note"`
-}
+type TaskRunAgentInfo = taskrun.AgentInfo
 
-const taskRunDispatchAgentID = "codex"
+const taskRunDispatchAgentID = taskrun.DispatchAgentID
 
-var taskRunDispatchAgent = TaskRunAgentInfo{
-	ID: taskRunDispatchAgentID, Name: "Codex", Binary: "codex",
-	CostNote: "使用当前 Codex 套餐或 API 配额；每次执行和继续修改都会产生新的模型用量。",
-}
-
-func listTaskRunAgents() []TaskRunAgentInfo {
-	agent := taskRunDispatchAgent
-	_, err := resolveTaskRunAgentBinary(agent.Binary)
-	agent.Available = err == nil
-	return []TaskRunAgentInfo{agent}
-}
+var taskRunDispatchAgent = taskrun.DispatchAgent()
 
 // resolveTaskRunDispatchAgent returns the only dispatch target.
 //
@@ -65,29 +48,4 @@ func buildTaskRunCommand(run store.TaskRun) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("todo run only dispatches Codex (got %q)", run.Agent)
 	}
 	return buildCodexTaskRunCommand(run)
-}
-
-var todoAgentsCmd = &cobra.Command{
-	Use:   "agents",
-	Short: "Show whether Codex is available for Todo dispatch",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		agents := listTaskRunAgents()
-		if jsonOutput {
-			output.JSON(agents)
-			return nil
-		}
-		for _, agent := range agents {
-			status := "missing"
-			if agent.Available {
-				status = "available"
-			}
-			fmt.Printf("%-12s %-10s %s\n", agent.ID, status, agent.CostNote)
-		}
-		return nil
-	},
-}
-
-func init() {
-	todoCmd.AddCommand(todoAgentsCmd)
 }

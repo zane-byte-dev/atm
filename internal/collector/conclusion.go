@@ -11,24 +11,24 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
-// SaveConclusion explicitly promotes one collected insight's conclusion into
+// saveConclusion explicitly promotes one collected insight's conclusion into
 // central knowledge. Classification only writes CollectionItem.Summary; this is
 // the user-controlled boundary that creates a knowledge document.
-func (service Service) SaveConclusion(itemID, collection string) (store.CollectionItem, error) {
+func (service Service) saveConclusion(itemID, collection string) (store.CollectionItem, error) {
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, strings.TrimSpace(itemID))
+	item, err := getItemForUseCase(db, strings.TrimSpace(itemID))
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	if item.Action != "insight" || item.Status != "processed" {
-		return store.CollectionItem{}, fmt.Errorf("collection item %s has no saveable conclusion", item.ID)
+		return store.CollectionItem{}, itemConflict(fmt.Sprintf("collection item %s has no saveable conclusion", item.ID), item.ID)
 	}
 	if strings.TrimSpace(item.Summary) == "" {
-		return store.CollectionItem{}, fmt.Errorf("collection item %s conclusion is empty", item.ID)
+		return store.CollectionItem{}, itemConflict(fmt.Sprintf("collection item %s conclusion is empty", item.ID), item.ID)
 	}
 	// Repeated clicks are idempotent. If the document was moved, refresh the
 	// stored collection so the App still opens the right library. If it was

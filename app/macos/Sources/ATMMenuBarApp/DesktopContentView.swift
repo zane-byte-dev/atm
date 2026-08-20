@@ -994,7 +994,12 @@ struct DesktopContentView: View {
     private func deleteCollection(_ target: ATMCollectionRef, force: Bool, moveTo: String?) {
         Task {
             do {
-                try await store.deleteCollection(id: target.id, force: force, moveTo: moveTo)
+                try await store.deleteCollection(
+                    id: target.id,
+                    force: force,
+                    moveTo: moveTo,
+                    confirmed: true
+                )
                 store.refreshKnowledgeCatalog()
                 await MainActor.run {
                     if navigation.selectedKnowledgeLibraryID == target.id {
@@ -2610,7 +2615,7 @@ struct DesktopTodoDetail: View {
         }
     }
 
-    /// `atm todo edit --review-at` takes `YYYY-MM-DD` and clears on empty, which a
+    /// `todo.update` takes `YYYY-MM-DD` and clears on empty, which a
     /// free-text field advertised only through its placeholder. A value that does
     /// not parse falls back to text so an odd existing date is never rewritten
     /// behind the user's back.
@@ -2736,7 +2741,7 @@ struct DesktopTodoDetail: View {
     }
 
     /// What the form was seeded with, so 保存 can stay disabled until something
-    /// actually changed instead of firing a no-op `atm todo edit`.
+    /// actually changed instead of firing a no-op `todo.update`.
     private var savedValue: ATMTodoEdit {
         ATMTodoEdit(
             title: todo.title,

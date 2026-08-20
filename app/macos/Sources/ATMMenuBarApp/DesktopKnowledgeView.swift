@@ -882,7 +882,7 @@ struct DesktopKnowledgeView: View {
     @MainActor
     private func deleteDocument(_ summary: ATMKnowledgeDocumentSummary) async {
         do {
-            try await store.deleteKnowledgeDocument(summary.documentID)
+            try await store.deleteKnowledgeDocument(summary.documentID, confirmed: true)
             documentCache.removeValue(forKey: summary.documentID)
             if selectedItemID == KnowledgeListItem.documentSummaryID(summary.documentID) {
                 finishEditing()
@@ -2378,10 +2378,9 @@ private struct KnowledgeGovernanceSheet: View {
         isLoading = true
         errorMessage = nil
         do {
-            async let audit = store.knowledgeAudit()
-            async let quality = store.knowledgeQuality()
-            report = try await audit
-            qualities = try await quality
+            let governance = try await store.knowledgeGovernance()
+            report = governance.audit
+            qualities = governance.quality.qualities
         } catch {
             errorMessage = error.localizedDescription
         }

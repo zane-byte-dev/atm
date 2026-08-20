@@ -21,22 +21,30 @@ enum ATMCommandError: LocalizedError {
     }
 }
 
+/// The complete result of a launched CLI process. `_ipc` needs stdout even when
+/// the status is non-zero because the CLI writes its structured error envelope
+/// there; ordinary commands continue to use `ATMCommandRunner.run`, which turns
+/// this result into the same checked stdout behavior they had before.
+struct ATMCommandProcessResult: Sendable {
+    let standardOutput: Data
+    let standardError: Data
+    let terminationStatus: Int32
+
+    func commandError(arguments: [String]) -> ATMCommandError {
+        ATMCommandError.failed(
+            arguments: arguments,
+            status: terminationStatus,
+            message: String(data: standardError, encoding: .utf8) ?? ""
+        )
+    }
+}
+
 enum ATMCommandPolicy {
     static func timeout(for arguments: [String]) -> TimeInterval {
         if arguments.first == "sync" { return 120 }
         if arguments.first == "day" { return 60 }
-        if arguments.starts(with: ["collect", "run"]) { return 300 }
-        // One model call per source that has new insights, plus a knowledge write.
-        if arguments.starts(with: ["collect", "digest"]) { return 300 }
-        if arguments.starts(with: ["collect", "item", "reprocess"]) { return 180 }
-        // Connector discovery and history can require multiple network pages.
-        if arguments.starts(with: ["collect", "source", "search"]) { return 45 }
-        if arguments.starts(with: ["collect", "history"]) { return 45 }
-        // One schema-constrained model call, same isolation as collect.
-        if arguments.starts(with: ["todo", "refine"]) { return 180 }
-        if arguments.starts(with: ["config", "test-text-model"]) { return 45 }
-        // Approving runs the gated command. The default 15s would terminate a slow
-        // send partway and report failure for a message that in fact went out.
+        // Guard decisions cannot use the replayable `_ipc` door. Approving may
+        // execute a real network command, so keep the longer CLI ceiling.
         if arguments.starts(with: ["guard", "approve"]) { return 90 }
         return 15
     }
@@ -57,30 +65,6 @@ private struct ATMCommandOutcome<Value> {
     }
 }
 
-/// Shape of `atm config get <key> --json` for boolean settings.
-private struct ATMConfigBoolValue: Decodable {
-    let value: Bool
-}
-
-/// Shape of `atm config get <key> --json` for string settings.
-private struct ATMConfigStringValue: Decodable {
-    let value: String
-}
-
-private struct ATMTextModelCredentialStatus: Decodable {
-    let configured: Bool
-}
-
-private struct ATMTextModelTestResult: Decodable {
-    let ok: Bool
-    let latencyMS: Int
-
-    enum CodingKeys: String, CodingKey {
-        case ok
-        case latencyMS = "latency_ms"
-    }
-}
-
 private func decodeCommand<Value: Decodable>(
     _ runner: ATMCommandRunner,
     arguments: [String],
@@ -95,6 +79,39 @@ private func decodeCommand<Value: Decodable>(
         // Not truncated: the whole point of this message is the instruction at the
         // end of it.
         return ATMCommandOutcome(value: nil, error: mismatch.summary, schemaMismatch: mismatch)
+    } catch let mismatch as ATMIPCProtocolMismatch {
+        // Same reason as above, and caught separately so the generic branch below
+        // does not compact away the upgrade instruction.
+        return ATMCommandOutcome(value: nil, error: mismatch.summary)
+    } catch {
+        return ATMCommandOutcome(
+            value: nil,
+            error: ATMErrorText.compact(error.localizedDescription, limit: 180)
+        )
+    }
+}
+
+private func decodeIPCCommand<Request: Encodable, Value: Decodable>(
+    _ runner: ATMCommandRunner,
+    method: ATMIPCMethod<Request, Value>,
+    request: Request
+) async -> ATMCommandOutcome<Value> {
+    do {
+        let value = try await ATMIPCClient(runner: runner).call(method, request: request)
+        return ATMCommandOutcome(value: value, error: nil)
+    } catch is CancellationError {
+        return ATMCommandOutcome(value: nil, error: nil)
+    } catch let mismatch as ATMDashboardSchemaMismatch {
+        return ATMCommandOutcome(value: nil, error: mismatch.summary, schemaMismatch: mismatch)
+    } catch let mismatch as ATMIPCProtocolMismatch {
+        return ATMCommandOutcome(value: nil, error: mismatch.summary)
+    } catch let mismatch as ATMIPCEnvelopeVersionMismatch {
+        return ATMCommandOutcome(
+            value: nil,
+            error: [mismatch.errorDescription, mismatch.recoverySuggestion]
+                .compactMap { $0 }
+                .joined(separator: " ")
+        )
     } catch {
         return ATMCommandOutcome(
             value: nil,
@@ -201,6 +218,7 @@ struct ATMTodoSessionBinding: Decodable, Equatable {
 }
 
 struct ATMTodoDetail: Decodable {
+    let todo: ATMTodo?
     let bindings: [ATMTodoSessionBinding]?
     let sessions: [ATMBoundSession]?
 }
@@ -496,9 +514,24 @@ struct ATMCommandRunner: Sendable {
     func run(
         _ arguments: [String],
         standardInput: Data? = nil,
-        timeout: TimeInterval? = nil,
-        environmentOverrides: [String: String] = [:]
+        timeout: TimeInterval? = nil
     ) async throws -> Data {
+        let result = try await runRaw(
+            arguments,
+            standardInput: standardInput,
+            timeout: timeout
+        )
+        guard result.terminationStatus == 0 else {
+            throw result.commandError(arguments: arguments)
+        }
+        return result.standardOutput
+    }
+
+    func runRaw(
+        _ arguments: [String],
+        standardInput: Data? = nil,
+        timeout: TimeInterval? = nil
+    ) async throws -> ATMCommandProcessResult {
         let executableURL = executableURL
         let processHandle = ATMRunningProcess()
         let timeout = timeout ?? ATMCommandPolicy.timeout(for: arguments)
@@ -516,11 +549,6 @@ struct ATMCommandRunner: Sendable {
             let commonPath = "/usr/local/bin:/opt/homebrew/bin:\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin"
             environment["PATH"] = commonPath + ":" + (environment["PATH"] ?? "")
             environment["ATM_SKIP_LOCAL_NOTIFICATION"] = "1"
-            // Credentials and unsaved advanced settings for the connection
-            // check travel only in the child environment, never argv or logs.
-            for (key, value) in environmentOverrides {
-                environment[key] = value
-            }
             process.environment = environment
 
             try Task.checkCancellation()
@@ -558,15 +586,11 @@ struct ATMCommandRunner: Sendable {
             }
             let output = await outputTask.value
             let errorOutput = await errorTask.value
-
-            guard process.terminationStatus == 0 else {
-                throw ATMCommandError.failed(
-                    arguments: arguments,
-                    status: process.terminationStatus,
-                    message: String(data: errorOutput, encoding: .utf8) ?? ""
-                )
-            }
-            return output
+            return ATMCommandProcessResult(
+                standardOutput: output,
+                standardError: errorOutput,
+                terminationStatus: process.terminationStatus
+            )
         }
         return try await withTaskCancellationHandler {
             do {
@@ -635,8 +659,8 @@ enum ATMLiveStatusRefreshPolicy {
     /// candidates, always carrying the hook overlay.
     ///
     /// Named and tested rather than inlined because forgetting the overlay on
-    /// one write path is exactly the bug this replaces. `atm dashboard` ships its
-    /// own `live_status` that has never seen a hook event, so landing it raw
+    /// one write path is exactly the bug this replaces. The dashboard snapshot
+    /// carries `live_status` that has never seen a hook event, so landing it raw
     /// retired every attention banner and then re-raised each one at the next
     /// poll — a blocked agent re-notifying about once a minute.
     static func mergedLiveStatus(
@@ -801,20 +825,6 @@ struct ATMTodoEdit: Equatable {
 }
 
 enum ATMCommandBuilder {
-    /// Passing `sections: ["work"]` asks the CLI for the todos and the now-view
-    /// without the statistics, which is roughly a second of SQL aggregation that
-    /// no task row reads. See `primeWork()`.
-    static func dashboard(sections: [String] = [], sessionID: String? = nil) -> [String] {
-        var arguments = ["dashboard", "--json"]
-        if !sections.isEmpty {
-            arguments += ["--sections", sections.joined(separator: ",")]
-        }
-        if let sessionID, !sessionID.isEmpty {
-            arguments += ["--agent-session", sessionID]
-        }
-        return arguments
-    }
-
     static func todaySessionUsage(sessionID: String? = nil) -> [String] {
         var arguments = ["stats", "--by", "session-usage", "--days", "1", "--json"]
         if let sessionID, !sessionID.isEmpty {
@@ -823,7 +833,7 @@ enum ATMCommandBuilder {
         return arguments
     }
 
-    static func arguments(for action: ATMTodoAction, todo: ATMTodo) -> [String] {
+    static func arguments(for action: ATMTodoAction, todo: ATMTodo) -> [String]? {
         switch action {
         case .start:
             return ["todo", "start", todo.id]
@@ -854,66 +864,14 @@ enum ATMCommandBuilder {
                     "--reason", reason,
                 ]
             }
-            return ["todo", "edit", todo.id, "--status", "open"]
+            return nil
         }
-    }
-
-    static func addTodo(_ draft: ATMTodoDraft) -> [String] {
-        var arguments = ["todo", "add", draft.title, "--priority", draft.priority]
-        if !draft.description.isEmpty { arguments += ["--desc", draft.description] }
-        if !draft.project.isEmpty { arguments += ["--project", draft.project] }
-		for path in draft.imagePaths { arguments += ["--image", path] }
-        // JSON so the desktop can select the new id after create succeeds.
-        arguments.append("--json")
-        return arguments
-    }
-
-    /// hint is the one-shot request that makes a repeat pass worth running;
-    /// empty means "just polish it".
-    static func refineTodo(id: String, hint: String = "") -> [String] {
-        var arguments = ["todo", "refine", id]
-        let trimmed = hint.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty { arguments += ["--hint", trimmed] }
-        arguments.append("--json")
-        return arguments
     }
 
     static func handoffTodo(id: String) -> [String] {
         ["todo", "handoff", id, "--json"]
     }
 
-    /// Parse the id returned by `atm todo add` (JSON object or plain first line).
-    static func createdTodoID(from data: Data) -> String? {
-        if let todo = try? JSONDecoder().decode(ATMTodo.self, from: data) {
-            let id = todo.id.trimmingCharacters(in: .whitespacesAndNewlines)
-            return id.isEmpty ? nil : id
-        }
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
-        let line = text
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .split(whereSeparator: \.isNewline)
-            .first
-            .map(String.init)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !line.isEmpty, line.range(of: #"^t\d+$"#, options: .regularExpression) != nil else {
-            return nil
-        }
-        return line
-    }
-
-    static func editTodo(id: String, edit: ATMTodoEdit) -> [String] {
-        [
-            "todo", "edit", id,
-            "--title", edit.title,
-            "--desc", edit.description,
-            "--priority", edit.priority,
-            "--project", edit.project,
-            "--status", edit.status,
-            "--wake", edit.wakeCondition,
-            "--review-at", edit.reviewAt,
-            "--source", edit.source,
-        ]
-    }
 
     static func todoPrompt(id: String) -> [String] {
         ["todo", "prompt", id, "--json"]
@@ -929,31 +887,6 @@ enum ATMCommandBuilder {
 
     static func interruptTaskRun(id: String) -> [String] {
         ["todo", "interrupt", id, "--json"]
-    }
-
-    static func moveKnowledgeDocument(id: String, to collectionID: String) -> [String] {
-        ["knowledge", "edit", id, "--collection", collectionID, "--json"]
-    }
-
-    /// Reading a source can require a connector round trip; `--local` answers
-    /// from the synced archive instead. The history sheet uses both:
-    /// local first so it opens instantly, then the network read to catch up.
-    static func collectionHistory(sourceID: String, limit: Int, local: Bool) -> [String] {
-        var arguments = ["collect", "history", sourceID, "--limit", String(limit), "--json"]
-        if local { arguments.append("--local") }
-        return arguments
-    }
-
-    static func collectionItemRead(ids: [String], read: Bool) -> [String] {
-        ["collect", "item", read ? "read" : "unread"] + ids + ["--json"]
-    }
-
-    static func collectionMarkAllRead() -> [String] {
-        ["collect", "item", "read", "--all", "--json"]
-    }
-
-    static func collectionItemArchive(ids: [String], archived: Bool) -> [String] {
-        ["collect", "item", archived ? "archive" : "unarchive"] + ids + ["--json"]
     }
 
     static func guardToolStatus() -> [String] {
@@ -988,15 +921,12 @@ enum ATMCommandBuilder {
         ["guard", "forget", tool, "--json"]
     }
 
-    static func guardList(status: String = "pending", limit: Int = 50) -> [String] {
-        ["guard", "list", "--status", status, "--limit", String(limit), "--json"]
-    }
-
-    /// `--by panel` records which surface decided, so the ledger can tell a
-    /// decision made here from one made in a terminal.
+    /// Guard decisions intentionally remain on the human CLI adapter. `_ipc`
+    /// is replayable and cannot prove its caller is the desktop App.
     static func guardDecision(id: String, approve: Bool) -> [String] {
         ["guard", approve ? "approve" : "deny", id, "--by", "panel", "--json"]
     }
+
 }
 
 struct ATMTodaySessionsState: Equatable {
@@ -1140,6 +1070,10 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var knowledgeCollections: [ATMKnowledgeCollection] = []
     @Published private(set) var isKnowledgeCatalogLoading = false
     @Published var knowledgeErrorMessage: String?
+    private let makeKnowledgeIPCClient: @Sendable () throws -> ATMKnowledgeIPCClient
+    private let makeMemoryIPCClient: @Sendable () throws -> ATMMemoryIPCClient
+    private let makeSessionIPCClient: @Sendable () throws -> ATMSessionIPCClient
+    private let makeTodoIPCClient: @Sendable () throws -> ATMTodoIPCClient
     @Published private(set) var progressByTodoID: [String: [ATMTodoProgressEntry]] = [:]
     @Published private(set) var loadingProgressTodoIDs: Set<String> = []
     @Published private(set) var boundSessionsByTodoID: [String: [ATMBoundSession]] = [:]
@@ -1231,6 +1165,26 @@ final class ATMDataStore: ObservableObject {
     /// successful dashboard load (baseline, no historical flood).
     private var notifiedTodoStatus: [String: String]?
 
+    init(
+        makeKnowledgeIPCClient: @escaping @Sendable () throws -> ATMKnowledgeIPCClient = {
+            try ATMKnowledgeIPCClient()
+        },
+        makeMemoryIPCClient: @escaping @Sendable () throws -> ATMMemoryIPCClient = {
+            try ATMMemoryIPCClient()
+        },
+        makeSessionIPCClient: @escaping @Sendable () throws -> ATMSessionIPCClient = {
+            try ATMSessionIPCClient()
+        },
+        makeTodoIPCClient: @escaping @Sendable () throws -> ATMTodoIPCClient = {
+            try ATMTodoIPCClient()
+        }
+    ) {
+        self.makeKnowledgeIPCClient = makeKnowledgeIPCClient
+        self.makeMemoryIPCClient = makeMemoryIPCClient
+        self.makeSessionIPCClient = makeSessionIPCClient
+        self.makeTodoIPCClient = makeTodoIPCClient
+    }
+
     var currentSessionID: String? {
         guard snapshot.currentSession?.bound == true else { return nil }
         return snapshot.currentSession?.binding?.sessionID
@@ -1249,7 +1203,7 @@ final class ATMDataStore: ObservableObject {
 
     /// Paints the task list from the cheap half of the dashboard.
     ///
-    /// `atm dashboard` also computes the usage statistics, which on a real
+    /// The complete dashboard snapshot also computes usage statistics, which on a real
     /// database is about a second of SQL aggregation that no task row reads —
     /// the todos themselves are ready in a few milliseconds. Asking for the work
     /// section first fills the window at launch rather than after the charts.
@@ -1266,9 +1220,10 @@ final class ATMDataStore: ObservableObject {
             let outcome: ATMCommandOutcome<ATMDashboardEnvelope>
             do {
                 let runner = try ATMCommandRunner()
-                outcome = await decodeCommand(
+                outcome = await decodeIPCCommand(
                     runner,
-                    arguments: ATMCommandBuilder.dashboard(
+                    method: ATMDashboardIPCCommand.snapshot,
+                    request: ATMDashboardRequest(
                         sections: ["work"],
                         sessionID: ATMAgentSessionContext.sessionID()
                     )
@@ -1294,10 +1249,7 @@ final class ATMDataStore: ObservableObject {
 
     func start() {
         guard timer == nil else { return }
-        loadGrokLiveQuotaSetting()
-        loadOwnerNameSetting()
-        loadTodoRefineOnAddSetting()
-        loadTextModelSettings()
+        loadSettings()
         primeWork()
         refresh()
         refresh(sync: true)
@@ -1495,102 +1447,69 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
-    /// Reads the effective value (config file + env override) from the CLI so
-    /// the toggle reflects reality even when config.json was edited by hand.
-    func loadGrokLiveQuotaSetting() {
+    /// Reads every setting the app shows in one `_ipc config.settings` call.
+    ///
+    /// This used to be four functions issuing eight `atm config get <key>` reads,
+    /// four of them concurrently. They were replaced together rather than one at a
+    /// time because the reason to merge them was never the spawn cost: it was that
+    /// eight argv arrays are eight independent chances to drift from the CLI, and
+    /// a drifted one shows up as a setting that silently reads back empty.
+    ///
+    /// Effective values, not file contents: an env override such as
+    /// ATM_GROK_LIVE_QUOTA beats config.json, and a toggle has to show what the
+    /// CLI will actually do.
+    func loadSettings() {
         Task {
             guard let runner = try? ATMCommandRunner() else { return }
-            let outcome: ATMCommandOutcome<ATMConfigBoolValue> = await decodeCommand(
-                runner,
-                arguments: ["config", "get", "grok_live_quota", "--json"]
-            )
-            if let value = outcome.value {
-                grokLiveQuotaEnabled = value.value
+            do {
+                let settings = try await ATMIPCClient(runner: runner).call(ATMIPCCommand.settings)
+                applySettings(settings)
+                textModelSettingsErrorMessage = nil
+            } catch is CancellationError {
+                return
+            } catch let mismatch as ATMIPCProtocolMismatch {
+                textModelSettingsErrorMessage = mismatch.summary
+            } catch {
+                textModelSettingsErrorMessage = ATMErrorText.compact(
+                    error.localizedDescription,
+                    limit: 180
+                )
             }
         }
     }
 
-    /// Reads the nickname a todo's "me" creator is displayed with. Read once at
-    /// start: it changes only when the user edits config, and every task detail
-    /// needs it.
-    func loadOwnerNameSetting() {
-        Task {
-            guard let runner = try? ATMCommandRunner() else { return }
-            let outcome: ATMCommandOutcome<ATMConfigStringValue> = await decodeCommand(
-                runner,
-                arguments: ["config", "get", "owner_name", "--json"]
-            )
-            if let value = outcome.value {
-                ownerName = value.value
-            }
-        }
+    /// Publishes one settings snapshot. Shared by the read and the save so the two
+    /// cannot disagree about which properties a snapshot updates — a field added to
+    /// the payload and wired into only one of them would show up as a setting that
+    /// sticks on reload but not on save.
+    private func applySettings(_ settings: ATMSettingsSnapshot) {
+        grokLiveQuotaEnabled = settings.grokLiveQuota
+        ownerName = settings.ownerName
+        todoRefineOnAdd = settings.todoRefineOnAdd
+        textModelBaseURL = settings.textModelBaseURL
+        textModelName = settings.textModelName
+        textModelSource = settings.textModelSource
+        todoRefinePrompt = settings.todoRefinePrompt
+        textModelAPIKeyConfigured = settings.textModelAPIKeyConfigured
     }
 
-    /// Persists the switch via `atm config set` and refreshes quota, so the
-    /// change works identically for plain CLI users. Reverts on failure. After
-    /// a successful write it re-reads the effective value: an
-    /// ATM_GROK_LIVE_QUOTA env override beats the config file, and the toggle
-    /// must show what `atm quota` will actually do.
-    func loadTodoRefineOnAddSetting() {
-        Task {
-            guard let runner = try? ATMCommandRunner() else { return }
-            let outcome: ATMCommandOutcome<ATMConfigBoolValue> = await decodeCommand(
-                runner,
-                arguments: ["config", "get", "todo_refine_on_add", "--json"]
-            )
-            if let value = outcome.value {
-                todoRefineOnAdd = value.value
-            }
-        }
-    }
-
+    /// Persists the switch through the typed settings service and reverts the
+    /// optimistic toggle if the write fails.
     func setTodoRefineOnAdd(_ enabled: Bool) {
         guard enabled != todoRefineOnAdd else { return }
         todoRefineOnAdd = enabled
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["config", "set", "todo_refine_on_add", enabled ? "true" : "false"])
-                loadTodoRefineOnAddSetting()
+                let saved = try await ATMIPCClient(runner: runner).call(
+                    ATMIPCCommand.saveSettings,
+                    request: ATMSettingsSave(todoRefineOnAdd: enabled)
+                )
+                applySettings(saved)
             } catch {
                 todoRefineOnAdd = !enabled
                 errorMessage = "任务整理设置未保存：\(ATMErrorText.compact(error.localizedDescription, limit: 160))"
             }
-        }
-    }
-
-    func loadTextModelSettings() {
-        Task {
-            guard let runner = try? ATMCommandRunner() else { return }
-            async let credentialOutcome: ATMCommandOutcome<ATMTextModelCredentialStatus> = decodeCommand(
-                runner,
-                arguments: ["config", "credential", "status", "--json"]
-            )
-            async let baseOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
-                runner,
-                arguments: ["config", "get", "text_model_base_url", "--json"]
-            )
-            async let modelOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
-                runner,
-                arguments: ["config", "get", "text_model_name", "--json"]
-            )
-            async let sourceOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
-                runner,
-                arguments: ["config", "get", "text_model_source", "--json"]
-            )
-            async let promptOutcome: ATMCommandOutcome<ATMConfigStringValue> = decodeCommand(
-                runner,
-                arguments: ["config", "get", "todo_refine_prompt", "--json"]
-            )
-            let (credential, base, model, source, prompt) = await (
-                credentialOutcome, baseOutcome, modelOutcome, sourceOutcome, promptOutcome
-            )
-            if let value = credential.value { textModelAPIKeyConfigured = value.configured }
-            if let value = base.value { textModelBaseURL = value.value }
-            if let value = model.value { textModelName = value.value }
-            if let value = source.value { textModelSource = value.value }
-            if let value = prompt.value { todoRefinePrompt = value.value }
-            textModelSettingsErrorMessage = credential.error ?? base.error ?? model.error ?? source.error ?? prompt.error
         }
     }
 
@@ -1621,18 +1540,34 @@ final class ATMDataStore: ObservableObject {
             do {
                 let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
                 let runner = try ATMCommandRunner()
+                let client = ATMIPCClient(runner: runner)
                 if !trimmedAPIKey.isEmpty {
-                    _ = try await runner.run(
-                        ["config", "credential", "set"],
-                        standardInput: Data(trimmedAPIKey.utf8)
+                    let credential = try await client.call(
+                        ATMIPCCommand.saveCredential,
+                        request: ATMCredentialSave(apiKey: trimmedAPIKey)
                     )
-                    textModelAPIKeyConfigured = true
+                    textModelAPIKeyConfigured = credential.configured
                 }
-                _ = try await runner.run(["config", "set", "text_model_base_url", trimmedBaseURL])
-                _ = try await runner.run(["config", "set", "text_model_name", trimmedModel])
-                _ = try await runner.run(["config", "set", "text_model_source", trimmedSource])
-                _ = try await runner.run(["config", "set", "todo_refine_prompt", trimmedPrompt])
-                loadTextModelSettings()
+                // One write, not four. As four sequential `config set` calls this
+                // could not fail as a unit: a value the CLI rejected on the third
+                // call left the first two already on disk, and the form then
+                // reloaded half of what was typed. `config.save` validates every
+                // field before writing any of them.
+                let save = ATMSettingsSave(
+                    textModelBaseURL: trimmedBaseURL,
+                    textModelName: trimmedModel,
+                    textModelSource: trimmedSource,
+                    todoRefinePrompt: trimmedPrompt
+                )
+                // The answer is the state after the write, so the form redraws from
+                // it instead of paying a second round trip — and what it draws is the
+                // effective value, which an env override can differ from what was
+                // just saved.
+                let saved = try await client.call(
+                    ATMIPCCommand.saveSettings,
+                    request: save
+                )
+                applySettings(saved)
             } catch {
                 textModelSettingsErrorMessage = "模型设置未保存：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
             }
@@ -1648,8 +1583,10 @@ final class ATMDataStore: ObservableObject {
             defer { isSavingTextModelSettings = false }
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["config", "credential", "delete"])
-                textModelAPIKeyConfigured = false
+                let status = try await ATMIPCClient(runner: runner).call(
+                    ATMIPCCommand.deleteCredential
+                )
+                textModelAPIKeyConfigured = status.configured
             } catch {
                 textModelSettingsErrorMessage = "API Key 未删除：\(ATMErrorText.compact(error.localizedDescription, limit: 180))"
             }
@@ -1683,21 +1620,17 @@ final class ATMDataStore: ObservableObject {
             defer { isTestingTextModelSettings = false }
             do {
                 let runner = try ATMCommandRunner()
-                var environment = [
-                    "ATM_TEXT_MODEL_BASE_URL": trimmedBaseURL,
-                    "ATM_TEXT_MODEL_MODEL": trimmedModel,
-                ]
-                if !draftKey.isEmpty {
-                    environment["ATM_TEXT_MODEL_API_KEY"] = draftKey
-                }
-                let data = try await runner.run(
-                    ["config", "test-text-model", "--json"],
-                    environmentOverrides: environment
+                let result = try await ATMIPCClient(runner: runner).call(
+                    ATMIPCCommand.checkTextModel,
+                    request: ATMTextModelCheck(
+                        apiKey: draftKey.isEmpty ? nil : draftKey,
+                        baseURL: trimmedBaseURL,
+                        model: trimmedModel
+                    )
                 )
-                let result = try JSONDecoder().decode(ATMTextModelTestResult.self, from: data)
                 guard result.ok else {
                     throw ATMCommandError.failed(
-                        arguments: ["config", "test-text-model"],
+                        arguments: ATMIPCCommand.checkTextModel.arguments,
                         status: 1,
                         message: "服务返回 ok=false"
                     )
@@ -1722,10 +1655,14 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { refiningTodoIDs.remove(trimmed) }
             do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(ATMCommandBuilder.refineTodo(id: trimmed, hint: hint))
-                struct Result: Decodable { let changed: Bool? }
-                if (try? JSONDecoder().decode(Result.self, from: data))?.changed == false {
+                let result = try await makeTodoIPCClient().refine(ATMTodoRefineRequest(
+                    todoID: trimmed,
+                    allowSplit: true,
+                    maxChildren: 5,
+                    hint: hint,
+                    dryRun: false
+                ))
+                if !result.changed {
                     refineUnchangedTodoIDs.insert(trimmed)
                 }
                 // Children and a rewritten title only exist after refine returns.
@@ -1755,8 +1692,11 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["config", "set", "grok_live_quota", enabled ? "true" : "false"])
-                loadGrokLiveQuotaSetting()
+                let saved = try await ATMIPCClient(runner: runner).call(
+                    ATMIPCCommand.saveSettings,
+                    request: ATMSettingsSave(grokLiveQuota: enabled)
+                )
+                applySettings(saved)
                 refresh()
             } catch {
                 grokLiveQuotaEnabled = !enabled
@@ -1771,10 +1711,13 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { isCollectionRefreshing = false }
             guard let runner = try? ATMCommandRunner() else { return }
+            let client = ATMIPCClient(runner: runner)
             var status: ATMCollectionOverview?
             do {
-                let data = try await runner.run(["collect", "status", "--limit", "200", "--json"])
-                status = try JSONDecoder().decode(ATMCollectionOverview.self, from: data)
+                status = try await client.call(
+                    ATMCollectionIPCCommand.snapshot,
+                    request: ATMCollectionSnapshotRequest(itemLimit: 200)
+                )
                 if let status { notifyCollectionRuns(status.runs) }
                 if let currentStatus = status,
                    runIfDue,
@@ -1783,9 +1726,14 @@ final class ATMDataStore: ObservableObject {
                     isCollecting = true
                     lastCollectionAttemptAt = Date()
                     defer { isCollecting = false }
-                    _ = try await runner.run(["collect", "run", "--due", "--json"])
-                    let refreshed = try await runner.run(["collect", "status", "--limit", "200", "--json"])
-                    status = try JSONDecoder().decode(ATMCollectionOverview.self, from: refreshed)
+                    _ = try await client.call(
+                        ATMCollectionIPCCommand.run,
+                        request: ATMCollectionRunRequest(sourceID: nil, dueOnly: true)
+                    )
+                    status = try await client.call(
+                        ATMCollectionIPCCommand.snapshot,
+                        request: ATMCollectionSnapshotRequest(itemLimit: 200)
+                    )
                     if let status { notifyCollectionRuns(status.runs) }
                     refresh()
                 }
@@ -1798,8 +1746,10 @@ final class ATMDataStore: ObservableObject {
                 // if any one source failed, and the latest run is the latest across
                 // *all* sources — so one source's hiccup used to raise a card over the
                 // whole workspace. The refreshed health below decides instead.
-                if let data = try? await runner.run(["collect", "status", "--limit", "200", "--json"]),
-                   let recovered = try? JSONDecoder().decode(ATMCollectionOverview.self, from: data) {
+                if let recovered = try? await client.call(
+                    ATMCollectionIPCCommand.snapshot,
+                    request: ATMCollectionSnapshotRequest(itemLimit: 200)
+                ) {
                     collectionOverview = recovered
                     notifyCollectionRuns(recovered.runs)
                     collectionErrorMessage = ATMCollectionWorkspaceNotice.banner(for: recovered)
@@ -1842,9 +1792,15 @@ final class ATMDataStore: ObservableObject {
             }
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(ATMCollectionRunCommand.arguments(sourceID: source.id))
-                let data = try await runner.run(["collect", "status", "--limit", "200", "--json"])
-                collectionOverview = try JSONDecoder().decode(ATMCollectionOverview.self, from: data)
+                let client = ATMIPCClient(runner: runner)
+                _ = try await client.call(
+                    ATMCollectionIPCCommand.run,
+                    request: ATMCollectionRunRequest(sourceID: source.id, dueOnly: false)
+                )
+                collectionOverview = try await client.call(
+                    ATMCollectionIPCCommand.snapshot,
+                    request: ATMCollectionSnapshotRequest(itemLimit: 200)
+                )
                 collectionSourceErrors[source.id] = nil
                 notifyCollectionRuns(collectionOverview.runs)
                 refresh()
@@ -1862,7 +1818,10 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["collect", enabled ? "enable" : "disable", "--json"])
+                _ = try await ATMIPCClient(runner: runner).call(
+                    ATMIPCCommand.saveSettings,
+                    request: ATMSettingsSave(collectionEnabled: enabled)
+                )
                 refreshCollection(runIfDue: enabled)
             } catch {
                 collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
@@ -1875,7 +1834,10 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["config", "set", "collection_interval_minutes", String(value)])
+                _ = try await ATMIPCClient(runner: runner).call(
+                    ATMIPCCommand.saveSettings,
+                    request: ATMSettingsSave(collectionIntervalMinutes: value)
+                )
                 refreshCollection()
             } catch {
                 collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
@@ -1904,23 +1866,30 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                var arguments = ["collect", "source", "add", "--connector", connectorID] + target.arguments
-                    + ["--priority", priority, "--strategy", strategy,
-                       "--decision-unit", decisionUnit,
-                       "--interval", String(intervalMinutes), "--json"]
                 let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedProject = project.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedExclude = excludePattern.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedInstruction = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedKnowledge = knowledgeCollection.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmedName.isEmpty { arguments += ["--name", trimmedName] }
-                if !trimmedProject.isEmpty { arguments += ["--project", trimmedProject] }
-                if !trimmedExclude.isEmpty { arguments += ["--exclude", trimmedExclude] }
-                if !trimmedInstruction.isEmpty { arguments += ["--instruction", trimmedInstruction] }
-                if !trimmedKnowledge.isEmpty { arguments += ["--knowledge-collection", trimmedKnowledge] }
-                if autoDispatch && strategy == "tasks" { arguments.append("--auto-dispatch") }
-                if !enabled { arguments.append("--disabled") }
-                _ = try await runner.run(arguments)
+                _ = try await ATMIPCClient(runner: runner).call(
+                    ATMCollectionIPCCommand.saveSource,
+                    request: ATMCollectionSourceSaveRequest(
+                        connector: connectorID,
+                        kind: target.kind,
+                        externalID: target.value,
+                        name: trimmedName,
+                        project: trimmedProject,
+                        excludePattern: trimmedExclude,
+                        instruction: trimmedInstruction,
+                        knowledgeCollection: trimmedKnowledge,
+                        strategy: strategy,
+                        decisionUnit: decisionUnit,
+                        intervalMinutes: intervalMinutes,
+                        priority: priority,
+                        autoDispatch: autoDispatch && strategy == "tasks",
+                        enabled: enabled
+                    )
+                )
                 refreshCollection(runIfDue: collectionOverview.enabled)
             } catch {
                 collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 220)
@@ -1939,12 +1908,13 @@ final class ATMDataStore: ObservableObject {
         guard !connectorID.isEmpty, !trimmed.isEmpty else { return ([], nil) }
         do {
             let runner = try ATMCommandRunner()
-            let outcome: ATMCommandOutcome<ATMCollectionCandidateList> = await decodeCommand(
-                runner,
-                arguments: ["collect", "source", "search", trimmed, "--connector", connectorID,
-                            "--kind", kind, "--limit", "10", "--json"]
+            let result = try await ATMIPCClient(runner: runner).call(
+                ATMCollectionIPCCommand.searchSources,
+                request: ATMCollectionSourceSearchRequest(
+                    connector: connectorID, kind: kind, keyword: trimmed, limit: 10
+                )
             )
-            return (outcome.value?.candidates ?? [], outcome.error)
+            return (result.candidates, nil)
         } catch {
             return ([], ATMErrorText.compact(error.localizedDescription, limit: 180))
         }
@@ -1960,13 +1930,13 @@ final class ATMDataStore: ObservableObject {
     ) async -> (ATMCollectionHistory?, String?) {
         do {
             let runner = try ATMCommandRunner()
-            let outcome: ATMCommandOutcome<ATMCollectionHistory> = await decodeCommand(
-                runner,
-                arguments: ATMCommandBuilder.collectionHistory(
+            let result = try await ATMIPCClient(runner: runner).call(
+                ATMCollectionIPCCommand.history,
+                request: ATMCollectionHistoryRequest(
                     sourceID: source.id, limit: limit, local: local
                 )
             )
-            return (outcome.value, outcome.error)
+            return (result, nil)
         } catch {
             return (nil, ATMErrorText.compact(error.localizedDescription, limit: 180))
         }
@@ -1976,7 +1946,10 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["collect", "source", enabled ? "enable" : "disable", source.id, "--json"])
+                _ = try await ATMIPCClient(runner: runner).call(
+                    ATMCollectionIPCCommand.setSourceEnabled,
+                    request: ATMCollectionSourceEnabledRequest(sourceID: source.id, enabled: enabled)
+                )
                 collectionSourceErrors[source.id] = nil
                 refreshCollection()
             } catch {
@@ -1995,8 +1968,9 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(
-                    ATMCollectionSourceMuteCommand.arguments(sourceID: source.id, muted: muted)
+                _ = try await ATMIPCClient(runner: runner).call(
+                    ATMCollectionIPCCommand.setSourceMuted,
+                    request: ATMCollectionSourceMutedRequest(sourceID: source.id, muted: muted)
                 )
                 collectionSourceErrors[source.id] = nil
                 refreshCollection()
@@ -2012,7 +1986,10 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["collect", "source", "delete", source.id, "--yes", "--json"])
+                _ = try await ATMIPCClient(runner: runner).call(
+                    ATMCollectionIPCCommand.deleteSource,
+                    request: ATMCollectionSourceDeleteRequest(sourceID: source.id, confirmed: true)
+                )
                 refreshCollection()
             } catch {
                 collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
@@ -2021,13 +1998,23 @@ final class ATMDataStore: ObservableObject {
     }
 
     func reprocessCollectionItem(_ item: ATMCollectionItem) {
-        runCollectionItemAction(["reprocess", item.id])
+        runCollectionItemAction { client in
+            _ = try await client.call(
+                ATMCollectionIPCCommand.reprocessItem,
+                request: ATMCollectionItemIDRequest(itemID: item.id)
+            )
+        }
     }
 
     /// Insight classification stops at the conclusion. This explicit action is
     /// the only Collection-workspace path that creates central knowledge.
     func saveCollectionItemToKnowledge(_ item: ATMCollectionItem) {
-        runCollectionItemAction(["save", item.id])
+        runCollectionItemAction { client in
+            _ = try await client.call(
+                ATMCollectionIPCCommand.saveConclusion,
+                request: ATMCollectionSaveConclusionRequest(itemID: item.id, collection: nil)
+            )
+        }
     }
 
     func promoteCollectionItem(
@@ -2036,12 +2023,17 @@ final class ATMDataStore: ObservableObject {
         project: String? = nil,
         priority: String? = nil
     ) {
-        runCollectionItemAction(
-            collectionItemArguments(
-                action: "promote", item: item, title: title,
-                project: project, priority: priority
+        runCollectionItemAction { client in
+            _ = try await client.call(
+                ATMCollectionIPCCommand.promoteItem,
+                request: ATMCollectionPromoteRequest(
+                    itemID: item.id,
+                    correction: ATMCollectionItemCorrectionRequest(
+                        title: title, project: project, priority: priority
+                    )
+                )
             )
-        )
+        }
     }
 
     func correctCollectionItem(
@@ -2050,16 +2042,26 @@ final class ATMDataStore: ObservableObject {
         project: String,
         priority: String
     ) {
-        runCollectionItemAction(
-            collectionItemArguments(
-                action: "correct", item: item, title: title,
-                project: project, priority: priority
+        runCollectionItemAction { client in
+            _ = try await client.call(
+                ATMCollectionIPCCommand.correctItem,
+                request: ATMCollectionCorrectRequest(
+                    itemID: item.id,
+                    correction: ATMCollectionItemCorrectionRequest(
+                        title: title, project: project, priority: priority
+                    )
+                )
             )
-        )
+        }
     }
 
     func revertCollectionItem(_ item: ATMCollectionItem) {
-        runCollectionItemAction(["revert", item.id, "--yes"])
+        runCollectionItemAction { client in
+            _ = try await client.call(
+                ATMCollectionIPCCommand.revertItem,
+                request: ATMCollectionRevertRequest(itemID: item.id, confirmed: true)
+            )
+        }
     }
 
     func setCollectionItemsRead(_ items: [ATMCollectionItem], read: Bool) {
@@ -2072,7 +2074,10 @@ final class ATMDataStore: ObservableObject {
             defer { collectionReadUpdatesInFlight.subtract(pending) }
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(ATMCommandBuilder.collectionItemRead(ids: ids, read: read))
+                _ = try await ATMIPCClient(runner: runner).call(
+                    ATMCollectionIPCCommand.setItemsRead,
+                    request: ATMCollectionItemsReadRequest(itemIDs: ids, all: false, read: read)
+                )
                 refreshCollection()
             } catch {
                 collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
@@ -2086,7 +2091,12 @@ final class ATMDataStore: ObservableObject {
     func setCollectionItemsArchived(_ items: [ATMCollectionItem], archived: Bool) {
         let ids = Array(Set(items.map(\.id))).sorted()
         guard !ids.isEmpty else { return }
-        runCollectionItemAction([archived ? "archive" : "unarchive"] + ids)
+        runCollectionItemAction { client in
+            _ = try await client.call(
+                ATMCollectionIPCCommand.setItemsArchived,
+                request: ATMCollectionItemsArchivedRequest(itemIDs: ids, archived: archived)
+            )
+        }
     }
 
     /// Reads the pending list and reconciles banners against it.
@@ -2098,8 +2108,11 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                let data = try await runner.run(ATMCommandBuilder.guardList())
-                let approvals = try JSONDecoder().decode([ATMGuardApproval].self, from: data)
+                let response = try await ATMIPCClient(runner: runner).call(
+                    ATMGuardIPCCommand.list,
+                    request: ATMGuardListRequest(status: "pending", limit: 50)
+                )
+                let approvals = response.approvals
                 pendingApprovals = approvals
                 approvalErrorMessage = nil
                 reconcileApprovalBanners(approvals)
@@ -2283,7 +2296,10 @@ final class ATMDataStore: ObservableObject {
         Task {
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(ATMCommandBuilder.collectionMarkAllRead())
+                _ = try await ATMIPCClient(runner: runner).call(
+                    ATMCollectionIPCCommand.setItemsRead,
+                    request: ATMCollectionItemsReadRequest(itemIDs: [], all: true, read: true)
+                )
                 refreshCollection()
             } catch {
                 collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 200)
@@ -2304,24 +2320,18 @@ final class ATMDataStore: ObservableObject {
     /// that was never cleared.
     func deleteCollectionItems(_ items: [ATMCollectionItem]) {
         guard !items.isEmpty else { return }
-        runCollectionItemAction(["delete"] + items.map(\.id) + ["--yes"])
+        let ids = Array(Set(items.map(\.id))).sorted()
+        runCollectionItemAction { client in
+            _ = try await client.call(
+                ATMCollectionIPCCommand.deleteItems,
+                request: ATMCollectionItemsDeleteRequest(itemIDs: ids, confirmed: true)
+            )
+        }
     }
 
-    private func collectionItemArguments(
-        action: String,
-        item: ATMCollectionItem,
-        title: String?,
-        project: String?,
-        priority: String?
-    ) -> [String] {
-        var arguments = [action, item.id]
-        if let title { arguments += ["--title", title] }
-        if let project { arguments += ["--project", project] }
-        if let priority { arguments += ["--priority", priority] }
-        return arguments
-    }
-
-    private func runCollectionItemAction(_ arguments: [String]) {
+    private func runCollectionItemAction(
+        _ operation: @escaping (ATMIPCClient) async throws -> Void
+    ) {
         guard !isCollecting else { return }
         isCollecting = true
         collectionErrorMessage = nil
@@ -2329,7 +2339,7 @@ final class ATMDataStore: ObservableObject {
             defer { isCollecting = false }
             do {
                 let runner = try ATMCommandRunner()
-                _ = try await runner.run(["collect", "item"] + arguments + ["--json"])
+                try await operation(ATMIPCClient(runner: runner))
                 refreshCollection()
                 refresh()
             } catch {
@@ -2407,24 +2417,25 @@ final class ATMDataStore: ObservableObject {
                     }
                 }
 
-                let dashboardArguments = ATMCommandBuilder.dashboard(
-                    sessionID: ATMAgentSessionContext.sessionID()
-                )
                 let dashboardRequestStartedAt = Date()
                 // Quota lives in the agents' own logs rather than the session
                 // index, so it is a separate command. Run it concurrently with
                 // the dashboard so the extra read costs no wall-clock time.
-                async let dashboardTask: ATMCommandOutcome<ATMDashboardEnvelope> = decodeCommand(
+                async let dashboardTask: ATMCommandOutcome<ATMDashboardEnvelope> = decodeIPCCommand(
                     runner,
-                    arguments: dashboardArguments
+                    method: ATMDashboardIPCCommand.snapshot,
+                    request: ATMDashboardRequest(
+                        sessionID: ATMAgentSessionContext.sessionID()
+                    )
                 )
                 async let quotaTask: ATMCommandOutcome<ATMQuotaSnapshot> = decodeCommand(
                     runner,
                     arguments: ["quota", "--json"]
                 )
-                async let trashTask: ATMCommandOutcome<[ATMTodo]> = decodeCommand(
+                async let trashTask: ATMCommandOutcome<[ATMTodo]> = decodeIPCCommand(
                     runner,
-                    arguments: ["todo", "list", "--status", "trashed", "--json"]
+                    method: ATMTodoIPCCommand.list,
+                    request: ATMTodoListRequest(status: "trashed")
                 )
                 let (dashboard, quotaOutcome, trashOutcome) = await (
                     dashboardTask,
@@ -2564,11 +2575,16 @@ final class ATMDataStore: ObservableObject {
         isActing = true
         errorMessage = nil
         Task {
-			defer { isActing = false }
+            defer { isActing = false }
             do {
-                let runner = try ATMCommandRunner()
-                let arguments = ATMCommandBuilder.arguments(for: action, todo: todo)
-                _ = try await runner.run(arguments)
+                if let arguments = ATMCommandBuilder.arguments(for: action, todo: todo) {
+                    let runner = try ATMCommandRunner()
+                    _ = try await runner.run(arguments)
+                } else {
+                    _ = try await makeTodoIPCClient().update(
+                        ATMTodoUpdateRequest(todoID: todo.id, status: "open")
+                    )
+                }
                 applySuccessfulTodoAction(action, on: todo)
                 switch action {
                 case .complete:
@@ -2672,30 +2688,28 @@ final class ATMDataStore: ObservableObject {
 			defer {
 				isActing = false
 				draft.cleanupTemporaryImages()
-			}
+            }
             do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(ATMCommandBuilder.addTodo(draft))
-                let createdID = ATMCommandBuilder.createdTodoID(from: data)
+                let created = try await makeTodoIPCClient().create(
+                    ATMTodoCreateRequest(draft: draft)
+                )
+                let createdID = created.id
                 // Prefer the decoded todo so selection can resolve before the next
                 // full dashboard refresh lands.
-                if let created = try? JSONDecoder().decode(ATMTodo.self, from: data),
-                   !allTodos.contains(where: { $0.id == created.id }) {
+                if !allTodos.contains(where: { $0.id == created.id }) {
                     updateDashboardState { $0.allTodos.append(created) }
                     // Human just filed this in the UI — do not also banner "新建".
                     var seen = notifiedTodoStatus ?? [:]
                     seen[created.id] = created.status
                     notifiedTodoStatus = seen
-                } else if let createdID {
+                } else {
                     var seen = notifiedTodoStatus ?? [:]
                     seen[createdID] = "open"
                     notifiedTodoStatus = seen
                 }
-                if let createdID {
-                    onCreated?(createdID)
-                    if todoRefineOnAdd {
-                        refineTodo(id: createdID, automatic: true)
-                    }
+                onCreated?(createdID)
+                if todoRefineOnAdd {
+                    refineTodo(id: createdID, automatic: true)
                 }
                 refresh()
             } catch {
@@ -2712,7 +2726,6 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { isActing = false }
             do {
-                let runner = try ATMCommandRunner()
                 let normalized = ATMTodoEdit(
                     title: trimmedTitle,
                     description: edit.description.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -2723,7 +2736,9 @@ final class ATMDataStore: ObservableObject {
                     reviewAt: edit.reviewAt.trimmingCharacters(in: .whitespacesAndNewlines),
                     source: edit.source.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
-                _ = try await runner.run(ATMCommandBuilder.editTodo(id: todo.id, edit: normalized))
+                _ = try await makeTodoIPCClient().update(
+                    ATMTodoUpdateRequest(todoID: todo.id, edit: normalized)
+                )
                 refresh()
             } catch {
                 errorMessage = error.localizedDescription
@@ -2735,9 +2750,7 @@ final class ATMDataStore: ObservableObject {
         errorMessage = nil
         Task {
             do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(["todo", "show", todo.id, "--json"])
-                let detail = try JSONDecoder().decode(ATMTodoDetail.self, from: data)
+                let detail = try await makeTodoIPCClient().show(todo.id)
                 guard let folderURL = ATMProjectFolderResolver.resolve(
                     todo: todo,
                     bindings: detail.bindings ?? []
@@ -2788,15 +2801,7 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { loadingProgressTodoIDs.remove(todoID) }
             do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(["todo", "doc", todoID, "--json"])
-                // content is optional for older CLI builds that returned exists:false
-                // without a body when the markdown card was missing.
-                struct Doc: Decodable {
-                    let content: String?
-                    let exists: Bool?
-                }
-                let doc = try JSONDecoder().decode(Doc.self, from: data)
+                let doc = try await makeTodoIPCClient().document(todoID)
                 let content = doc.content ?? ""
                 progressByTodoID[todoID] = ATMTodoProgressEntry.parse(from: content)
             } catch {
@@ -2819,9 +2824,7 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { loadingBoundSessionTodoIDs.remove(todoID) }
             do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(["todo", "show", todoID, "--json"])
-                let detail = try JSONDecoder().decode(ATMTodoDetail.self, from: data)
+                let detail = try await makeTodoIPCClient().show(todoID)
                 boundSessionsByTodoID[todoID] = detail.sessions ?? []
             } catch {
                 boundSessionsByTodoID[todoID] = []
@@ -3018,9 +3021,7 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { isKnowledgeCatalogLoading = false }
             do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(["knowledge", "catalog", "--json"])
-                knowledgeCollections = try JSONDecoder().decode([ATMKnowledgeCollection].self, from: data)
+                knowledgeCollections = try await makeKnowledgeIPCClient().catalog()
             } catch {
                 knowledgeErrorMessage = error.localizedDescription
             }
@@ -3028,12 +3029,15 @@ final class ATMDataStore: ObservableObject {
     }
 
     func knowledgeDocuments(collectionID: String, status: String = "active") async throws -> [ATMKnowledgeDocumentSummary] {
-        let runner = try ATMCommandRunner()
-        let arguments = ["knowledge", "list", "--collection", collectionID, "--json"]
-        let data = try await runner.run(arguments)
-        let decoded = try JSONDecoder().decode([ATMKnowledgeDocumentSummary].self, from: data)
+        let decoded = try await makeKnowledgeIPCClient().query(ATMKnowledgeQueryRequest(
+            text: nil,
+            collection: collectionID,
+            status: status,
+            sessionID: nil,
+            limit: nil
+        ))
         var seen = Set<String>()
-        return decoded.filter { ($0.status ?? "active") == status && seen.insert($0.documentID).inserted }
+        return decoded.filter { seen.insert($0.documentID).inserted }
     }
 
     /// Archived documents remain attached to their original collection. The
@@ -3041,48 +3045,45 @@ final class ATMDataStore: ObservableObject {
     /// unscoped list once and aggregate by status rather than querying every
     /// collection separately.
     func archivedKnowledgeDocuments() async throws -> [ATMKnowledgeDocumentSummary] {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run(["knowledge", "list", "--json"])
-        let decoded = try JSONDecoder().decode([ATMKnowledgeDocumentSummary].self, from: data)
+        let decoded = try await makeKnowledgeIPCClient().query(ATMKnowledgeQueryRequest(
+            text: nil,
+            collection: nil,
+            status: "archived",
+            sessionID: nil,
+            limit: nil
+        ))
         var seen = Set<String>()
-        return decoded.filter { ($0.status ?? "active") == "archived" && seen.insert($0.documentID).inserted }
+        return decoded.filter { seen.insert($0.documentID).inserted }
     }
 
     func createCollection(id: String, name: String) async throws {
-        let runner = try ATMCommandRunner()
-        var arguments = ["knowledge", "collection", "create", id]
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedName.isEmpty { arguments += ["--name", trimmedName] }
-        arguments.append("--json")
-        _ = try await runner.run(arguments)
+        try await makeKnowledgeIPCClient().saveCollection(.create(id: id, name: trimmedName))
     }
 
     func renameCollectionName(id: String, name: String) async throws {
-        let runner = try ATMCommandRunner()
-        _ = try await runner.run(["knowledge", "collection", "edit", id, "--name", name, "--json"])
+        try await makeKnowledgeIPCClient().saveCollection(.update(id: id, name: name))
     }
 
-    func deleteCollection(id: String, force: Bool, moveTo: String?) async throws {
-        let runner = try ATMCommandRunner()
-        var arguments = ["knowledge", "collection", "delete", id]
-        if let moveTo, !moveTo.isEmpty { arguments += ["--move-to", moveTo] }
-        if force { arguments.append("--force") }
-        arguments.append("--json")
-        _ = try await runner.run(arguments)
+    func deleteCollection(id: String, force: Bool, moveTo: String?, confirmed: Bool) async throws {
+        try await makeKnowledgeIPCClient().deleteCollection(
+            id: id,
+            force: force,
+            moveTo: moveTo?.isEmpty == false ? moveTo : nil,
+            confirmed: confirmed
+        )
     }
 
     func searchKnowledge(_ query: String, status: String = "active") async throws -> [ATMKnowledgeDocumentSummary] {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else { return [] }
-        let runner = try ATMCommandRunner()
-        var arguments = [
-            "knowledge", "search", trimmedQuery, "--status", status, "--limit", "200", "--json",
-        ]
-        if let currentSessionID {
-            arguments += ["--session", currentSessionID]
-        }
-        let data = try await runner.run(arguments)
-        let decoded = try JSONDecoder().decode([ATMKnowledgeDocumentSummary].self, from: data)
+        let decoded = try await makeKnowledgeIPCClient().query(ATMKnowledgeQueryRequest(
+            text: trimmedQuery,
+            collection: nil,
+            status: status,
+            sessionID: currentSessionID,
+            limit: 200
+        ))
         var seen = Set<String>()
         return decoded.filter { seen.insert($0.documentID).inserted }
     }
@@ -3090,106 +3091,67 @@ final class ATMDataStore: ObservableObject {
     func searchTodos(_ query: String) async throws -> [ATMTodo] {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else { return [] }
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run([
-            "todo", "list", "--status", "all", "--query", trimmedQuery, "--json",
-        ])
-        return try JSONDecoder().decode([ATMTodo].self, from: data)
+        return try await makeTodoIPCClient().list(
+            ATMTodoListRequest(status: "all", query: trimmedQuery)
+        )
     }
 
     func searchSessions(_ query: String) async throws -> [ATMSessionSearchHit] {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedQuery.isEmpty else { return [] }
-        let runner = try ATMCommandRunner()
-        // An explicit limit, matching knowledge search: the palette dedupes down
-        // to sessions, so it needs more message matches than the CLI default
-        // reserves for a terminal reader.
-        let data = try await runner.run([
-            "session", "search", trimmedQuery, "--limit", "200", "--json",
-        ])
-        let decoded = try JSONDecoder().decode(ATMSessionSearchResult.self, from: data)
+        // The palette dedupes message hits down to sessions, so it needs a wider
+        // page than the terminal-oriented default.
+        let decoded = try await makeSessionIPCClient().search(ATMSessionSearchRequest(
+            keyword: trimmedQuery,
+            limit: 200
+        ))
         var seen = Set<String>()
         return decoded.matches.filter { seen.insert($0.shortID).inserted }
     }
 
     func knowledgeDocument(_ documentID: String) async throws -> ATMKnowledgeDocument {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run(["knowledge", "get", documentID, "--json"])
-        return try JSONDecoder().decode(ATMKnowledgeDocument.self, from: data)
+        try await makeKnowledgeIPCClient().document(documentID)
     }
 
     func updateKnowledgeDocument(_ documentID: String, content: String) async throws -> ATMKnowledgeDocument {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run(
-            ["knowledge", "update", documentID, "--file", "-", "--json"],
-            standardInput: Data(content.utf8)
+        try await makeKnowledgeIPCClient().saveDocument(
+            .content(documentID: documentID, content: content)
         )
-        return try JSONDecoder().decode(ATMKnowledgeDocument.self, from: data)
     }
 
     func addKnowledgeDocument(_ draft: ATMKnowledgeDraft) async throws -> ATMKnowledgeDocument {
-        let runner = try ATMCommandRunner()
-        var arguments = [
-            "knowledge", "add", draft.title,
-            "--collection", draft.collection,
-            "--producer", "human",
-        ]
-        appendValues(draft.domains, flag: "--domain", to: &arguments)
-        appendValues(draft.tags, flag: "--tag", to: &arguments)
-        appendValues(draft.projects, flag: "--project", to: &arguments)
-        arguments += ["--file", "-", "--json"]
-        let data = try await runner.run(arguments, standardInput: Data(draft.content.utf8))
-        return try JSONDecoder().decode(ATMKnowledgeDocument.self, from: data)
+        try await makeKnowledgeIPCClient().saveDocument(.create(draft))
     }
 
     func importKnowledge(at url: URL, collectionID: String) async throws -> [ATMKnowledgeDocument] {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run([
-            "knowledge", "import", url.path,
-            "--collection", collectionID,
-            "--producer", "atm-desktop",
-            "--json",
-        ])
-        return try JSONDecoder().decode([ATMKnowledgeDocument].self, from: data)
+        try await makeKnowledgeIPCClient().importDocument(path: url.path, collection: collectionID)
     }
 
     func editKnowledgeDocument(_ documentID: String, edit: ATMKnowledgeMetadataEdit) async throws -> ATMKnowledgeDocument {
-        let runner = try ATMCommandRunner()
-        var arguments = [
-            "knowledge", "edit", documentID,
-            "--title", edit.title,
-            "--collection", edit.collection,
-            "--status", edit.status,
-        ]
-        appendReplacementValues(edit.domains, flag: "--domain", to: &arguments)
-        appendReplacementValues(edit.tags, flag: "--tag", to: &arguments)
-        appendReplacementValues(edit.projects, flag: "--project", to: &arguments)
-        arguments.append("--json")
-        let data = try await runner.run(arguments)
-        return try JSONDecoder().decode(ATMKnowledgeDocument.self, from: data)
+        try await makeKnowledgeIPCClient().saveDocument(.metadata(
+            documentID: documentID,
+            title: edit.title,
+            collection: edit.collection,
+            status: edit.status,
+            domains: edit.domains,
+            tags: edit.tags,
+            projects: edit.projects
+        ))
     }
 
     func moveKnowledgeDocument(_ documentID: String, to collectionID: String) async throws -> ATMKnowledgeDocument {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run(ATMCommandBuilder.moveKnowledgeDocument(id: documentID, to: collectionID))
-        return try JSONDecoder().decode(ATMKnowledgeDocument.self, from: data)
+        try await makeKnowledgeIPCClient().saveDocument(.metadata(
+            documentID: documentID,
+            collection: collectionID
+        ))
     }
 
-    func deleteKnowledgeDocument(_ documentID: String) async throws {
-        let runner = try ATMCommandRunner()
-        _ = try await runner.run(["knowledge", "delete", documentID, "--json"])
+    func deleteKnowledgeDocument(_ documentID: String, confirmed: Bool) async throws {
+        try await makeKnowledgeIPCClient().deleteDocument(documentID, confirmed: confirmed)
     }
 
-    func knowledgeAudit(staleDays: Int = 180) async throws -> ATMKnowledgeAuditReport {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run(["knowledge", "audit", "--stale-days", String(staleDays), "--json"])
-        return try JSONDecoder().decode(ATMKnowledgeAuditReport.self, from: data)
-    }
-
-    func knowledgeQuality() async throws -> [ATMKnowledgeQuality] {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run(["knowledge", "quality", "--json"])
-        return try JSONDecoder().decode([ATMKnowledgeQuality].self, from: data)
+    func knowledgeGovernance(staleDays: Int = 180) async throws -> ATMKnowledgeGovernance {
+        try await makeKnowledgeIPCClient().governance(staleDays: staleDays)
     }
 
     func recordKnowledgeFeedback(
@@ -3200,18 +3162,13 @@ final class ATMDataStore: ObservableObject {
         guard let currentSessionID else {
             throw ATMKnowledgeFeedbackError.noBoundSession
         }
-        let runner = try ATMCommandRunner()
-        var arguments = [
-            "knowledge", "feedback", documentID,
-            "--session", currentSessionID,
-            "--outcome", outcome,
-        ]
         let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedNote.isEmpty {
-            arguments += ["--note", trimmedNote]
-        }
-        arguments.append("--json")
-        _ = try await runner.run(arguments)
+        try await makeKnowledgeIPCClient().feedback(ATMKnowledgeFeedbackRequest(
+            documentID: documentID,
+            sessionID: currentSessionID,
+            outcome: outcome,
+            note: trimmedNote.isEmpty ? nil : trimmedNote
+        ))
     }
 
     func doctor() async throws -> ATMDoctorReport {
@@ -3220,45 +3177,30 @@ final class ATMDataStore: ObservableObject {
         return try JSONDecoder().decode(ATMDoctorReport.self, from: data)
     }
 
-    private func appendValues(_ values: [String], flag: String, to arguments: inout [String]) {
-        for value in values where !value.isEmpty { arguments += [flag, value] }
-    }
-
-    private func appendReplacementValues(_ values: [String], flag: String, to arguments: inout [String]) {
-        if values.isEmpty {
-            arguments += [flag, ""]
-        } else {
-            appendValues(values, flag: flag, to: &arguments)
-        }
-    }
-
     func memories(query: String) async throws -> [ATMMemoryHit] {
-        let runner = try ATMCommandRunner()
-        var arguments = ["memory", "recall"]
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedQuery.isEmpty { arguments.append(trimmedQuery) }
-        arguments += ["--limit", "200", "--json"]
-        let data = try await runner.run(arguments)
-        return try JSONDecoder().decode([ATMMemoryHit].self, from: data)
+        return try await makeMemoryIPCClient().recall(ATMMemoryRecallRequest(
+            query: trimmedQuery.isEmpty ? nil : trimmedQuery,
+            scope: nil,
+            limit: 200
+        ))
     }
 
     func supersedeMemory(_ memory: ATMMemoryHit, content: String) async throws {
-        let runner = try ATMCommandRunner()
-        var arguments = ["memory", "supersede", memory.id, "--scope", memory.scope, "--file", "-"]
-        for tag in memory.tags {
-            arguments += ["--tag", tag]
-        }
-        if let source = memory.metadata["source"], !source.isEmpty {
-            arguments += ["--source", source]
-        }
-        arguments.append("--json")
-        _ = try await runner.run(arguments, standardInput: Data(content.utf8))
+        let source = memory.metadata["source"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        try await makeMemoryIPCClient().supersede(ATMMemorySupersedeRequest(
+            targetID: memory.id,
+            scope: memory.scope,
+            content: content,
+            tags: memory.tags,
+            source: source?.isEmpty == false ? source : nil
+        ))
     }
 
     func sessionTranscript(_ sessionID: String) async throws -> String {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run(["session", "show", sessionID])
-        return String(decoding: data, as: UTF8.self)
+        try await makeSessionIPCClient().show(
+            ATMSessionShowRequest(sessionID: sessionID)
+        ).plainText
     }
 
     // MARK: - Session index
@@ -3279,17 +3221,15 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { isLoadingIndexedSessions = false }
             do {
-                let runner = try ATMCommandRunner()
-                var arguments = [
-                    "session", "list", "--all", "--order", "desc",
-                    "--limit", String(Self.indexedSessionPageSize),
-                    "--offset", String(offset),
-                    "--json",
-                ]
-                if let agent, !agent.isEmpty { arguments += ["--agent", agent] }
-                if let project, !project.isEmpty { arguments += ["--project", project] }
-                let data = try await runner.run(arguments)
-                let page = try JSONDecoder().decode([ATMIndexedSession].self, from: data)
+                let response = try await makeSessionIPCClient().list(ATMSessionListRequest(
+                    agent: agent?.isEmpty == false ? agent : nil,
+                    project: project?.isEmpty == false ? project : nil,
+                    includeAll: true,
+                    order: "desc",
+                    limit: Self.indexedSessionPageSize,
+                    offset: offset
+                ))
+                let page = response.sessions
                 indexedSessionsError = nil
                 // A short page is the end of the index. Tracking it explicitly
                 // keeps the list from asking for a page that will always be empty
@@ -3343,12 +3283,12 @@ final class ATMDataStore: ObservableObject {
         Task {
             defer { loadingSessionReads.remove(key) }
             do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(mode.arguments(sessionID: sessionID))
                 if mode == .timeline {
-                    sessionTimelines[sessionID] = try JSONDecoder().decode([ATMSessionTimelineEntry].self, from: data)
-                } else {
-                    sessionTranscripts[key] = try JSONDecoder().decode(ATMSessionTranscript.self, from: data)
+                    sessionTimelines[sessionID] = try await makeSessionIPCClient().timeline(
+                        ATMSessionTimelineRequest(sessionID: sessionID)
+                    )
+                } else if let request = mode.showRequest(sessionID: sessionID) {
+                    sessionTranscripts[key] = try await makeSessionIPCClient().show(request)
                 }
                 sessionReadErrors[key] = nil
             } catch {

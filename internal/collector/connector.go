@@ -20,6 +20,31 @@ type Message struct {
 	Sender         string `json:"sender"`
 	CreatedAt      int64  `json:"created_at"`
 	Content        string `json:"content"`
+	// ExternalStates are connector-verified snapshots for work referenced by
+	// this message. Message content remains untrusted text; these structured
+	// states come from the configured connector and let collection avoid filing
+	// work that the upstream system already considers settled.
+	ExternalStates []ExternalState `json:"external_states,omitempty"`
+	// ExternalStatesCoverMessage asserts that those references account for all
+	// actionable meaning in this message, so settled states may ignore it whole.
+	ExternalStatesCoverMessage bool `json:"external_states_cover_message,omitempty"`
+}
+
+const (
+	ExternalDispositionActionable = "actionable"
+	ExternalDispositionSettled    = "settled"
+	ExternalDispositionUnknown    = "unknown"
+)
+
+// ExternalState maps a provider-native state onto the small disposition set
+// collection needs. Kind and State stay provider-defined so the core remains
+// connector-neutral; Disposition alone controls whether a Todo may be filed.
+type ExternalState struct {
+	Kind        string `json:"kind"`
+	Reference   string `json:"reference"`
+	State       string `json:"state"`
+	Disposition string `json:"disposition"`
+	CheckedAt   int64  `json:"checked_at"`
 }
 
 // Fetcher is the legacy single-connector injection point kept for embedders and

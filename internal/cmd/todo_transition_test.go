@@ -211,6 +211,7 @@ func TestStatusTransitionIgnoresObsoleteJSONWriteObstacles(t *testing.T) {
 
 func TestClosingTodoInSameStateIsIdempotent(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	oldJSON, oldReason := jsonOutput, todoReasonFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON

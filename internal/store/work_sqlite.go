@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 	"time"
@@ -347,13 +348,34 @@ func writeTodoImages(store sqlWorkStore, todo *Todo) error {
 	return nil
 }
 
-// WorkStateTx is the single transaction boundary for Todo lifecycle and Session
-// binding changes. Callers mutate Todos in memory and use the binding helpers
-// below; UpdateWorkState persists both domains atomically.
+// WorkStateTx is the single transaction boundary for Todo lifecycle, Session
+// bindings and the durable effects those changes require. Callers mutate Todos
+// in memory and use the helpers below; UpdateWorkState persists all three
+// atomically.
 type WorkStateTx struct {
 	tx    *sql.Tx
 	Todos *TodoFile
 }
+
+// WorkEffectRecord is one durable request to update a projection outside the
+// WorkStateTx database (currently Todo Markdown and desktop notifications).
+// Consumers must acknowledge a row only after applying its whole payload. A
+// failed or crashed delivery remains pending and may therefore run more than
+// once.
+type WorkEffectRecord struct {
+	ID            string
+	RequestID     string
+	TodoID        string
+	Kind          string
+	PayloadJSON   string
+	CreatedAt     int64
+	CompletedAt   *int64
+	AttemptCount  int
+	LastAttemptAt *int64
+	LastError     string
+}
+
+var ErrWorkEffectNotFound = errors.New("work effect not found")
 
 // UpdateWorkState runs fn inside one serialized write transaction: it takes the
 // cross-process write lock, reads the todos under that lock, hands them to fn,
@@ -388,6 +410,163 @@ func UpdateWorkState(fn func(*WorkStateTx) error) error {
 	return tx.Commit()
 }
 
+// EnqueueWorkEffect inserts an effect into the same transaction as the Todo and
+// binding changes that require it. The caller owns the stable ID; retries read
+// that persisted row instead of generating another one.
+func (state *WorkStateTx) EnqueueWorkEffect(effect WorkEffectRecord) error {
+	if effect.ID == "" || effect.RequestID == "" || effect.TodoID == "" ||
+		effect.Kind == "" || effect.PayloadJSON == "" || effect.CreatedAt == 0 {
+		return fmt.Errorf("work effect id, request ID, todo ID, kind, payload and creation time are required")
+	}
+	_, err := state.tx.Exec(`INSERT INTO work_effect_outbox
+		(id,request_id,todo_id,kind,payload_json,created_at)
+		VALUES(?,?,?,?,?,?)`, effect.ID, effect.RequestID, effect.TodoID,
+		effect.Kind, effect.PayloadJSON, effect.CreatedAt)
+	return err
+}
+
+// UpdatePendingWorkEffectPayload coalesces a projection update that has not yet
+// been delivered. Its ID, originating request and attempt history remain stable.
+func (state *WorkStateTx) UpdatePendingWorkEffectPayload(id, payloadJSON string) error {
+	if id == "" || payloadJSON == "" {
+		return fmt.Errorf("work effect ID and payload are required")
+	}
+	result, err := state.tx.Exec(`UPDATE work_effect_outbox SET payload_json=?
+		WHERE id=? AND completed_at IS NULL`, payloadJSON, id)
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("%w: %s", ErrWorkEffectNotFound, id)
+	}
+	return nil
+}
+
+func (state *WorkStateTx) PendingWorkEffects(todoID string) ([]WorkEffectRecord, error) {
+	return pendingWorkEffects(state.tx, todoID)
+}
+
+// ListPendingWorkEffects reads undelivered effects in creation order. Passing
+// an empty Todo ID returns every pending effect, which lets a future background
+// drainer reuse the same durable contract as command retries.
+func ListPendingWorkEffects(todoID string) ([]WorkEffectRecord, error) {
+	db, err := Open()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	return pendingWorkEffects(db, todoID)
+}
+
+func pendingWorkEffects(query sqlQueryer, todoID string) ([]WorkEffectRecord, error) {
+	statement := `SELECT id,request_id,todo_id,kind,payload_json,created_at,
+		completed_at,attempt_count,last_attempt_at,last_error
+		FROM work_effect_outbox WHERE completed_at IS NULL`
+	args := []any{}
+	if todoID != "" {
+		statement += ` AND todo_id=?`
+		args = append(args, todoID)
+	}
+	statement += ` ORDER BY created_at,id`
+	rows, err := query.Query(statement, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	effects := []WorkEffectRecord{}
+	for rows.Next() {
+		effect, err := scanWorkEffect(rows)
+		if err != nil {
+			return nil, err
+		}
+		effects = append(effects, effect)
+	}
+	return effects, rows.Err()
+}
+
+type workEffectScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanWorkEffect(scanner workEffectScanner) (WorkEffectRecord, error) {
+	var effect WorkEffectRecord
+	var completedAt, lastAttemptAt sql.NullInt64
+	err := scanner.Scan(&effect.ID, &effect.RequestID, &effect.TodoID, &effect.Kind,
+		&effect.PayloadJSON, &effect.CreatedAt, &completedAt, &effect.AttemptCount,
+		&lastAttemptAt, &effect.LastError)
+	if err != nil {
+		return WorkEffectRecord{}, err
+	}
+	if completedAt.Valid {
+		value := completedAt.Int64
+		effect.CompletedAt = &value
+	}
+	if lastAttemptAt.Valid {
+		value := lastAttemptAt.Int64
+		effect.LastAttemptAt = &value
+	}
+	return effect, nil
+}
+
+// CompleteWorkEffect acknowledges successful delivery. It is idempotent: a
+// second acknowledgement of an already completed row succeeds, while an
+// unknown ID remains an error so adapters cannot silently ack the wrong item.
+func CompleteWorkEffect(id string) error {
+	return updateWorkEffectAttempt(id, "", true)
+}
+
+// FailWorkEffect records one failed delivery without removing it from the
+// pending set. The next Submit/Wait retry will receive the same effect ID.
+func FailWorkEffect(id, message string) error {
+	return updateWorkEffectAttempt(id, message, false)
+}
+
+func updateWorkEffectAttempt(id, message string, complete bool) error {
+	if id == "" {
+		return fmt.Errorf("work effect ID is required")
+	}
+	db, err := Open()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	now := time.Now().UTC().UnixNano()
+	var result sql.Result
+	if complete {
+		result, err = db.Exec(`UPDATE work_effect_outbox SET completed_at=?,
+			attempt_count=attempt_count+1,last_attempt_at=?,last_error=''
+			WHERE id=? AND completed_at IS NULL`, now, now, id)
+	} else {
+		result, err = db.Exec(`UPDATE work_effect_outbox SET
+			attempt_count=attempt_count+1,last_attempt_at=?,last_error=?
+			WHERE id=? AND completed_at IS NULL`, now, message, id)
+	}
+	if err != nil {
+		return err
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	var exists int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_effect_outbox WHERE id=?`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return fmt.Errorf("%w: %s", ErrWorkEffectNotFound, id)
+	}
+	// Completed rows deliberately ignore duplicate Complete/Fail calls. This
+	// makes acknowledgement safe when a transport retries after losing its reply.
+	return nil
+}
+
 func (state *WorkStateTx) BindSession(binding TodoSessionBinding) (*TodoSessionBinding, error) {
 	if binding.SessionID == "" || binding.TodoID == "" {
 		return nil, fmt.Errorf("session ID and todo ID are required")
@@ -415,10 +594,23 @@ func (state *WorkStateTx) BindSession(binding TodoSessionBinding) (*TodoSessionB
 	binding.BoundAt = now
 	binding.UnboundAt = nil
 	binding.Reason = ""
-	if _, err := insertTodoBinding(state.tx, binding); err != nil {
+	result, err := insertTodoBinding(state.tx, binding)
+	if err != nil {
+		return nil, err
+	}
+	binding.ID, err = result.LastInsertId()
+	if err != nil {
 		return nil, err
 	}
 	return &binding, nil
+}
+
+func (state *WorkStateTx) CurrentSessionBinding(sessionID string) (*TodoSessionBinding, error) {
+	return currentTodoBinding(state.tx, sessionID)
+}
+
+func (state *WorkStateTx) LatestSessionBinding(sessionID string) (*TodoSessionBinding, error) {
+	return latestTodoSessionBinding(state.tx, sessionID)
 }
 
 func (state *WorkStateTx) UnbindSession(sessionID, reason string) (bool, error) {

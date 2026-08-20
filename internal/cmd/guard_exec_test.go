@@ -114,6 +114,10 @@ func runGuard(t *testing.T, args ...string) (stdout, stderr string, passedThroug
 func guardTestEnv(t *testing.T) {
 	t.Helper()
 	withTempAtmDir(t)
+	// Decision provenance is derived best-effort from the process environment. These
+	// CLI integration tests stand in for a human terminal unless a test opts into
+	// an Agent environment explicitly.
+	withHumanCLI(t)
 	// No app listening, and no banner: the notifier would otherwise spawn
 	// osascript on every test run.
 	t.Setenv(agentevent.SocketEnvVar, filepath.Join(shortSocketDir(t), "absent.sock"))

@@ -49,6 +49,36 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
   argv 或日志，避免开发构建重签名反复触发钥匙串授权。模型和 endpoint 属于非敏感配置。“测试连接”复用同一客户端，以当前
   草稿配置发送最小 schema 请求但不接触 Todo。`in_progress` 只润色不拆分，
   避免把正在工作的会话解绑。
+- **模块化单体，业务规则归 Application Service**（2026-08-20）：ATM 仍是一个进程和一个 SQLite，
+  不拆 daemon、微服务或独立读库；边界存在于依赖方向。Cobra、typed IPC、Run controller 和 hook 都是
+  adapter，只能调用按领域划分的 application service，再由 service 调用 domain/store 和副作用 port：
+  `adapter → service → domain/store`。adapter 之间禁止互相复用——尤其不能让 IPC 调 Cobra handler，或让
+  service 通过 shell 再执行 `atm`。`internal/cmd` 只保留参数解析、确认交互和人类文本/JSON 渲染；校验、
+  授权、事务、幂等和跨表编排属于 service。Service 按 Work、AI Day、Collector、Knowledge、Guard、Config
+  等 bounded context 划分，不建立一个接受 `string + map` 的万能 God Service。迁移可以逐域完成，
+  `store` 暂时无需先拆 repository 层；当前公共调用身份和错误模型在
+  [`internal/application`](internal/application)，typed IPC router 在 [`internal/ipc`](internal/ipc)，首批
+  纵向样板是 [`config.Service`](internal/config/settings.go) 和
+  [`aiday.Service`](internal/aiday/application.go)。
+- **App 与 Agent 能力面可以分化，同一动作必须共享 service**（2026-08-20）：App 是人的主入口，Agent
+  通过 skill 发现 CLI；二者的任务和授权不同，因此不要求一条 App 能力同时暴露为 Agent 命令。真正的
+  一致性约束是：如果两个入口表达同一业务动作，它们必须映射到同一个 typed use case，不能各自实现规则。
+  App 调用逐步迁到隐藏的 `atm _ipc <method>`；普通 CLI 只保留 Agent、人工恢复或诊断确实需要的 adapter。
+  `_ipc` 仍用 fork/exec + JSON stdin/stdout，保留崩溃隔离和终端可重放性，不为当前不存在的吞吐问题引入
+  常驻协议进程。Method 按数据或原子工作流命名（如 `config.settings`、`day.snapshot`），不按 Swift
+  screen 命名，也不把 100 多条 CLI 一对一镜像成 verbs。统一 envelope 回显 request ID、协议版本和稳定
+  错误码；App 必须先解 error envelope，再按进程退出码处理 transport failure。可重放也意味着 `_ipc`
+  不是 App 身份认证边界；Guard approve/deny 这类只允许人执行的授权动作在有可验证调用方身份前继续走
+  能识别 Agent 环境的 CLI adapter，不能仅凭 `human@ipc` 标签放行。现有 CLI 对 ambient environment 的
+  识别也只是 best-effort 分类，不是抗恶意调用的认证；若 Guard 要成为真正的安全边界，仍需 user-presence
+  或可验证的可信 App channel。
+  尚未迁移的普通 argv 由 [`app/macos/atm-cli-contract.txt`](app/macos/atm-cli-contract.txt) 和
+  [`internal/cmd/app_contract_test.go`](internal/cmd/app_contract_test.go) 钉住，迁完一个领域就从清单移走。
+- **skill 是 Agent 的真实命令面，root help 只是人工导航**（2026-08-20）：命令存在于 Cobra 但没有写进
+  ATM skill，对日常 Agent 等同于不存在。常驻 skill 只放 match/bind/context/log/wait/submit 等核心闭环；
+  Knowledge、Memory、Artifact、收集纠正和历史查询按任务加载扩展说明。root help 分组仍保留，因为它让
+  人工排障更容易，但它不能替代 skill 覆盖。删除或迁移 Cobra adapter 的判据是 IPC 切换后已无 Agent、
+  人工或后台消费者，而不是简单地看 App 是否调用过。
 - **Parser 提取结构，不做业务判断**：应提取一切可用的结构化信息（summary、时间戳、工具调用），
   但不提取 git commit、不生成摘要。
 - **`review` 状态保留，但不是闸门**：它表示「Agent 声称完成、人尚未验收」。`todo done` 不设前置检查 ——

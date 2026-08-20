@@ -332,18 +332,7 @@ func guardBody(match *guard.Match, tool string, argv []string) string {
 // call these CLIs, only some announce themselves in the environment at all. The
 // working directory is the reliable answer to "who asked", and is always recorded.
 func guardCallingAgent() string {
-	for env, agent := range map[string]string{
-		"CLAUDE_CODE_SESSION_ID": "claude",
-		"CLAUDECODE":             "claude",
-		"CODEX_THREAD_ID":        "codex",
-		"PI_SESSION_ID":          "pi",
-		"QWORK_SHIM_ROUTE":       "qoderwork",
-	} {
-		if strings.TrimSpace(os.Getenv(env)) != "" {
-			return agent
-		}
-	}
-	return ""
+	return cliAgentFromEnvironment()
 }
 
 // guardStdinCarriesContent reports whether the command was handed input it could

@@ -1,6 +1,6 @@
 import Foundation
 
-/// What the add-task sheet sends to `atm todo add`. The composer is one block of
+/// What the add-task sheet sends to typed `todo.create`. The composer is one block of
 /// text: the first non-empty line is the title, everything after it is the
 /// description, so a task and its details are typed in one go.
 struct ATMTodoDraft: Equatable {

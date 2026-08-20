@@ -236,12 +236,6 @@ enum ATMCollectionSourceTarget: Equatable {
         .identifier(kind: candidate.kind, externalID: candidate.externalID)
     }
 
-    var arguments: [String] {
-        switch self {
-        case .identifier(let kind, _): return ["--kind", kind, "--id", value]
-        }
-    }
-
     /// The trimmed identifier or search text this target carries.
     var value: String {
         switch self {
@@ -329,24 +323,6 @@ struct ATMCollectionRun: Decodable, Identifiable, Equatable {
         case insightCount = "insight_count"
         case ignoredCount = "ignored_count"
         case failedCount = "failed_count"
-    }
-}
-
-/// Keeps the App's manual action on the same source-scoped CLI path as the
-/// scheduler. A source ID is mandatory here: the Collection workspace no
-/// longer exposes the old "run every source" action.
-enum ATMCollectionRunCommand {
-    static func arguments(sourceID: String) -> [String] {
-        ["collect", "run", "--source", sourceID, "--json"]
-    }
-}
-
-/// Muting one source's desktop notifications. Its own verb rather than a flag on
-/// the source upsert, so that saving an edited source cannot silently change it —
-/// and deliberately not `disable`, which stops the collecting instead.
-enum ATMCollectionSourceMuteCommand {
-    static func arguments(sourceID: String, muted: Bool) -> [String] {
-        ["collect", "source", muted ? "mute" : "unmute", sourceID, "--json"]
     }
 }
 

@@ -5,7 +5,7 @@ AI Day 是 ATM 的本地每日回顾：每天只选择一个概念和一枚徽�
 
 ## 数据与隐私
 
-`atm day today` 会把 ATM 已有会话镜像归一化为 `ai_day_events`。事件 ID 幂等，包含时间、来源、哈希
+macOS App 刷新 AI Day 时会把 ATM 已有会话镜像归一化为 `ai_day_events`。事件 ID 幂等，包含时间、来源、哈希
 会话 ID、事件类型、模态、执行模式、token、时长和语义标签。语义分类只在本机短暂读取已有消息，保存
 后原文立即丢弃；表约束要求 `raw_content_retained = 0`。默认衍生事件保留 90 天，日结果和徽章历史可
 继续保留。
@@ -14,25 +14,20 @@ ATM 自身的模型调用（`agent='atm'`，例如内置分类器）不会被采
 在与另一个 AI 协作；计入会凭空造出第二个「AI 来源」，让 `模型指挥家` 因为一次后台调用而达标。
 
 ```bash
-atm day privacy show
-atm day privacy set --semantic off
-atm day privacy set --retention 30
-atm day sources list
-atm day sources pause codex
-atm day sources resume codex
-atm day sources delete codex --yes
-atm day delete --from 2026-08-01 --to 2026-08-15 --yes
-atm day delete --all --yes
+atm day sources list --json
+atm day export > ai-day.json
 ```
 
-暂停不会删除历史；来源删除会删除其 AI Day 衍生事件并同时暂停。范围删除只作用于 AI Day 的事件、结果
-与反馈，不删除 ATM 原始会话索引。`atm day export` 始终输出 JSON，且不包含消息原文。
+来源开关、语义分类、保留期和删除由 macOS App 的数据与隐私页管理。暂停不会删除历史；来源删除会删除
+其 AI Day 衍生事件并同时暂停。范围删除只作用于 AI Day 的事件、结果与反馈，不删除 ATM 原始会话索引。
+`atm day sources list` 保留为人工诊断入口；`atm day export` 保留为数据携带与支持取证入口，始终输出
+JSON 且不包含消息原文。
 
-两处操作有超出字面含义的副作用，App 会先确认：
+两项隐私设置有超出字面含义的副作用，App 会先确认：
 
-- `--semantic off` 不只是暂停开关。它会清空 `ai_day_events` 中已存的语义标签，并删除每日特征与
+- 关闭语义分类不只是暂停开关。它会清空 `ai_day_events` 中已存的语义标签，并删除每日特征与
   会话特征投影。重新打开开关不会自动恢复，需要跑一次 `atm day rebuild` 重新分类。
-- `--retention N` 会立即删除更早的衍生事件。日结果与徽章历史保留，但被删除的事件只有最近 31 天
+- 缩短保留期会立即删除更早的衍生事件。日结果与徽章历史保留，但被删除的事件只有最近 31 天
   能通过重建从原始会话恢复，更早的无法恢复。
 
 ## 语义、模态与归因
@@ -84,7 +79,7 @@ Atlas 固定包含 12 枚徽章：自动驾驶、深度共创、模型指挥家�
 - `origin`：`computed` 或 `user_corrected`；`computed_id` / `computed_title` 保留纠正前引擎自己的
   判断。纠正表示这一天应该属于哪枚徽章，不表示引擎更有把握，所以不会把可信度抬到 100%，也不会
   用一条 `user_correction` 替换掉实测证据。
-- 纠正可撤销：`atm day feedback <day> --clear` 删除该天反馈并恢复引擎结论。
+- 纠正可在 App 中撤销；撤销会删除该天反馈并恢复引擎结论。
 
 ## 当天与数据覆盖
 
@@ -98,23 +93,22 @@ Atlas 固定包含 12 枚徽章：自动驾驶、深度共创、模型指挥家�
 
 ## 重建范围
 
-`atm day today` 和 `atm day dashboard` 走同一条 `Refresh`：补齐基线窗口内**从未构建过**的日子，
-并且总是重建当天，已经构建过的过去保持不变。此前两者都会在每次读取时重建整个 31 天窗口，意味着
-打开一次 App 就可能静默改写上个月的徽章。改写历史仍然可以做，但需要显式的 `atm day rebuild`。
+App 的 AI Day 快照走 `aiday.Service` 的 `Refresh`：补齐基线窗口内**从未构建过**的日子，并且总是
+重建当天，已经构建过的过去保持不变。此前每次读取都会重建整个 31 天窗口，意味着打开一次 App 就可能
+静默改写上个月的徽章。改写历史仍然可以做，但需要显式的 `atm day rebuild`。
 
 ## CLI 与 App
 
 ```bash
-atm day today --json
-atm day show 2026-08-15 --json
 atm day rebuild --from 2026-08-01 --to 2026-08-15
-atm day history --days 180 --json
-atm day atlas --json
 atm day badge code_architect --json
-atm day feedback 2026-08-15 --verdict accurate
-atm day feedback 2026-08-15 --verdict corrected --badge code_architect
-atm day feedback 2026-08-15 --clear
+atm day sources list --json
+atm day export > ai-day.json
 ```
+
+公开 CLI 有意只保留这四个叶子：`rebuild` 用于重建/回填投影，`badge` 和 `sources list` 用于判定与来源
+诊断，`export` 用于数据携带和支持取证。今日、历史、Atlas、反馈、隐私与删除都是 App 能力，通过 typed
+IPC 直接调用同一个 `aiday.Service`，不再占用 Agent 的命令命名空间。
 
 macOS 主窗口的 AI Day 工作区包含今日、Atlas 星图/列表、历史、数据与隐私四个页面。今日卡显示
 provisional 状态、数据截止与更新时间、覆盖度告警、证据强度与可信度，以及纠正来源。反馈按钮显示

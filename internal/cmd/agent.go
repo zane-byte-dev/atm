@@ -17,7 +17,7 @@ import (
 var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Wire AI agents into the ATM notch",
-	Args:  cobra.NoArgs,
+	Args:  noSubcommandArgs,
 	RunE:  showHelp,
 }
 
@@ -31,7 +31,9 @@ stdout and always exits 0, so installing it cannot change how the agent behaves:
 if the app is not running the event is simply dropped.
 
   atm agent hook --source claude < payload.json`,
-	Args: cobra.NoArgs,
+	// This one both forwards an event and parents install/status/uninstall, so a
+	// mistyped subcommand has to be rejected rather than forwarded as an event.
+	Args: noSubcommandArgs,
 	RunE: runAgentHook,
 }
 

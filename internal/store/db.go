@@ -251,6 +251,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 48
+		case 48:
+			if err := migrateV48ToV49(db); err != nil {
+				return err
+			}
+			version = 49
+		case 49:
+			if err := migrateV49ToV50(db); err != nil {
+				return err
+			}
+			version = 50
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -1352,6 +1362,75 @@ func migrateV47ToV48(db *sql.DB) error {
 		return err
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 48`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV48ToV49 adds the durable Work effect outbox. Historical lifecycle
+// changes cannot be reconstructed reliably, so the table intentionally starts
+// empty; only transitions performed by v49 and later enqueue effects.
+func migrateV48ToV49(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS work_effect_outbox (
+		id              TEXT PRIMARY KEY,
+		request_id      TEXT NOT NULL,
+		todo_id         TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+		kind            TEXT NOT NULL,
+		payload_json    TEXT NOT NULL,
+		created_at      INTEGER NOT NULL,
+		completed_at    INTEGER,
+		attempt_count   INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+		last_attempt_at INTEGER,
+		last_error      TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_work_effect_outbox_pending
+		ON work_effect_outbox(todo_id, created_at, id) WHERE completed_at IS NULL`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 49`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV49ToV50 adds the append-only plan stream. Existing Todos start with
+// no plan; there is no legacy transient checklist that can be reconstructed.
+func migrateV49ToV50(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS todo_plan_revisions (
+		todo_id       TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+		revision      INTEGER NOT NULL CHECK (revision >= 1),
+		base_revision INTEGER NOT NULL CHECK (base_revision >= 0),
+		snapshot_json TEXT NOT NULL,
+		snapshot_hash TEXT NOT NULL,
+		request_id    TEXT NOT NULL,
+		actor_kind    TEXT NOT NULL,
+		origin        TEXT NOT NULL,
+		session_id    TEXT NOT NULL DEFAULT '',
+		binding_id    INTEGER,
+		run_id        TEXT NOT NULL DEFAULT '',
+		agent         TEXT NOT NULL DEFAULT '',
+		created_at    INTEGER NOT NULL,
+		PRIMARY KEY (todo_id, revision)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_todo_plan_latest
+		ON todo_plan_revisions(todo_id, revision DESC)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 50`); err != nil {
 		return err
 	}
 	return tx.Commit()

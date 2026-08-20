@@ -70,7 +70,11 @@ func logBuiltinModelCall(call textmodel.Call) {
 		logging.Lifecycle("builtin_model_call", fields)
 		return
 	}
-	logging.Failure("builtin_model_call", failedCommandPath(), fmt.Errorf("%s", call.Err), fields)
+	// Provider failures may contain response bodies, endpoint URLs, or even an
+	// echoed Authorization header. The detailed error already returns to the
+	// foreground caller; cli.log enters diagnose bundles and records only the
+	// safe failure class plus structured usage metadata.
+	logging.Failure("builtin_model_call", failedCommandPath(), fmt.Errorf("built-in text model call failed"), fields)
 }
 
 // flushBuiltinModelCalls writes what this process spent, if anything.

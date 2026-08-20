@@ -5,14 +5,14 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"io/fs"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -27,70 +27,15 @@ type Service struct {
 	Fetcher    Fetcher
 	Extractor  Extractor
 	Summarizer Summarizer
-	Dispatcher TodoDispatcher
+	Dispatcher TaskDispatcher
 	Now        func() time.Time
 }
 
-// TodoDispatcher is the narrow boundary between collection and execution. The
-// production implementation re-enters the ATM CLI so there remains one claim,
-// policy and controller path for App, CLI and collector dispatches alike.
-type TodoDispatcher interface {
+// TaskDispatcher is the narrow boundary between collection and task
+// execution. Its concrete process/controller adapter belongs at the delivery
+// edge; collector only decides when a newly-created Todo should be dispatched.
+type TaskDispatcher interface {
 	Dispatch(context.Context, string, string) error
-}
-
-type CommandTodoDispatcher struct {
-	Executable string
-}
-
-func (dispatcher CommandTodoDispatcher) Dispatch(ctx context.Context, todoID, project string) error {
-	if strings.TrimSpace(dispatcher.Executable) == "" {
-		return fmt.Errorf("ATM executable is unavailable for automatic dispatch")
-	}
-	workDir, err := collectionProjectWorkDir(project)
-	if err != nil {
-		return err
-	}
-	command := exec.CommandContext(ctx, dispatcher.Executable,
-		"todo", "run", todoID, "--cwd", workDir, "--json")
-	command.Env = append(os.Environ(), "ATM_SKIP_LOCAL_NOTIFICATION=1")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			return fmt.Errorf("dispatch todo %s: %w", todoID, err)
-		}
-		return fmt.Errorf("dispatch todo %s: %w: %s", todoID, err, detail)
-	}
-	return nil
-}
-
-func collectionProjectWorkDir(project string) (string, error) {
-	project = strings.TrimSpace(project)
-	if project == "" {
-		return "", fmt.Errorf("automatic dispatch requires a Todo project")
-	}
-	candidates := []string{}
-	if filepath.IsAbs(project) {
-		candidates = append(candidates, project)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, "mox", project),
-			filepath.Join(home, "work", project),
-			filepath.Join(home, project),
-		)
-	}
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && info.IsDir() {
-			absolute, err := filepath.Abs(candidate)
-			if err != nil {
-				return "", err
-			}
-			return absolute, nil
-		}
-	}
-	return "", fmt.Errorf("cannot resolve project directory for %q", project)
 }
 
 type RunReport struct {
@@ -99,12 +44,10 @@ type RunReport struct {
 
 func DefaultService() Service {
 	registry, registryErr := DefaultRegistry()
-	executable, _ := os.Executable()
 	return Service{
 		Connectors: registry, RegistryError: registryErr,
 		Extractor:  AutomaticExtractor{},
 		Summarizer: AutomaticSummarizer{},
-		Dispatcher: CommandTodoDispatcher{Executable: executable},
 		Now:        func() time.Time { return time.Now().In(config.Loc) },
 	}
 }
@@ -519,6 +462,11 @@ func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Dec
 		return normalizeDecision(Decision{Action: "ignore", ItemType: "conversation",
 			Reason: "命中来源排除规则：" + batch.ExcludedKeyword, Confidence: 1}, batch.Source), nil
 	}
+	if decision, settled, err := externalStateDecision(batch); err != nil {
+		return Decision{}, err
+	} else if settled {
+		return normalizeDecision(decision, batch.Source), nil
+	}
 	todos, err := store.LoadTodosReadOnly()
 	if err != nil {
 		return Decision{}, err
@@ -610,29 +558,32 @@ func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decis
 }
 
 type ItemCorrection struct {
-	Title    *string
-	Project  *string
-	Priority *string
+	Title    *string `json:"title,omitempty"`
+	Project  *string `json:"project,omitempty"`
+	Priority *string `json:"priority,omitempty"`
 }
 
-// Reprocess retries a failed or ignored audit item without advancing the
+// reprocessItem retries a failed or ignored audit item without advancing the
 // source checkpoint. Processed writes must be explicitly reverted first so a
 // reclassification cannot silently orphan an earlier Todo side effect.
-func (service Service) Reprocess(ctx context.Context, itemID string) (store.CollectionItem, error) {
+func (service Service) reprocessItem(ctx context.Context, itemID string) (store.CollectionItem, error) {
 	if service.Extractor == nil {
-		return store.CollectionItem{}, fmt.Errorf("collector extractor is required")
+		return store.CollectionItem{}, application.NewError(application.CodeUnavailable, "collector extractor is required")
 	}
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, itemID)
+	item, err := getItemForUseCase(db, itemID)
 	if err != nil {
 		return item, err
 	}
 	if item.Action == "create" || item.Action == "append" {
-		return item, fmt.Errorf("collection item %s already changed Todo %s; revert it before reprocessing", item.ID, item.TodoID)
+		return item, itemConflict(
+			fmt.Sprintf("collection item %s already changed Todo %s; revert it before reprocessing", item.ID, item.TodoID),
+			item.ID,
+		)
 	}
 	_, batch, err := loadItemBatch(db, item)
 	if err != nil {
@@ -654,20 +605,20 @@ func (service Service) Reprocess(ctx context.Context, itemID string) (store.Coll
 	return item, nil
 }
 
-// Promote turns an ignored or failed item into a concrete Todo using explicit
+// promoteItem turns an ignored or failed item into a concrete Todo using explicit
 // user intent while retaining normal task-level deduplication.
-func (service Service) Promote(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
+func (service Service) promoteItem(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, itemID)
+	item, err := getItemForUseCase(db, itemID)
 	if err != nil {
 		return item, err
 	}
 	if item.Action == "create" || item.Action == "append" {
-		return item, fmt.Errorf("collection item %s already has Todo %s", item.ID, item.TodoID)
+		return item, itemConflict(fmt.Sprintf("collection item %s already has Todo %s", item.ID, item.TodoID), item.ID)
 	}
 	source, batch, err := loadItemBatch(db, item)
 	if err != nil {
@@ -723,44 +674,38 @@ func (service Service) Promote(itemID string, correction ItemCorrection) (store.
 	return item, store.UpdateCollectionItem(db, item)
 }
 
-// Correct keeps the audit decision and its Todo metadata in sync. Nil fields
+// correctItem keeps the audit decision and its Todo metadata in sync. Nil fields
 // mean unchanged; a non-nil empty project intentionally clears the mapping.
-func (service Service) Correct(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
+func (service Service) correctItem(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, itemID)
+	item, err := getItemForUseCase(db, itemID)
 	if err != nil {
 		return item, err
 	}
-	if correction.Title == nil && correction.Project == nil && correction.Priority == nil {
-		return item, fmt.Errorf("no collection item correction supplied")
-	}
 	if correction.Title != nil {
-		value := strings.TrimSpace(*correction.Title)
-		if value == "" {
-			return item, fmt.Errorf("corrected title cannot be empty")
-		}
-		item.Title = value
+		item.Title = strings.TrimSpace(*correction.Title)
 	}
 	if correction.Project != nil {
 		item.Project = strings.TrimSpace(*correction.Project)
 	}
 	if correction.Priority != nil {
-		value := strings.ToUpper(strings.TrimSpace(*correction.Priority))
-		if value != "P0" && value != "P1" && value != "P2" && value != "P3" {
-			return item, fmt.Errorf("invalid priority: %s", value)
-		}
-		item.Priority = value
+		item.Priority = strings.ToUpper(strings.TrimSpace(*correction.Priority))
 	}
 	if item.TodoID != "" {
 		var corrected store.Todo
 		err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
 			todo, err := transaction.Todo(item.TodoID)
 			if err != nil {
-				return err
+				return linkedTodoConflict(
+					fmt.Sprintf("collection item %s references unavailable Todo %s", item.ID, item.TodoID),
+					item.ID,
+					item.TodoID,
+					err,
+				)
 			}
 			if correction.Title != nil {
 				todo.Title = item.Title
@@ -786,20 +731,20 @@ func (service Service) Correct(itemID string, correction ItemCorrection) (store.
 	return item, store.UpdateCollectionItem(db, item)
 }
 
-// Revert preserves history: a newly created Todo is dropped, while an append
+// revertItem preserves history: a newly created Todo is dropped, while an append
 // gets an explicit compensating note instead of destructive document surgery.
-func (service Service) Revert(itemID string) (store.CollectionItem, error) {
+func (service Service) revertItem(itemID string) (store.CollectionItem, error) {
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, itemID)
+	item, err := getItemForUseCase(db, itemID)
 	if err != nil {
 		return item, err
 	}
 	if item.TodoID == "" || (item.Action != "create" && item.Action != "append") {
-		return item, fmt.Errorf("collection item %s has no reversible Todo write", item.ID)
+		return item, itemConflict(fmt.Sprintf("collection item %s has no reversible Todo write", item.ID), item.ID)
 	}
 	if item.Action == "create" {
 		source, batch, err := loadItemBatch(db, item)
@@ -811,10 +756,18 @@ func (service Service) Revert(itemID string) (store.CollectionItem, error) {
 		err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
 			todo, err := transaction.Todo(item.TodoID)
 			if err != nil {
-				return err
+				return linkedTodoConflict(
+					fmt.Sprintf("collection item %s references unavailable Todo %s", item.ID, item.TodoID),
+					item.ID,
+					item.TodoID,
+					err,
+				)
 			}
 			if todo.Source != connectorSource(batch) {
-				return fmt.Errorf("refusing to drop Todo %s because its source no longer matches this collection item", todo.ID)
+				return itemConflict(
+					fmt.Sprintf("refusing to drop Todo %s because its source no longer matches this collection item", todo.ID),
+					item.ID,
+				)
 			}
 			today, reason := store.Today(), "撤销自动收集误创建"
 			now := time.Now().In(config.Loc).Unix()
@@ -840,11 +793,17 @@ func (service Service) Revert(itemID string) (store.CollectionItem, error) {
 		}
 		todo := store.FindTodo(todos, item.TodoID)
 		if todo == nil {
-			return item, store.TodoNotFoundError(todos, item.TodoID)
+			cause := store.TodoNotFoundError(todos, item.TodoID)
+			return item, linkedTodoConflict(
+				fmt.Sprintf("collection item %s references unavailable Todo %s", item.ID, item.TodoID),
+				item.ID,
+				item.TodoID,
+				cause,
+			)
 		}
-		marker := "[撤销" + collectionSupplementMarker + ":" + shortFingerprint(item.Fingerprint) +
-			"] 此前自动补充被用户标记为误判；原记录保留供审计。"
-		if _, err := store.AppendTodoLog(todo, marker, "补充"); err != nil {
+		fingerprintMarker := collectionRevertMarker(item.Fingerprint)
+		note := fingerprintMarker + " 此前自动补充被用户标记为误判；原记录保留供审计。"
+		if err := appendTodoLogOnce(todo, note, "补充", fingerprintMarker); err != nil {
 			return item, err
 		}
 	}
@@ -1095,12 +1054,46 @@ func appendDecision(batch MessageBatch, decision Decision) (string, error) {
 	// The fingerprint goes in an HTML comment because the App strips exactly this
 	// shape out of the task timeline: the entry reads as the one sentence the chat
 	// added, and the marker stays on disk to tie it back to the collection item.
-	note := strings.TrimSpace(decision.Summary) +
-		"\n\n<!-- [" + collectionSupplementMarker + ":" + shortFingerprint(batch.Fingerprint) + "] -->"
-	if _, err := store.AppendTodoLog(target, note, "补充"); err != nil {
+	fingerprintMarker := collectionAppendMarker(batch.Fingerprint)
+	note := strings.TrimSpace(decision.Summary) + "\n\n" + fingerprintMarker
+	if err := appendTodoLogOnce(target, note, "补充", fingerprintMarker); err != nil {
 		return "", err
 	}
 	return target.ID, nil
+}
+
+func collectionAppendMarker(fingerprint string) string {
+	return "<!-- [" + collectionSupplementMarker + ":" + shortFingerprint(fingerprint) + "] -->"
+}
+
+func collectionRevertMarker(fingerprint string) string {
+	return "[撤销" + collectionSupplementMarker + ":" + shortFingerprint(fingerprint) + "]"
+}
+
+// appendTodoLogOnce closes the retry window between a Todo document write and
+// the collection item's SQLite update. A retry is keyed only by the stable
+// fingerprint marker, never by model-produced summary text: two batches may add
+// the same sentence, while one batch must never add its supplement twice.
+//
+// A missing card is normal because AppendTodoLog creates it. Other read errors
+// are surfaced so a permission or I/O failure cannot be mistaken for absence
+// and followed by another write attempt.
+func appendTodoLogOnce(todo *store.Todo, note, section, fingerprintMarker string) error {
+	return withTodoMarkerLock(todo.ID, func() error {
+		content, err := store.ReadTodoDoc(todo.ID)
+		switch {
+		case err == nil:
+			if strings.Contains(content, fingerprintMarker) {
+				return nil
+			}
+		case errors.Is(err, fs.ErrNotExist):
+			// AppendTodoLog initializes a missing Todo document.
+		default:
+			return fmt.Errorf("read Todo %s before appending collection marker: %w", todo.ID, err)
+		}
+		_, err = store.AppendTodoLog(todo, note, section)
+		return err
+	})
 }
 
 func todoDescription(decision Decision, relatedTodoID string) string {

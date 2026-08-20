@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -91,6 +93,16 @@ func tickingClock() func() time.Time {
 	return func() time.Time {
 		now = now.Add(time.Second)
 		return now
+	}
+}
+
+func itemTestCall() application.Call {
+	return application.Call{
+		RequestID: "collector-test-request",
+		Actor: application.Actor{
+			Kind:   application.ActorHuman,
+			Origin: application.OriginCLI,
+		},
 	}
 }
 
@@ -252,22 +264,6 @@ func TestServiceRecordsDispatchFailureWithoutLosingCreatedTodo(t *testing.T) {
 	}
 }
 
-func TestCollectionProjectWorkDirUsesConfiguredProjectRoots(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	want := filepath.Join(home, "mox", "atm")
-	if err := os.MkdirAll(want, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	got, err := collectionProjectWorkDir("atm")
-	if err != nil || got != want {
-		t.Fatalf("work dir=%q err=%v, want %q", got, err, want)
-	}
-	if _, err := collectionProjectWorkDir(""); err == nil {
-		t.Fatal("empty project resolved for automatic dispatch")
-	}
-}
-
 func TestServiceRelatedWorkCreatesNewTodoAndKeepsExistingTodoUntouched(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
@@ -374,6 +370,163 @@ func TestServiceAppendsFollowUpToTheTodoTheSameChatFiled(t *testing.T) {
 	appended := items[0]
 	if appended.Action != "append" || appended.TodoID != filed || appended.Status != "processed" {
 		t.Fatalf("append item=%+v", appended)
+	}
+}
+
+func TestAppendDecisionRetryUsesOnlyTheFingerprintMarker(t *testing.T) {
+	withCollectorStore(t)
+	source := store.CollectionSource{Connector: "test", ExternalID: "cid-product"}
+	todo := store.Todo{ID: "t9", Title: "追踪同一会话", Description: "初始需求", Priority: "P1",
+		Status: store.TodoStatusOpen, Project: "atm", Created: store.Today(), Source: "test:cid-product:m1"}
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{todo}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+
+	batch := MessageBatch{Source: source, Fingerprint: "fingerprint-retry-0001", Messages: []Message{{
+		ID: "m2", ConversationID: source.ExternalID,
+	}}}
+	decision := Decision{RelatedTodoID: todo.ID, Summary: "只注入了 skill definition"}
+	for attempt := 0; attempt < 2; attempt++ {
+		got, err := appendDecision(batch, decision)
+		if err != nil || got != todo.ID {
+			t.Fatalf("append attempt %d = %q, %v", attempt+1, got, err)
+		}
+	}
+	doc, err := store.ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatalf("read Todo doc: %v", err)
+	}
+	marker := collectionAppendMarker(batch.Fingerprint)
+	if got := strings.Count(doc, marker); got != 1 {
+		t.Fatalf("same fingerprint marker count=%d, want 1:\n%s", got, doc)
+	}
+	if got := strings.Count(doc, decision.Summary); got != 1 {
+		t.Fatalf("same fingerprint summary count=%d, want 1:\n%s", got, doc)
+	}
+
+	// Summary text is not the idempotency key. A distinct batch is allowed to
+	// contribute the same sentence and carries its own marker.
+	batch.Fingerprint = "fingerprint-distinct-0002"
+	if got, err := appendDecision(batch, decision); err != nil || got != todo.ID {
+		t.Fatalf("append distinct fingerprint = %q, %v", got, err)
+	}
+	doc, err = store.ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatalf("read Todo doc after distinct append: %v", err)
+	}
+	if got := strings.Count(doc, decision.Summary); got != 2 {
+		t.Fatalf("equal summaries with distinct fingerprints count=%d, want 2:\n%s", got, doc)
+	}
+	if got := strings.Count(doc, collectionAppendMarker(batch.Fingerprint)); got != 1 {
+		t.Fatalf("distinct fingerprint marker count=%d, want 1:\n%s", got, doc)
+	}
+}
+
+func TestAppendTodoLogOnceSerializesConcurrentRetries(t *testing.T) {
+	withCollectorStore(t)
+	todo := store.Todo{ID: "t9", Title: "追踪同一会话", Priority: "P1", Status: store.TodoStatusOpen,
+		Project: "atm", Created: store.Today()}
+	marker := collectionAppendMarker("fingerprint-concurrent")
+	note := "并发到达的同一批补充\n\n" + marker
+	start := make(chan struct{})
+	errors := make(chan error, 12)
+	var writers sync.WaitGroup
+	for index := 0; index < cap(errors); index++ {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			<-start
+			errors <- appendTodoLogOnce(&todo, note, "补充", marker)
+		}()
+	}
+	close(start)
+	writers.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("concurrent append: %v", err)
+		}
+	}
+	doc, err := store.ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatalf("read Todo doc: %v", err)
+	}
+	if got := strings.Count(doc, marker); got != 1 {
+		t.Fatalf("concurrent fingerprint marker count=%d, want 1:\n%s", got, doc)
+	}
+}
+
+func TestAppendDecisionPropagatesTodoDocumentReadErrors(t *testing.T) {
+	withCollectorStore(t)
+	todo := store.Todo{ID: "t9", Title: "追踪同一会话", Priority: "P1", Status: store.TodoStatusOpen,
+		Project: "atm", Created: store.Today(), Source: "test:cid-product:m1"}
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{todo}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	// A directory at the document path produces a stable non-ENOENT read error.
+	// The collector must not reinterpret it as a missing card and attempt a write.
+	if err := os.MkdirAll(store.TodoDocPath(todo.ID), 0o755); err != nil {
+		t.Fatalf("create unreadable Todo path: %v", err)
+	}
+	batch := MessageBatch{Source: store.CollectionSource{Connector: "test", ExternalID: "cid-product"},
+		Fingerprint: "fingerprint-read-error", Messages: []Message{{ID: "m2", ConversationID: "cid-product"}}}
+	_, err := appendDecision(batch, Decision{RelatedTodoID: todo.ID, Summary: "不应写入"})
+	if err == nil || !strings.Contains(err.Error(), "read Todo t9 before appending collection marker") {
+		t.Fatalf("read error was not propagated with context: %v", err)
+	}
+}
+
+func TestRevertRetryDoesNotDuplicateCompensatingMarker(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	todo := store.Todo{ID: "t9", Title: "追踪同一会话", Priority: "P1", Status: store.TodoStatusOpen,
+		Project: "atm", Created: store.Today(), Source: "test:cid-product:m1"}
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{todo}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	fingerprint := "fingerprint-revert-retry"
+	if _, err := store.AppendTodoLog(&todo, "原自动补充\n\n"+collectionAppendMarker(fingerprint), "补充"); err != nil {
+		t.Fatalf("seed original supplement: %v", err)
+	}
+	compensatingMarker := collectionRevertMarker(fingerprint)
+	if _, err := store.AppendTodoLog(&todo, compensatingMarker+" 此前自动补充被用户标记为误判；原记录保留供审计。", "补充"); err != nil {
+		t.Fatalf("seed first compensating write: %v", err)
+	}
+
+	db, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	item, _, err := store.PutCollectionItem(db, store.CollectionItem{
+		SourceID: source.ID, Connector: source.Connector, ConversationID: source.ExternalID,
+		Fingerprint: fingerprint, MessageIDs: []string{"m2"}, Action: "append", TodoID: todo.ID, Status: "processed",
+	})
+	db.Close()
+	if err != nil {
+		t.Fatalf("seed collection item: %v", err)
+	}
+
+	result, err := (Service{}).Revert(context.Background(), itemTestCall(), RevertInput{
+		ItemID: item.ID, Confirmed: true,
+	})
+	if err != nil || result.Item.Action != "reverted" {
+		t.Fatalf("retry revert item=%+v err=%v", result.Item, err)
+	}
+	doc, err := store.ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatalf("read Todo doc: %v", err)
+	}
+	if got := strings.Count(doc, compensatingMarker); got != 1 {
+		t.Fatalf("compensating marker count=%d, want 1:\n%s", got, doc)
 	}
 }
 
@@ -611,10 +764,11 @@ func TestPromoteTurnsObservationInsightIntoTodo(t *testing.T) {
 	if len(items) != 1 || items[0].Action != "insight" {
 		t.Fatalf("expected one insight item, got %+v", items)
 	}
-	promoted, err := service.Promote(items[0].ID, ItemCorrection{})
+	promoteResult, err := service.Promote(context.Background(), itemTestCall(), PromoteInput{ItemID: items[0].ID})
 	if err != nil {
 		t.Fatalf("promote insight: %v", err)
 	}
+	promoted := promoteResult.Item
 	if promoted.Action != "create" || promoted.TodoID == "" {
 		t.Fatalf("promoted item=%+v", promoted)
 	}
@@ -916,10 +1070,11 @@ func TestReprocessRestoresTheAutomaticRetryBudget(t *testing.T) {
 
 	service.Extractor = &fakeExtractor{decision: Decision{Action: "create", Title: "修好连接器后重试",
 		Summary: "重新解析", ItemType: "bug", Priority: "P1", Confidence: 0.9}}
-	item, err := service.Reprocess(context.Background(), items[0].ID)
+	reprocessResult, err := service.Reprocess(context.Background(), itemTestCall(), ReprocessInput{ItemID: items[0].ID})
 	if err != nil {
 		t.Fatalf("reprocess after retirement: %v", err)
 	}
+	item := reprocessResult.Item
 	if item.Action != "create" || item.TodoID == "" {
 		t.Fatalf("reprocess did not carry out the decision: %+v", item)
 	}
@@ -1016,10 +1171,11 @@ func TestPromoteCarriesOutAProposedAppend(t *testing.T) {
 		}
 	}
 
-	promoted, err := service.Promote(proposal.ID, ItemCorrection{})
+	promoteResult, err := service.Promote(context.Background(), itemTestCall(), PromoteInput{ItemID: proposal.ID})
 	if err != nil {
 		t.Fatalf("promote proposed append: %v", err)
 	}
+	promoted := promoteResult.Item
 	if promoted.Action != "append" || promoted.TodoID != "t9" || promoted.ProposedAction != "" {
 		t.Fatalf("promoted item=%+v", promoted)
 	}
@@ -1072,14 +1228,19 @@ func TestItemPromotionCorrectionAndRevert(t *testing.T) {
 		t.Fatalf("missing ignored audit item: %+v", items)
 	}
 	title := "评估需求自动收集方案"
-	promoted, err := service.Promote(items[0].ID, ItemCorrection{Title: &title})
+	promoteResult, err := service.Promote(context.Background(), itemTestCall(), PromoteInput{
+		ItemID: items[0].ID, Correction: ItemCorrection{Title: &title},
+	})
+	promoted := promoteResult.Item
 	if err != nil || promoted.Action != "create" || promoted.TodoID == "" {
 		t.Fatalf("promote item=%+v err=%v", promoted, err)
 	}
 	correctedTitle, project, priority := "实现需求自动收集方案", "platform", "P0"
-	corrected, err := service.Correct(promoted.ID, ItemCorrection{
-		Title: &correctedTitle, Project: &project, Priority: &priority,
+	correctResult, err := service.Correct(context.Background(), itemTestCall(), CorrectInput{
+		ItemID:     promoted.ID,
+		Correction: ItemCorrection{Title: &correctedTitle, Project: &project, Priority: &priority},
 	})
+	corrected := correctResult.Item
 	if err != nil || corrected.Title != correctedTitle || corrected.Project != project || corrected.Priority != priority {
 		t.Fatalf("correct item=%+v err=%v", corrected, err)
 	}
@@ -1088,7 +1249,8 @@ func TestItemPromotionCorrectionAndRevert(t *testing.T) {
 		todos.Items[0].Project != project || todos.Items[0].Priority != priority {
 		t.Fatalf("Todo correction did not stay in sync: %+v", todos.Items)
 	}
-	reverted, err := service.Revert(corrected.ID)
+	revertResult, err := service.Revert(context.Background(), itemTestCall(), RevertInput{ItemID: corrected.ID, Confirmed: true})
+	reverted := revertResult.Item
 	if err != nil || reverted.Action != "reverted" {
 		t.Fatalf("revert item=%+v err=%v", reverted, err)
 	}
@@ -1099,7 +1261,8 @@ func TestItemPromotionCorrectionAndRevert(t *testing.T) {
 	oldTodoID := todos.Items[0].ID
 	service.Extractor = &fakeExtractor{decision: Decision{Action: "create", Title: "重新判断后的事项",
 		Summary: "用户撤销后要求重新处理", ItemType: "follow_up", Priority: "P1", Confidence: 0.9}}
-	reprocessed, err := service.Reprocess(context.Background(), reverted.ID)
+	reprocessResult, err := service.Reprocess(context.Background(), itemTestCall(), ReprocessInput{ItemID: reverted.ID})
+	reprocessed := reprocessResult.Item
 	if err != nil || reprocessed.Action != "create" || reprocessed.TodoID == oldTodoID {
 		t.Fatalf("reprocess reverted item=%+v err=%v", reprocessed, err)
 	}
@@ -1190,6 +1353,10 @@ func TestCollectionPromptOffersAppendAndMarksThisChatsOwnTodos(t *testing.T) {
 	}
 	if strings.Contains(prompt, "t70") {
 		t.Fatalf("closed Todo offered as a candidate:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "a line later in time may prove") ||
+		!strings.Contains(prompt, "A terminal context line earlier than a later new follow-up does not cancel") {
+		t.Fatalf("prompt does not let later terminal context veto stale work safely:\n%s", prompt)
 	}
 }
 
@@ -1541,10 +1708,11 @@ func TestSaveConclusionWritesKnowledgeOnlyAfterExplicitAction(t *testing.T) {
 		t.Fatalf("classification must not write knowledge: docs=%+v err=%v", documents, err)
 	}
 	service := Service{}
-	saved, err := service.SaveConclusion(itemID, "")
+	saveResult, err := service.SaveConclusion(context.Background(), itemTestCall(), SaveConclusionInput{ItemID: itemID})
 	if err != nil {
 		t.Fatalf("save conclusion: %v", err)
 	}
+	saved := saveResult.Item
 	if saved.KnowledgeDocumentID == "" || saved.KnowledgeCollection != config.CollectionDigestCollection {
 		t.Fatalf("saved item=%+v", saved)
 	}
@@ -1555,7 +1723,10 @@ func TestSaveConclusionWritesKnowledgeOnlyAfterExplicitAction(t *testing.T) {
 	}
 
 	// A repeated click opens the same result; it never files a duplicate.
-	again, err := service.SaveConclusion(itemID, "another-library")
+	againResult, err := service.SaveConclusion(context.Background(), itemTestCall(), SaveConclusionInput{
+		ItemID: itemID, Collection: "another-library",
+	})
+	again := againResult.Item
 	if err != nil || again.KnowledgeDocumentID != saved.KnowledgeDocumentID {
 		t.Fatalf("repeated save=%+v err=%v", again, err)
 	}
@@ -1581,7 +1752,7 @@ func TestSaveConclusionRejectsTodoDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := (Service{}).SaveConclusion(item.ID, ""); err == nil {
+	if _, err := (Service{}).SaveConclusion(context.Background(), itemTestCall(), SaveConclusionInput{ItemID: item.ID}); err == nil {
 		t.Fatal("todo decision was accepted as a saveable insight")
 	}
 }

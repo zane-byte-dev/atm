@@ -25,6 +25,7 @@ func withTempConfigHome(t *testing.T) string {
 	oldCollectionEnabled := CollectionEnabled
 	oldCollectionInterval := CollectionIntervalMinutes
 	oldCollectionLookback := CollectionLookbackMinutes
+	oldCollectionRetention := CollectionMessageRetentionDays
 	oldTextModelBaseURL, oldTextModelName := TextModelBaseURL, TextModelName
 	oldTextModelSource, oldTodoRefinePrompt := TextModelSource, TodoRefinePrompt
 	oldCollectionConnectors := CollectionConnectors
@@ -52,6 +53,7 @@ func withTempConfigHome(t *testing.T) string {
 	CollectionEnabled = false
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
+	CollectionMessageRetentionDays = 90
 	TextModelBaseURL = "https://api.deepseek.com"
 	TextModelName = "deepseek-v4-flash"
 	TextModelSource = "deepseek"
@@ -76,6 +78,7 @@ func withTempConfigHome(t *testing.T) string {
 		CollectionEnabled = oldCollectionEnabled
 		CollectionIntervalMinutes = oldCollectionInterval
 		CollectionLookbackMinutes = oldCollectionLookback
+		CollectionMessageRetentionDays = oldCollectionRetention
 		TextModelBaseURL, TextModelName = oldTextModelBaseURL, oldTextModelName
 		TextModelSource, TodoRefinePrompt = oldTextModelSource, oldTodoRefinePrompt
 		CollectionConnectors = oldCollectionConnectors

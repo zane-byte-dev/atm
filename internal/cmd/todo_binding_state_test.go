@@ -26,6 +26,7 @@ func setCommandFlagForTest(t *testing.T, cmd *cobra.Command, name, value string)
 
 func TestNonWorkingTodoTransitionsUnbindSessions(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	oldJSON := jsonOutput
 	oldEditStatus, oldBulkStatus, oldBulkReason := todoEditStatusFlag, todoBulkStatusFlag, todoBulkReasonFlag
 	t.Cleanup(func() {

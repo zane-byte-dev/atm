@@ -10,6 +10,7 @@ import (
 
 func TestTodoDoneAutomaticallyWakesStructuredDependents(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	oldJSON, oldReason := jsonOutput, todoReasonFlag
 	t.Cleanup(func() { jsonOutput, todoReasonFlag = oldJSON, oldReason })
 	jsonOutput = true

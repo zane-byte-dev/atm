@@ -107,8 +107,8 @@ func TestOnlyOneClaimWins(t *testing.T) {
 	if err := ClaimApprovalRun(db, approval.ID, "gate", 4242); err != nil {
 		t.Fatalf("first claim: %v", err)
 	}
-	if err := ClaimApprovalRun(db, approval.ID, "app", 99); err == nil {
-		t.Fatal("second claim succeeded; one approved command could run twice")
+	if err := ClaimApprovalRun(db, approval.ID, "app", 99); !errors.Is(err, ErrApprovalRunClaimLost) {
+		t.Fatalf("second claim error = %v, want ErrApprovalRunClaimLost", err)
 	}
 
 	stored, err := GetApproval(db, approval.ID, now+6)

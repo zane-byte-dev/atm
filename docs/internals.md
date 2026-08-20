@@ -28,9 +28,26 @@ todo 的优先级和创建时间推导，不再单独保存 `focus/queued`。v4 
 迁移，并在下次保存时移除；`atm now` 会在一个兼容版本内附带旧视图字段，支持 CLI 与 macOS App
 分步升级。
 
-Todo 离开 `in_progress` 时先关闭活跃 binding，再保存 Todo 状态：即使后续保存失败，也只会留下
-可重新绑定的 `in_progress + unbound`，不会留下指向非工作态 Todo 的活跃 binding。
+Todo 离开 `in_progress` 时，关闭活跃 binding 与保存 Todo 状态在同一个 SQLite 事务里提交；任一步
+失败都会整体回滚，不会留下指向非工作态 Todo 的活跃 binding，也不会出现状态已改但 binding 未关。
 `atm todo show <id> --json` 中的 binding history 记录 `unbound_at` 与结构化 `reason`。
+
+`todo submit` 和 `todo wait` 还会在这个事务里写入 `work_effect_outbox`。Markdown 日志、Todo 文档
+元数据和桌面通知只有在事务提交后才执行；adapter executor 成功后由 Work service ack 对应 outbox 行。进程若在 commit
+后退出，或文件写入失败，下一次 Submit/Wait 会拿到同一个 effect ID 继续补偿；即使用省略 ID 的绑定
+命令重试，也会从该 Session 最近关闭的 binding 恢复目标，但只有关闭原因、Todo 当前状态和 pending
+effect 三者一致时才会采用，旧 binding 不会被误当成当前任务。
+
+这套投递保证是 **at-least-once**，不是 exactly-once：若进程在外部副作用成功后、ack 提交前崩溃，
+重试可能再次写日志或发送通知。文档元数据同步本身是收敛覆盖；通知是提示性质。outbox 保证的是
+成功的生命周期变更不会永久丢掉后续动作，而不是跨 SQLite、文件系统和操作系统通知做分布式事务。
+
+`todo plan set` 在同一 Work application service 中写 `todo_plan_revisions`，但不改 Todo 生命周期。
+每次写入是整份不可变 JSON 快照，按 Todo 单调递增 revision；`base_revision` 防止两个 Agent 静默覆盖，
+与最新快照完全相同的重试则先于冲突检查直接幂等返回。revision 同时记录 session、binding、run、agent
+和 request provenance。最新计划会进入 `todo show/context --json`，并投影到 Todo Markdown 的生成区块；
+投影失败可通过重试同一快照或再次读取 `todo doc` 修复。Plan step 不是 Todo，全部 completed 也不会自动
+submit 或 done。
 
 `atm todo archive <id>` 把已完结的 Todo 移出工作集：行仍然保留，所以它的 ID 不会被复用，
 依赖和进展记录仍可引用它。面向日常删除使用 `atm todo trash <id>`：任何状态都能无确认移入
@@ -120,8 +137,9 @@ Codex 是唯一沙箱能被 ATM 强制、线程 id 能被 ATM 找回的 CLI，�
 `todo context` 是每次调用即时生成的只读快照，不代表 handoff 已持久化，也不触发 review 状态。
 它默认使用 Todo 的单一活跃 Session 绑定；没有活跃绑定时退回最近绑定，多个活跃 worktree 时要求用
 `--cwd` 明确选择。它区分 ATM 工作状态、Git 实现状态、历史里程碑与验证状态，列出 staged、unstaged
-和 untracked 文件，但不会输出完整 diff、运行测试或改变 Todo 状态。`todo review-context` 暂时
-保留为兼容别名。
+和 untracked 文件，但不会输出完整 diff、运行测试或改变 Todo 状态。曾经存在的兼容别名
+`todo review-context` 已删除：它和 `todo context` 逐字相同，而名字里的 review 会让人以为它会
+推进 review 状态。
 
 ## 外部收集
 
@@ -482,7 +500,8 @@ domain、tag 和 project 是跨 collection 的查询 metadata。目录导入保�
 
 搜索时传入 session ID 会记录召回，回答后用 feedback 标记采纳、纠正或拒绝；聚合质量分会温和影响
 后续检索排序。`knowledge audit` 只输出重复、陈旧、源文件漂移和低质量建议，不自动归档。
-`knowledge delete` 永久移出 ATM，导入源文件保留。
+`knowledge delete` 永久移出 ATM，导入源文件保留。文档与 collection 的永久删除都由 Knowledge Service
+强制要求显式确认：CLI 交互确认或 `--yes`，App 只能在确认框完成后发送 `confirmed: true`。
 
 ### Memory 与 Artifact
 
@@ -492,10 +511,56 @@ Knowledge、Memory 和 Artifact 只通过 ATM CLI 访问。
 
 ## App 与 CLI 的协议
 
-macOS App 的周期刷新调用 `atm dashboard --json` 取会话索引快照，该协议当前为 v1，契约见
-[`docs/contracts/dashboard-v1.schema.json`](contracts/dashboard-v1.schema.json)；并并发调用一次
-`atm quota --json`。额度来自各 Agent 自己的日志而不是会话索引（Codex 会话 `rate_limits`、
-Grok `~/.grok/logs/unified.jsonl` 里的 billing credits 与账期刷新时间）。私有或第三方额度源可通过
-[`quota_providers` 版本化命令协议](quota-provider-protocol.md)提供通用多指标卡片，无需链接进 ATM
-或暴露服务凭据。额度不进快照协议——这样 CLI 与 App 的版本可以继续各自演进，任一额度源读取失败也
-只影响自己的卡片。
+ATM 是模块化单体，不把 `internal/cmd` 当业务层。依赖方向固定为：
+
+```text
+Cobra CLI ───────┐
+App typed _ipc ──┼──> 分领域 Application Service ──> domain / store ──> SQLite、文件与副作用 port
+Run controller ──┘
+```
+
+`internal/cmd` 只解析 Cobra 参数、做终端确认并渲染；`internal/ipc` 只解码 typed request、注入
+`human@ipc` 调用身份并编码 envelope。校验、事务、幂等和跨步骤工作流放在 `config.Service`、
+`aiday.Service`、`work.Service` 等领域 service。任何非 cmd 包都禁止反向导入 `internal/cmd`；IPC 也禁止
+依赖 Cobra，这些方向由 `internal/architecture` 的 AST 测试锁住。
+
+这里的 `human@ipc` 是 adapter 来源标签，不是经过认证的用户身份。`_ipc` 为了排障可在终端重放，任何本机
+Agent 也能直接启动它，因此当前只承载读、配置和不依赖人类授权的工作流。Guard approve/deny 仍走会识别
+Agent 环境并由 `guard.Service` 再做 human-only 校验的 CLI；在 transport 能证明 App 身份前不得注册成
+`_ipc` verb。CLI 的环境识别同样只是 best-effort：调用方能删掉 ambient environment，所以它不能单独
+构成抗恶意 Agent 的认证。要把 human-only 从产品策略提升为安全边界，需要 user-presence 或可验证的可信
+App channel。
+
+App 专用调用使用隐藏的 `atm _ipc <method>`。请求参数从 JSON stdin 读取，成功和失败都返回同一个
+envelope：`envelope_version`、`protocol_version`、`request_id`、`verb`，以及互斥的 `data` 或
+`error`。领域错误使用稳定的 `invalid_argument`、`not_found`、`conflict`、`forbidden`、`busy`、
+`unavailable`、`internal`；App 即使看到非零退出码也先解析 stdout 中的 error envelope，只有无法解析时
+才把它当 transport failure。Method 按数据或原子工作流聚合，不按每条 CLI 或每个 Swift screen 镜像。
+
+迁移按领域进行。Config 的设置快照/原子保存、AI Day 的快照/反馈/权限/导出/删除、Dashboard 聚合快照、
+Knowledge 的 catalog/query/get/governance 读模型与文档/collection/feedback 写工作流、Collector 的
+快照/采集/历史、来源管理与记录动作、Session 的 list/search/show/timeline 读模型、Todo 的
+list/show/doc 读模型、create/update 元数据工作流与 refine 整理工作流，以及 Guard 的只读待批
+列表已走 typed IPC。Collector 的 App
+契约按 use case 聚合成 typed request；不会透传 argv，也没有 `action + map` 万能入口。来源/记录删除和
+记录撤销仍由 `collector.Service` 强制要求 `confirmed=true`，但这个字段只防误操作，不能把可重放的
+`human@ipc` 变成身份认证。Knowledge、Collector、Session 和 Todo 的相应公开 CLI 仍作为 Agent、人工恢复或诊断入口，
+并与 IPC 共用各自的 service；App 不再拼这些已迁读取路径的 argv。Guard 决策因上述认证边界继续走 CLI。
+尚未迁移的普通 argv 仍列在
+`app/macos/atm-cli-contract.txt`，Go 契约测试会反扫 Swift 字面调用，避免改名后只在运行时坏掉。普通命令
+是否保留由 Agent、人工恢复和后台消费者决定，和 App 是否已迁 IPC 是两个问题。
+
+AI Day 的日常快照、单日读取、反馈、来源/隐私设置和删除只通过 typed IPC 暴露给 App；不再为这些
+App 工作流保留同形 Cobra 叶子。公开 `day` 命令只剩 `rebuild`、`badge`、`sources list` 和 `export`，分别
+服务历史投影修复、判定证据诊断、来源状态诊断和无原文数据导出，四者都直接调用 `aiday.Service`。
+
+macOS App 的主周期刷新调用 `_ipc dashboard.snapshot`，从 JSON stdin 传 section 与可选 Session ID；
+普通 `dashboard` Cobra 命令已删除。聚合、section 校验、Todo/绑定/索引/统计并发读取都由
+`dashboard.Service` 负责，CLI transport 不再实现第二份规则。实时进程与 transcript 探测目前仍由 cmd
+侧实现并通过只读 port 注入，这是待独立成 live-status read service 的明确过渡边界，不属于 Dashboard
+领域逻辑。Dashboard payload 继续遵守版本化契约
+[`docs/contracts/dashboard-v1.schema.json`](contracts/dashboard-v1.schema.json)，刷新时并发调用一次
+`atm quota --json`。额度来自各 Agent 自己的日志而不是会话索引（Codex 会话 `rate_limits`、Grok
+`~/.grok/logs/unified.jsonl` 里的 billing credits 与账期刷新时间）。私有或第三方额度源可通过
+[`quota_providers` 版本化命令协议](quota-provider-protocol.md)提供通用多指标卡片，无需链接进 ATM 或
+暴露服务凭据；任一额度源读取失败只影响自己的卡片。

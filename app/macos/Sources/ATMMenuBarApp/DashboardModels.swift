@@ -87,15 +87,15 @@ struct ATMDashboardSchemaMismatch: LocalizedError, Equatable {
         }
     }
 
+    /// Shared with the `_ipc` protocol check via ATMVersionSkewAdvice: two skew
+    /// messages quoting different install commands would send whichever user hit
+    /// the other one down the wrong path.
     var recoverySuggestion: String? {
         switch direction {
         case .appTooOld:
-            return "下载新版 ATM.app 覆盖安装后重启 App；从源码构建则运行 "
-                + "app/macos/Scripts/build-app.sh。CLI 与 App 必须配套升级。"
+            return ATMVersionSkewAdvice.appTooOld.text
         case .cliTooOld:
-            return "运行 curl -fsSL "
-                + "https://raw.githubusercontent.com/zane-byte-dev/atm/main/install.sh | sh"
-                + " 更新 CLI，然后点刷新。"
+            return ATMVersionSkewAdvice.cliTooOld.text
         }
     }
 
@@ -227,6 +227,32 @@ struct ATMDashboardEnvelope: Decodable {
             refreshedAt: refreshedAt
         )
     }
+}
+
+/// One aggregate request replaces the ordinary `dashboard` argv contract. The
+/// two sections remain independently selectable so cold start can paint work
+/// before the statistics queries finish.
+struct ATMDashboardRequest: Encodable, Equatable {
+    let sections: [String]
+    let sessionID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sections
+        case sessionID = "session_id"
+    }
+
+    init(sections: [String] = [], sessionID: String? = nil) {
+        self.sections = sections
+        self.sessionID = sessionID?.isEmpty == false ? sessionID : nil
+    }
+}
+
+enum ATMDashboardIPCCommand {
+    static let snapshot = ATMIPCMethod<ATMDashboardRequest, ATMDashboardEnvelope>(
+        "dashboard.snapshot",
+        timeout: 30,
+        responseKeyDecoding: .useDefault
+    )
 }
 
 struct ATMRangeSummary {

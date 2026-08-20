@@ -1,15 +1,14 @@
 package cmd
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/store"
+	statsapp "github.com/zane-byte-dev/atm/internal/stats"
 
 	"github.com/spf13/cobra"
 )
@@ -37,123 +36,82 @@ var statsCmd = &cobra.Command{
 }
 
 func runStats(cmd *cobra.Command, args []string) error {
-	validGroups := map[string]bool{
-		"": true, "model": true, "model-day": true, "model-hour": true,
-		"skill": true, "session": true, "session-usage": true, "request": true, "speed": true,
-		"day": true, "hour": true, "wrapped": true,
+	days := statsDaysFlag
+	if statsRangeFlag != "" {
+		// Cobra already makes --days and --range mutually exclusive. Zero here
+		// distinguishes the default flag value from an explicitly requested rolling
+		// window at the application boundary.
+		days = 0
 	}
-	if !validGroups[statsByFlag] {
-		return fmt.Errorf("unknown stats group %q (use model, model-day, model-hour, skill, session, session-usage, request, speed, day, hour, or wrapped)", statsByFlag)
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
 	}
-
-	agent, err := resolveAgent()
+	result, err := statsapp.Default.Query(ctx, cliApplicationCall("stats", ""), statsapp.Input{
+		Days: days, Range: statsRangeFlag, Group: statsByFlag, Agent: agentFlag,
+		SessionID: statsSessionFlag, Sync: syncBeforeRead,
+	})
 	if err != nil {
 		return err
 	}
-
-	days := statsDaysFlag
-	if days < 1 {
-		days = 1
+	if result.SyncedFiles > 0 && !jsonOutput {
+		output.Progress("Synced %d files.", result.SyncedFiles)
 	}
-	// --range names a calendar window; --days is the rolling one it has always
-	// been. Mutually exclusive, because a caller who passes both has no way to
-	// know which they got.
-	var namedRange config.MetricsRange
-	if statsRangeFlag != "" {
-		namedRange, err = config.ParseMetricsRange(statsRangeFlag)
-		if err != nil {
-			return err
-		}
+	switch result.Group {
+	case statsapp.GroupModel:
+		return runModelStats(result)
+	case statsapp.GroupModelDay:
+		return runModelDayStats(result)
+	case statsapp.GroupModelHour:
+		return runModelHourStats(result)
+	case statsapp.GroupSkill:
+		return runSkillStats(result)
+	case statsapp.GroupSession:
+		return runSessionStats(result)
+	case statsapp.GroupSessionUsage:
+		return runSessionUsageStats(result)
+	case statsapp.GroupRequest:
+		return runRequestStats(result)
+	case statsapp.GroupSpeed:
+		return runSpeedStats(result)
+	case statsapp.GroupDay:
+		return runDayStats(result)
+	case statsapp.GroupHour:
+		return runHourStats(result)
+	case statsapp.GroupWrapped:
+		return runWrapped(result)
 	}
 
-	return withDB(true, func(db *sql.DB) error {
-		now := time.Now().In(config.Loc)
-		start := startOfDayWindow(now, days)
-		end := now
-		label := dayRangeLabel(days)
-		if namedRange != "" {
-			// end is the window's exclusive upper bound, so a period that has
-			// already closed — yesterday, last week — stops where it ended instead
-			// of running to now and absorbing everything since.
-			start, end = namedRange.Bounds(now)
-			days = namedRange.Days(now)
-			label = string(namedRange)
-		}
-		startTS, endTS := start.Unix(), end.Unix()
-
-		if statsByFlag == "model" {
-			return runModelStats(db, startTS, endTS, agent, label, days)
-		}
-		if statsByFlag == "model-day" {
-			return runModelDayStats(db, startTS, endTS, agent, label)
-		}
-		if statsByFlag == "model-hour" {
-			return runModelHourStats(db, startTS, endTS, agent, label)
-		}
-		if statsByFlag == "skill" {
-			return runSkillStats(db, startTS, endTS, agent, label)
-		}
-		if statsByFlag == "session" {
-			return runSessionStats(db, startTS, endTS, agent, label, days)
-		}
-		if statsByFlag == "session-usage" {
-			return runSessionUsageStats(db, startTS, endTS, agent, label)
-		}
-		if statsByFlag == "request" {
-			return runRequestStats(db, startTS, endTS, agent, statsSessionFlag, label)
-		}
-		if statsByFlag == "speed" {
-			return runSpeedStats(db, startTS, endTS, agent, label)
-		}
-		if statsByFlag == "day" {
-			return runDayStats(db, startTS, endTS, agent, label, days)
-		}
-		if statsByFlag == "hour" {
-			return runHourStats(db, startTS, endTS, agent, label, days)
-		}
-		if statsByFlag == "wrapped" {
-			return runWrapped(db, startTS, endTS, agent, label, days)
-		}
-
-		results, err := store.GetStats(db, startTS, endTS, agent)
-		ok, sectionErr := statsSection(results, err, "Statistics", label, 60, "No activity recorded.")
-		if !ok {
-			return sectionErr
-		}
-
-		fmt.Printf("\n  %-20s %-11s %8s %8s %8s %10s %10s %8s\n",
-			"Project", "Agent", "Sessions", "Queries", "Tools", "In", "Out", "Cost($)")
-		statsSep := output.Dashes(20, 11, 8, 8, 8, 10, 10, 8)
-		fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %8s\n", statsSep...)
-
-		var totalSessions, totalQueries, totalTools int
-		var totalIn, totalOut int64
-		var totalCost float64
-		for _, r := range results {
-			fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %8.2f\n",
-				r.Project, r.Agent, r.Sessions, r.Queries, r.ToolCalls,
-				fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), r.CostUSD)
-			totalSessions += r.Sessions
-			totalQueries += r.Queries
-			totalTools += r.ToolCalls
-			totalIn += r.InputTokens
-			totalOut += r.OutputTokens
-			totalCost += r.CostUSD
-		}
-		fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %8s\n", statsSep...)
-		fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %8.2f\n",
-			"Total", "", totalSessions, totalQueries, totalTools, fmtTokens(totalIn), fmtTokens(totalOut), totalCost)
-
-		printSubscriptionSummary(totalCost, days)
+	results := result.Projects
+	ok := statsSection(results, "Statistics", result.Window.Label, 60, "No activity recorded.")
+	if !ok {
 		return nil
-	})
+	}
+
+	fmt.Printf("\n  %-20s %-11s %8s %8s %8s %10s %10s %8s\n",
+		"Project", "Agent", "Sessions", "Queries", "Tools", "In", "Out", "Cost($)")
+	statsSep := output.Dashes(20, 11, 8, 8, 8, 10, 10, 8)
+	fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %8s\n", statsSep...)
+
+	for _, r := range results {
+		fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %8.2f\n",
+			r.Project, r.Agent, r.Sessions, r.Queries, r.ToolCalls,
+			fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), r.CostUSD)
+	}
+	fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %8s\n", statsSep...)
+	fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %8.2f\n",
+		"Total", "", result.Totals.Sessions, result.Totals.Queries, result.Totals.ToolCalls,
+		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens), result.Totals.CostUSD)
+
+	printSubscriptionSummary(result.Subscription)
+	return nil
 }
 
-func runSkillStats(db *sql.DB, startTS, endTS int64, agent, label string) error {
-	results, err := store.GetSkillStats(db, startTS, endTS, agent)
-	ok, sectionErr := statsSection(results, err, "Statistics by Skill", label, 60, "No skill activity recorded.")
+func runSkillStats(result statsapp.Result) error {
+	results := result.Skills
+	ok := statsSection(results, "Statistics by Skill", result.Window.Label, 60, "No skill activity recorded.")
 	if !ok {
-		return sectionErr
+		return nil
 	}
 	fmt.Printf("\n  %-32s %8s %10s %8s\n", "Skill", "Calls", "Sessions", "Agents")
 	for _, result := range results {
@@ -162,16 +120,15 @@ func runSkillStats(db *sql.DB, startTS, endTS int64, agent, label string) error 
 	return nil
 }
 
-func runRequestStats(db *sql.DB, startTS, endTS int64, agent, session, label string) error {
-	results, err := store.GetRequestStats(db, startTS, endTS, agent, session)
-	ok, sectionErr := statsSection(results, err, "Statistics by Request", label, 100, "No request-level usage recorded.")
+func runRequestStats(result statsapp.Result) error {
+	results := result.Requests
+	ok := statsSection(results, "Statistics by Request", result.Window.Label, 100, "No request-level usage recorded.")
 	if !ok {
-		return sectionErr
+		return nil
 	}
 	// Req shows model-call multiplicity (×N when a row aggregates several calls,
 	// as Grok turn_completed does). Tokens/cost on the row are the full total.
 	fmt.Printf("\n  %-16s %-11s %-12s %-24s %5s %8s %8s %8s %8s\n", "Time", "Agent", "Session", "Model", "Req", "In", "Out", "Cache", "Cost($)")
-	var totalCalls int
 	for _, r := range results {
 		model := r.Model
 		if len(model) > 24 {
@@ -181,14 +138,13 @@ func runRequestStats(db *sql.DB, startTS, endTS int64, agent, session, label str
 		if calls <= 0 {
 			calls = 1
 		}
-		totalCalls += calls
 		fmt.Printf("  %-16s %-11s %-12s %-24s %5s %8s %8s %8s %8.4f\n",
 			time.Unix(r.TS, 0).In(config.Loc).Format("01-02 15:04:05"),
 			r.Agent, r.SessionID, model, fmtRequestCount(calls),
 			fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), fmtTokens(r.CacheTokens), r.CostUSD)
 	}
-	if len(results) > 0 && totalCalls != len(results) {
-		fmt.Printf("\n  %d rows · %d model calls\n", len(results), totalCalls)
+	if len(results) > 0 && result.Totals.Requests != len(results) {
+		fmt.Printf("\n  %d rows · %d model calls\n", len(results), result.Totals.Requests)
 	}
 	return nil
 }
@@ -207,16 +163,13 @@ func fmtRequestCount(n int) string {
 // waiting. Both are derived from transcript timestamps rather than logged by any
 // agent, so the closing lines say how many requests could not be measured — an
 // agent missing from the first table is unmeasurable, not idle.
-func runSpeedStats(db *sql.DB, startTS, endTS int64, agent, label string) error {
-	report, err := store.GetSpeedStats(db, startTS, endTS, agent)
-	if err != nil {
-		return fmt.Errorf("query error: %w", err)
-	}
+func runSpeedStats(result statsapp.Result) error {
+	report := result.Speed
 	if jsonOutput {
 		output.JSON(report)
 		return nil
 	}
-	fmt.Printf("Statistics by Speed (%s)\n", label)
+	fmt.Printf("Statistics by Speed (%s)\n", result.Window.Label)
 	fmt.Println(strings.Repeat("=", 88))
 	if len(report.Models) == 0 && len(report.Turns) == 0 {
 		fmt.Println("\nNo activity recorded.")
@@ -279,20 +232,11 @@ func fmtSeconds(seconds float64) string {
 	return formatShortDuration(int64(seconds))
 }
 
-func runSessionStats(db *sql.DB, startTS, endTS int64, agent, label string, days int) error {
-	results, err := store.GetSessionStats(db, startTS, endTS, agent)
-	ok, sectionErr := statsSection(results, err, "Statistics by Session", label, 80, "No activity recorded.")
+func runSessionStats(result statsapp.Result) error {
+	results := result.Sessions
+	ok := statsSection(results, "Statistics by Session", result.Window.Label, 80, "No activity recorded.")
 	if !ok {
-		return sectionErr
-	}
-
-	var totalIn, totalOut, totalCache int64
-	var totalCost float64
-	for _, r := range results {
-		totalIn += r.InputTokens
-		totalOut += r.OutputTokens
-		totalCache += r.CacheTokens
-		totalCost += r.CostUSD
+		return nil
 	}
 
 	fmt.Printf("\n  %-3s %-10s %-16s %-16s %4s %8s %8s %8s %8s %5s\n",
@@ -300,8 +244,6 @@ func runSessionStats(db *sql.DB, startTS, endTS int64, agent, label string, days
 	sep := strings.Repeat("-", 88)
 	fmt.Printf("  %s\n", sep)
 
-	totalTokens := totalIn + totalOut + totalCache
-	var totalReqs int
 	for i, r := range results {
 		model := r.Model
 		if len(model) > 16 {
@@ -311,48 +253,40 @@ func runSessionStats(db *sql.DB, startTS, endTS int64, agent, label string, days
 		if len(project) > 16 {
 			project = project[:16]
 		}
-		pct := 0.0
-		if totalTokens > 0 {
-			pct = float64(r.InputTokens+r.OutputTokens+r.CacheTokens) / float64(totalTokens) * 100
-		}
-		totalReqs += r.Queries
 		fmt.Printf("  %-3d %-10s %-16s %-16s %4d %8s %8s %8s %8.2f %4.0f%%\n",
 			i+1, r.ShortID, project, model, r.Queries,
 			fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), fmtTokens(r.CacheTokens),
-			r.CostUSD, pct)
+			r.CostUSD, r.Share*100)
 	}
 	fmt.Printf("  %s\n", sep)
 	fmt.Printf("  %-3s %-10s %-16s %-16s %4d %8s %8s %8s %8.2f\n",
-		"", "Total", "", "", totalReqs,
-		fmtTokens(totalIn), fmtTokens(totalOut), fmtTokens(totalCache), totalCost)
+		"", "Total", "", "", result.Totals.Queries,
+		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens),
+		fmtTokens(result.Totals.CacheTokens), result.Totals.CostUSD)
 
-	printSubscriptionSummary(totalCost, days)
+	printSubscriptionSummary(result.Subscription)
 	return nil
 }
 
 // runSessionUsageStats uses each request's event timestamp rather than the
 // session creation date. The desktop loads this independently when its Today
 // Sessions tab opens, so the default dashboard never pays for this aggregation.
-func runSessionUsageStats(db *sql.DB, startTS, endTS int64, agent, label string) error {
-	results, err := store.GetSessionUsageStats(db, startTS, endTS, agent)
-	ok, sectionErr := statsSection(
+func runSessionUsageStats(result statsapp.Result) error {
+	results := result.SessionUsage
+	ok := statsSection(
 		results,
-		err,
 		"Usage by Session",
-		label,
+		result.Window.Label,
 		94,
 		"No request-level session usage recorded.",
 	)
 	if !ok {
-		return sectionErr
+		return nil
 	}
 
 	fmt.Printf("\n  %-3s %-10s %-16s %-16s %4s %8s %8s %8s %8s %5s\n",
 		"#", "Session", "Project", "Model", "Req", "In", "Out", "Cache", "Cost($)", "%")
 	fmt.Printf("  %s\n", strings.Repeat("-", 94))
-	var totalRequests int
-	var totalInput, totalOutput, totalCache int64
-	var totalCost float64
 	for index, result := range results {
 		model := result.Model
 		if len(model) > 16 {
@@ -363,11 +297,6 @@ func runSessionUsageStats(db *sql.DB, startTS, endTS int64, agent, label string)
 			project = project[:16]
 		}
 		cache := result.CacheCreateTokens + result.CacheReadTokens
-		totalRequests += result.Requests
-		totalInput += result.InputTokens
-		totalOutput += result.OutputTokens
-		totalCache += cache
-		totalCost += result.CostUSD
 		fmt.Printf("  %-3d %-10s %-16s %-16s %4d %8s %8s %8s %8.2f %4.0f%%\n",
 			index+1, result.ShortID, project, model, result.Requests,
 			fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens), fmtTokens(cache),
@@ -375,134 +304,51 @@ func runSessionUsageStats(db *sql.DB, startTS, endTS int64, agent, label string)
 	}
 	fmt.Printf("  %s\n", strings.Repeat("-", 94))
 	fmt.Printf("  %-3s %-10s %-16s %-16s %4d %8s %8s %8s %8.2f\n",
-		"", "Total", "", "", totalRequests,
-		fmtTokens(totalInput), fmtTokens(totalOutput), fmtTokens(totalCache), totalCost)
+		"", "Total", "", "", result.Totals.Requests,
+		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens),
+		fmtTokens(result.Totals.CacheTokens), result.Totals.CostUSD)
 	return nil
 }
 
-func runWrapped(db *sql.DB, startTS, endTS int64, agent, label string, days int) error {
-	stats, err := store.GetStats(db, startTS, endTS, agent)
-	if err != nil {
-		return err
-	}
-	modelStats, err := store.GetModelStats(db, startTS, endTS, agent)
-	if err != nil {
-		return err
-	}
-	dayStats, err := store.GetDayStats(db, startTS, endTS, agent, config.Loc)
-	if err != nil {
-		return err
-	}
-
-	if len(stats) == 0 {
+func runWrapped(result statsapp.Result) error {
+	wrapped := result.Wrapped
+	if wrapped == nil {
 		fmt.Println("No activity recorded.")
 		return nil
 	}
 
-	var totalSessions, totalQueries, totalTools int
-	var totalIn, totalOut int64
-	var totalCost float64
-	projectCost := map[string]float64{}
-	for _, r := range stats {
-		totalSessions += r.Sessions
-		totalQueries += r.Queries
-		totalTools += r.ToolCalls
-		totalIn += r.InputTokens
-		totalOut += r.OutputTokens
-		totalCost += r.CostUSD
-		projectCost[r.Project] += r.CostUSD
-	}
-
-	topModel := ""
-	if len(modelStats) > 0 {
-		topModel = modelStats[0].Model
-		if modelStats[0].Client != "" {
-			topModel += " · " + modelStats[0].Client
-		}
-	}
-
-	topProject := ""
-	var topProjectCost float64
-	for p, c := range projectCost {
-		if c > topProjectCost {
-			topProject = p
-			topProjectCost = c
-		}
-	}
-
-	var activeDays, peakIdx int
-	var peakCost float64
-	for i, d := range dayStats {
-		if d.Sessions > 0 {
-			activeDays++
-		}
-		if d.CostUSD > peakCost {
-			peakCost = d.CostUSD
-			peakIdx = i
-		}
-	}
-
 	if jsonOutput {
-		output.JSON(map[string]any{
-			"period":        label,
-			"days":          days,
-			"active_days":   activeDays,
-			"sessions":      totalSessions,
-			"queries":       totalQueries,
-			"tool_calls":    totalTools,
-			"input_tokens":  totalIn,
-			"output_tokens": totalOut,
-			"cost_usd":      totalCost,
-			"top_model":     topModel,
-			"top_project":   topProject,
-			"peak_day":      dayStats[peakIdx].Date,
-			"peak_cost":     peakCost,
-		})
+		output.JSON(wrapped)
 		return nil
 	}
 
-	fmt.Printf("\n  Wrapped (%s)\n", label)
+	fmt.Printf("\n  Wrapped (%s)\n", wrapped.Period)
 	fmt.Printf("  %s\n\n", strings.Repeat("─", 40))
-	fmt.Printf("  Total Cost        $%.2f\n", totalCost)
-	fmt.Printf("  Sessions          %d\n", totalSessions)
-	fmt.Printf("  Queries           %d\n", totalQueries)
-	fmt.Printf("  Tool Calls        %d\n", totalTools)
-	fmt.Printf("  Tokens In         %s\n", fmtTokens(totalIn))
-	fmt.Printf("  Tokens Out        %s\n", fmtTokens(totalOut))
-	fmt.Printf("  Active Days       %d / %d\n", activeDays, days)
-	fmt.Printf("  Avg Cost/Day      $%.2f\n", totalCost/float64(days))
-	fmt.Printf("  Avg Sessions/Day  %.1f\n", float64(totalSessions)/float64(days))
+	fmt.Printf("  Total Cost        $%.2f\n", wrapped.CostUSD)
+	fmt.Printf("  Sessions          %d\n", wrapped.Sessions)
+	fmt.Printf("  Queries           %d\n", wrapped.Queries)
+	fmt.Printf("  Tool Calls        %d\n", wrapped.ToolCalls)
+	fmt.Printf("  Tokens In         %s\n", fmtTokens(wrapped.InputTokens))
+	fmt.Printf("  Tokens Out        %s\n", fmtTokens(wrapped.OutputTokens))
+	fmt.Printf("  Active Days       %d / %d\n", wrapped.ActiveDays, wrapped.Days)
+	fmt.Printf("  Avg Cost/Day      $%.2f\n", wrapped.CostUSD/float64(wrapped.Days))
+	fmt.Printf("  Avg Sessions/Day  %.1f\n", float64(wrapped.Sessions)/float64(wrapped.Days))
 	fmt.Println()
-	fmt.Printf("  Top Model         %s\n", topModel)
-	fmt.Printf("  Top Project       %s ($%.2f)\n", topProject, topProjectCost)
-	if len(dayStats) > 0 {
-		fmt.Printf("  Peak Day          %s ($%.2f)\n", dayStats[peakIdx].Date, peakCost)
+	fmt.Printf("  Top Model         %s\n", wrapped.TopModel)
+	fmt.Printf("  Top Project       %s ($%.2f)\n", wrapped.TopProject, wrapped.TopProjectCost)
+	if wrapped.PeakDay != "" {
+		fmt.Printf("  Peak Day          %s ($%.2f)\n", wrapped.PeakDay, wrapped.PeakCost)
 	}
 
-	printSubscriptionSummary(totalCost, days)
+	printSubscriptionSummary(result.Subscription)
 	return nil
 }
 
-func runDayStats(db *sql.DB, startTS, endTS int64, agent, label string, days int) error {
-	results, err := store.GetDayStats(db, startTS, endTS, agent, config.Loc)
-	ok, sectionErr := statsSection(results, err, "Statistics by Day", label, 72, "No activity recorded.")
+func runDayStats(result statsapp.Result) error {
+	results := result.Periods
+	ok := statsSection(results, "Statistics by Day", result.Window.Label, 72, "No activity recorded.")
 	if !ok {
-		return sectionErr
-	}
-
-	var maxCost float64
-	var totalSessions, totalQueries int
-	var totalIn, totalOut int64
-	var totalCost float64
-	for _, r := range results {
-		if r.CostUSD > maxCost {
-			maxCost = r.CostUSD
-		}
-		totalSessions += r.Sessions
-		totalQueries += r.Queries
-		totalIn += r.InputTokens
-		totalOut += r.OutputTokens
-		totalCost += r.CostUSD
+		return nil
 	}
 
 	fmt.Printf("\n  %-12s %5s %5s %8s %8s %8s  %s\n",
@@ -513,8 +359,8 @@ func runDayStats(db *sql.DB, startTS, endTS int64, agent, label string, days int
 	barWidth := 24
 	for _, r := range results {
 		bar := ""
-		if maxCost > 0 {
-			n := int(r.CostUSD / maxCost * float64(barWidth))
+		if result.Totals.MaxCostUSD > 0 {
+			n := int(r.CostUSD / result.Totals.MaxCostUSD * float64(barWidth))
 			if n > 0 {
 				bar = strings.Repeat("█", n)
 			} else if r.CostUSD > 0 {
@@ -528,88 +374,62 @@ func runDayStats(db *sql.DB, startTS, endTS int64, agent, label string, days int
 	}
 	fmt.Printf("  %s\n", sep)
 	fmt.Printf("  %-12s %5d %5d %8s %8s %8.2f\n",
-		"Total", totalSessions, totalQueries,
-		fmtTokens(totalIn), fmtTokens(totalOut), totalCost)
+		"Total", result.Totals.Sessions, result.Totals.Queries,
+		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens), result.Totals.CostUSD)
 
-	printSubscriptionSummary(totalCost, days)
+	printSubscriptionSummary(result.Subscription)
 	return nil
 }
 
-func runHourStats(db *sql.DB, startTS, endTS int64, agent, label string, days int) error {
-	results, err := store.GetHourStats(db, startTS, endTS, agent, config.Loc)
+func runHourStats(result statsapp.Result) error {
+	results := result.Periods
 	// This was the one section with no empty-state line, printing a bare column
 	// header instead. Hour stats fill every gap in the window, so the case is all
 	// but unreachable; it now reads like its siblings if it ever happens.
-	ok, sectionErr := statsSection(results, err, "Statistics by Hour", label, 76, "No activity recorded.")
+	ok := statsSection(results, "Statistics by Hour", result.Window.Label, 76, "No activity recorded.")
 	if !ok {
-		return sectionErr
+		return nil
 	}
-	var totalSessions, totalQueries int
-	var totalIn, totalOut int64
-	var totalCost float64
 	fmt.Printf("\n  %-18s %5s %5s %8s %8s %8s\n", "Hour", "Sess", "Query", "In", "Out", "Cost($)")
 	for _, r := range results {
 		fmt.Printf("  %-18s %5d %5d %8s %8s %8.2f\n",
 			r.Date, r.Sessions, r.Queries, fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), r.CostUSD)
-		totalSessions += r.Sessions
-		totalQueries += r.Queries
-		totalIn += r.InputTokens
-		totalOut += r.OutputTokens
-		totalCost += r.CostUSD
 	}
 	fmt.Printf("  %-18s %5d %5d %8s %8s %8.2f\n",
-		"Total", totalSessions, totalQueries, fmtTokens(totalIn), fmtTokens(totalOut), totalCost)
-	printSubscriptionSummary(totalCost, days)
+		"Total", result.Totals.Sessions, result.Totals.Queries,
+		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens), result.Totals.CostUSD)
+	printSubscriptionSummary(result.Subscription)
 	return nil
 }
 
-// statsSection prints the opening every `atm stats` table shares: fail on the
-// query error, hand JSON callers the rows untouched, then the banner — or say
-// nothing was recorded. It reports false when there is no table left to print,
-// so a caller returns the error it hands back, which is nil for the JSON and
-// empty cases.
-func statsSection[T any](rows []T, queryErr error, title, label string, width int, empty string) (bool, error) {
-	if queryErr != nil {
-		return false, fmt.Errorf("query error: %w", queryErr)
-	}
+// statsSection renders the opening every `atm stats` table shares. Query errors
+// have already been classified by the application service, so this edge only
+// hands JSON callers the rows untouched or prints the text banner/empty state.
+func statsSection[T any](rows []T, title, label string, width int, empty string) bool {
 	if jsonOutput {
 		output.JSON(rows)
-		return false, nil
+		return false
 	}
 	fmt.Printf("%s (%s)\n", title, label)
 	fmt.Println(strings.Repeat("=", width))
 	if len(rows) == 0 {
 		fmt.Printf("\n%s\n", empty)
-		return false, nil
+		return false
 	}
-	return true, nil
+	return true
 }
 
-func printSubscriptionSummary(totalCost float64, days int) {
-	if len(config.Subscriptions) == 0 || totalCost == 0 {
+func printSubscriptionSummary(comparison *statsapp.SubscriptionComparison) {
+	if comparison == nil {
 		return
 	}
-	// Sorted because Subscriptions is a map: unsorted, the same data reorders
-	// between runs and anything diffing or grepping this line sees a change that
-	// is not one.
-	var subTotal float64
-	names := make([]string, 0, len(config.Subscriptions))
-	for name := range config.Subscriptions {
-		names = append(names, name)
+	parts := make([]string, 0, len(comparison.Plans))
+	for _, plan := range comparison.Plans {
+		parts = append(parts, fmt.Sprintf("%s $%.0f", plan.Name, plan.MonthlyUSD))
 	}
-	sort.Strings(names)
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		subTotal += config.Subscriptions[name]
-		parts = append(parts, fmt.Sprintf("%s $%.0f", name, config.Subscriptions[name]))
-	}
-	if subTotal == 0 {
-		return
-	}
-	monthlyAPI := totalCost / float64(days) * 30
-	ratio := monthlyAPI / subTotal
 	fmt.Printf("\n  API equivalent: $%.0f/mo | Subscription: %s = $%.0f/mo | %.1fx value\n",
-		monthlyAPI, strings.Join(parts, " + "), subTotal, ratio)
+		comparison.APIEquivalentMonthlyUSD, strings.Join(parts, " + "),
+		comparison.SubscriptionMonthlyUSD, comparison.ValueRatio)
 }
 
 func fmtTokens(n int64) string {
@@ -625,11 +445,11 @@ func fmtTokens(n int64) string {
 	}
 }
 
-func runModelStats(db *sql.DB, startTS, endTS int64, agent, label string, days int) error {
-	results, err := store.GetModelStats(db, startTS, endTS, agent)
-	ok, sectionErr := statsSection(results, err, "Statistics by Model and Client", label, 60, "No activity recorded.")
+func runModelStats(result statsapp.Result) error {
+	results := result.Models
+	ok := statsSection(results, "Statistics by Model and Client", result.Window.Label, 60, "No activity recorded.")
 	if !ok {
-		return sectionErr
+		return nil
 	}
 
 	fmt.Printf("\n  %-12s %-30s %8s %10s %10s %8s\n",
@@ -637,29 +457,18 @@ func runModelStats(db *sql.DB, startTS, endTS int64, agent, label string, days i
 	modelSep := output.Dashes(12, 30, 8, 10, 10, 8)
 	fmt.Printf("  %-12s %-30s %8s %10s %10s %8s\n", modelSep...)
 
-	var totalSessions int
-	var totalIn, totalOut int64
-	var totalCost, estimatedCost float64
-	anyEstimated := false
 	for _, r := range results {
 		fmt.Printf("  %-12s %-30s %8d %10s %10s %8s\n",
 			r.Client, r.Model, r.Sessions, fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens),
 			fmtCost(r.CostUSD, r.CostEstimated))
-		totalSessions += r.Sessions
-		totalIn += r.InputTokens
-		totalOut += r.OutputTokens
-		totalCost += r.CostUSD
-		if r.CostEstimated {
-			anyEstimated = true
-			estimatedCost += r.CostUSD
-		}
 	}
 	fmt.Printf("  %-12s %-30s %8s %10s %10s %8s\n", modelSep...)
 	fmt.Printf("  %-12s %-30s %8d %10s %10s %8s\n",
-		"", "Total", totalSessions, fmtTokens(totalIn), fmtTokens(totalOut), fmtCost(totalCost, anyEstimated))
-	printEstimatedCostLegend(totalCost, estimatedCost, anyEstimated)
+		"", "Total", result.Totals.Sessions, fmtTokens(result.Totals.InputTokens),
+		fmtTokens(result.Totals.OutputTokens), fmtCost(result.Totals.CostUSD, result.Totals.AnyEstimated))
+	printEstimatedCostLegend(result.Totals.CostUSD, result.Totals.EstimatedCostUSD, result.Totals.AnyEstimated)
 
-	printSubscriptionSummary(totalCost, days)
+	printSubscriptionSummary(result.Subscription)
 	return nil
 }
 
@@ -688,51 +497,37 @@ func printEstimatedCostLegend(totalCost, estimatedCost float64, anyEstimated boo
 	fmt.Println("      Run `atm doctor` for the models, or set rates in ~/.atm/pricing.json.")
 }
 
-func runModelDayStats(db *sql.DB, startTS, endTS int64, agent, label string) error {
-	results, err := store.GetModelDayStats(db, startTS, endTS, agent, config.Loc)
-	ok, sectionErr := statsSection(results, err, "Statistics by Model, Client, and Day", label, 84, "No activity recorded.")
+func runModelDayStats(result statsapp.Result) error {
+	results := result.ModelPeriods
+	ok := statsSection(results, "Statistics by Model, Client, and Day", result.Window.Label, 84, "No activity recorded.")
 	if !ok {
-		return sectionErr
+		return nil
 	}
 
 	fmt.Printf("\n  %-16s %-10s %-28s %8s %10s %10s %8s\n",
 		"Date", "Client", "Model", "Sessions", "In", "Out", "Cost($)")
-	var totalCost, estimatedCost float64
-	anyEstimated := false
 	for _, r := range results {
 		fmt.Printf("  %-16s %-10s %-28s %8d %10s %10s %8s\n",
 			r.Date, r.Client, r.Model, r.Sessions, fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens),
 			fmtCost(r.CostUSD, r.CostEstimated))
-		totalCost += r.CostUSD
-		if r.CostEstimated {
-			anyEstimated = true
-			estimatedCost += r.CostUSD
-		}
 	}
-	printEstimatedCostLegend(totalCost, estimatedCost, anyEstimated)
+	printEstimatedCostLegend(result.Totals.CostUSD, result.Totals.EstimatedCostUSD, result.Totals.AnyEstimated)
 	return nil
 }
 
-func runModelHourStats(db *sql.DB, startTS, endTS int64, agent, label string) error {
-	results, err := store.GetModelHourStats(db, startTS, endTS, agent, config.Loc)
-	ok, sectionErr := statsSection(results, err, "Statistics by Model and Hour", label, 90, "No activity recorded.")
+func runModelHourStats(result statsapp.Result) error {
+	results := result.ModelPeriods
+	ok := statsSection(results, "Statistics by Model and Hour", result.Window.Label, 90, "No activity recorded.")
 	if !ok {
-		return sectionErr
+		return nil
 	}
 	fmt.Printf("\n  %-18s %-28s %8s %10s %10s %8s\n",
 		"Hour", "Model", "Sessions", "In", "Out", "Cost($)")
-	var totalCost, estimatedCost float64
-	anyEstimated := false
 	for _, r := range results {
 		fmt.Printf("  %-18s %-28s %8d %10s %10s %8s\n",
 			r.Date, r.Model, r.Sessions, fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens),
 			fmtCost(r.CostUSD, r.CostEstimated))
-		totalCost += r.CostUSD
-		if r.CostEstimated {
-			anyEstimated = true
-			estimatedCost += r.CostUSD
-		}
 	}
-	printEstimatedCostLegend(totalCost, estimatedCost, anyEstimated)
+	printEstimatedCostLegend(result.Totals.CostUSD, result.Totals.EstimatedCostUSD, result.Totals.AnyEstimated)
 	return nil
 }

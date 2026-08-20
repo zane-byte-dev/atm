@@ -31,7 +31,7 @@ does not have to still be around.
 
 This exists because the skills that drive these CLIs pass the tool's own
 "skip confirmation" flag, which leaves no prompt anywhere.`,
-	Args: cobra.NoArgs,
+	Args: noSubcommandArgs,
 	RunE: showHelp,
 }
 

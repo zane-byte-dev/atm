@@ -3,6 +3,11 @@ import XCTest
 @testable import ATMMenuBarApp
 
 final class ModelsTests: XCTestCase {
+    private func encodedObject<Value: Encodable>(_ value: Value) throws -> [String: Any] {
+        let data = try JSONEncoder().encode(value)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
     func testAIDayContractAndCommands() throws {
         let data = Data("""
         {"schema_version":3,"day":"2026-08-15","state":"ready","timezone":"Asia/Shanghai",
@@ -47,18 +52,72 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(result.concept?.computedTitle, "深度共创")
         XCTAssertEqual(result.concept?.strength, 0.45)
         XCTAssertLessThan(result.concept?.confidence ?? 1, 1)
-        XCTAssertEqual(ATMAIDayCommand.today, ["day", "today", "--json"])
-        XCTAssertEqual(ATMAIDayCommand.dashboard, ["day", "dashboard", "--days", "180", "--json"])
+    }
+
+    func testAIDayUsesOnlyTheEightTypedIPCMethods() {
         XCTAssertEqual(
-            ATMAIDayCommand.feedback(day: "2026-08-15", verdict: "corrected", badge: "code_architect"),
-            ["day", "feedback", "2026-08-15", "--verdict", "corrected", "--badge", "code_architect", "--json"]
+            [
+                ATMAIDayCommand.snapshot.arguments,
+                ATMAIDayCommand.show.arguments,
+                ATMAIDayCommand.feedback.arguments,
+                ATMAIDayCommand.setSource.arguments,
+                ATMAIDayCommand.deleteSource.arguments,
+                ATMAIDayCommand.setPrivacy.arguments,
+                ATMAIDayCommand.deleteData.arguments,
+                ATMAIDayCommand.exportData.arguments,
+            ],
+            [
+                ["_ipc", "day.snapshot"],
+                ["_ipc", "day.show"],
+                ["_ipc", "day.feedback"],
+                ["_ipc", "day.source.set"],
+                ["_ipc", "day.source.delete"],
+                ["_ipc", "day.privacy.set"],
+                ["_ipc", "day.data.delete"],
+                ["_ipc", "day.data.export"],
+            ]
         )
-        XCTAssertEqual(
-            ATMAIDayCommand.clearFeedback(day: "2026-08-15"),
-            ["day", "feedback", "2026-08-15", "--clear", "--json"]
+        XCTAssertEqual(ATMAIDayCommand.snapshot.timeout, 60)
+        XCTAssertEqual(ATMAIDayCommand.feedback.timeout, 60)
+        XCTAssertEqual(ATMAIDayCommand.exportData.timeout, 60)
+    }
+
+    func testAIDayIPCRequestsUseTheGoContractKeysAndOmitAbsentFields() throws {
+        let feedback = try encodedObject(ATMAIDayFeedbackRequest(
+            day: "2026-08-15",
+            verdict: "corrected",
+            correctedBadgeID: "code_architect",
+            semanticLabels: ["directive"]
+        ))
+        XCTAssertEqual(Set(feedback.keys), [
+            "day", "verdict", "corrected_badge_id", "semantic_labels",
+        ])
+        XCTAssertEqual(feedback["corrected_badge_id"] as? String, "code_architect")
+
+        let clear = try encodedObject(ATMAIDayFeedbackRequest(day: "2026-08-15", clear: true))
+        XCTAssertEqual(Set(clear.keys), ["day", "clear"])
+        XCTAssertEqual(clear["clear"] as? Bool, true)
+
+        let source = try encodedObject(ATMAIDaySourceSetRequest(
+            source: "codex",
+            enabled: false,
+            semanticEnabled: false
+        ))
+        XCTAssertEqual(Set(source.keys), ["source", "enabled", "semantic_enabled"])
+        XCTAssertEqual(source["semantic_enabled"] as? Bool, false)
+
+        let privacy = try encodedObject(ATMAIDayPrivacyPatch(retentionDays: 30))
+        XCTAssertEqual(Set(privacy.keys), ["retention_days"])
+        XCTAssertNil(privacy["semantic_enabled"])
+
+        let deletion = try encodedObject(ATMAIDayDeleteRequest(all: true, confirmed: true))
+        XCTAssertEqual(Set(deletion.keys), ["all", "confirmed"])
+        XCTAssertEqual(deletion["confirmed"] as? Bool, true)
+
+        let sourceDeletion = try encodedObject(
+            ATMAIDaySourceDeleteRequest(source: "codex", confirmed: true)
         )
-        XCTAssertEqual(ATMAIDayCommand.show(day: "2026-08-15"), ["day", "show", "2026-08-15", "--json"])
-        XCTAssertEqual(ATMCommandPolicy.timeout(for: ATMAIDayCommand.today), 60)
+        XCTAssertEqual(Set(sourceDeletion.keys), ["source", "confirmed"])
     }
 
     /// The app ships separately from `atm`, so an older CLI must degrade to the
@@ -262,21 +321,28 @@ final class ModelsTests: XCTestCase {
     private func runCLI(
         executable: String,
         arguments: [String],
-        home: URL
+        home: URL,
+        standardInput: Data? = nil
     ) throws -> CLIResult {
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
+        let stdin = standardInput == nil ? nil : Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
         process.standardOutput = stdout
         process.standardError = stderr
+        process.standardInput = stdin
         process.currentDirectoryURL = home
         var environment = ProcessInfo.processInfo.environment
         environment["HOME"] = home.path
         environment["ATM_SKIP_LOCAL_NOTIFICATION"] = "1"
         process.environment = environment
         try process.run()
+        if let standardInput, let stdin {
+            stdin.fileHandleForWriting.write(standardInput)
+            try? stdin.fileHandleForWriting.close()
+        }
         process.waitUntilExit()
         return CLIResult(
             status: process.terminationStatus,
@@ -376,43 +442,22 @@ final class ModelsTests: XCTestCase {
         XCTAssertTrue(overview.items[3].isArchived)
         XCTAssertTrue(overview.items[3].shouldCollapseInCollection)
         XCTAssertFalse(overview.items[3].isUnread)
-        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "run"]), 300)
-        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "item", "reprocess", "ci1"]), 180)
-        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["todo", "refine", "t1", "--json"]), 180)
-        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["config", "test-text-model", "--json"]), 45)
+        XCTAssertEqual(ATMCollectionIPCCommand.run.timeout, 300)
+        XCTAssertEqual(ATMCollectionIPCCommand.reprocessItem.timeout, 180)
+        XCTAssertEqual(ATMIPCCommand.checkTextModel.timeout, 45)
         let notification = ATMCollectionNotificationPayload.make(runs: overview.runs)
         XCTAssertEqual(notification?.subtitle, "有新的收集待查看")
         XCTAssertEqual(notification?.body, "新增 1 · 补充 1 · 结论 0 · 失败 0")
     }
 
     func testCollectionManualRunIsScopedToOneSource() {
-        XCTAssertEqual(
-            ATMCollectionRunCommand.arguments(sourceID: "cs-example"),
-            ["collect", "run", "--source", "cs-example", "--json"]
-        )
+        XCTAssertEqual(ATMCollectionIPCCommand.run.verb, "collect.run")
     }
 
-    func testCollectionReadCommandsUseThePersistentCLIPath() {
-        XCTAssertEqual(
-            ATMCommandBuilder.collectionItemRead(ids: ["ci1", "ci2"], read: true),
-            ["collect", "item", "read", "ci1", "ci2", "--json"]
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.collectionItemRead(ids: ["ci1"], read: false),
-            ["collect", "item", "unread", "ci1", "--json"]
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.collectionMarkAllRead(),
-            ["collect", "item", "read", "--all", "--json"]
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.collectionItemArchive(ids: ["ci1", "ci2"], archived: true),
-            ["collect", "item", "archive", "ci1", "ci2", "--json"]
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.collectionItemArchive(ids: ["ci1"], archived: false),
-            ["collect", "item", "unarchive", "ci1", "--json"]
-        )
+    func testCollectionItemStateUsesTypedIPCMethods() {
+        XCTAssertEqual(ATMCollectionIPCCommand.setItemsRead.verb, "collect.item.read")
+        XCTAssertEqual(ATMCollectionIPCCommand.setItemsArchived.verb, "collect.item.archive")
+        XCTAssertEqual(ATMCollectionIPCCommand.deleteItems.verb, "collect.item.delete")
     }
 
     func testCollectionGroupsTodoSupplementsUnderTheCreateRecord() throws {
@@ -672,16 +717,12 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(collectionKindSymbol(nil), "person.fill")
         XCTAssertEqual(list.candidates[0].detail, "由示例连接器返回")
         XCTAssertFalse(list.candidates[1].isGroup)
-        XCTAssertEqual(
-            ATMCollectionSourceTarget.candidate(list.candidates[1]).arguments,
-            ["--kind", "issue", "--id", "owner/repo#42"]
-        )
-        XCTAssertEqual(
-            ATMCollectionSourceTarget.identifier(kind: "channel", externalID: " channel-2 ").arguments,
-            ["--kind", "channel", "--id", "channel-2"]
-        )
+        XCTAssertEqual(ATMCollectionSourceTarget.candidate(list.candidates[1]).kind, "issue")
+        XCTAssertEqual(ATMCollectionSourceTarget.candidate(list.candidates[1]).value, "owner/repo#42")
+        XCTAssertEqual(ATMCollectionSourceTarget.identifier(kind: "channel", externalID: " channel-2 ").kind, "channel")
+        XCTAssertEqual(ATMCollectionSourceTarget.identifier(kind: "channel", externalID: " channel-2 ").value, "channel-2")
         XCTAssertTrue(ATMCollectionSourceTarget.identifier(kind: "channel", externalID: "   ").value.isEmpty)
-        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "source", "search", "示例研发"]), 45)
+        XCTAssertEqual(ATMCollectionIPCCommand.searchSources.timeout, 45)
     }
 
     /// The add sheet only knows the connector and whatever the person has picked
@@ -703,12 +744,14 @@ final class ModelsTests: XCTestCase {
         identity.selection = ATMCollectionCandidate(
             kind: "bot", externalID: "bot-1", name: "Code助手", detail: nil
         )
-        XCTAssertEqual(identity.target?.arguments, ["--kind", "bot", "--id", "bot-1"])
+        XCTAssertEqual(identity.target?.kind, "bot")
+        XCTAssertEqual(identity.target?.value, "bot-1")
         XCTAssertNil(identity.blockReason)
 
         // Switching to manual entry ignores the stale candidate.
         identity.manualEntry = true
-        XCTAssertEqual(identity.target?.arguments, ["--kind", "group", "--id", "typed-id"])
+        XCTAssertEqual(identity.target?.kind, "group")
+        XCTAssertEqual(identity.target?.value, "typed-id")
         identity.externalID = "   "
         XCTAssertNil(identity.target)
         XCTAssertEqual(identity.blockReason, "请填写来源类型和来源 ID")
@@ -717,7 +760,8 @@ final class ModelsTests: XCTestCase {
         // drift would create a second source instead of updating this one.
         identity.locked = .identifier(kind: "group", externalID: "chat-9")
         XCTAssertTrue(identity.isEditing)
-        XCTAssertEqual(identity.target?.arguments, ["--kind", "group", "--id", "chat-9"])
+        XCTAssertEqual(identity.target?.kind, "group")
+        XCTAssertEqual(identity.target?.value, "chat-9")
         XCTAssertNil(identity.blockReason)
     }
 
@@ -779,18 +823,8 @@ final class ModelsTests: XCTestCase {
         XCTAssertFalse(history.messages[0].time.isEmpty)
         // A message without a sender still renders; only the label is missing.
         XCTAssertNil(history.messages[1].sender)
-        XCTAssertEqual(ATMCommandPolicy.timeout(for: ["collect", "history", "cs1", "--json"]), 45)
-
-        // The sheet opens on the archive first and then catches up over the connector,
-        // (~2s), so both argument forms have to be exactly right.
-        XCTAssertEqual(
-            ATMCommandBuilder.collectionHistory(sourceID: "cs1", limit: 50, local: true),
-            ["collect", "history", "cs1", "--limit", "50", "--json", "--local"]
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.collectionHistory(sourceID: "cs1", limit: 50, local: false),
-            ["collect", "history", "cs1", "--limit", "50", "--json"]
-        )
+        XCTAssertEqual(ATMCollectionIPCCommand.history.timeout, 45)
+        XCTAssertEqual(ATMCollectionIPCCommand.history.verb, "collect.history")
 
         // A read served off disk because the connector was unreachable must be labelled, so
         // the sheet can say so instead of passing it off as current.
@@ -1038,18 +1072,17 @@ final class ModelsTests: XCTestCase {
         XCTAssertTrue(snapshot.projectDayStats.isEmpty)
     }
 
-    func testDashboardCommandRequestsOnlyTheSectionsItNeeds() {
-        XCTAssertEqual(ATMCommandBuilder.dashboard(), ["dashboard", "--json"])
-        XCTAssertEqual(
-            ATMCommandBuilder.dashboard(sections: ["work"]),
-            ["dashboard", "--json", "--sections", "work"]
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.dashboard(sections: ["work"], sessionID: "s9"),
-            ["dashboard", "--json", "--sections", "work", "--agent-session", "s9"]
-        )
-        // An empty session ID must not become a bare flag with no value.
-        XCTAssertEqual(ATMCommandBuilder.dashboard(sessionID: ""), ["dashboard", "--json"])
+    func testDashboardUsesOneTypedIPCRequestForSectionAndSession() throws {
+        XCTAssertEqual(ATMDashboardIPCCommand.snapshot.arguments, ["_ipc", "dashboard.snapshot"])
+        let request = ATMDashboardRequest(sections: ["work"], sessionID: "s9")
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as! [String: Any]
+        XCTAssertEqual(object["sections"] as? [String], ["work"])
+        XCTAssertEqual(object["session_id"] as? String, "s9")
+
+        let withoutSession = try JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(ATMDashboardRequest(sessionID: ""))
+        ) as! [String: Any]
+        XCTAssertNil(withoutSession["session_id"])
     }
 
     func testTodaySessionsDecodeAndFilterIndependentlyFromDashboard() throws {
@@ -1555,16 +1588,24 @@ final class ModelsTests: XCTestCase {
 
         let sync = try runCLI(executable: executable, arguments: ["sync"], home: home)
         XCTAssertEqual(sync.status, 0, sync.stderr)
+        let dashboardRequest = try JSONEncoder().encode(
+            ATMDashboardRequest(sessionID: "legacy-session")
+        )
         let dashboard = try runCLI(
             executable: executable,
-            arguments: ["dashboard", "--agent-session", "legacy-session", "--json"],
-            home: home
+            arguments: ["_ipc", "dashboard.snapshot"],
+            home: home,
+            standardInput: dashboardRequest
         )
         XCTAssertEqual(dashboard.status, 0, dashboard.stderr)
-        let envelope = try JSONDecoder().decode(ATMDashboardEnvelope.self, from: dashboard.stdout)
-        XCTAssertEqual(envelope.schemaVersion, ATMDashboardContract.supportedSchemaVersion)
-        XCTAssertEqual(envelope.todos.map(\.id), ["t1"])
-        XCTAssertTrue(envelope.currentSession?.bound == true)
+        let ipcEnvelope = try JSONDecoder().decode(
+            ATMIPCEnvelope<ATMDashboardEnvelope>.self,
+            from: dashboard.stdout
+        )
+        XCTAssertEqual(ipcEnvelope.verb, "dashboard.snapshot")
+        XCTAssertEqual(ipcEnvelope.data.schemaVersion, ATMDashboardContract.supportedSchemaVersion)
+        XCTAssertEqual(ipcEnvelope.data.todos.map(\.id), ["t1"])
+        XCTAssertTrue(ipcEnvelope.data.currentSession?.bound == true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: atmDirectory.appendingPathComponent("atm.db").path))
 
         let missing = try runCLI(
@@ -2993,10 +3034,9 @@ final class ModelsTests: XCTestCase {
             ATMCommandBuilder.arguments(for: .delete, todo: todo),
             ["todo", "delete", "t8", "--yes"]
         )
-        XCTAssertEqual(
-            ATMCommandBuilder.arguments(for: .returnToOpen, todo: submitted),
-            ["todo", "edit", "t9", "--status", "open"]
-        )
+        // Non-waiting return-to-open is a typed todo.update request, so the
+        // ordinary command builder deliberately has no argv for this action.
+        XCTAssertNil(ATMCommandBuilder.arguments(for: .returnToOpen, todo: submitted))
         XCTAssertEqual(submitted.completionVerb, "验收")
         XCTAssertEqual(todo.completionVerb, "完成")
 
@@ -3038,12 +3078,9 @@ final class ModelsTests: XCTestCase {
             ATMTodoStatusActions.items(for: inProgress).map(\.title),
             ["标记完成", "回到待办", "暂不处理", "放弃"]
         )
-        // Not waiting, so the edit path applies — it also unbinds the sessions
-        // that were working the todo.
-        XCTAssertEqual(
-            ATMCommandBuilder.arguments(for: .returnToOpen, todo: inProgress),
-            ["todo", "edit", "t10", "--status", "open"]
-        )
+        // Not waiting, so typed todo.update applies; Work still owns the
+        // status-change unbind rule.
+        XCTAssertNil(ATMCommandBuilder.arguments(for: .returnToOpen, todo: inProgress))
         let deferred = try JSONDecoder().decode(
             ATMTodo.self,
             from: Data(
@@ -3092,38 +3129,6 @@ final class ModelsTests: XCTestCase {
             ["todo", "start", "t12"]
         )
 
-        XCTAssertEqual(
-            ATMCommandBuilder.addTodo(
-                ATMTodoDraft(text: "New task", project: "atm", priority: "P0")
-            ),
-            ["todo", "add", "New task", "--priority", "P0", "--project", "atm", "--json"]
-        )
-        // Everything after the first line is the description, so one composer can
-        // file a task and its details in a single call.
-        XCTAssertEqual(
-            ATMCommandBuilder.addTodo(
-                ATMTodoDraft(text: "New task\n\nWhy it matters", project: "", priority: "P1")
-            ),
-            ["todo", "add", "New task", "--priority", "P1", "--desc", "Why it matters", "--json"]
-        )
-		XCTAssertEqual(
-			ATMCommandBuilder.addTodo(
-				ATMTodoDraft(
-					text: "Task with images",
-					project: "atm",
-					priority: "P1",
-					imagePaths: ["/tmp/one.png", "/tmp/two.webp"]
-				)
-			),
-			[
-				"todo", "add", "Task with images", "--priority", "P1", "--project", "atm",
-				"--image", "/tmp/one.png", "--image", "/tmp/two.webp", "--json",
-			]
-		)
-        XCTAssertEqual(
-            ATMCommandBuilder.refineTodo(id: "t142"),
-            ["todo", "refine", "t142", "--json"]
-        )
         // Handoff carries no policy and no agent: it opens Codex and stops, so
         // there is nothing for the App to choose on the user's behalf.
         XCTAssertEqual(
@@ -3131,50 +3136,9 @@ final class ModelsTests: XCTestCase {
             ["todo", "handoff", "t142", "--json"]
         )
 
-        // Desktop selects the new todo after create; accept JSON or plain id stdout.
-        XCTAssertEqual(
-            ATMCommandBuilder.createdTodoID(
-                from: Data(#"{"id":"t142","title":"Created","priority":"P1","status":"open","created":"2026-07-29","closed":null,"closed_reason":null}"#.utf8)
-            ),
-            "t142"
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.createdTodoID(from: Data("t99\n".utf8)),
-            "t99"
-        )
-        XCTAssertNil(ATMCommandBuilder.createdTodoID(from: Data("not-an-id\n".utf8)))
-
-        let edit = ATMTodoEdit(
-            title: "Updated task",
-            description: "More context",
-            priority: "P2",
-            project: "atm",
-            status: "review",
-            wakeCondition: "",
-            reviewAt: "2026-07-20",
-            source: "menu bar"
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.editTodo(id: "t8", edit: edit),
-            [
-                "todo", "edit", "t8",
-                "--title", "Updated task",
-                "--desc", "More context",
-                "--priority", "P2",
-                "--project", "atm",
-                "--status", "review",
-                "--wake", "",
-                "--review-at", "2026-07-20",
-                "--source", "menu bar",
-            ]
-        )
         XCTAssertEqual(
             ATMCommandBuilder.todoPrompt(id: "t8"),
             ["todo", "prompt", "t8", "--json"]
-        )
-        XCTAssertEqual(
-            ATMCommandBuilder.moveKnowledgeDocument(id: "document:1", to: "research"),
-            ["knowledge", "edit", "document:1", "--collection", "research", "--json"]
         )
     }
 

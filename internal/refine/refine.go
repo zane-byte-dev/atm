@@ -169,19 +169,30 @@ func NormalizeOptions(opts Options) Options {
 // original card is trusted context; the model is not allowed to invent a
 // project, change priority, or follow instructions inside the title.
 func Analyze(ctx context.Context, todo store.Todo, card string, existingChildren int, opts Options) (Prepared, Proposal, error) {
-	opts = NormalizeOptions(opts)
-	data, err := runModel(ctx, textmodel.TaskTodoRefine, opts.Timeout, proposalJSONSchema,
-		PromptWithInstructions(todo, card, config.TodoRefinePrompt, opts.Hint))
-	if err != nil {
-		return Prepared{}, Proposal{}, err
-	}
-	proposal, err := ParseProposal(data)
+	proposal, source, err := Propose(ctx, todo, card, opts)
 	if err != nil {
 		return Prepared{}, Proposal{}, err
 	}
 	prepared, err := Prepare(todo, existingChildren, proposal, opts)
-	prepared.Source = normalizeSourceLabel(config.TextModelSource)
+	prepared.Source = source
 	return prepared, proposal, err
+}
+
+// Propose is the built-in text-model adapter without Work's post-model policy.
+// The Work application service calls this through an injectable port, then
+// applies Prepare itself against the latest Todo snapshot.
+func Propose(ctx context.Context, todo store.Todo, card string, opts Options) (Proposal, string, error) {
+	opts = NormalizeOptions(opts)
+	data, err := runModel(ctx, textmodel.TaskTodoRefine, opts.Timeout, proposalJSONSchema,
+		PromptWithInstructions(todo, card, config.TodoRefinePrompt, opts.Hint))
+	if err != nil {
+		return Proposal{}, "", err
+	}
+	proposal, err := ParseProposal(data)
+	if err != nil {
+		return Proposal{}, "", err
+	}
+	return proposal, normalizeSourceLabel(config.TextModelSource), nil
 }
 
 // runModel is the one seam tests replace. Production talks to ATM's built-in

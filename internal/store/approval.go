@@ -31,6 +31,11 @@ const ApprovalTextLimit = 400
 // request, so the caller should attach to it rather than raise a second one.
 var ErrApprovalPending = errors.New("an identical request is already pending")
 
+// ErrApprovalRunClaimLost means another owner changed an approved row before
+// this caller could claim execution. It is the one expected CAS miss; database
+// and driver failures remain distinguishable infrastructure errors.
+var ErrApprovalRunClaimLost = errors.New("approval execution claim was lost")
+
 // Approval is one attempt by an agent to run a command that reaches somebody
 // else, and the decision made about it.
 //
@@ -381,7 +386,7 @@ func ClaimApprovalRun(db *sql.DB, id, ranBy string, pid int) error {
 		return err
 	}
 	if changed != 1 {
-		return fmt.Errorf("approval %s is not awaiting execution", id)
+		return fmt.Errorf("%w: %s is not awaiting execution", ErrApprovalRunClaimLost, id)
 	}
 	return nil
 }

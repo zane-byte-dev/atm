@@ -64,17 +64,17 @@ final class GuardApprovalTests: XCTestCase {
 
     // MARK: - List decoding
 
-    func testApprovalListDecodesWhatTheCLIEmits() throws {
+    func testApprovalListDecodesWhatGuardIPCEmits() throws {
         let json = Data(
             """
-            [{"id":"ap_1","dedup_key":"k","tool":"dws","rule_id":"chat-send",
+            {"approvals":[{"id":"ap_1","dedup_key":"k","tool":"dws","rule_id":"chat-send",
               "real_bin":"/x/dws-atm-real","argv":["chat","message","send"],
               "cwd":"/w","env_agent":"claude","label":"发送钉钉消息",
               "preview_target":"cid1","preview_title":"上线","preview_body":"已发布到预发",
               "status":"pending","attach_count":2,"requested_at":100,"expires_at":1900,
-              "effective_status":"pending"}]
+              "effective_status":"pending"}]}
             """.utf8)
-        let approvals = try JSONDecoder().decode([ATMGuardApproval].self, from: json)
+        let approvals = try JSONDecoder().decode(ATMGuardListResponse.self, from: json).approvals
         XCTAssertEqual(approvals.count, 1)
         let approval = approvals[0]
         XCTAssertEqual(approval.actionLine, "发送钉钉消息 → cid1")
@@ -238,28 +238,25 @@ final class GuardApprovalTests: XCTestCase {
         XCTAssertTrue(notified.isEmpty)
     }
 
-    // MARK: - Command construction
+    // MARK: - Typed IPC contract
 
-    func testDecisionArgvNamesThePanelAsTheDecidingSurface() {
+    func testGuardUsesTypedIPCMethods() {
+        XCTAssertEqual(ATMGuardIPCCommand.list.arguments, ["_ipc", "guard.list"])
+        XCTAssertEqual(ATMGuardIPCCommand.list.timeout, 15)
+    }
+
+    func testDecisionRemainsOnTheHumanCLIAdapter() {
         XCTAssertEqual(
             ATMCommandBuilder.guardDecision(id: "ap_1", approve: true),
-            ["guard", "approve", "ap_1", "--by", "panel", "--json"])
+            ["guard", "approve", "ap_1", "--by", "panel", "--json"]
+        )
         XCTAssertEqual(
             ATMCommandBuilder.guardDecision(id: "ap_1", approve: false),
-            ["guard", "deny", "ap_1", "--by", "panel", "--json"])
-    }
-
-    func testListArgvAsksOnlyForPendingRequests() {
-        XCTAssertEqual(
-            ATMCommandBuilder.guardList(),
-            ["guard", "list", "--status", "pending", "--limit", "50", "--json"])
-    }
-
-    /// Approving runs the gated command. The default 15s ceiling would terminate a
-    /// slow send partway and report failure for a message that in fact went out.
-    func testApprovingGetsALongerTimeoutThanAnOrdinaryCommand() {
-        let approveTimeout = ATMCommandPolicy.timeout(for: ["guard", "approve", "ap_1"])
-        XCTAssertGreaterThan(approveTimeout, ATMCommandPolicy.timeout(for: ["guard", "list"]))
-        XCTAssertGreaterThanOrEqual(approveTimeout, 60)
+            ["guard", "deny", "ap_1", "--by", "panel", "--json"]
+        )
+        XCTAssertGreaterThanOrEqual(
+            ATMCommandPolicy.timeout(for: ["guard", "approve", "ap_1"]),
+            60
+        )
     }
 }

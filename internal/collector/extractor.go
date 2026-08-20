@@ -148,7 +148,7 @@ Return exactly one JSON object matching the supplied schema.
 ` + strategy + `
 
 Use a concise action-oriented Chinese title for every action except ignore. An append needs one too, naming the work being added to: ATM shows it on this batch's own record, and uses it if the target Todo turns out to be closed. Preserve the actual goal in summary. Never invent a repository project; use the source project only when clearly applicable. Confidence is 0..1.
-When markers are present, lines marked [新消息] are the only lines allowed to trigger a decision. Lines marked [上下文] were already processed and exist only to resolve references and preserve continuity. If no markers are present, every chat line is eligible (this is an explicit on-demand analysis).
+When markers are present, lines marked [新消息] are the only lines allowed to trigger a decision. Lines marked [上下文] were already processed and exist only to resolve references and preserve continuity. Context cannot trigger work by itself, but a line later in time may prove that the same external item from [新消息] was already handled, approved, merged, closed or resolved; in that case choose ignore. A terminal context line earlier than a later new follow-up does not cancel that follow-up. If no markers are present, every chat line is eligible (this is an explicit on-demand analysis).
 
 Source name: ` + batch.Source.Name + `
 Source project: ` + batch.Source.Project + `
