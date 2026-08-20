@@ -679,10 +679,6 @@ enum ATMCommandBuilder {
         ["todo", "handoff", id, "--copy", "--json"]
     }
 
-    static func guardToolStatus() -> [String] {
-        ["guard", "status", "--json"]
-    }
-
     static func guardInstall(tool: String, bin: String) -> [String] {
         var argv = ["guard", "install", tool]
         if !bin.isEmpty { argv += ["--bin", bin] }
@@ -691,10 +687,6 @@ enum ATMCommandBuilder {
 
     static func guardUninstall(tool: String) -> [String] {
         ["guard", "uninstall", tool, "--json"]
-    }
-
-    static func guardRuleList() -> [String] {
-        ["guard", "rule", "list", "--json"]
     }
 
     /// The rule itself travels on stdin, not argv: it is a nested object, and argv
@@ -1987,16 +1979,20 @@ final class ATMDataStore: ObservableObject {
     }
 
     /// Reads which CLIs are gated and what rules they carry. Both come from the
-    /// CLI, so the settings pane and `atm guard status` can never disagree.
+    /// same Guard service the CLI uses, so the settings pane and
+    /// `atm guard status` can never disagree.
     func loadGuardConfiguration() {
         Task {
             do {
-                let runner = try ATMCommandRunner()
-                async let toolsData = runner.run(ATMCommandBuilder.guardToolStatus())
-                async let rulesData = runner.run(ATMCommandBuilder.guardRuleList())
-                let decoder = JSONDecoder()
-                guardTools = try decoder.decode([ATMGuardTool].self, from: try await toolsData)
-                guardRules = try decoder.decode([ATMGuardRule].self, from: try await rulesData)
+                let client = try ATMIPCClient()
+                async let tools = client.call(
+                    ATMGuardIPCCommand.status, request: ATMGuardStatusRequest()
+                )
+                async let rules = client.call(
+                    ATMGuardIPCCommand.ruleList, request: ATMGuardRuleListRequest()
+                )
+                guardTools = try await tools.states
+                guardRules = try await rules.rules
                 guardConfigErrorMessage = nil
             } catch is CancellationError {
                 return

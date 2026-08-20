@@ -69,9 +69,46 @@ struct ATMGuardListResponse: Decodable, Equatable {
     let approvals: [ATMGuardApproval]
 }
 
+/// Reads shim installation state. Empty `tools` means every registered tool.
+struct ATMGuardStatusRequest: Encodable, Equatable {
+    let tools: [String]
+    let bin: String
+
+    init(tools: [String] = [], bin: String = "") {
+        self.tools = tools
+        self.bin = bin
+    }
+}
+
+struct ATMGuardStatusResponse: Decodable, Equatable {
+    let states: [ATMGuardTool]
+}
+
+struct ATMGuardRuleListRequest: Encodable, Equatable {
+    let tool: String?
+
+    init(tool: String? = nil) { self.tool = tool }
+}
+
+struct ATMGuardRuleListResponse: Decodable, Equatable {
+    let rules: [ATMGuardRule]
+}
+
+/// Only Guard's read paths are here. Installing, uninstalling, rule changes and
+/// approve/deny stay on the CLI because the service refuses OriginIPC for them:
+/// `_ipc` is replayable from a terminal and proves nothing about who launched it,
+/// and a gate an Agent can open for itself is not a gate.
 enum ATMGuardIPCCommand {
     static let list = ATMIPCMethod<ATMGuardListRequest, ATMGuardListResponse>(
         "guard.list",
+        responseKeyDecoding: .useDefault
+    )
+    static let status = ATMIPCMethod<ATMGuardStatusRequest, ATMGuardStatusResponse>(
+        "guard.status",
+        responseKeyDecoding: .useDefault
+    )
+    static let ruleList = ATMIPCMethod<ATMGuardRuleListRequest, ATMGuardRuleListResponse>(
+        "guard.rule.list",
         responseKeyDecoding: .useDefault
     )
 }

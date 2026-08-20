@@ -30,6 +30,94 @@ final class GuardWireContractTests: XCTestCase {
                       "the CLI sends fields the app drops: \(Set(raw.keys).subtracting(known))")
     }
 
+    /// The read paths the settings pane now uses, run against the real Go binary.
+    ///
+    /// The captured fixture below still pins `atm guard status --json`, which the
+    /// CLI keeps emitting as a bare array. Over `_ipc` the same data arrives
+    /// wrapped in the service's result struct, so both shapes need their own
+    /// guarantee — a decoder that silently produced an empty list would show every
+    /// tool as ungated.
+    func testRealGoGuardReadPathsDecodeInSwift() throws {
+        guard let executable = ProcessInfo.processInfo.environment["ATM_CONTRACT_EXECUTABLE"],
+              !executable.isEmpty else {
+            throw XCTSkip("ATM_CONTRACT_EXECUTABLE is set by the release contract check")
+        }
+        let home = FileManager.default.temporaryDirectory
+            .appendingPathComponent("atm-guard-ipc-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+
+        let encoder = JSONEncoder()
+        let status = try runGoIPC(
+            executable: executable, verb: "guard.status", home: home,
+            input: encoder.encode(ATMGuardStatusRequest())
+        )
+        XCTAssertEqual(status.status, 0, status.stderr)
+        let states = try JSONDecoder().decode(
+            ATMIPCEnvelope<ATMGuardStatusResponse>.self, from: status.stdout
+        ).data.states
+        // Guard ships built-in tools, so an empty list means the decode dropped
+        // them rather than that there is nothing to gate.
+        XCTAssertFalse(states.isEmpty)
+        XCTAssertFalse(states.contains { $0.tool.isEmpty })
+
+        let rules = try runGoIPC(
+            executable: executable, verb: "guard.rule.list", home: home,
+            input: encoder.encode(ATMGuardRuleListRequest())
+        )
+        XCTAssertEqual(rules.status, 0, rules.stderr)
+        let decoded = try JSONDecoder().decode(
+            ATMIPCEnvelope<ATMGuardRuleListResponse>.self, from: rules.stdout
+        ).data.rules
+        XCTAssertFalse(decoded.isEmpty)
+        XCTAssertFalse(decoded.contains { $0.id.isEmpty || $0.tool.isEmpty })
+
+        // The decision path must stay refused over this transport: a gate an Agent
+        // can open for itself is not a gate.
+        let approve = try runGoIPC(
+            executable: executable, verb: "guard.approve", home: home,
+            input: Data(#"{"id":"ap_whatever"}"#.utf8)
+        )
+        XCTAssertNotEqual(approve.status, 0, "guard.approve must not be a desktop method")
+    }
+
+    private struct CLIResult {
+        let status: Int32
+        let stdout: Data
+        let stderr: String
+    }
+
+    private func runGoIPC(
+        executable: String,
+        verb: String,
+        home: URL,
+        input: Data
+    ) throws -> CLIResult {
+        let process = Process()
+        let stdout = Pipe(), stderr = Pipe(), stdin = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = ["_ipc", verb]
+        process.standardOutput = stdout
+        process.standardError = stderr
+        process.standardInput = stdin
+        process.currentDirectoryURL = home
+        var environment = ProcessInfo.processInfo.environment
+        environment["HOME"] = home.path
+        environment["ATM_SKIP_LOCAL_NOTIFICATION"] = "1"
+        process.environment = environment
+        try process.run()
+        stdin.fileHandleForWriting.write(input)
+        try stdin.fileHandleForWriting.close()
+        process.waitUntilExit()
+        return CLIResult(
+            status: process.terminationStatus,
+            stdout: stdout.fileHandleForReading.readDataToEndOfFile(),
+            stderr: String(
+                data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8
+            ) ?? ""
+        )
+    }
+
     /// Captured from `atm guard status --json`. Pins the field names the settings
     /// pane reads: a rename on the Go side would otherwise surface as a tool that
     /// silently reports itself not installed.

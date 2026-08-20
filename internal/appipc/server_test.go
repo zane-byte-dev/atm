@@ -47,6 +47,8 @@ func TestNamesAreTheDeclaredDesktopSet(t *testing.T) {
 		"day.source.delete",
 		"day.source.set",
 		"guard.list",
+		"guard.rule.list",
+		"guard.status",
 		"knowledge.catalog",
 		"knowledge.collection.delete",
 		"knowledge.collection.save",

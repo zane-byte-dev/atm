@@ -25,10 +25,8 @@ guard approve --by --json
 guard deny --by --json
 guard forget --json
 guard install --bin
-guard rule list --json
 guard rule remove --json
 guard rule set --json
-guard status --json
 guard uninstall --json
 quota --json
 session status --json
@@ -72,6 +70,8 @@ day.source.delete
 day.source.set
 dashboard.snapshot
 guard.list
+guard.status
+guard.rule.list
 knowledge.catalog
 knowledge.collection.delete
 knowledge.collection.save
