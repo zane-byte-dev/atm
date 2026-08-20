@@ -29,9 +29,6 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 	if source.Strategy != CollectionStrategyTasks || source.IntervalMinutes != 5 {
 		t.Fatalf("unexpected default source strategy: %+v", source)
 	}
-	if source.AutoDispatch {
-		t.Fatalf("automatic dispatch must be opt-in: %+v", source)
-	}
 	updated, err := UpsertCollectionSource(db, CollectionSource{
 		Connector: "test", Kind: "group", ExternalID: "cid-demo",
 		Name: "新产品群", Priority: "P2", Enabled: false,
@@ -433,41 +430,6 @@ func TestCollectionOverviewKeepsLatestRunForEverySource(t *testing.T) {
 			(previous.StartedAt == current.StartedAt && previous.ID < current.ID) {
 			t.Fatalf("runs are not newest-first at %d: %+v", index, overview.Runs)
 		}
-	}
-}
-
-func TestObserveCollectionSourceCannotAutoDispatch(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	source, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-observe-only",
-		Strategy: CollectionStrategyObserve, AutoDispatch: true, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if source.AutoDispatch {
-		t.Fatalf("observe source retained automatic dispatch: %+v", source)
-	}
-}
-
-func TestAutomaticDispatchRequiresProject(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-no-project",
-		AutoDispatch: true, Enabled: true,
-	})
-	if err == nil {
-		t.Fatal("automatic dispatch without a project was accepted")
 	}
 }
 

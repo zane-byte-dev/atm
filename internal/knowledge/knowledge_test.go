@@ -808,11 +808,11 @@ func TestConcurrentSessionReviewWrites(t *testing.T) {
 
 func TestSaveArtifactUsesCentralUniquePath(t *testing.T) {
 	dataDir := newDataDir(t)
-	first, err := SaveArtifact(dataDir, "调研报告", "# 结论\n\n第一版。", "pi", "run-1", []SourceRef{{DocumentID: "document:test", LineStart: 2, LineEnd: 4}})
+	first, err := SaveArtifact(dataDir, "调研报告", "# 结论\n\n第一版。", "pi", []SourceRef{{DocumentID: "document:test", LineStart: 2, LineEnd: 4}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := SaveArtifact(dataDir, "调研报告", "# 结论\n\n第二版。", "pi", "run-1", nil)
+	second, err := SaveArtifact(dataDir, "调研报告", "# 结论\n\n第二版。", "pi", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

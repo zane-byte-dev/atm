@@ -374,18 +374,17 @@ extension ATMLiveSession {
         return nil
     }
 
-    /// ATM dispatch prompts are implementation machinery, not conversation
-    /// titles. Prefer the durable Todo title when a binding is available; for
-    /// the short window before the Agent binds, recover the title from the full
-    /// prompt instead of displaying its repeated controller preamble.
+    /// Prefer the durable Todo title when a binding is available, falling back
+    /// to the conversation's own first message.
+    ///
+    /// This used to also un-mangle a dispatch preamble out of the prompt, because
+    /// ATM wrote the opening turn itself and every unattended run started with
+    /// the same paragraph. Nothing generates that text now: the handoff pointer
+    /// is written by a person's Codex session, so the raw candidate is already
+    /// the conversation.
     private func preferredTitleText(_ candidates: String?...) -> String? {
         if let title = todo?.title.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             return title
-        }
-        for candidate in candidates {
-            if let title = Self.atmTaskRunTitle(from: candidate) {
-                return title
-            }
         }
         for candidate in candidates {
             guard let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -396,47 +395,18 @@ extension ATMLiveSession {
         return nil
     }
 
-    private static func atmTaskRunTitle(from value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            return nil
-        }
-        let firstLine = value.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? value
-        let normalized = firstLine.lowercased()
-        if let marker = firstLine.range(of: " (ATM Todo ", options: .caseInsensitive),
-           normalized.hasSuffix(")") {
-            let title = firstLine[..<marker.lowerBound]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !title.isEmpty {
-                return title
-            }
-        }
-        let legacyPrefixes = [
-            "you are the unattended agent run for atm todo ",
-            "continue the existing codex work for atm todo ",
-        ]
-        guard legacyPrefixes.contains(where: { normalized.hasPrefix($0) }),
-              let separator = firstLine.firstIndex(of: ":") else {
-            return nil
-        }
-        let title = firstLine[firstLine.index(after: separator)...]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        return title.isEmpty ? nil : title
-    }
-
+    /// Recognizes an opening turn that is harness plumbing rather than something
+    /// a person said, so it is not shown as the conversation's title.
+    ///
+    /// The ATM dispatch preambles this also used to match are gone with the
+    /// background runs that wrote them; what is left is text other tools inject.
     private static func looksLikeInjectedInstructions(_ value: String) -> Bool {
         let prefix = value.prefix(240).lowercased()
-        let isCurrentATMRunPrompt = prefix.contains("(atm todo ")
-            && (prefix.contains("this is an unattended codex task run managed by atm")
-                || prefix.contains("continue the existing codex work for this task"))
         return prefix.contains("agents.md instructions")
             || prefix.contains("<instructions>")
             || prefix.contains("system-reminder")
             || prefix.contains("some conversation entries were omitted")
             || prefix.contains("no retained transcript delta entries")
-            || prefix.hasPrefix("you are the unattended agent run for atm todo ")
-            || prefix.hasPrefix("continue the existing codex work for atm todo ")
-            || isCurrentATMRunPrompt
     }
 
     private static func comparableText(_ value: String) -> String {

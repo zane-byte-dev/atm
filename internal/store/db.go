@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 
@@ -261,6 +262,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 50
+		case 50:
+			if err := migrateV50ToV51(db); err != nil {
+				return err
+			}
+			version = 51
+		case 51:
+			if err := migrateV51ToV52(db); err != nil {
+				return err
+			}
+			version = 52
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -1434,6 +1445,93 @@ func migrateV49ToV50(db *sql.DB) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// migrateV50ToV51 removes workflow meaning from waiting and folds discard
+// vocabulary into the archive layer. Existing SQLite CHECK constraints remain
+// permissive so the data conversion can happen in place; fresh databases and
+// application validators expose only the four lifecycle states.
+func migrateV50ToV51(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().In(config.Loc).Unix()
+	if _, err := tx.Exec(`UPDATE todos
+		SET status='open', wake_condition='', review_at=''
+		WHERE status='waiting' AND TRIM(wake_condition)='暂不处理'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE todos SET status='in_progress'
+		WHERE status IN ('waiting','blocked')`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE todos
+		SET status='open', archived_at=COALESCE(archived_at, ?),
+			closed=NULL, closed_reason=NULL, done_ts=NULL,
+			wake_condition='', review_at=''
+		WHERE status='dropped'`, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 51`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV51ToV52 drops the background-dispatch subsystem. ATM no longer starts
+// an Agent on the user's behalf, so nothing can produce a task_runs row, an
+// auto-dispatched collection item, or an ATM_RUN_ID: the columns could only ever
+// hold their defaults from here on, and a column nothing writes still has to be
+// read past by everyone maintaining these tables.
+//
+// This drops data rather than preserving it, which is the right trade only
+// because the data is inert: task_runs was never displayed after the "Agent
+// 执行" page was removed, and the dispatch columns never left their defaults.
+// The Todos those runs worked on are untouched — lifecycle always lived in
+// todos, and run rows were execution evidence beside it, never the record of
+// what the work was.
+//
+// DROP COLUMN is used directly instead of the rename-and-copy dance: SQLite
+// permits it here because no index, trigger, view or table-level constraint
+// names these columns, only their own column-level CHECKs.
+func migrateV51ToV52(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Each step is individually idempotent so a previous attempt that dropped
+	// some columns but failed before bumping the version can be replayed.
+	statements := []string{
+		`DROP TABLE IF EXISTS task_runs`,
+		`ALTER TABLE collection_sources DROP COLUMN auto_dispatch`,
+		`ALTER TABLE collection_items DROP COLUMN dispatch_status`,
+		`ALTER TABLE collection_items DROP COLUMN dispatch_error`,
+		`ALTER TABLE todo_plan_revisions DROP COLUMN run_id`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			if isMissingColumnError(err) {
+				continue
+			}
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 52`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// isMissingColumnError reports whether a DROP COLUMN failed because the column
+// was already gone, which is success for a replayed migration and an error for
+// anything else.
+func isMissingColumnError(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such column") ||
+		strings.Contains(message, "cannot drop column")
 }
 
 // tableHasColumn reports whether a column already exists, so a migration can run

@@ -624,12 +624,12 @@ func (state *WorkStateTx) UnbindSession(sessionID, reason string) (bool, error) 
 	return count > 0, err
 }
 
-// ArchiveTodos moves closed todos out of the working set. The rows stay — an
+// ArchiveTodos moves todos out of the working set. The rows stay — an
 // archived todo can still be named by a dependency or a progress note, and its
 // ID is never reused — so this updates archived_at directly and drops the todos
 // from the snapshot, which is what loadTodos would return from now on.
 func (state *WorkStateTx) ArchiveTodos(ids []string) ([]string, error) {
-	return state.moveTodosOutOfWorkingSet(ids, true, "todo archived")
+	return state.moveTodosOutOfWorkingSet(ids, false, "todo archived")
 }
 
 // TrashTodos moves todos of any lifecycle status out of the working set. Unlike
@@ -638,7 +638,7 @@ func (state *WorkStateTx) ArchiveTodos(ids []string) ([]string, error) {
 // session binding is closed because an invisible todo must not remain the
 // session's current focus.
 func (state *WorkStateTx) TrashTodos(ids []string) ([]string, error) {
-	return state.moveTodosOutOfWorkingSet(ids, false, "todo moved to trash")
+	return state.ArchiveTodos(ids)
 }
 
 func (state *WorkStateTx) moveTodosOutOfWorkingSet(ids []string, requireClosed bool, unbindReason string) ([]string, error) {

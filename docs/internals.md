@@ -22,7 +22,7 @@
 
 ### 生命周期
 
-Todo 使用一套生命周期状态：`open/in_progress/waiting/review/blocked/done/dropped`。
+Todo 使用四个生命周期状态：`open/in_progress/review/done`。
 `maintenance` 是标签而不是状态。当前会话通过 session↔todo 绑定表达焦点；待开始队列由 `open`
 todo 的优先级和创建时间推导，不再单独保存 `focus/queued`。v4 的 `attention` 字段会在读取时自动
 迁移，并在下次保存时移除；`atm now` 会在一个兼容版本内附带旧视图字段，支持 CLI 与 macOS App
@@ -32,7 +32,8 @@ Todo 离开 `in_progress` 时，关闭活跃 binding 与保存 Todo 状态在同
 失败都会整体回滚，不会留下指向非工作态 Todo 的活跃 binding，也不会出现状态已改但 binding 未关。
 `atm todo show <id> --json` 中的 binding history 记录 `unbound_at` 与结构化 `reason`。
 
-`todo submit` 和 `todo wait` 还会在这个事务里写入 `work_effect_outbox`。Markdown 日志、Todo 文档
+`todo submit` 和兼容命令 `todo wait` 还会在这个事务里写入 `work_effect_outbox`。后者只写
+in_progress 的等待样式元数据并解绑，不会产生 waiting 状态。Markdown 日志、Todo 文档
 元数据和桌面通知只有在事务提交后才执行；adapter executor 成功后由 Work service ack 对应 outbox 行。进程若在 commit
 后退出，或文件写入失败，下一次 Submit/Wait 会拿到同一个 effect ID 继续补偿；即使用省略 ID 的绑定
 命令重试，也会从该 Session 最近关闭的 binding 恢复目标，但只有关闭原因、Todo 当前状态和 pending
@@ -49,20 +50,24 @@ effect 三者一致时才会采用，旧 binding 不会被误当成当前任务�
 投影失败可通过重试同一快照或再次读取 `todo doc` 修复。Plan step 不是 Todo，全部 completed 也不会自动
 submit 或 done。
 
-`atm todo archive <id>` 把已完结的 Todo 移出工作集：行仍然保留，所以它的 ID 不会被复用，
-依赖和进展记录仍可引用它。面向日常删除使用 `atm todo trash <id>`：任何状态都能无确认移入
-回收站，活跃 Session Binding 会安全关闭，但任务状态、Markdown、进展、依赖和历史都保留。
-菜单栏 App 的普通删除走这条可恢复路径，只有回收站里的永久删除才要求确认。
+`waiting` 不是生命周期：`in_progress` 带 `wake_condition` 或 `review_at` 时，客户端可显示橙色等待样式，
+但它仍在工作中分组。Schema v51 将历史 waiting/blocked 迁为 in_progress；“暂不处理”迁回 open。
+
+`atm todo archive <id>` 可把任意阶段 Todo 移出工作集：行仍然保留，所以 ID 不会被复用，生命周期、
+依赖、Markdown 和进展记录也都保留；活跃 Session Binding 会安全关闭。`trash/drop` 是 archive 的
+兼容别名，`unarchive` 是 restore 的兼容别名。Schema v51 将历史 dropped 迁为归档的 open。
+菜单栏 App 只有“归档/恢复”，永久删除只从归档视图提供。
 
 ### 依赖与唤醒
 
 Todo 可通过 `depends_on` 建立结构化依赖。`atm todo done` 和批量完成会在同一次原子保存中检查
-依赖图；当 waiting todo 的全部依赖都为 done 时，自动回到 open 并记录 wake 进展。依赖就绪只表示
-工作可以开始，不表示实现已经提交 review。
+依赖图。带未满足依赖的 open Todo 保持在待办并拒绝 start/bind；已经开始的 Todo 保持 in_progress，
+用派生 wake_condition 显示等待样式，依赖全部 done 后只清除等待元数据。依赖就绪只表示工作可以继续，
+不表示实现已经提交 review。
 
 `wake_condition` 中的 `waiting for todos: ...` 由完整 `depends_on` 集合确定性派生；重复添加同一
 依赖不会产生重复边，新增或移除依赖会刷新派生文本。`atm todo wake` 是流水线、MR webhook 或人工
-判断等外部条件的统一显式入口；`atm todo reconcile` 用于补偿执行并报告缺失、dropped 和循环依赖。
+判断等外部条件的兼容清除入口；`atm todo reconcile` 用于补偿执行并报告缺失与循环依赖。
 
 ### link 与 creator
 
@@ -91,46 +96,18 @@ token、签名、credential 等敏感参数的 URL 会被拒绝。
 只有打开 `todo_refine_on_add`（默认关）时桌面添加才会自动跑一次。`in_progress`
 的 Todo 只润色不拆分，避免把正在工作的会话解绑。
 
-### prompt 与 handoff
+### handoff
 
-`todo prompt` 输出一行交给人粘贴进新 Agent 会话的指针，不搬运需求本身：Agent 按指针自己去读
-`todo doc`，拿到的永远是当前版本。想在会话之外补充需求就用 `todo log --section 补充`，它写进同一份
-文档，接手的 Agent 一并读到。
+`todo handoff` 在任务的工作目录里打开 Codex 并填好一行指针，不自动执行。指针不搬运需求本身：
+Agent 按它自己去读 `todo doc`，拿到的永远是当前版本。想在会话之外补充需求就用
+`todo log --section 补充`，它写进同一份文档，接手的 Agent 一并读到。
 
-`todo handoff` 在任务的工作目录里打开 Codex 并填好这行提示，不自动执行。
+只要那行文字就用 `todo handoff --copy`：复制并打印指针，不打开任何窗口。它连工作目录都不解析，
+因为目录只对深链有意义——为了复制一行字而让一个绑在多个 worktree 上的 Todo 报错，是只有真要打开
+Codex 的调用方才需要回答的问题。这个分支就是过去的 `todo prompt`。
 
-### run
-
-`todo run` 是显式的本地执行入口，**只派发 Codex**（`todo agents` 显示本机是否已安装与费用说明）。
-Codex 是唯一沙箱能被 ATM 强制、线程 id 能被 ATM 找回的 CLI，所以委派收敛到它一个：guarded 用
-`codex exec --sandbox workspace-write` 并额外开放 ATM 数据目录，边界由 sandbox 而不是 prompt 保证。
-全局 `--agent` 只是读过滤器（看哪个 Agent 的会话、任务与用量），传给 `todo run` 会被拒绝而不是
-静默启动另一个 CLI。`--policy trusted` 绕过审批与 sandbox，必须显式传入并会输出警告。
-
-派发 prompt 不要求 Agent 用 ATM 记录进展，只要求它把结果、证据和遗留问题写在最后一段回复里：这次
-执行的会话本来就被索引成全文，Todo 详情直接读取会话最后一条回复，再写一遍等于把 ATM 已经拥有的
-文字抄进第二张表。
-
-它先创建唯一的 `task_runs` claim，再启动一个脱离调用终端的 ATM controller 来运行 Codex。同一 Todo
-同时最多一个 starting/running Run；进程异常消失后，下次派发会把旧 claim 记为失败再重试。
-
-退出语义是硬的：Agent 退出 0 只会把仍在进行中的 Todo 提交到 `review`，**永远不会自动 `done`**；
-非零退出只记录 Run 失败，不改变 Todo 生命周期。`todo interrupt` 会停止 controller 及其 Agent
-子进程树，将 Run 单独记为 `interrupted`，并让 Todo 保持 `in_progress`。子进程退出或被 interrupt
-之后，controller 会向 App 发一条 `session_end`——它是唯一确知子进程已经没了的一方，否则 App 会
-拿着一条「等待授权」信号直到安全 TTL 过期。每次派发的工作目录、策略、controller PID、时间、
-退出码和日志路径均独立保存。
-
-### --continue
-
-已有执行关联到 Codex 线程后，可用 `--continue` 发送新的修改要求：ATM 创建新的 Run 审计记录（续跑的
-意图记在 `resume_session_id`，与记录「这次执行实际是哪个会话」的 `session_id` 分开），并通过
-`codex exec resume` 恢复原线程上下文。
-
-传给 Codex 的必须是线程 UUID：Codex 会把认不出的 id 当成线程名，找不到时不报错而是静默新开一个
-会话，所以 ATM 先把 `rollout-<时间>-<uuid>` 归一成 UUID，归一不出来就直接拒绝而不是假装续上。
-`task_runs` 里 Claude、Grok、Pi 时代的行作为执行履历保留，但 `--continue` 只认 Codex 的会话：
-它们的 session id 是 ATM 自己生成的，Codex 会把它当线程名静默新开一轮。
+ATM 不在后台启动 Agent：没有 `todo run`、没有收集器自动派发。会话开始于人在 Codex 里按回车，
+ATM 通过 `session bind` 认识它。
 
 ### context
 
@@ -152,11 +129,7 @@ macOS 菜单栏 App 常驻时按默认 5 分钟间隔采集；主窗口关闭不
 来源有独立 checkpoint，并重叠回读 20 分钟，消息 ID 与来源标记共同保证重复拉取不会重复新建。
 语义匹配只用于在新 Todo 中记录相关历史 Todo，不会把新事项补充进旧 Todo。
 
-`tasks` 来源可用 `--auto-dispatch`（App 中为「新 Todo 自动交给 Codex」）显式开启一次性派发，
-默认关闭；`observe` 在存储层强制禁止派发。分类完成和 Agent 派发分别记账：Codex 启动失败时 Todo
-仍保留，处理记录展示失败证据，可从 Todo 详情人工重试；成功 Run 仍只进入 `review`。自动派发来源
-必须配置项目，工作目录只从这项可信配置解析（`~/mox/<project>`、`~/work/<project>` 或绝对路径），
-不接受聊天或分类模型改写执行目录。模型只输出固定决策 JSON，TodoWriter 才能写 ATM；权限、模型或
+收集器只创建或补充 Todo，不启动 Agent。模型只输出固定决策 JSON，TodoWriter 才能写 ATM；权限、模型或
 写入失败会显示为等待重试且不会推进 checkpoint。
 
 处理记录跟随它写出去的 Todo：那个 Todo 被完成或废弃后（在哪儿关的都算），这条记录一并了结，
@@ -166,6 +139,15 @@ macOS 菜单栏 App 常驻时按默认 5 分钟间隔采集；主窗口关闭不
 没有关联 Todo、或不想等待 Todo 生命周期时，可用 `collect item archive` 手动了结记录；它只写
 `collection_items.archived_at`，不会改 Todo、不会删除审计，也不会释放消息让下一轮重复收集。
 `collect item unarchive` 可恢复到主列表；App 中对应「了结记录」和「重新打开」。
+
+`collect item archive --all` 是同一个动作的批量版，只扫一类记录：**已读、且没保存进知识库的
+结论**。这类记录是唯一没有自己的生命周期可跟随的——`create`/`append` 由 Todo 关掉时一并了结，
+`ignore` 从来不是活儿，而一条结论「看过了，不值得进知识库」这个结论本身没有落点，于是主列表
+只会涨。已读在这里就是那个决定：打开过又没保存，就是答复。所以还欠动作的一律扫不到——未读结论、
+Todo 还开着的跟进、重试用尽的失败，都得点名 ID。批量只会关不会开：`all` 只能配 `archived:true`，
+批量重新打开不存在。它也不会顺手把记录标成已读——已读是入选前提，写它就等于让这个动作自己制造
+入选资格。`collect status` 报可了结条数，App 记录页在「全部已读」旁边多一个「全部了结」按钮，
+只在真有可了结记录时出现。判定只有 Go 一份（`store.ArchiveSettledCollectionItems`），App 不重算。
 
 新产生的收集结果默认未读：新建 Todo、对已有 Todo 的补充、还没保存的结论和等人确认的提议都算，
 `collect status` 报未读数，侧栏和菜单栏出徽标，App 前台时还会弹一条桌面通知。打开即已读，

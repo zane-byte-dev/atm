@@ -77,16 +77,15 @@ func buildNowView(tf *store.TodoFile, now time.Time) nowView {
 		switch t.Status {
 		case store.TodoStatusInProgress:
 			view.Working = append(view.Working, t)
-		case store.TodoStatusReview:
-			view.Review = append(view.Review, t)
-		case store.TodoStatusBlocked:
-			view.Blocked = append(view.Blocked, t)
-		case store.TodoStatusWaiting:
 			if t.ReviewAt != "" && t.ReviewAt <= today {
 				view.Due = append(view.Due, t)
-			} else {
+			} else if strings.TrimSpace(t.WakeCondition) != "" || t.ReviewAt != "" {
+				// Compatibility projection for clients that render waiting attention.
+				// The same Todo remains present in Working and counts as in_progress.
 				view.Waiting = append(view.Waiting, t)
 			}
+		case store.TodoStatusReview:
+			view.Review = append(view.Review, t)
 		default:
 			view.Open = append(view.Open, t)
 		}
@@ -106,7 +105,7 @@ func buildNowView(tf *store.TodoFile, now time.Time) nowView {
 		InProgress:  len(view.Working),
 		Waiting:     len(view.Waiting),
 		Review:      len(view.Review),
-		Blocked:     len(view.Blocked),
+		Blocked:     0,
 		Due:         len(view.Due),
 		Maintenance: maintenance,
 	}

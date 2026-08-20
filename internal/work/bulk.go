@@ -15,7 +15,6 @@ type BulkAction string
 
 const (
 	BulkDone BulkAction = "done"
-	BulkDrop BulkAction = "drop"
 	BulkMove BulkAction = "move"
 	BulkEdit BulkAction = "edit"
 )
@@ -97,11 +96,8 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 	reason := strings.TrimSpace(input.Reason)
 	closeStatus := ""
 	message := ""
-	if action == BulkDone || action == BulkDrop {
+	if action == BulkDone {
 		closeStatus = store.TodoStatusDone
-		if action == BulkDrop {
-			closeStatus = store.TodoStatusDropped
-		}
 		if reason != "" {
 			message = fmt.Sprintf("[%s] %s", closeStatus, reason)
 			if err := store.ValidateTodoLogMessage(message, "进展"); err != nil {
@@ -122,7 +118,6 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 			selected = append(selected, todo)
 			selectedIDs[todo.ID] = true
 		}
-
 		if message != "" {
 			if unknown := store.UnknownTodoReferences(transaction.Todos(), message); len(unknown) > 0 {
 				err := lifecycleInvalidArgument(
@@ -133,17 +128,7 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 				return err
 			}
 		}
-		if action == BulkEdit && status == store.TodoStatusWaiting {
-			for _, todo := range selected {
-				if todo.WakeCondition == "" && todo.ReviewAt == "" && len(todo.DependsOn) == 0 {
-					return lifecycleInvalidArgument(
-						fmt.Sprintf("todo %s cannot enter waiting without a wake condition, review date, or dependency", todo.ID),
-						"status", status,
-					)
-				}
-			}
-		}
-		if action == BulkDone || action == BulkDrop {
+		if action == BulkDone {
 			for _, todo := range selected {
 				if todo.Status != closeStatus && !store.TodoIsActive(*todo) {
 					return lifecycleConflict(
@@ -158,7 +143,7 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 		today := store.Today()
 		for _, todo := range selected {
 			switch action {
-			case BulkDone, BulkDrop:
+			case BulkDone:
 				if todo.Status == closeStatus {
 					continue
 				}
@@ -189,7 +174,7 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 				if status != "" {
 					todo.Status = status
 				}
-				if todo.Status != store.TodoStatusWaiting {
+				if todo.Status != store.TodoStatusInProgress {
 					todo.WakeCondition = ""
 					todo.ReviewAt = ""
 				}
@@ -245,11 +230,13 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 func normalizeBulkAction(value BulkAction) (BulkAction, error) {
 	action := BulkAction(strings.ToLower(strings.TrimSpace(string(value))))
 	switch action {
-	case BulkDone, BulkDrop, BulkMove, BulkEdit:
+	case BulkDone, BulkMove, BulkEdit:
 		return action, nil
 	default:
+		// `drop` was an archive alias here. `todo archive` already takes a list of
+		// IDs, so batching it a second way only added a second spelling.
 		return "", lifecycleInvalidArgument(
-			fmt.Sprintf("unsupported bulk action %q (use done, drop, move, or edit)", value), "action", value,
+			fmt.Sprintf("unsupported bulk action %q (use done, move, or edit)", value), "action", value,
 		)
 	}
 }

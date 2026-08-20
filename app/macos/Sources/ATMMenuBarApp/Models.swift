@@ -444,7 +444,7 @@ struct ATMNowSnapshot: Decodable {
 
     func replacingTodo(_ todo: ATMTodo) -> ATMNowSnapshot {
         let withoutOldValue = removingTodos(withIDs: [todo.id])
-        guard todo.status != "done", todo.status != "dropped" else {
+        guard todo.status != "done" else {
             return withoutOldValue
         }
 
@@ -452,28 +452,21 @@ struct ATMNowSnapshot: Decodable {
         var working = withoutOldValue.working
         var waiting = withoutOldValue.waiting
         var review = withoutOldValue.review
-        var blocked = withoutOldValue.blocked
+        let blocked = withoutOldValue.blocked
         var summary = withoutOldValue.summary
         let maintenanceIncrement = todo.tags?.contains("maintenance") == true ? 1 : 0
 
         switch todo.status {
         case "in_progress":
             working.append(todo)
+            let waitingStyle = !(todo.wakeCondition ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !(todo.reviewAt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if waitingStyle { waiting.append(todo) }
             summary = ATMWorkSummary(
                 open: summary.open,
                 inProgress: summary.inProgress + 1,
-                waiting: summary.waiting,
-                review: summary.review,
-                blocked: summary.blocked,
-                due: summary.due,
-                maintenance: summary.maintenance + maintenanceIncrement
-            )
-        case "waiting":
-            waiting.append(todo)
-            summary = ATMWorkSummary(
-                open: summary.open,
-                inProgress: summary.inProgress,
-                waiting: summary.waiting + 1,
+                waiting: summary.waiting + (waitingStyle ? 1 : 0),
                 review: summary.review,
                 blocked: summary.blocked,
                 due: summary.due,
@@ -487,17 +480,6 @@ struct ATMNowSnapshot: Decodable {
                 waiting: summary.waiting,
                 review: summary.review + 1,
                 blocked: summary.blocked,
-                due: summary.due,
-                maintenance: summary.maintenance + maintenanceIncrement
-            )
-        case "blocked":
-            blocked.append(todo)
-            summary = ATMWorkSummary(
-                open: summary.open,
-                inProgress: summary.inProgress,
-                waiting: summary.waiting,
-                review: summary.review,
-                blocked: summary.blocked + 1,
                 due: summary.due,
                 maintenance: summary.maintenance + maintenanceIncrement
             )

@@ -15,7 +15,7 @@ var (
 )
 
 var todoBulkCmd = &cobra.Command{
-	Use:   "bulk <done|drop|move|edit> <todo-id>...",
+	Use:   "bulk <done|move|edit> <todo-id>...",
 	Short: "Apply one lifecycle or metadata change to multiple todos",
 	Args:  cobra.MinimumNArgs(2),
 	RunE:  runTodoBulk,
@@ -24,7 +24,7 @@ var todoBulkCmd = &cobra.Command{
 func init() {
 	todoBulkCmd.Flags().StringVar(&todoBulkProjectFlag, "project", "", "target project for move/edit")
 	todoBulkCmd.Flags().StringVar(&todoBulkStatusFlag, "status", "", "target status for edit")
-	todoBulkCmd.Flags().StringVar(&todoBulkReasonFlag, "reason", "", "reason recorded for done/drop")
+	todoBulkCmd.Flags().StringVar(&todoBulkReasonFlag, "reason", "", "reason recorded for done")
 	todoCmd.AddCommand(todoBulkCmd)
 }
 

@@ -21,7 +21,6 @@ type Todo = store.Todo
 type ArchivedTodo = store.ArchivedTodo
 type TodoSessionBinding = store.TodoSessionBinding
 type TodoBoundSession = store.TodoBoundSession
-type TaskRun = store.TaskRun
 
 type PlanItem struct {
 	Step   string `json:"step"`
@@ -41,7 +40,6 @@ type PlanSnapshot struct {
 	Origin      application.Origin    `json:"origin"`
 	SessionID   string                `json:"session_id,omitempty"`
 	BindingID   int64                 `json:"binding_id,omitempty"`
-	RunID       string                `json:"run_id,omitempty"`
 	Agent       string                `json:"agent,omitempty"`
 }
 
@@ -69,7 +67,6 @@ type ShowResult struct {
 	Bindings   []TodoSessionBinding `json:"bindings,omitempty"`
 	Sessions   []TodoBoundSession   `json:"sessions,omitempty"`
 	Summary    *SessionSummary      `json:"summary,omitempty"`
-	LatestRun  *TaskRun             `json:"latest_run,omitempty"`
 	LatestPlan *PlanSnapshot        `json:"latest_plan,omitempty"`
 }
 
@@ -132,17 +129,12 @@ func (service Service) Show(ctx context.Context, call application.Call, input Sh
 	if err := nameTodoSessions(db, sessions); err != nil {
 		return ShowResult{}, readApplicationError("name sessions for todo", err)
 	}
-	latestRun, err := store.LatestTaskRun(db, todo.ID)
-	if err != nil {
-		return ShowResult{}, readApplicationError("load latest task run", err)
-	}
 
 	result := ShowResult{
-		Todo:      *todo,
-		Document:  inspectTodoDocument(todo.ID, 5),
-		Bindings:  bindings,
-		Sessions:  sessions,
-		LatestRun: latestRun,
+		Todo:     *todo,
+		Document: inspectTodoDocument(todo.ID, 5),
+		Bindings: bindings,
+		Sessions: sessions,
 	}
 	result.LatestPlan, err = latestPlanSnapshot(todo.ID)
 	if err != nil {
@@ -394,12 +386,11 @@ func normalizeListStatus(value string) (status string, activeOnly, archived bool
 		return "", false, false, nil
 	case "archived", "trashed":
 		return status, false, true, nil
-	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusWaiting,
-		store.TodoStatusReview, store.TodoStatusBlocked, store.TodoStatusDone, store.TodoStatusDropped:
+	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusReview, store.TodoStatusDone:
 		return status, false, false, nil
 	default:
 		return "", false, false, readInvalidArgument(
-			"invalid todo status (use open, in_progress, waiting, review, blocked, done, dropped, archived, trashed, or all)",
+			"invalid todo status (use open, in_progress, review, done, archived, or all)",
 			"status", value,
 		)
 	}

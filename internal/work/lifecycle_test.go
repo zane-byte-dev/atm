@@ -61,7 +61,7 @@ func TestDoneRequiresHumanAndAtomicallyWakesDependencies(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t,
 		store.Todo{ID: "t1", Title: "Await acceptance", Priority: "P1", Status: store.TodoStatusReview, Created: store.Today()},
-		store.Todo{ID: "t2", Title: "Dependent work", Priority: "P1", Status: store.TodoStatusWaiting,
+		store.Todo{ID: "t2", Title: "Dependent work", Priority: "P1", Status: store.TodoStatusInProgress,
 			WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}, Created: store.Today()},
 	)
 	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "done-session", TodoID: "t1"}); err != nil {
@@ -76,7 +76,7 @@ func TestDoneRequiresHumanAndAtomicallyWakesDependencies(t *testing.T) {
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
-	if store.FindTodo(todos, "t1").Status != store.TodoStatusReview || store.FindTodo(todos, "t2").Status != store.TodoStatusWaiting {
+	if store.FindTodo(todos, "t1").Status != store.TodoStatusReview || store.FindTodo(todos, "t2").Status != store.TodoStatusInProgress {
 		t.Fatalf("Agent Done mutated todos: %+v", todos.Items)
 	}
 
@@ -98,7 +98,7 @@ func TestDoneRequiresHumanAndAtomicallyWakesDependencies(t *testing.T) {
 		t.Fatalf("binding after Done = %+v, err=%v", binding, err)
 	}
 	todos, err = store.LoadTodosReadOnly()
-	if err != nil || store.FindTodo(todos, "t2").Status != store.TodoStatusOpen {
+	if err != nil || store.FindTodo(todos, "t2").Status != store.TodoStatusInProgress {
 		t.Fatalf("todos after Done = %+v, err=%v", todos, err)
 	}
 
@@ -117,8 +117,8 @@ func TestDoneRollsBackLifecycleWakeAndOutboxWhenUnbindFails(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t,
 		store.Todo{ID: "t1", Title: "Rollback acceptance", Priority: "P1", Status: store.TodoStatusReview, Created: store.Today()},
-		store.Todo{ID: "t2", Title: "Must stay waiting", Priority: "P1", Status: store.TodoStatusWaiting,
-			DependsOn: []string{"t1"}, Created: store.Today()},
+		store.Todo{ID: "t2", Title: "Must stay waiting", Priority: "P1", Status: store.TodoStatusInProgress,
+			WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}, Created: store.Today()},
 	)
 	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "rollback-session", TodoID: "t1"}); err != nil {
 		t.Fatal(err)
@@ -144,7 +144,7 @@ func TestDoneRollsBackLifecycleWakeAndOutboxWhenUnbindFails(t *testing.T) {
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
-	if store.FindTodo(todos, "t1").Status != store.TodoStatusReview || store.FindTodo(todos, "t2").Status != store.TodoStatusWaiting {
+	if store.FindTodo(todos, "t1").Status != store.TodoStatusReview || store.FindTodo(todos, "t2").Status != store.TodoStatusInProgress {
 		t.Fatalf("rolled-back todos = %+v", todos.Items)
 	}
 	if binding, bindErr := store.CurrentTodoBinding("rollback-session"); bindErr != nil || binding == nil {
@@ -158,7 +158,7 @@ func TestDoneRollsBackLifecycleWakeAndOutboxWhenUnbindFails(t *testing.T) {
 func TestWakeIsValidatedTransactionalAndRetryable(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t, store.Todo{
-		ID: "t1", Title: "Wake externally", Priority: "P1", Status: store.TodoStatusWaiting,
+		ID: "t1", Title: "Wake externally", Priority: "P1", Status: store.TodoStatusInProgress,
 		WakeCondition: "external approval", ReviewAt: "2026-09-01", Created: store.Today(),
 	})
 	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "stale-wake-session", TodoID: "t1"}); err != nil {
@@ -173,12 +173,12 @@ func TestWakeIsValidatedTransactionalAndRetryable(t *testing.T) {
 	}
 
 	first, err := Default.Wake(context.Background(), lifecycleCall(application.ActorAgent, "wake-1"), WakeInput{
-		TodoID: "#T01", Status: "OPEN", Reason: "external approval arrived",
+		TodoID: "#T01", Status: "IN_PROGRESS", Reason: "external approval arrived",
 	})
 	if err != nil {
 		t.Fatalf("Wake: %v", err)
 	}
-	if first.Todo.Status != store.TodoStatusOpen || first.Todo.WakeCondition != "" || first.Todo.ReviewAt != "" ||
+	if first.Todo.Status != store.TodoStatusInProgress || first.Todo.WakeCondition != "" || first.Todo.ReviewAt != "" ||
 		first.UnboundSessions != 1 || len(first.Effects) != 1 || first.Effects[0].Kind != EffectTodoAwakened {
 		t.Fatalf("first = %+v", first)
 	}
@@ -186,7 +186,7 @@ func TestWakeIsValidatedTransactionalAndRetryable(t *testing.T) {
 		t.Fatalf("binding after Wake = %+v, err=%v", binding, err)
 	}
 	retry, err := Default.Wake(context.Background(), lifecycleCall(application.ActorAgent, "wake-2"), WakeInput{
-		TodoID: "t1", Status: store.TodoStatusOpen, Reason: "external approval arrived",
+		TodoID: "t1", Status: store.TodoStatusInProgress, Reason: "external approval arrived",
 	})
 	if err != nil {
 		t.Fatalf("retry Wake: %v", err)
@@ -200,8 +200,8 @@ func TestReconcileReturnsPendingEffectsOnIdempotentRetry(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t,
 		store.Todo{ID: "t1", Title: "Complete dependency", Priority: "P1", Status: store.TodoStatusDone, Created: store.Today()},
-		store.Todo{ID: "t2", Title: "Ready dependent", Priority: "P1", Status: store.TodoStatusWaiting,
-			DependsOn: []string{"t1"}, Created: store.Today()},
+		store.Todo{ID: "t2", Title: "Ready dependent", Priority: "P1", Status: store.TodoStatusInProgress,
+			WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}, Created: store.Today()},
 	)
 	first, err := Default.Reconcile(context.Background(), lifecycleCall(application.ActorHuman, "reconcile-1"), ReconcileInput{})
 	if err != nil {
@@ -230,37 +230,33 @@ func TestRetentionBatchPolicyIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := lifecycleCall(application.ActorHuman, "retention")
-	_, err := Default.Archive(context.Background(), call, RetentionInput{TodoIDs: []string{"t1", "t2"}})
-	if !errors.Is(err, application.ErrConflict) {
-		t.Fatalf("Archive error = %v", err)
+	archivedBatch, err := Default.Archive(context.Background(), call, RetentionInput{TodoIDs: []string{"t1", "t2"}})
+	if err != nil || len(archivedBatch.Moved) != 2 {
+		t.Fatalf("Archive = %+v, err=%v", archivedBatch, err)
 	}
 	todos, loadErr := store.LoadTodosReadOnly()
-	if loadErr != nil || store.FindTodo(todos, "t1") == nil {
-		t.Fatalf("mixed Archive partially moved: %+v, err=%v", todos, loadErr)
-	}
-
-	trashed, err := Default.Trash(context.Background(), call, RetentionInput{TodoIDs: []string{"#T02"}})
-	if err != nil || len(trashed.Moved) != 1 || trashed.Moved[0] != "t2" {
-		t.Fatalf("Trash = %+v, err=%v", trashed, err)
+	if loadErr != nil || len(todos.Items) != 0 {
+		t.Fatalf("Archive left working todos: %+v, err=%v", todos, loadErr)
 	}
 	if binding, err := store.CurrentTodoBinding("trash-session"); err != nil || binding != nil {
-		t.Fatalf("binding after Trash = %+v, err=%v", binding, err)
+		t.Fatalf("binding after Archive = %+v, err=%v", binding, err)
 	}
-	retry, err := Default.Trash(context.Background(), call, RetentionInput{TodoIDs: []string{"t2"}})
+	// Archiving what is already archived reports it as unchanged rather than
+	// failing the batch. Trash and Unarchive were separate use cases here before
+	// the three disposal states collapsed into this one layer.
+	retry, err := Default.Archive(context.Background(), call, RetentionInput{TodoIDs: []string{"t2"}})
 	if err != nil || len(retry.Moved) != 0 || len(retry.Unchanged) != 1 {
-		t.Fatalf("idempotent Trash = %+v, err=%v", retry, err)
+		t.Fatalf("idempotent Archive = %+v, err=%v", retry, err)
 	}
 	restored, err := Default.Restore(context.Background(), call, RetentionInput{TodoIDs: []string{"t2"}})
 	if err != nil || len(restored.Moved) != 1 {
 		t.Fatalf("Restore = %+v, err=%v", restored, err)
 	}
-	archived, err := Default.Archive(context.Background(), call, RetentionInput{TodoIDs: []string{"t1"}})
-	if err != nil || len(archived.Moved) != 1 {
-		t.Fatalf("Archive closed = %+v, err=%v", archived, err)
-	}
-	unarchived, err := Default.Unarchive(context.Background(), call, RetentionInput{TodoIDs: []string{"t1"}})
-	if err != nil || len(unarchived.Moved) != 1 {
-		t.Fatalf("Unarchive = %+v, err=%v", unarchived, err)
+	// Restore takes any lifecycle state back out of the archive, including the
+	// closed card that only `unarchive` used to accept.
+	reopened, err := Default.Restore(context.Background(), call, RetentionInput{TodoIDs: []string{"t1"}})
+	if err != nil || len(reopened.Moved) != 1 {
+		t.Fatalf("Restore closed card = %+v, err=%v", reopened, err)
 	}
 }
 

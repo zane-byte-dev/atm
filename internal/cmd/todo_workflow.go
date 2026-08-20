@@ -16,36 +16,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runTodoWait(cmd *cobra.Command, args []string) error {
-	call := todoWaitCLICall()
-	id, sessionID := todoTransitionTarget(args)
-	result, err := workapp.Default.Wait(cmd.Context(), call, workapp.WaitInput{
-		TodoID:        id,
-		SessionID:     sessionID,
-		WakeCondition: todoWaitWakeFlag,
-		ReviewAt:      todoWaitReviewAtFlag,
-	})
-	if err != nil {
-		return err
-	}
-	if err := workapp.Default.DeliverEffects(cmd.Context(), call, result.Effects, localWorkEffectExecutor{}); err != nil {
-		return err
-	}
-
-	if jsonOutput {
-		output.JSON(&result.Todo)
-		return nil
-	}
-	fmt.Printf("Waiting %s: %s\n", result.Todo.ID, result.Todo.Title)
-	if result.Todo.WakeCondition != "" {
-		fmt.Printf("  Wake:   %s\n", result.Todo.WakeCondition)
-	}
-	if result.Todo.ReviewAt != "" {
-		fmt.Printf("  Review: %s\n", result.Todo.ReviewAt)
-	}
-	return nil
-}
-
 func runTodoSubmit(cmd *cobra.Command, args []string) error {
 	call := todoSubmitCLICall()
 	id, sessionID := todoTransitionTarget(args)
@@ -89,10 +59,6 @@ func todoSubmitCLICall() application.Call {
 	return todoWorkflowCLICall("submit")
 }
 
-func todoWaitCLICall() application.Call {
-	return todoWorkflowCLICall("wait")
-}
-
 func todoTransitionTarget(args []string) (todoID, sessionID string) {
 	if len(args) > 0 && args[0] != "current" {
 		return args[0], ""
@@ -103,10 +69,10 @@ func todoTransitionTarget(args []string) (todoID, sessionID string) {
 
 // Human-facing lifecycle events. Start/edit/start-work are noise; these are not.
 const (
-	notifyEventCreated = "created"
-	notifyEventReview  = "review"
-	notifyEventDone    = "done"
-	notifyEventDropped = "dropped"
+	notifyEventCreated  = "created"
+	notifyEventReview   = "review"
+	notifyEventDone     = "done"
+	notifyEventArchived = "archived"
 )
 
 // notifyCopy is the pure title/subtitle/body for a human local notification.
@@ -123,8 +89,8 @@ func notifyCopy(t *store.Todo, event string) (title, subtitle, body string) {
 		subtitle = fmt.Sprintf("%s 待验收", t.ID)
 	case notifyEventDone:
 		subtitle = fmt.Sprintf("%s 已完成", t.ID)
-	case notifyEventDropped:
-		subtitle = fmt.Sprintf("%s 已放弃", t.ID)
+	case notifyEventArchived:
+		subtitle = fmt.Sprintf("%s 已归档", t.ID)
 	default:
 		subtitle = fmt.Sprintf("%s %s", t.ID, event)
 	}

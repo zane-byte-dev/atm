@@ -43,7 +43,7 @@ func TestWaitCommitsConditionsAndUnbindsTogether(t *testing.T) {
 	if result.UnboundSessions != 2 {
 		t.Fatalf("unbound sessions = %d", result.UnboundSessions)
 	}
-	if result.Todo.Status != store.TodoStatusWaiting ||
+	if result.Todo.Status != store.TodoStatusInProgress ||
 		result.Todo.WakeCondition != "keep existing wake" || result.Todo.ReviewAt != "2026-09-01" {
 		t.Fatalf("waiting todo = %+v", result.Todo)
 	}
@@ -68,7 +68,7 @@ func TestWaitRetainsExistingConditionWhenInputIsOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wait: %v", err)
 	}
-	if result.Todo.Status != store.TodoStatusWaiting || result.Todo.ReviewAt != "2026-08-30" {
+	if result.Todo.Status != store.TodoStatusInProgress || result.Todo.ReviewAt != "2026-08-30" {
 		t.Fatalf("result = %+v", result)
 	}
 }
@@ -87,7 +87,7 @@ func TestWaitAcceptsEveryAuthorizedActorKind(t *testing.T) {
 		{name: "controller", call: application.Call{
 			RequestID: "controller-wait",
 			Actor: application.Actor{Kind: application.ActorController, Origin: application.OriginController,
-				SessionID: "session-1", RunID: "run-1", Agent: "codex"},
+				SessionID: "session-1", Agent: "codex"},
 		}},
 	}
 	for _, test := range tests {
@@ -103,7 +103,7 @@ func TestWaitAcceptsEveryAuthorizedActorKind(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Wait: %v", err)
 			}
-			if result.Todo.Status != store.TodoStatusWaiting {
+			if result.Todo.Status != store.TodoStatusInProgress {
 				t.Fatalf("result = %+v", result)
 			}
 		})

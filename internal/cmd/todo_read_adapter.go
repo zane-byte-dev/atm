@@ -99,9 +99,6 @@ func printTodoShowJSON(result workapp.ShowResult) error {
 		out["sessions"] = result.Sessions
 		out["summary"] = result.Summary
 	}
-	if result.LatestRun != nil {
-		out["latest_run"] = result.LatestRun
-	}
 	if result.LatestPlan != nil {
 		out["latest_plan"] = result.LatestPlan
 	}
@@ -172,17 +169,6 @@ func printTodoShowText(result workapp.ShowResult) {
 	}
 	if todo.StartTS != nil {
 		fmt.Printf("Started:  %s\n", time.Unix(*todo.StartTS, 0).In(config.Loc).Format("2006-01-02 15:04:05"))
-	}
-	if result.LatestRun != nil {
-		run := result.LatestRun
-		fmt.Printf("Agent:    %s (%s, PID %d)\n", run.Agent, run.Status, run.PID)
-		if run.SessionID != nil {
-			fmt.Printf("Session:  %s\n", shortSessionID(*run.SessionID))
-		}
-		fmt.Printf("Run log:  %s\n", run.LogPath)
-		if run.Message != "" {
-			fmt.Printf("Run note: %s\n", run.Message)
-		}
 	}
 	if todo.Closed != nil {
 		fmt.Printf("Closed:   %s\n", *todo.Closed)

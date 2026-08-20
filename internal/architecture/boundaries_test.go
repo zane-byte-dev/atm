@@ -173,7 +173,6 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 		"internal/cmd/todo_refine.go":              true,
 		"internal/cmd/todo_retention_adapter.go":   true,
 		"internal/cmd/todo_review_context.go":      true,
-		"internal/cmd/todo_run_management.go":      true,
 	}
 
 	assertNoImports(t, imports, func(item sourceImport) string {
@@ -184,49 +183,6 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 			return fmt.Sprintf("%s reaches persistence directly through %q instead of its application service", item.file, item.path)
 		}
 		return ""
-	})
-}
-
-func TestTaskRunManagementAdapterDoesNotReachPersistenceProcessOrFilesystem(t *testing.T) {
-	root, module := repository(t)
-	imports := scanProductionImports(t, root)
-	storeImport := module + "/internal/store"
-
-	assertNoImports(t, imports, func(item sourceImport) string {
-		if item.file != "internal/cmd/todo_run_management.go" {
-			return ""
-		}
-		switch {
-		case item.path == "database/sql" || importWithin(item.path, storeImport):
-			return fmt.Sprintf("%s reaches task-run persistence directly through %q", item.file, item.path)
-		case item.path == "os" || item.path == "os/exec" || item.path == "path/filepath" || item.path == "syscall":
-			return fmt.Sprintf("%s reaches task-run process/filesystem infrastructure directly through %q", item.file, item.path)
-		default:
-			return ""
-		}
-	})
-}
-
-func TestTaskRunApplicationDoesNotDependOnCommandOrRenderingPackages(t *testing.T) {
-	root, module := repository(t)
-	imports := scanProductionImports(t, root)
-	commandImport := module + "/internal/cmd"
-	outputImport := module + "/internal/output"
-
-	assertNoImports(t, imports, func(item sourceImport) string {
-		if !withinPackageDir(item.packageDir, "taskrun") {
-			return ""
-		}
-		switch {
-		case importWithin(item.path, cobraImport):
-			return fmt.Sprintf("%s imports Cobra %q", item.file, item.path)
-		case importWithin(item.path, commandImport):
-			return fmt.Sprintf("%s imports command adapter %q", item.file, item.path)
-		case importWithin(item.path, outputImport):
-			return fmt.Sprintf("%s imports command renderer %q", item.file, item.path)
-		default:
-			return ""
-		}
 	})
 }
 

@@ -714,18 +714,18 @@ func TestRunTodoAddImportsImagesAndPermanentDeleteCleansFiles(t *testing.T) {
 	}
 
 	oldJSON := jsonOutput
-	oldPriority, oldProject, oldStatus := todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag
+	oldPriority, oldProject := todoAddPriorityFlag, todoAddProjectFlag
 	oldSource, oldDesc, oldDescFile := todoSourceFlag, todoDescFlag, todoDescFileFlag
 	oldImages, oldYes := todoAddImageFlags, todoDeleteYesFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
-		todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag = oldPriority, oldProject, oldStatus
+		todoAddPriorityFlag, todoAddProjectFlag = oldPriority, oldProject
 		todoSourceFlag, todoDescFlag, todoDescFileFlag = oldSource, oldDesc, oldDescFile
 		todoAddImageFlags, todoDeleteYesFlag = oldImages, oldYes
 		todoAddCmd.SetErr(os.Stderr)
 	})
 	jsonOutput = false
-	todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag = "P1", "atm", store.TodoStatusOpen
+	todoAddPriorityFlag, todoAddProjectFlag = "P1", "atm"
 	todoSourceFlag, todoDescFlag, todoDescFileFlag = "test-suite", "", ""
 	todoAddImageFlags = []string{source}
 	todoAddCmd.SetErr(io.Discard)
@@ -1026,7 +1026,7 @@ func TestRunTodoTrashRestoreAndPermanentDelete(t *testing.T) {
 			t.Fatalf("trash: %v", err)
 		}
 	})
-	if trashOut != "Trashed t1\n" {
+	if trashOut != "Archived t1\n" {
 		t.Fatalf("trash output = %q", trashOut)
 	}
 	archived, err := store.LoadArchivedTodos()
@@ -1066,7 +1066,7 @@ func TestTodoHelpIncludesBatchAndDependencyExamples(t *testing.T) {
 	if !strings.Contains(todoAddCmd.Example, "atm todo add --batch") || !strings.Contains(todoAddCmd.Example, "--desc-file -") {
 		t.Fatalf("todo add examples = %q", todoAddCmd.Example)
 	}
-	if !strings.Contains(todoDependAddCmd.Example, "t77 t76") || !strings.Contains(todoDependAddCmd.Example, "t77 waits") {
+	if !strings.Contains(todoDependAddCmd.Example, "t77 t76") || !strings.Contains(todoDependAddCmd.Example, "t77 depends") {
 		t.Fatalf("todo depend add example = %q", todoDependAddCmd.Example)
 	}
 }
@@ -1218,11 +1218,12 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 	withTempAtmDir(t)
 	oldJSON := jsonOutput
 	oldWaitWake, oldWaitReview := todoWaitWakeFlag, todoWaitReviewAtFlag
-	oldMaintainLimit := todoMaintainLimitFlag
+	oldMaintenanceLimit := todoEditMaintenanceLimitFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		todoWaitWakeFlag, todoWaitReviewAtFlag = oldWaitWake, oldWaitReview
-		todoMaintainLimitFlag = oldMaintainLimit
+		todoEditMaintenanceLimitFlag = oldMaintenanceLimit
+		todoEditCmd.Flags().Lookup("maintenance-limit").Changed = false
 	})
 
 	todos := []store.Todo{
@@ -1248,10 +1249,11 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 		t.Fatalf("wait: %v", commandErr)
 	}
 
-	todoMaintainLimitFlag = 2
-	captureStdout(t, func() { commandErr = runTodoMaintain(todoMaintainCmd, []string{"t3"}) })
+	todoEditMaintenanceLimitFlag = 2
+	todoEditCmd.Flags().Lookup("maintenance-limit").Changed = true
+	captureStdout(t, func() { commandErr = runTodoEdit(todoEditCmd, []string{"t3"}) })
 	if commandErr != nil {
-		t.Fatalf("maintain: %v", commandErr)
+		t.Fatalf("edit --maintenance-limit: %v", commandErr)
 	}
 
 	var runErr error
@@ -1265,7 +1267,7 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 	if err := json.Unmarshal([]byte(nowOut), &view); err != nil {
 		t.Fatalf("unmarshal now: %v\n%s", err, nowOut)
 	}
-	if len(view.Working) != 1 || view.Working[0].ID != "t1" {
+	if len(view.Working) != 2 || view.Working[0].ID != "t1" || view.Working[1].ID != "t2" {
 		t.Fatalf("working = %#v", view.Working)
 	}
 	if len(view.Waiting) != 1 || view.Waiting[0].ID != "t2" || view.Waiting[0].WakeCondition != "new business input" {
@@ -1486,7 +1488,7 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 	oldRecallScope, oldWriteScope, oldMemoryLimit := memoryRecallScope, memoryWriteScope, memoryLimit
 	oldMemorySource, oldMemoryWriteFile := memorySource, memoryWriteFile
 	oldMemoryTags := append([]string(nil), memoryTags...)
-	oldArtifactFile, oldProducer, oldRunID := artifactFile, artifactProducer, artifactRunID
+	oldArtifactFile, oldProducer := artifactFile, artifactProducer
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		knowledgeLimit = oldKnowledgeLimit
@@ -1497,7 +1499,7 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 		memoryRecallScope, memoryWriteScope, memoryLimit = oldRecallScope, oldWriteScope, oldMemoryLimit
 		memorySource, memoryWriteFile = oldMemorySource, oldMemoryWriteFile
 		memoryTags = oldMemoryTags
-		artifactFile, artifactProducer, artifactRunID = oldArtifactFile, oldProducer, oldRunID
+		artifactFile, artifactProducer = oldArtifactFile, oldProducer
 	})
 
 	jsonOutput = true
@@ -1596,7 +1598,7 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 		t.Fatalf("memory recall after supersede output = %q, err = %v", recallOut, runErr)
 	}
 
-	artifactProducer, artifactRunID, artifactFile = "test", "run-test", ""
+	artifactProducer, artifactFile = "test", ""
 	artifactSourceRaw = nil
 	artifactOut := captureStdout(t, func() {
 		runErr = artifactSaveCmd.RunE(artifactSaveCmd, []string{"Command report", "# Report\n\nDone."})
@@ -1654,9 +1656,9 @@ func TestNotifyCopyHumanFacingEvents(t *testing.T) {
 		t.Fatalf("done = %q / %q / %q", title, subtitle, body)
 	}
 
-	title, subtitle, body = notifyCopy(todo, notifyEventDropped)
-	if title != "ATM · atm" || subtitle != "t42 已放弃" || body != "Ship notify" {
-		t.Fatalf("dropped = %q / %q / %q", title, subtitle, body)
+	title, subtitle, body = notifyCopy(todo, notifyEventArchived)
+	if title != "ATM · atm" || subtitle != "t42 已归档" || body != "Ship notify" {
+		t.Fatalf("archived = %q / %q / %q", title, subtitle, body)
 	}
 
 	noProject := &store.Todo{ID: "t1", Title: "Solo"}

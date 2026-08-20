@@ -83,6 +83,12 @@ func (service Service) Start(ctx context.Context, call application.Call, input S
 		if err != nil {
 			return lifecycleTodoNotFound(input.TodoID, err)
 		}
+		if unmet := store.UnmetTodoDependencies(transaction.Todos(), *todo); len(unmet) > 0 {
+			return lifecycleConflict(
+				fmt.Sprintf("cannot start todo %s until dependencies are done: %s", todo.ID, strings.Join(unmet, ", ")),
+				todo.ID, todo.Status,
+			)
+		}
 		wasClosed := !store.TodoIsActive(*todo)
 		changed := todo.Status != store.TodoStatusInProgress || todo.StartTS == nil ||
 			todo.WakeCondition != "" || todo.ReviewAt != "" || wasClosed
@@ -136,7 +142,44 @@ func (service Service) Drop(ctx context.Context, call application.Call, input Cl
 	if err := validateLifecycleCall(ctx, call); err != nil {
 		return CloseResult{}, err
 	}
-	return service.close(ctx, call, input, store.TodoStatusDropped, dropTransitionTarget)
+	if strings.TrimSpace(input.TodoID) != "" {
+		if err := validateLifecycleTodoID(input.TodoID); err != nil {
+			return CloseResult{}, err
+		}
+	}
+	result := CloseResult{}
+	err := service.Mutate(func(transaction *Transaction) error {
+		todoID := store.NormalizeTodoID(input.TodoID)
+		if todoID == "" {
+			sessionID := strings.TrimSpace(input.SessionID)
+			if sessionID == "" {
+				sessionID = call.Actor.SessionID
+			}
+			binding, bindErr := transaction.currentSessionBinding(sessionID)
+			if bindErr != nil {
+				return bindErr
+			}
+			if binding == nil {
+				return transitionTargetUnavailable(sessionID)
+			}
+			todoID = binding.TodoID
+		}
+		todo, findErr := transaction.Todo(todoID)
+		if findErr != nil {
+			return lifecycleTodoNotFound(todoID, findErr)
+		}
+		result.Todo = cloneTodo(*todo)
+		result.UnboundSessions, findErr = transaction.UnbindTodoSessions(todo.ID, "todo archived")
+		if findErr != nil {
+			return findErr
+		}
+		_, findErr = transaction.ArchiveTodos([]string{todo.ID})
+		return findErr
+	})
+	if err != nil {
+		return CloseResult{}, lifecycleApplicationError("archive todo", err)
+	}
+	return result, nil
 }
 
 func (service Service) close(
@@ -242,12 +285,10 @@ func (service Service) Wake(ctx context.Context, call application.Call, input Wa
 		return WakeResult{}, err
 	}
 	status := strings.ToLower(strings.TrimSpace(input.Status))
-	if status == "" {
-		status = store.TodoStatusOpen
+	if status != "" && status != store.TodoStatusInProgress {
+		return WakeResult{}, lifecycleInvalidArgument("wake only clears waiting style; status remains in_progress", "status", input.Status)
 	}
-	if status != store.TodoStatusOpen && status != store.TodoStatusReview {
-		return WakeResult{}, lifecycleInvalidArgument("wake status must be open or review", "status", input.Status)
-	}
+	status = store.TodoStatusInProgress
 	reason := strings.TrimSpace(input.Reason)
 	if reason == "" {
 		return WakeResult{}, lifecycleInvalidArgument("wake reason is required", "reason", input.Reason)
@@ -263,7 +304,7 @@ func (service Service) Wake(ctx context.Context, call application.Call, input Wa
 		if err != nil {
 			return lifecycleTodoNotFound(input.TodoID, err)
 		}
-		if todo.Status != store.TodoStatusWaiting {
+		if todo.Status != store.TodoStatusInProgress || (todo.WakeCondition == "" && todo.ReviewAt == "") {
 			pending, pendingErr := transaction.pendingEffects(todo.ID)
 			if pendingErr != nil {
 				return pendingErr
@@ -290,7 +331,6 @@ func (service Service) Wake(ctx context.Context, call application.Call, input Wa
 			err.Details["unknown_todo_ids"] = unknown
 			return err
 		}
-		todo.Status = status
 		todo.WakeCondition = ""
 		todo.ReviewAt = ""
 		result.Todo = cloneTodo(*todo)

@@ -28,17 +28,14 @@ type MetadataEffect struct {
 }
 
 type AddInput struct {
-	Title         string   `json:"title"`
-	Description   string   `json:"description,omitempty"`
-	Priority      string   `json:"priority,omitempty"`
-	Status        string   `json:"status,omitempty"`
-	Project       string   `json:"project,omitempty"`
-	WakeCondition string   `json:"wake_condition,omitempty"`
-	ReviewAt      string   `json:"review_at,omitempty"`
-	Source        string   `json:"source,omitempty"`
-	Creator       string   `json:"creator,omitempty"`
-	OnDone        string   `json:"on_done,omitempty"`
-	ImagePaths    []string `json:"image_paths,omitempty"`
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	Priority    string   `json:"priority,omitempty"`
+	Project     string   `json:"project,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Creator     string   `json:"creator,omitempty"`
+	OnDone      string   `json:"on_done,omitempty"`
+	ImagePaths  []string `json:"image_paths,omitempty"`
 }
 
 type AddResult struct {
@@ -53,22 +50,18 @@ type BatchAddInput struct {
 
 type BatchAddDefaults struct {
 	Priority string `json:"priority,omitempty"`
-	Status   string `json:"status,omitempty"`
 	Project  string `json:"project,omitempty"`
 	Source   string `json:"source,omitempty"`
 	Creator  string `json:"creator,omitempty"`
 }
 
 type BatchAddItem struct {
-	Title         string `json:"title"`
-	Description   string `json:"description,omitempty"`
-	Priority      string `json:"priority,omitempty"`
-	Status        string `json:"status,omitempty"`
-	Project       string `json:"project,omitempty"`
-	Source        string `json:"source,omitempty"`
-	Creator       string `json:"creator,omitempty"`
-	WakeCondition string `json:"wake_condition,omitempty"`
-	ReviewAt      string `json:"review_at,omitempty"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	Priority    string `json:"priority,omitempty"`
+	Project     string `json:"project,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Creator     string `json:"creator,omitempty"`
 }
 
 type BatchAddResult struct {
@@ -79,15 +72,16 @@ type BatchAddResult struct {
 // EditPatch uses pointers so transports can distinguish an omitted field from
 // deliberately clearing a string-valued field.
 type EditPatch struct {
-	Title         *string `json:"title,omitempty"`
-	Description   *string `json:"description,omitempty"`
-	Priority      *string `json:"priority,omitempty"`
-	Project       *string `json:"project,omitempty"`
-	Source        *string `json:"source,omitempty"`
-	Creator       *string `json:"creator,omitempty"`
-	Status        *string `json:"status,omitempty"`
-	WakeCondition *string `json:"wake_condition,omitempty"`
-	ReviewAt      *string `json:"review_at,omitempty"`
+	Title            *string `json:"title,omitempty"`
+	Description      *string `json:"description,omitempty"`
+	Priority         *string `json:"priority,omitempty"`
+	Project          *string `json:"project,omitempty"`
+	Source           *string `json:"source,omitempty"`
+	Creator          *string `json:"creator,omitempty"`
+	Status           *string `json:"status,omitempty"`
+	WakeCondition    *string `json:"wake_condition,omitempty"`
+	ReviewAt         *string `json:"review_at,omitempty"`
+	MaintenanceLimit *int    `json:"maintenance_limit,omitempty"`
 }
 
 type EditInput struct {
@@ -112,17 +106,15 @@ type MoveResult struct {
 }
 
 type normalizedAdd struct {
-	title         string
-	description   string
-	priority      string
-	status        string
-	project       string
-	wakeCondition string
-	reviewAt      string
-	source        string
-	creator       string
-	onDone        string
-	imagePaths    []string
+	title       string
+	description string
+	priority    string
+	status      string
+	project     string
+	source      string
+	creator     string
+	onDone      string
+	imagePaths  []string
 }
 
 // Add validates and creates one Todo, including managed image import, in the
@@ -142,18 +134,16 @@ func (service Service) Add(ctx context.Context, call application.Call, input Add
 	var rollbackImageFiles func()
 	err = service.Mutate(func(transaction *Transaction) error {
 		todo := Todo{
-			ID:            store.NextTodoID(transaction.Todos()),
-			Title:         normalized.title,
-			Description:   normalized.description,
-			Priority:      normalized.priority,
-			Status:        normalized.status,
-			Project:       normalized.project,
-			WakeCondition: normalized.wakeCondition,
-			ReviewAt:      normalized.reviewAt,
-			Created:       store.Today(),
-			Source:        normalized.source,
-			Creator:       normalized.creator,
-			OnDone:        normalized.onDone,
+			ID:          store.NextTodoID(transaction.Todos()),
+			Title:       normalized.title,
+			Description: normalized.description,
+			Priority:    normalized.priority,
+			Status:      normalized.status,
+			Project:     normalized.project,
+			Created:     store.Today(),
+			Source:      normalized.source,
+			Creator:     normalized.creator,
+			OnDone:      normalized.onDone,
 		}
 		images, cleanup, importErr := store.ImportTodoImages(todo.ID, normalized.imagePaths)
 		if importErr != nil {
@@ -194,7 +184,6 @@ func (service Service) BatchAdd(ctx context.Context, call application.Call, inpu
 	}
 	defaults := AddInput{
 		Priority: valueOr(input.Defaults.Priority, "P1"),
-		Status:   valueOr(input.Defaults.Status, store.TodoStatusOpen),
 		Project:  input.Defaults.Project,
 		Source:   input.Defaults.Source,
 		Creator:  defaultCreator,
@@ -209,15 +198,12 @@ func (service Service) BatchAdd(ctx context.Context, call application.Call, inpu
 			creator = item.Creator
 		}
 		value, itemErr := normalizeAdd(call, AddInput{
-			Title:         item.Title,
-			Description:   item.Description,
-			Priority:      valueOr(item.Priority, defaults.Priority),
-			Status:        valueOr(item.Status, defaults.Status),
-			Project:       valueOr(item.Project, defaults.Project),
-			WakeCondition: item.WakeCondition,
-			ReviewAt:      item.ReviewAt,
-			Source:        valueOr(item.Source, defaults.Source),
-			Creator:       creator,
+			Title:       item.Title,
+			Description: item.Description,
+			Priority:    valueOr(item.Priority, defaults.Priority),
+			Project:     valueOr(item.Project, defaults.Project),
+			Source:      valueOr(item.Source, defaults.Source),
+			Creator:     creator,
 		})
 		if itemErr != nil {
 			return BatchAddResult{}, metadataBatchItemError(index, item.Title, itemErr)
@@ -229,17 +215,15 @@ func (service Service) BatchAdd(ctx context.Context, call application.Call, inpu
 	err = service.Mutate(func(transaction *Transaction) error {
 		for _, item := range normalized {
 			todo := Todo{
-				ID:            store.NextTodoID(transaction.Todos()),
-				Title:         item.title,
-				Description:   item.description,
-				Priority:      item.priority,
-				Status:        item.status,
-				Project:       item.project,
-				WakeCondition: item.wakeCondition,
-				ReviewAt:      item.reviewAt,
-				Created:       store.Today(),
-				Source:        item.source,
-				Creator:       item.creator,
+				ID:          store.NextTodoID(transaction.Todos()),
+				Title:       item.title,
+				Description: item.description,
+				Priority:    item.priority,
+				Status:      item.status,
+				Project:     item.project,
+				Created:     store.Today(),
+				Source:      item.source,
+				Creator:     item.creator,
 			}
 			transaction.Todos().Items = append(transaction.Todos().Items, todo)
 			result.Todos = append(result.Todos, cloneTodo(todo))
@@ -275,7 +259,7 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 	}
 	if !patch.changed() {
 		return EditResult{}, metadataInvalidArgument(
-			"nothing to update, use --title, --desc, --priority, --project, --source, --status, --wake, or --review-at",
+			"nothing to update, use --title, --desc, --priority, --project, --source, --status, --wake, --review-at, or --maintenance-limit",
 			"patch", input.Patch,
 		)
 	}
@@ -288,15 +272,28 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 		}
 		result.PreviousStatus = todo.Status
 		patch.apply(todo)
-		if todo.Status == store.TodoStatusWaiting && todo.WakeCondition == "" && todo.ReviewAt == "" && len(todo.DependsOn) == 0 {
-			return metadataInvalidArgument("waiting todos require --wake or --review-at", "status", todo.Status)
+		if patch.MaintenanceLimit != nil {
+			if *patch.MaintenanceLimit == 0 {
+				todo.Tags = withoutTodoTag(todo.Tags, store.TodoTagMaintenance)
+			} else {
+				store.AddTodoTag(todo, store.TodoTagMaintenance)
+			}
 		}
-		if todo.Status != store.TodoStatusWaiting {
+		if todo.Status != store.TodoStatusInProgress &&
+			((patch.WakeCondition != nil && *patch.WakeCondition != "") ||
+				(patch.ReviewAt != nil && *patch.ReviewAt != "")) {
+			return metadataInvalidArgument("wake metadata is only valid for in_progress todos", "status", todo.Status)
+		}
+		if todo.Status != store.TodoStatusInProgress {
 			todo.WakeCondition = ""
 			todo.ReviewAt = ""
 		}
-		if patch.Status != nil && todo.Status != store.TodoStatusInProgress {
-			if _, unbindErr := transaction.UnbindTodoSessions(todo.ID, "status:"+todo.Status); unbindErr != nil {
+		shouldUnbind := patch.Status != nil && todo.Status != store.TodoStatusInProgress
+		shouldUnbind = shouldUnbind || (todo.Status == store.TodoStatusInProgress &&
+			(todo.WakeCondition != "" || todo.ReviewAt != "") &&
+			(patch.WakeCondition != nil || patch.ReviewAt != nil))
+		if shouldUnbind {
+			if _, unbindErr := transaction.UnbindTodoSessions(todo.ID, "status-style:"+todo.Status); unbindErr != nil {
 				return fmt.Errorf("unbind todo sessions before status change: %w", unbindErr)
 			}
 		}
@@ -350,20 +347,21 @@ func (service Service) Move(ctx context.Context, call application.Call, input Mo
 }
 
 type normalizedEditPatch struct {
-	Title         *string
-	Description   *string
-	Priority      *string
-	Project       *string
-	Source        *string
-	Creator       *string
-	Status        *string
-	WakeCondition *string
-	ReviewAt      *string
+	Title            *string
+	Description      *string
+	Priority         *string
+	Project          *string
+	Source           *string
+	Creator          *string
+	Status           *string
+	WakeCondition    *string
+	ReviewAt         *string
+	MaintenanceLimit *int
 }
 
 func (patch normalizedEditPatch) changed() bool {
 	return patch.Title != nil || patch.Description != nil || patch.Priority != nil || patch.Project != nil ||
-		patch.Source != nil || patch.Creator != nil || patch.Status != nil || patch.WakeCondition != nil || patch.ReviewAt != nil
+		patch.Source != nil || patch.Creator != nil || patch.Status != nil || patch.WakeCondition != nil || patch.ReviewAt != nil || patch.MaintenanceLimit != nil
 }
 
 func (patch normalizedEditPatch) apply(todo *Todo) {
@@ -393,6 +391,9 @@ func (patch normalizedEditPatch) apply(todo *Todo) {
 	}
 	if patch.ReviewAt != nil {
 		todo.ReviewAt = *patch.ReviewAt
+	}
+	if patch.MaintenanceLimit != nil {
+		todo.MaintenanceLimit = *patch.MaintenanceLimit
 	}
 }
 
@@ -452,19 +453,35 @@ func normalizeEditPatch(input EditPatch) (normalizedEditPatch, error) {
 		}
 		patch.ReviewAt = &value
 	}
+	if input.MaintenanceLimit != nil {
+		if *input.MaintenanceLimit < 0 {
+			return patch, metadataInvalidArgument("maintenance limit cannot be negative", "maintenance_limit", *input.MaintenanceLimit)
+		}
+		value := *input.MaintenanceLimit
+		patch.MaintenanceLimit = &value
+	}
 	return patch, nil
+}
+
+func withoutTodoTag(tags []string, target string) []string {
+	result := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if tag != target {
+			result = append(result, tag)
+		}
+	}
+	return result
 }
 
 func normalizeAdd(call application.Call, input AddInput) (normalizedAdd, error) {
 	normalized := normalizedAdd{
-		title:         strings.TrimSpace(input.Title),
-		description:   input.Description,
-		project:       config.CanonicalProject(input.Project),
-		wakeCondition: strings.TrimSpace(input.WakeCondition),
-		reviewAt:      strings.TrimSpace(input.ReviewAt),
-		source:        strings.TrimSpace(input.Source),
-		onDone:        input.OnDone,
-		imagePaths:    append([]string(nil), input.ImagePaths...),
+		title:       strings.TrimSpace(input.Title),
+		description: input.Description,
+		status:      store.TodoStatusOpen,
+		project:     config.CanonicalProject(input.Project),
+		source:      strings.TrimSpace(input.Source),
+		onDone:      input.OnDone,
+		imagePaths:  append([]string(nil), input.ImagePaths...),
 	}
 	if normalized.title == "" {
 		return normalized, metadataInvalidArgument("todo title is required", "title", input.Title)
@@ -477,27 +494,11 @@ func normalizeAdd(call application.Call, input AddInput) (normalizedAdd, error) 
 		return normalized, err
 	}
 	normalized.priority = priority
-	status, err := normalizeMetadataStatus(valueOr(input.Status, store.TodoStatusOpen))
-	if err != nil {
-		return normalized, err
-	}
-	normalized.status = status
-	if err := ValidateReviewAt(normalized.reviewAt); err != nil {
-		return normalized, metadataInvalidArgument(err.Error(), "review_at", input.ReviewAt)
-	}
 	creator, err := normalizeCreator(call, input.Creator)
 	if err != nil {
 		return normalized, err
 	}
 	normalized.creator = creator
-	if normalized.status == store.TodoStatusWaiting {
-		if normalized.wakeCondition == "" && normalized.reviewAt == "" {
-			return normalized, metadataInvalidArgument("waiting todos require --wake or --review-at", "status", normalized.status)
-		}
-	} else {
-		normalized.wakeCondition = ""
-		normalized.reviewAt = ""
-	}
 	return normalized, nil
 }
 
@@ -529,12 +530,11 @@ func normalizePriority(value string) (string, error) {
 func normalizeMetadataStatus(value string) (string, error) {
 	status := strings.ToLower(strings.TrimSpace(value))
 	switch status {
-	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusWaiting,
-		store.TodoStatusReview, store.TodoStatusBlocked:
+	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusReview:
 		return status, nil
 	default:
 		return "", metadataInvalidArgument(
-			fmt.Sprintf("invalid todo status %q (use open, in_progress, waiting, review, or blocked)", value),
+			fmt.Sprintf("invalid todo status %q (use open, in_progress, or review)", value),
 			"status", value,
 		)
 	}
@@ -550,12 +550,11 @@ func validateMetadataCall(ctx context.Context, call application.Call) error {
 	return call.Validate()
 }
 
+// metadataEffectsForCreate emits only creation. A new Todo is always open —
+// reaching review is a transition a Todo has to be taken through, which is why
+// this no longer also checks for a review status the caller cannot ask for.
 func metadataEffectsForCreate(todo Todo) []MetadataEffect {
-	effects := []MetadataEffect{{Kind: MetadataEffectCreated, Todo: cloneTodo(todo)}}
-	if todo.Status == store.TodoStatusReview {
-		effects = append(effects, MetadataEffect{Kind: MetadataEffectEnteredReview, Todo: cloneTodo(todo)})
-	}
-	return effects
+	return []MetadataEffect{{Kind: MetadataEffectCreated, Todo: cloneTodo(todo)}}
 }
 
 func syncTodoDocumentIfPresent(todo *Todo) error {

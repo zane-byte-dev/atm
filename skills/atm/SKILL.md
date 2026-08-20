@@ -38,16 +38,18 @@ atm now --json
 
 需要进一步确认任务详情，再使用 `atm todo show`、`atm todo list` 或对应 session 查询。`atm now` 是全局仪表盘，不是常规 SessionStart 上下文。
 
-TODO 只使用一套生命周期状态，不再维护独立的 attention 状态：
+TODO 只使用四个生命周期状态：
 
 - `open`：待开始，队列顺序由优先级和创建时间推导。
 - `in_progress`：工作中；当前会话的具体焦点由 session 绑定表达。
-- `waiting`：工作已暂停，存在明确外部唤醒条件或复查日期。
 - `review`：等待人审阅、验收或决策。
-- `blocked`：当前无法继续，且没有可执行替代路径。
-- `done/dropped`：已完成或已放弃。
+- `done`：已完成。
 
-`maintenance` 是范围标签，不是状态；使用 `atm todo maintain` 设置。
+`waiting` 不是状态：`in_progress` 带 `wake_condition` 或 `review_at` 时，App
+仅把它显示成橙色“等待中”，仍留在工作中分组。`blocked` 合并为这种表达；不再用“暂不处理”
+制造等待状态。暂时不做的事项回到 `open`。任何阶段都可归档，归档不是生命周期状态。
+
+`maintenance` 是范围标签，不是状态；使用 `atm todo edit <id> --maintenance-limit <n>` 设置（0 清除）。
 
 实时活动、Session binding 和 Todo 生命周期是三个正交事实：
 
@@ -123,10 +125,10 @@ atm session bind <id>
 
 无法取得会话 ID 的人工终端才使用 `atm todo start <id>`。绑定关系会保留历史，可用 `atm session current` 或 `atm todo show <id>` 查看。
 
-用户要把任务交给另一个 Agent 时，用 `atm todo prompt <id> --copy` 复制一行指针交给用户粘贴；
+用户要把任务交给另一个 Agent 时，用 `atm todo handoff <id> --copy` 复制一行指针交给用户粘贴；
 ATM 不代为启动任何会话。收到这样一行指针时，按它列出的命令读 `atm todo doc <id>` 再 `atm session bind <id>`。
 交给 Codex 桌面端可以用 `atm todo handoff <id>`：它在任务的工作目录里打开一个新会话并填好这行指针，
-但**不会替人按回车**，所以它仍然不是派发。无人在场才用 `atm todo run`。
+但**不会替人按回车**，所以它仍然不是派发。ATM 不在后台启动 Agent。
 
 `session bind` 会拒绝把任务绑到属于另一个项目的工作目录（`--force` 可越过）。收到这个错误不要改用
 `--force`，也不要在当前目录继续干：先切到正确的仓库，或者向用户确认这个 Todo 的项目是否写错了。
@@ -135,9 +137,9 @@ ATM 不代为启动任何会话。收到这样一行指针时，按它列出的�
 这是一次 schema 调用，不是派发。不要在 Agent 自己 `todo add` 时加 `--refine`。
 
 任务依赖另一个 ATM todo 时，使用 `atm todo depend add <id> <dependency-id>` 保存结构化关系，
-不要只把 `tNN` 写进自由文本 wake condition。依赖全部完成后 ATM 会自动将 waiting 任务恢复为 open；
-依赖就绪只表示工作可以开始，不表示实现已提交 review。完成实现后用 `atm todo submit` 显式提交确认；
-外部流水线、MR 或人工条件满足时使用 `atm todo wake`，异常恢复时可运行只影响依赖状态的
+不要只把 `tNN` 写进自由文本 wake condition。未开始的依赖任务仍是 `open`，依赖满足前不能 start/bind；
+已开始的任务保留 `in_progress`，仅显示等待样式，依赖完成后清除该样式。依赖就绪不表示实现已提交 review。
+完成实现后用 `atm todo submit` 显式提交确认；旧集成可用 `wake` 清除等待元数据，异常恢复时可运行
 `atm todo reconcile`。
 
 重复执行同一 `depend add` 是幂等的；派生的 `waiting for todos: ...` 会按完整依赖集合刷新。
@@ -166,7 +168,7 @@ atm todo log "结果：<交付变化>；证据：<验证边界>；下一步：<�
 - 每个阶段最多一条完成动态；中间准备状态不写，除非工作暂停在可观察的外部条件。
 - 单条不超过 400 个 Unicode 字符，只写一个段落。源码调查、架构映射、备选方案和列表写到
   `atm todo log <id> "<detail>" --section 分析`，不要塞进 `进展`。
-- 状态先结构化、后留痕：开始用 `start`，执行计划用 `plan set`，Agent 实现完成用 `submit`，人的最终验收用 `done`，等待用 `wait`，其他状态用 `edit --status`，维护标签用 `maintain`，依赖用
+- 状态先结构化、后留痕：开始用 `start`，执行计划用 `plan set`，Agent 实现完成用 `submit`，人的最终验收用 `done`，生命周期用 `edit --status`，外部等待元数据用 `edit --wake/--review-at`，维护标签用 `maintain`，依赖用
   `depend`。日志不能代替这些状态命令，也不能代替 description 或 plan 中的真实清单更新。
 - 日志里提到的 `tNN` 必须已经创建且可由 `atm todo show <id>` 查到；不得先在自由文本中声称拆出了不存在的子任务。
 - 写完或接手历史任务时可运行 `atm todo lint <id>`，检查超长/多段动态、未知 todo 引用、重复阶段日志和 Markdown 元数据漂移。
@@ -179,8 +181,7 @@ atm todo log "结果：<交付变化>；证据：<验证边界>；下一步：<�
 atm todo submit --reason "<结果与证据>"
 ```
 
-`submit` 只把 `in_progress` 任务提交到 `review`，不会标记 `done`。Agent 后台 run 成功退出时也只能
-走这条提交路径；模型输出或进程退出码本身不是完成事实。
+`submit` 只把 `in_progress` 任务提交到 `review`，不会标记 `done`。模型输出或进程退出码本身不是完成事实。
 
 人已完成验收且没有剩余必需工作时：
 
@@ -191,14 +192,16 @@ atm todo done --reason "<最终结果>"
 暂停在外部条件时：
 
 ```bash
-atm todo wait --wake "<可观察的唤醒条件>"
+atm todo edit <id> --status in_progress --wake "<可观察的唤醒条件>"
 ```
 
-`submit`、`done`、`drop` 和 `wait` 会自动解除关联会话，避免下次启动沿用失效任务。
+`submit`、`done`、`archive` 以及设置等待元数据会自动解除关联会话，避免下次启动沿用失效任务。
 
 主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status` 或 `maintain`。不要只在回复里描述状态变化而不更新 ATM。
 
-普通删除使用无确认、可恢复的 `atm todo trash`，需要时以 `atm todo restore` 取回。永久删除是破坏性操作；除非用户明确要求删除错误数据，否则优先使用 `trash`、`done` 或 `drop` 保留历史。
+普通移出工作集使用无确认、可恢复的 `atm todo archive`，需要时以 `atm todo restore` 取回。
+`trash/drop` 是 archive 的兼容别名，`unarchive` 是 restore 的兼容别名。永久删除只针对已归档数据，
+且是破坏性操作；除非用户明确要求删除错误数据，否则优先归档或完成。
 
 ## 4. 在 ATM 任务中执行代码 Review
 
@@ -217,7 +220,7 @@ atm todo wait --wake "<可观察的唤醒条件>"
 
 - `review`：用户只要求 review、审查、检查或评估时，只读检查并报告问题，不修改代码、测试或配置；不要机械改变 Todo 状态，但真实生命周期变化仍按 ATM 规则写回。
 - `review-fix`：用户明确要求“发现问题直接修”“按审核结果修复”或同等授权时，才修改代码；只修复本轮审核确认的问题，不扩大范围或顺手重构。
-- 问题涉及产品取舍、兼容性、数据迁移、安全边界或其他无法安全决定的事项时，不擅自修复；写明影响和所需决策。只有任务真实暂停在外部条件时才进入 `waiting`。
+- 问题涉及产品取舍、兼容性、数据迁移、安全边界或其他无法安全决定的事项时，不擅自修复；写明影响和所需决策。只有任务真实暂停在外部条件时，才给 `in_progress` 写明确的 wake/review 元数据。
 
 Todo 的 `review` 状态表示等待人审阅、验收或决策，不表示代码已经完成 Code Review。不要仅因执行了一次代码检查就机械改变 Todo 状态。
 

@@ -20,16 +20,12 @@ var (
 		unboundReason: "submit:review",
 	}
 	waitTransitionTarget = transitionTargetSpec{
-		effectKind: EffectTodoWaiting, currentStatus: store.TodoStatusWaiting,
+		effectKind: EffectTodoWaiting, currentStatus: store.TodoStatusInProgress,
 		unboundReason: "waiting",
 	}
 	doneTransitionTarget = transitionTargetSpec{
 		effectKind: EffectTodoClosed, currentStatus: store.TodoStatusDone,
 		unboundReason: store.TodoStatusDone,
-	}
-	dropTransitionTarget = transitionTargetSpec{
-		effectKind: EffectTodoClosed, currentStatus: store.TodoStatusDropped,
-		unboundReason: store.TodoStatusDropped,
 	}
 )
 

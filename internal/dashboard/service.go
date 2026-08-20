@@ -456,16 +456,13 @@ func buildWork(file *store.TodoFile, now time.Time) WorkView {
 		switch todo.Status {
 		case store.TodoStatusInProgress:
 			view.Working = append(view.Working, todo)
-		case store.TodoStatusReview:
-			view.Review = append(view.Review, todo)
-		case store.TodoStatusBlocked:
-			view.Blocked = append(view.Blocked, todo)
-		case store.TodoStatusWaiting:
 			if todo.ReviewAt != "" && todo.ReviewAt <= today {
 				view.Due = append(view.Due, todo)
-			} else {
+			} else if strings.TrimSpace(todo.WakeCondition) != "" || todo.ReviewAt != "" {
 				view.Waiting = append(view.Waiting, todo)
 			}
+		case store.TodoStatusReview:
+			view.Review = append(view.Review, todo)
 		default:
 			view.Open = append(view.Open, todo)
 		}
@@ -481,7 +478,7 @@ func buildWork(file *store.TodoFile, now time.Time) WorkView {
 	}
 	view.Summary = WorkSummary{
 		Open: len(view.Open), InProgress: len(view.Working), Waiting: len(view.Waiting),
-		Review: len(view.Review), Blocked: len(view.Blocked), Due: len(view.Due), Maintenance: maintenance,
+		Review: len(view.Review), Blocked: 0, Due: len(view.Due), Maintenance: maintenance,
 	}
 	return view
 }

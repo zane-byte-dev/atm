@@ -36,8 +36,6 @@ var cliSessionEnvironment = []string{
 	"PI_SESSION_ID",
 }
 
-const cliRunEnvironment = "ATM_RUN_ID"
-
 // cliApplicationCall is the single provenance boundary for Cobra adapters.
 // Command arguments never self-declare actor metadata; the adapter derives it
 // consistently from the launching process. Ambient environment is still only
@@ -58,7 +56,6 @@ func cliApplicationCall(scope, sessionID string) application.Call {
 			Kind:      kind,
 			Origin:    application.OriginCLI,
 			SessionID: strings.TrimSpace(sessionID),
-			RunID:     strings.TrimSpace(os.Getenv(cliRunEnvironment)),
 			Agent:     agent,
 		},
 	}
@@ -67,7 +64,7 @@ func cliApplicationCall(scope, sessionID string) application.Call {
 // cliAttributionEnvironment lists every variable cliApplicationCall consults,
 // deduplicated in the order the lookups reach them.
 func cliAttributionEnvironment() []string {
-	keys := make([]string, 0, len(cliSessionEnvironment)+len(cliAgentEnvironment)+1)
+	keys := make([]string, 0, len(cliSessionEnvironment)+len(cliAgentEnvironment))
 	seen := make(map[string]bool, cap(keys))
 	add := func(key string) {
 		if !seen[key] {
@@ -81,7 +78,6 @@ func cliAttributionEnvironment() []string {
 	for _, candidate := range cliAgentEnvironment {
 		add(candidate.environment)
 	}
-	add(cliRunEnvironment)
 	return keys
 }
 

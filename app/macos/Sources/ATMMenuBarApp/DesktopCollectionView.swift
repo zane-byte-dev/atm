@@ -53,9 +53,15 @@ struct DesktopCollectionView: View {
     @State private var draggedSourceID: String?
     @AppStorage("ATMCollapsedCollectionSourceGroups") private var collapsedSourceGroupsRaw = ""
     @AppStorage(ATMManualOrder.collectionSourcesKey) private var collectionSourceOrder = ""
+    @AppStorage(ATMNavigatorPresentationPreferences.collectionKey)
+    private var recordListPresentationRaw = ATMNavigatorPresentationPreferences.defaultValue
 
     private var collapsedSourceGroups: Set<String> {
         Set(collapsedSourceGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private var recordListPresentation: ATMNavigatorPresentation {
+        ATMNavigatorPresentation.resolve(recordListPresentationRaw)
     }
 
     private func expandedBinding(for id: String) -> Binding<Bool> {
@@ -79,6 +85,12 @@ struct DesktopCollectionView: View {
 
     private var unreadCount: Int {
         store.collectionOverview.summary.unreadCount ?? 0
+    }
+
+    /// 「全部了结」能关掉多少条。取的是 summary 而不是 `filteredItems`，因为取数只带最新
+    /// 200 条，按屏幕上数出来的会比台账少——而这个数字正是用来决定要不要按的。
+    private var settleableCount: Int {
+        store.collectionOverview.summary.settleableCount ?? 0
     }
 
     private var selectedItem: ATMCollectionItem? {
@@ -109,7 +121,18 @@ struct DesktopCollectionView: View {
     }
 
     private var displayedItems: [ATMCollectionItem] {
-        showingIgnoredItems ? primaryItems + ignoredItems : primaryItems
+        if recordListPresentation == .flat { return flattenedItems }
+        return showingIgnoredItems ? primaryItems + ignoredItems : primaryItems
+    }
+
+    /// Match grouped presentation order: configured sources first, orphaned
+    /// records next, and records normally folded under the closed section last.
+    private var flattenedItems: [ATMCollectionItem] {
+        let sourceItems = orderedSources.flatMap { source in
+            primaryItems.filter { $0.sourceID == source.id }
+        }
+        let unknownItems = primaryItems.filter { source(for: $0) == nil }
+        return sourceItems + unknownItems + ignoredItems
     }
 
     var body: some View {
@@ -159,6 +182,10 @@ struct DesktopCollectionView: View {
             }
         }
         .onChange(of: showingIgnoredItems) { _ in selectDefaultItem() }
+        .onChange(of: recordListPresentationRaw) { _ in
+            selectDefaultItem()
+            revealSelectedSourceGroup()
+        }
         .onChange(of: navigation.selectedCollectionItemID) { _ in
             revealSelectedSourceGroup()
             markSelectedItemRead()
@@ -209,6 +236,9 @@ struct DesktopCollectionView: View {
             )
         } trailing: {
             HStack(spacing: ATMSpacing.xSmall) {
+                if drawerTab == .records {
+                    ATMNavigatorPresentationToggle(storedValue: $recordListPresentationRaw)
+                }
                 if drawerTab == .records, unreadCount > 0 {
                     Button {
                         store.markAllCollectionItemsRead()
@@ -218,6 +248,19 @@ struct DesktopCollectionView: View {
                     }
                     .buttonStyle(.borderless)
                     .help("将 \(unreadCount) 条新收集全部标为已读")
+                }
+                // 和「全部已读」是两件事，所以是两个按钮：那个清注意力，这个清列表。只在
+                // 真有可了结的记录时出现，免得给一个按下去什么都不动的按钮。
+                if drawerTab == .records, settleableCount > 0 {
+                    Button {
+                        store.settleReadCollectionConclusions()
+                    } label: {
+                        Label("全部了结", systemImage: "archivebox")
+                            .font(ATMFont.caption)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(store.isCollecting)
+                    .help("把 \(settleableCount) 条已读、没存进知识库的结论折叠进「已保存与已了结」，记录保留，可单条重新打开")
                 }
                 ATMIconButton(
                     systemImage: "gearshape",
@@ -389,56 +432,63 @@ struct DesktopCollectionView: View {
                 )
             } else {
                 ATMGroupedNavigatorScroll {
-                    ForEach(orderedSources) { source in
-                        let items = primaryItems.filter { $0.sourceID == source.id }
-                        if !items.isEmpty {
-                            let expanded = expandedBinding(for: source.id)
+                    if recordListPresentation == .grouped {
+                        ForEach(orderedSources) { source in
+                            let items = primaryItems.filter { $0.sourceID == source.id }
+                            if !items.isEmpty {
+                                let expanded = expandedBinding(for: source.id)
+                                ATMNavigatorGroup {
+                                    sourceSectionHeader(source, items: items, expanded: expanded)
+                                } content: {
+                                    if expanded.wrappedValue {
+                                        ForEach(items) { item in
+                                            itemRow(item)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        let unknownItems = primaryItems.filter { source(for: $0) == nil }
+                        if !unknownItems.isEmpty {
+                            let expanded = expandedBinding(for: "__unknown__")
                             ATMNavigatorGroup {
-                                sourceSectionHeader(source, items: items, expanded: expanded)
+                                genericSourceSectionHeader(
+                                    "其他来源",
+                                    systemImage: "questionmark.folder",
+                                    count: unknownItems.count,
+                                    expanded: expanded,
+                                    clear: { requestClear("其他来源", items: unknownItems) }
+                                )
                             } content: {
                                 if expanded.wrappedValue {
-                                    ForEach(items) { item in
+                                    ForEach(unknownItems) { item in
                                         itemRow(item)
                                     }
                                 }
                             }
                         }
-                    }
 
-                    let unknownItems = primaryItems.filter { source(for: $0) == nil }
-                    if !unknownItems.isEmpty {
-                        let expanded = expandedBinding(for: "__unknown__")
-                        ATMNavigatorGroup {
-                            genericSourceSectionHeader(
-                                "其他来源",
-                                systemImage: "questionmark.folder",
-                                count: unknownItems.count,
-                                expanded: expanded,
-                                clear: { requestClear("其他来源", items: unknownItems) }
-                            )
-                        } content: {
-                            if expanded.wrappedValue {
-                                ForEach(unknownItems) { item in
-                                    itemRow(item)
+                        if !ignoredItems.isEmpty {
+                            ATMNavigatorGroup {
+                                genericSourceSectionHeader(
+                                    "已保存与已了结",
+                                    count: ignoredItems.count,
+                                    expanded: $showingIgnoredItems,
+                                    clear: { requestClear("已保存与已了结", items: ignoredItems) }
+                                )
+                            } content: {
+                                if showingIgnoredItems {
+                                    ForEach(ignoredItems) { item in
+                                        itemRow(item).opacity(0.78)
+                                    }
                                 }
                             }
                         }
-                    }
-
-                    if !ignoredItems.isEmpty {
-                        ATMNavigatorGroup {
-                            genericSourceSectionHeader(
-                                "已保存与已了结",
-                                count: ignoredItems.count,
-                                expanded: $showingIgnoredItems,
-                                clear: { requestClear("已保存与已了结", items: ignoredItems) }
-                            )
-                        } content: {
-                            if showingIgnoredItems {
-                                ForEach(ignoredItems) { item in
-                                    itemRow(item).opacity(0.78)
-                                }
-                            }
+                    } else {
+                        ForEach(flattenedItems) { item in
+                            itemRow(item, showsSource: true)
+                                .opacity(shouldCollapse(item) ? 0.78 : 1)
                         }
                     }
                 }
@@ -551,7 +601,7 @@ struct DesktopCollectionView: View {
         .fixedSize()
     }
 
-    private func itemRow(_ item: ATMCollectionItem) -> some View {
+    private func itemRow(_ item: ATMCollectionItem, showsSource: Bool = false) -> some View {
         // 选中判定比的是 `selectedItem`，不是 selectedCollectionItemID —— 后者为 nil 时
         // 详情栏会回退展示首条，直接比 ID 会出现「右栏有内容、中栏没高亮」。
         let selected = selectedItem?.id == item.id
@@ -567,7 +617,8 @@ struct DesktopCollectionView: View {
                 item: item,
                 supplementCount: records.count - 1,
                 unreadCount: rowUnreadCount,
-                isSelected: selected
+                isSelected: selected,
+                sourceName: showsSource ? source(for: item)?.displayName ?? "其他来源" : nil
             )
         }
         .buttonStyle(.atmRow)
@@ -659,7 +710,7 @@ struct DesktopCollectionView: View {
 
     private func openTodo(_ item: ATMCollectionItem) {
         guard let todoID = item.todoID else { return }
-        navigation.taskListMode = item.todoArchived == true ? .trash : .active
+        navigation.taskListMode = item.todoArchived == true ? .archive : .active
         navigation.selectedTodoID = todoID
         navigation.section = .tasks
     }
@@ -734,7 +785,9 @@ struct DesktopCollectionView: View {
     }
 
     private func revealSelectedSourceGroup() {
-        guard let item = selectedItem, !shouldCollapse(item) else { return }
+        guard recordListPresentation == .grouped,
+              let item = selectedItem,
+              !shouldCollapse(item) else { return }
         let groupID = source(for: item)?.id ?? "__unknown__"
         var set = collapsedSourceGroups
         guard set.remove(groupID) != nil else { return }
@@ -987,7 +1040,6 @@ private struct CollectionSourceDetail: View {
             sourceValueRow("自动调度", store.collectionOverview.enabled ? "正在运行" : "总开关已关闭")
             sourceValueRow("间隔", "每 \(source.effectiveIntervalMinutes) 分钟")
             sourceValueRow("处理方式", source.effectiveStrategy == "observe" ? "收集结论，按需保存" : "创建或补充 Todo")
-            sourceValueRow("Agent 派发", source.automaticallyDispatches ? "新 Todo 自动交给 Codex" : "仅收集，由人决定")
             sourceValueRow("判断单位", source.effectiveDecisionUnit == "message" ? "单条消息" : "消息窗口")
             sourceValueRow("默认优先级", source.priority)
         }
@@ -1227,6 +1279,7 @@ private struct CollectionItemRow: View {
     let supplementCount: Int
     let unreadCount: Int
     let isSelected: Bool
+    var sourceName: String? = nil
 
     private var itemType: ATMCollectionItemType {
         ATMCollectionItemType.resolve(item.itemType)
@@ -1260,6 +1313,10 @@ private struct CollectionItemRow: View {
                     .font(ATMFont.font(.body, weight: unreadCount > 0 ? .semibold : .medium))
                     .lineLimit(2)
                 HStack(spacing: 5) {
+                    if let sourceName {
+                        Text(sourceName)
+                        Text("·")
+                    }
                     Text(itemType.title)
                     Text("·")
                     Text(collectionActionTitle(
@@ -1270,13 +1327,6 @@ private struct CollectionItemRow: View {
                     if supplementCount > 0 {
                         Text("·")
                         Text("补充 \(supplementCount)")
-                    }
-                    if item.dispatchStatus == "failed" {
-                        Text("·")
-                        Text("Agent 派发失败")
-                            .foregroundStyle(ATMTheme.danger)
-                    } else if item.dispatchStatus == "dispatched" {
-                        Text("· 已交给 Codex")
                     }
                     if item.todoClosed, let todoID = item.todoID, let status = item.todoStatus {
                         Text("·")
@@ -1661,22 +1711,6 @@ private struct CollectionItemDetail: View {
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
             }
-            if item.dispatchStatus == "failed" {
-                Label(
-                    item.dispatchError?.isEmpty == false ? item.dispatchError! : "Agent 派发失败",
-                    systemImage: "exclamationmark.triangle.fill"
-                )
-                .font(ATMFont.footnote)
-                .foregroundStyle(ATMTheme.danger)
-                .textSelection(.enabled)
-                Text("Todo 已保留；打开 Todo 后可点击“重试”再次交给 Codex。")
-                    .font(ATMFont.caption)
-                    .foregroundStyle(ATMTheme.secondary)
-            } else if item.dispatchStatus == "dispatched" {
-                Label("已自动交给 Codex，可在 Todo 详情查看进度和日志。", systemImage: "play.circle.fill")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.success)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1958,7 +1992,6 @@ private struct CollectionSourceEditor: View {
     @State private var decisionUnit = "window"
     @State private var intervalValue = "5"
     @State private var intervalUnit = CollectionIntervalUnit.minute
-    @State private var autoDispatch = false
 
     @State private var searchKind = ATMCollectionSearchKind.all
     @State private var keyword = ""
@@ -2010,7 +2043,6 @@ private struct CollectionSourceEditor: View {
         )
         _intervalValue = State(initialValue: interval.text)
         _intervalUnit = State(initialValue: interval.unit)
-        _autoDispatch = State(initialValue: source?.automaticallyDispatches ?? false)
     }
 
     var body: some View {
@@ -2110,9 +2142,6 @@ private struct CollectionSourceEditor: View {
     private var saveBlockReason: String? {
         if let reason = identity.blockReason { return reason }
         if let reason = intervalInput.validationMessage { return reason }
-        if autoDispatch && project.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "自动派发前请指定项目"
-        }
         return nil
     }
 
@@ -2126,7 +2155,7 @@ private struct CollectionSourceEditor: View {
             excludePattern: excludePattern, instruction: instruction,
             knowledgeCollection: knowledgeCollection, strategy: strategy,
             decisionUnit: decisionUnit,
-            intervalMinutes: intervalMinutes, autoDispatch: autoDispatch,
+            intervalMinutes: intervalMinutes,
             enabled: source?.enabled ?? true
         )
         onClose()
@@ -2538,7 +2567,6 @@ private struct CollectionSourceEditor: View {
                         if intervalInput.minutes == previousDefault {
                             setIntervalMinutes(value == "observe" ? 60 : 5)
                         }
-                        if value == "observe" { autoDispatch = false }
                     }
                 }
 
@@ -2612,17 +2640,6 @@ private struct CollectionSourceEditor: View {
                         TextField("例如：atm", text: $project)
                             .textFieldStyle(.roundedBorder)
                     }
-
-                    Toggle(isOn: $autoDispatch) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("新 Todo 自动交给 Codex")
-                                .font(ATMFont.font(.body, weight: .medium))
-                            Text("使用受保护策略在项目目录启动 Agent；成功后进入待验收")
-                                .font(ATMFont.footnote)
-                                .foregroundStyle(ATMTheme.secondary)
-                        }
-                    }
-                    .toggleStyle(.switch)
                 }
             }
         }

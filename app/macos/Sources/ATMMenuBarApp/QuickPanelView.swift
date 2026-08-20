@@ -250,12 +250,12 @@ struct QuickPanelView: View {
 
     private var workingSection: some View {
         quickCard(
-            "工作中",
+            "进行中",
             indicatorColor: ATMTheme.accent,
             badge: store.snapshot.work.working.isEmpty ? nil : "\(store.snapshot.work.working.count)"
         ) {
             if store.snapshot.work.working.isEmpty {
-                empty("当前没有工作中的任务")
+                empty("当前没有进行中的任务")
             } else {
                 ForEach(store.snapshot.work.working) { todo in
                     quickTodoRow(todo)
@@ -404,11 +404,11 @@ struct QuickPanelView: View {
     }
 
     private func attentionCaption(_ todo: ATMTodo) -> String {
+        // Waiting gets no caption of its own; it is shown by the orange clock on
+        // the row, the same way it is in the task list.
         let status: String
         switch todo.status {
         case "review": status = "待验收"
-        case "blocked": status = "阻塞"
-        case "waiting": status = "到期"
         default: status = "需处理"
         }
         // Status only: quickTodoRow appends the project itself, so returning it

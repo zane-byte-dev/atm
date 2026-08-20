@@ -1,69 +1,56 @@
 package cmd
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/zane-byte-dev/atm/internal/store"
-	workapp "github.com/zane-byte-dev/atm/internal/work"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	todoListPriorityFlag   string
-	todoStatusFlag         string
-	todoProjectFlag        string
-	todoListQueryFlag      string
-	todoListCreatorFlag    string
-	todoListLimitFlag      int
-	todoListOffsetFlag     int
-	todoAddPriorityFlag    string
-	todoAddProjectFlag     string
-	todoAddStatusFlag      string
-	todoAddWakeFlag        string
-	todoAddReviewAtFlag    string
-	todoAddCreatorFlag     string
-	todoSourceFlag         string
-	todoDescFlag           string
-	todoDescFileFlag       string
-	todoAddImageFlags      []string
-	todoBatchFlag          bool
-	todoReasonFlag         string
-	todoEditTitleFlag      string
-	todoEditDescFlag       string
-	todoEditDescFileFlag   string
-	todoLogMessageFileFlag string
-	todoEditPriorityFlag   string
-	todoEditProjectFlag    string
-	todoEditSourceFlag     string
-	todoEditStatusFlag     string
-	todoEditWakeFlag       string
-	todoEditReviewAtFlag   string
-	todoMoveProjectFlag    string
-	todoLogSectionFlag     string
-	todoDocInitFlag        bool
-	todoDeleteProjectFlag  string
-	todoDeleteYesFlag      bool
-	todoOnDoneFlag         string
-	todoPromptCopyFlag     bool
-	todoHandoffCWDFlag     string
-	todoHandoffPrintFlag   bool
-	todoWaitWakeFlag       string
-	todoWaitReviewAtFlag   string
-	todoMaintainLimitFlag  int
-	todoContextCWD         string
-	todoSubmitReasonFlag   string
-	todoRunPolicyFlag      string
-	todoRunCWDFlag         string
-	todoRunContinueFlag    string
-	todoRunTailFollowFlag  bool
-	todoRunTailBytesFlag   int64
+	todoListPriorityFlag         string
+	todoStatusFlag               string
+	todoProjectFlag              string
+	todoListQueryFlag            string
+	todoListCreatorFlag          string
+	todoListLimitFlag            int
+	todoListOffsetFlag           int
+	todoAddPriorityFlag          string
+	todoAddProjectFlag           string
+	todoAddCreatorFlag           string
+	todoSourceFlag               string
+	todoDescFlag                 string
+	todoDescFileFlag             string
+	todoAddImageFlags            []string
+	todoBatchFlag                bool
+	todoReasonFlag               string
+	todoEditTitleFlag            string
+	todoEditDescFlag             string
+	todoEditDescFileFlag         string
+	todoLogMessageFileFlag       string
+	todoEditPriorityFlag         string
+	todoEditProjectFlag          string
+	todoEditSourceFlag           string
+	todoEditStatusFlag           string
+	todoEditWakeFlag             string
+	todoEditReviewAtFlag         string
+	todoEditMaintenanceLimitFlag int
+	todoLogSectionFlag           string
+	todoDocInitFlag              bool
+	todoDeleteProjectFlag        string
+	todoDeleteYesFlag            bool
+	todoOnDoneFlag               string
+	todoHandoffCWDFlag           string
+	todoHandoffPrintFlag         bool
+	todoHandoffCopyFlag          bool
+	todoContextCWD               string
+	todoSubmitReasonFlag         string
 )
 
 func init() {
 	todoListCmd.Flags().StringVar(&todoListPriorityFlag, "priority", "", "filter by priority: P0, P1, P2")
-	todoListCmd.Flags().StringVar(&todoStatusFlag, "status", "", "filter by status: open, in_progress, waiting, review, blocked, done, dropped, archived, trashed, all (default: active)")
+	todoListCmd.Flags().StringVar(&todoStatusFlag, "status", "", "filter by status: open, in_progress, review, done, archived, all (default: active)")
 	todoListCmd.Flags().StringVar(&todoProjectFlag, "project", "", "filter by project name (case-insensitive substring)")
 	todoListCmd.Flags().StringVar(&todoListQueryFlag, "query", "", "filter by id, title, description, project, source, or todo document")
 	todoListCmd.Flags().StringVar(&todoListCreatorFlag, "creator", "", "filter by creator: "+strings.Join(store.TodoCreatorVocabulary, ", "))
@@ -72,9 +59,6 @@ func init() {
 
 	todoAddCmd.Flags().StringVar(&todoAddPriorityFlag, "priority", "P1", "priority: P0, P1, P2")
 	todoAddCmd.Flags().StringVar(&todoAddProjectFlag, "project", "", "project name")
-	todoAddCmd.Flags().StringVar(&todoAddStatusFlag, "status", store.TodoStatusOpen, "initial status: open, in_progress, waiting, review, blocked")
-	todoAddCmd.Flags().StringVar(&todoAddWakeFlag, "wake", "", "condition that should wake a waiting todo")
-	todoAddCmd.Flags().StringVar(&todoAddReviewAtFlag, "review-at", "", "next review date (YYYY-MM-DD)")
 	todoAddCmd.Flags().StringVar(&todoSourceFlag, "source", "", "source of the task")
 	todoAddCmd.Flags().StringVar(&todoAddCreatorFlag, "creator", "", "who filed it: "+strings.Join(store.TodoCreatorVocabulary, ", ")+" (default: the agent in the environment, otherwise me)")
 	todoAddCmd.Flags().StringVar(&todoDescFlag, "desc", "", "single-line description (use --desc-file for multiline text)")
@@ -86,7 +70,6 @@ func init() {
 	todoAddCmd.MarkFlagsMutuallyExclusive("batch", "image")
 
 	todoDoneCmd.Flags().StringVar(&todoReasonFlag, "reason", "", "closing reason")
-	todoDropCmd.Flags().StringVar(&todoReasonFlag, "reason", "", "dropping reason")
 	todoSubmitCmd.Flags().StringVar(&todoSubmitReasonFlag, "reason", "", "submission summary or evidence")
 
 	todoEditCmd.Flags().StringVar(&todoEditTitleFlag, "title", "", "new title")
@@ -96,12 +79,10 @@ func init() {
 	todoEditCmd.Flags().StringVar(&todoEditPriorityFlag, "priority", "", "new priority: P0, P1, P2")
 	todoEditCmd.Flags().StringVar(&todoEditProjectFlag, "project", "", "new project name")
 	todoEditCmd.Flags().StringVar(&todoEditSourceFlag, "source", "", "new source")
-	todoEditCmd.Flags().StringVar(&todoEditStatusFlag, "status", "", "new status: open, in_progress, waiting, review, blocked")
-	todoEditCmd.Flags().StringVar(&todoEditWakeFlag, "wake", "", "new wake condition (empty clears it)")
+	todoEditCmd.Flags().StringVar(&todoEditStatusFlag, "status", "", "return lifecycle status to open")
+	todoEditCmd.Flags().StringVar(&todoEditWakeFlag, "wake", "", "waiting-style condition for in_progress (empty clears it)")
 	todoEditCmd.Flags().StringVar(&todoEditReviewAtFlag, "review-at", "", "new review date YYYY-MM-DD (empty clears it)")
-
-	todoMoveCmd.Flags().StringVar(&todoMoveProjectFlag, "project", "", "target project name")
-	todoMoveCmd.MarkFlagRequired("project")
+	todoEditCmd.Flags().IntVar(&todoEditMaintenanceLimitFlag, "maintenance-limit", 0, "bounded maintenance batch size (0 clears maintenance)")
 
 	todoLogCmd.Flags().StringVar(&todoLogSectionFlag, "section", "", "target section name (default: 进展)")
 	todoLogCmd.Flags().StringVar(&todoLogMessageFileFlag, "message-file", "", "read the entry from a file (use - for stdin)")
@@ -112,23 +93,15 @@ func init() {
 
 	todoAddCmd.Flags().StringVar(&todoOnDoneFlag, "on-done", "", "command to execute when todo is done")
 
-	todoPromptCmd.Flags().BoolVar(&todoPromptCopyFlag, "copy", false, "copy the prompt to the clipboard")
 	todoHandoffCmd.Flags().StringVar(&todoHandoffCWDFlag, "cwd", "", "working directory to open in Codex (defaults from Todo bindings or project)")
 	todoHandoffCmd.Flags().BoolVar(&todoHandoffPrintFlag, "print", false, "print the deep link instead of opening Codex")
-	todoRunCmd.Flags().StringVar(&todoRunPolicyFlag, "policy", "guarded", "permission policy: guarded or trusted")
-	todoRunCmd.Flags().StringVar(&todoRunCWDFlag, "cwd", "", "working directory (defaults from Todo bindings or current directory)")
-	todoRunCmd.Flags().StringVar(&todoRunContinueFlag, "continue", "", "resume the latest Codex session with these follow-up instructions")
-	todoRunTailCmd.Flags().BoolVarP(&todoRunTailFollowFlag, "follow", "f", false, "keep following while the run is active")
-	todoRunTailCmd.Flags().Int64Var(&todoRunTailBytesFlag, "bytes", 0, "show only the latest N bytes (0 means the full log)")
-
-	todoWaitCmd.Flags().StringVar(&todoWaitWakeFlag, "wake", "", "condition that should wake the todo")
-	todoWaitCmd.Flags().StringVar(&todoWaitReviewAtFlag, "review-at", "", "next review date (YYYY-MM-DD)")
-	todoMaintainCmd.Flags().IntVar(&todoMaintainLimitFlag, "limit", 3, "maximum items in this maintenance batch")
+	todoHandoffCmd.Flags().BoolVar(&todoHandoffCopyFlag, "copy", false, "copy the agent pointer instead of opening Codex")
+	todoHandoffCmd.MarkFlagsMutuallyExclusive("print", "copy")
 	for _, contextCmd := range []*cobra.Command{todoContextCmd} {
 		contextCmd.Flags().StringVar(&todoContextCWD, "cwd", "", "Git worktree to inspect (required when active todo bindings use multiple worktrees)")
 	}
 
-	todoCmd.AddCommand(todoArchiveCmd, todoUnarchiveCmd, todoTrashCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoDropCmd, todoShowCmd, todoContextCmd, todoPromptCmd, todoHandoffCmd, todoRunCmd, todoRunsCmd, todoRunInterruptCmd, todoRunTailCmd, todoRunControllerCmd, todoEditCmd, todoMoveCmd, todoLogCmd, todoDocCmd, todoDeleteCmd, todoWaitCmd, todoMaintainCmd)
+	todoCmd.AddCommand(todoArchiveCmd, todoRestoreCmd, todoListCmd, todoAddCmd, todoStartCmd, todoSubmitCmd, todoDoneCmd, todoShowCmd, todoContextCmd, todoHandoffCmd, todoEditCmd, todoLogCmd, todoDocCmd, todoDeleteCmd)
 	rootCmd.AddCommand(todoCmd)
 }
 
@@ -200,89 +173,6 @@ var todoStartCmd = &cobra.Command{
 	RunE:       runTodoStart,
 }
 
-var todoWaitCmd = &cobra.Command{
-	Use:   "wait [id]",
-	Short: "Set a todo to waiting until a condition or review date",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runTodoWait,
-}
-
-var todoMaintainCmd = &cobra.Command{
-	Use:   "maintain <id>",
-	Short: "Tag a todo as bounded maintenance work",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTodoMaintain,
-}
-
-var todoPromptCmd = &cobra.Command{
-	Use:   "prompt <id>",
-	Short: "Print the line to paste into a fresh agent session",
-	Long: `Print a short pointer a human pastes into a new agent session.
-
-The pointer names the todo and the commands that load it; the agent reads the
-requirement from ATM itself, so it always works from the current version rather
-than a copied snapshot.`,
-	Example: `  atm todo prompt t89
-  atm todo prompt t89 --copy`,
-	Args: cobra.ExactArgs(1),
-	RunE: runTodoPrompt,
-}
-
-var todoRunCmd = &cobra.Command{
-	Use:   "run <id>",
-	Short: "Dispatch a Todo to Codex",
-	Long: `Start the Todo, claim one durable task run, then launch a background
-controller that runs Codex. A successful Agent exit submits the Todo to review;
-it never marks the Todo done. Codex is the only dispatch target: it is the one
-CLI whose sandbox ATM can enforce and whose thread id it can recover, so the
-global --agent flag stays a read filter and cannot pick a different executor.`,
-	Example: `  atm todo run t240
-  atm todo run t240 --policy trusted
-  atm todo run t240 --cwd /path/to/repo
-  atm todo run t240 --continue "按验收意见调整交互"
-  atm todo runs t240
-  atm todo interrupt t240
-  atm todo tail t240 -f`,
-	Args: cobra.ExactArgs(1),
-	RunE: runTodoRun,
-}
-
-var todoRunsCmd = &cobra.Command{
-	Use:   "runs <id>",
-	Short: "List Agent runs for a Todo",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTodoRuns,
-}
-
-var todoRunInterruptCmd = &cobra.Command{
-	Use:     "interrupt <id>",
-	Aliases: []string{"stop", "cancel-run"},
-	Short:   "Interrupt the active Agent run for a Todo",
-	Args:    cobra.ExactArgs(1),
-	RunE:    runTodoRunInterrupt,
-}
-
-var todoRunTailCmd = &cobra.Command{
-	Use:   "tail <id>",
-	Short: "Print the latest Agent run log",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTodoRunTail,
-}
-
-var todoRunControllerCmd = &cobra.Command{
-	Use:    "run-controller <run-id>",
-	Hidden: true,
-	Args:   cobra.ExactArgs(1),
-	RunE:   runTodoRunController,
-}
-
-var todoDropCmd = &cobra.Command{
-	Use:   "drop [id]",
-	Short: "Mark a todo as dropped",
-	Args:  cobra.MaximumNArgs(1),
-	RunE:  runTodoDrop,
-}
-
 var todoShowCmd = &cobra.Command{
 	Use:   "show [id]",
 	Short: "Show todo details",
@@ -316,13 +206,6 @@ var todoEditCmd = &cobra.Command{
 	RunE:  runTodoEdit,
 }
 
-var todoMoveCmd = &cobra.Command{
-	Use:   "move <id> --project <name>",
-	Short: "Move a todo to a different project",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTodoMove,
-}
-
 var todoLogCmd = &cobra.Command{
 	Use:   "log [id] <message>",
 	Short: "Append a progress entry to todo's doc",
@@ -353,52 +236,21 @@ var todoDeleteCmd = &cobra.Command{
 
 var todoArchiveCmd = &cobra.Command{
 	Use:   "archive <id>...",
-	Short: "Move closed todos out of the working set",
-	Long: `Move done or dropped todos out of the working set.
+	Short: "Move todos out of the working set",
+	Long: `Move todos of any lifecycle state out of the working set.
 
 Archived todos keep their row, their ID, and their markdown card: dependencies
 and progress notes may still refer to them, and the ID is never reused. They no
 longer appear in listings, the dashboard, or matching. Use
-` + "`atm todo list --status archived`" + ` to read them and ` + "`atm todo unarchive`" + ` to bring
+` + "`atm todo list --status archived`" + ` to read them and ` + "`atm todo restore`" + ` to bring
 one back.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: runTodoArchive,
 }
 
-var todoUnarchiveCmd = &cobra.Command{
-	Use:   "unarchive <id>...",
-	Short: "Bring archived todos back into the working set",
-	Args:  cobra.MinimumNArgs(1),
-	RunE:  runTodoUnarchive,
-}
-
-var todoTrashCmd = &cobra.Command{
-	Use:   "trash <id>...",
-	Short: "Move todos to the trash without deleting them",
-	Long: `Move todos out of the working set without deleting their rows, markdown,
-progress, dependencies, or history. No confirmation is required because the
-operation is reversible with ` + "`atm todo restore`" + `.`,
-	Args: cobra.MinimumNArgs(1),
-	RunE: runTodoTrash,
-}
-
 var todoRestoreCmd = &cobra.Command{
 	Use:   "restore <id>...",
-	Short: "Restore todos from the trash",
+	Short: "Restore archived todos to the working set",
 	Args:  cobra.MinimumNArgs(1),
 	RunE:  runTodoRestore,
-}
-
-func validateWorkStatus(value string) error {
-	switch value {
-	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusWaiting,
-		store.TodoStatusReview, store.TodoStatusBlocked:
-		return nil
-	default:
-		return fmt.Errorf("invalid todo status %q (use open, in_progress, waiting, review, or blocked)", value)
-	}
-}
-
-func validateReviewAt(value string) error {
-	return workapp.ValidateReviewAt(value)
 }

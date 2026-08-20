@@ -117,22 +117,20 @@ func TodoDependencyWakeCondition(todo Todo) string {
 	return "waiting for todos: " + strings.Join(dependencies, ", ")
 }
 
-// ReconcileTodoDependencies makes waiting todos open once every structured
-// dependency is done. Dependency completion means work is ready to start; it
-// is not evidence that the dependent work has been submitted for review.
-// Free-form wake text is never interpreted.
+// ReconcileTodoDependencies clears dependency-derived waiting presentation once
+// every structured dependency is done. Lifecycle remains in_progress.
 func ReconcileTodoDependencies(tf *TodoFile) []TodoWakeEvent {
 	var events []TodoWakeEvent
 	for i := range tf.Items {
 		todo := &tf.Items[i]
-		if todo.Status != TodoStatusWaiting || len(todo.DependsOn) == 0 {
+		if todo.Status != TodoStatusInProgress || len(todo.DependsOn) == 0 ||
+			!strings.HasPrefix(todo.WakeCondition, "waiting for todos: ") {
 			continue
 		}
 		if len(UnmetTodoDependencies(tf, *todo)) != 0 {
 			continue
 		}
 		dependencies := append([]string(nil), todo.DependsOn...)
-		todo.Status = TodoStatusOpen
 		todo.WakeCondition = ""
 		todo.ReviewAt = ""
 		events = append(events, TodoWakeEvent{
@@ -159,8 +157,6 @@ func AuditTodoDependencies(tf *TodoFile) []TodoDependencyIssue {
 			switch {
 			case dependency == nil:
 				issues = append(issues, TodoDependencyIssue{TodoID: todo.ID, DependsOn: id, Code: "dependency_missing", Detail: "referenced todo does not exist", Suggestion: "remove the dependency or restore the referenced todo"})
-			case dependency.Status == TodoStatusDropped && TodoIsActive(todo):
-				issues = append(issues, TodoDependencyIssue{TodoID: todo.ID, DependsOn: id, Code: "dependency_dropped", Detail: "active todo depends on a dropped todo", Suggestion: "replace the dependency or explicitly drop/unblock the dependent todo"})
 			}
 		}
 		for _, id := range todo.DependsOn {

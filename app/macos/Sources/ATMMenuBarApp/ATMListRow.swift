@@ -1,6 +1,50 @@
 import SwiftUI
 
-/// 任务栏的中栏标题。只有标题本身承载状态（任务 / 回收站）、尾部挂着真操作的抽屉才配
+enum ATMNavigatorPresentation: String {
+    case grouped
+    case flat
+
+    static func resolve(_ storedValue: String) -> Self {
+        Self(rawValue: storedValue) ?? .grouped
+    }
+
+    var toggled: Self {
+        self == .grouped ? .flat : .grouped
+    }
+}
+
+enum ATMNavigatorPresentationPreferences {
+    static let defaultValue = ATMNavigatorPresentation.grouped.rawValue
+    static let tasksKey = "ATMTaskListPresentation"
+    static let collectionKey = "ATMCollectionRecordListPresentation"
+    static let agentsKey = "ATMLiveAgentListPresentation"
+    static let knowledgeKey = "ATMKnowledgeArticleListPresentation"
+}
+
+/// Every grouped middle-column list uses the same compact, destination-oriented
+/// toggle. Each workspace owns its storage key so changing one list does not
+/// unexpectedly rearrange the others.
+struct ATMNavigatorPresentationToggle: View {
+    @Binding var storedValue: String
+
+    private var presentation: ATMNavigatorPresentation {
+        ATMNavigatorPresentation.resolve(storedValue)
+    }
+
+    var body: some View {
+        ATMIconButton(
+            systemImage: presentation == .grouped ? "list.bullet" : "list.bullet.indent",
+            help: presentation == .grouped ? "切换为平铺" : "切换为分组",
+            chrome: .bare,
+            side: 30,
+            iconTier: .bodyLarge
+        ) {
+            storedValue = presentation.toggled.rawValue
+        }
+    }
+}
+
+/// 任务栏的中栏标题。只有标题本身承载状态（任务 / 归档）、尾部挂着真操作的抽屉才配
 /// 这一层——纯复读左侧栏选中项的标题一律不画，收集 / 知识 / Agent 都直接从段控起头。
 struct ATMDrawerHeader<Trailing: View>: View {
     let title: String

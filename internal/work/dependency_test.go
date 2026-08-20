@@ -35,7 +35,7 @@ func TestAddDependencyOwnsWaitingBindingAndIdempotency(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AddDependency %s: %v", dependencyID, err)
 		}
-		if result.Todo.Status != store.TodoStatusWaiting {
+		if result.Todo.Status != store.TodoStatusInProgress {
 			t.Fatalf("result todo = %+v", result.Todo)
 		}
 	}
@@ -61,7 +61,7 @@ func TestRemoveLastDependencyWakesWithDurableEffect(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t,
 		store.Todo{ID: "t1", Title: "Prerequisite", Priority: "P1", Status: store.TodoStatusOpen, Created: store.Today()},
-		store.Todo{ID: "t2", Title: "Dependent", Priority: "P1", Status: store.TodoStatusWaiting,
+		store.Todo{ID: "t2", Title: "Dependent", Priority: "P1", Status: store.TodoStatusInProgress,
 			WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}, Created: store.Today()},
 	)
 	result, err := Default.RemoveDependency(context.Background(), dependencyTestCall(), RemoveDependencyInput{
@@ -70,7 +70,7 @@ func TestRemoveLastDependencyWakesWithDurableEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RemoveDependency: %v", err)
 	}
-	if !result.Removed || result.Todo.Status != store.TodoStatusOpen || result.Todo.WakeCondition != "" ||
+	if !result.Removed || result.Todo.Status != store.TodoStatusInProgress || result.Todo.WakeCondition != "" ||
 		len(result.Awakened) != 1 || result.Awakened[0].Reason != "all structured dependencies removed" {
 		t.Fatalf("result = %+v", result)
 	}
@@ -102,8 +102,8 @@ func TestRemoveDependencyDeliversOlderWaitingProjectionBeforeWake(t *testing.T) 
 	}
 	if len(removed.Effects) != 2 || removed.Effects[0].Kind != EffectTodoWaiting ||
 		removed.Effects[1].Kind != EffectTodoDependencyAwakened ||
-		removed.Effects[0].Todo.Status != store.TodoStatusWaiting ||
-		removed.Effects[1].Todo.Status != store.TodoStatusOpen {
+		removed.Effects[0].Todo.Status != store.TodoStatusInProgress ||
+		removed.Effects[1].Todo.Status != store.TodoStatusInProgress {
 		t.Fatalf("ordered effects = %+v", removed.Effects)
 	}
 }

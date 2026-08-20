@@ -46,7 +46,7 @@ func TestBulkDoneAtomicallyClosesDeduplicatesAndWakes(t *testing.T) {
 	seedWorkTodos(t,
 		store.Todo{ID: "t1", Title: "First accepted", Priority: "P1", Status: store.TodoStatusReview, Created: store.Today()},
 		store.Todo{ID: "t2", Title: "Second accepted", Priority: "P1", Status: store.TodoStatusInProgress, Created: store.Today()},
-		store.Todo{ID: "t3", Title: "Ready after batch", Priority: "P1", Status: store.TodoStatusWaiting,
+		store.Todo{ID: "t3", Title: "Ready after batch", Priority: "P1", Status: store.TodoStatusInProgress,
 			WakeCondition: "waiting for todos: t1, t2", DependsOn: []string{"t1", "t2"}, Created: store.Today()},
 	)
 	for _, binding := range []store.TodoSessionBinding{
@@ -102,7 +102,7 @@ func TestBulkDoneAtomicallyClosesDeduplicatesAndWakes(t *testing.T) {
 			t.Fatalf("closed %s = %+v", id, todo)
 		}
 	}
-	if todo := store.FindTodo(todos, "t3"); todo.Status != store.TodoStatusOpen || todo.WakeCondition != "" {
+	if todo := store.FindTodo(todos, "t3"); todo.Status != store.TodoStatusInProgress || todo.WakeCondition != "" {
 		t.Fatalf("dependent = %+v", todo)
 	}
 
@@ -129,8 +129,8 @@ func TestBulkRollsBackTodosBindingsWakeAndOutboxTogether(t *testing.T) {
 	seedWorkTodos(t,
 		store.Todo{ID: "t1", Title: "First rollback", Priority: "P1", Status: store.TodoStatusReview, Created: store.Today()},
 		store.Todo{ID: "t2", Title: "Second rollback", Priority: "P1", Status: store.TodoStatusReview, Created: store.Today()},
-		store.Todo{ID: "t3", Title: "Must remain waiting", Priority: "P1", Status: store.TodoStatusWaiting,
-			DependsOn: []string{"t1", "t2"}, Created: store.Today()},
+		store.Todo{ID: "t3", Title: "Must remain waiting", Priority: "P1", Status: store.TodoStatusInProgress,
+			WakeCondition: "waiting for todos: t1, t2", DependsOn: []string{"t1", "t2"}, Created: store.Today()},
 	)
 	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "bulk-rollback", TodoID: "t2"}); err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestBulkRollsBackTodosBindingsWakeAndOutboxTogether(t *testing.T) {
 	}
 	todos, loadErr := store.LoadTodosReadOnly()
 	if loadErr != nil || store.FindTodo(todos, "t1").Status != store.TodoStatusReview ||
-		store.FindTodo(todos, "t2").Status != store.TodoStatusReview || store.FindTodo(todos, "t3").Status != store.TodoStatusWaiting {
+		store.FindTodo(todos, "t2").Status != store.TodoStatusReview || store.FindTodo(todos, "t3").Status != store.TodoStatusInProgress {
 		t.Fatalf("rolled back todos = %+v, err=%v", todos, loadErr)
 	}
 	if binding, bindErr := store.CurrentTodoBinding("bulk-rollback"); bindErr != nil || binding == nil {
@@ -190,13 +190,16 @@ func TestBulkOwnsReasonStatusWaitingAndTransitionValidation(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("idempotent done: %v", err)
 	}
+	// `drop` is no longer a bulk action: it archived, which `todo archive` already
+	// does for a list of IDs.
 	if _, err := Default.Bulk(context.Background(), call, BulkInput{
-		Action: BulkDrop, TodoIDs: []string{"t2"}, Confirmed: true,
-	}); !errors.Is(err, application.ErrConflict) {
-		t.Fatalf("cross-close transition error = %v, want conflict", err)
+		Action: BulkAction("drop"), TodoIDs: []string{"t2"}, Confirmed: true,
+	}); !errors.Is(err, application.ErrInvalidArgument) {
+		t.Fatalf("bulk drop error = %v, want invalid argument", err)
 	}
 	todos, err := store.LoadTodosReadOnly()
-	if err != nil || store.FindTodo(todos, "t1").Status != store.TodoStatusOpen || store.FindTodo(todos, "t2").Status != store.TodoStatusDone {
+	if err != nil || store.FindTodo(todos, "t1").Status != store.TodoStatusOpen ||
+		store.FindTodo(todos, "t2").Status != store.TodoStatusDone {
 		t.Fatalf("invalid bulk changed todos = %+v, err=%v", todos, err)
 	}
 }

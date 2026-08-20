@@ -28,9 +28,14 @@ struct DesktopAIDayView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
-            Divider()
-            ATMDetailTabs { tabs }
+            ATMDetailTabs {
+                HStack(spacing: 16) {
+                    tabs
+                    Spacer(minLength: 0)
+                    refreshButton
+                }
+                .frame(maxWidth: .infinity)
+            }
             ATMDetailBodySurface {
                 Group {
                     switch tab {
@@ -91,39 +96,6 @@ struct DesktopAIDayView: View {
         .onChange(of: tab) { newTab in if newTab == .today { store.refreshIfStale() } }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             store.refreshIfStale()
-        }
-    }
-
-    /// Header only owns page identity and global actions. Navigation lives in
-    /// the tab strip below it, immediately above the content card.
-    private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .bottom, spacing: 14) {
-                title
-                Spacer(minLength: 8)
-                refreshButton
-            }
-            VStack(alignment: .leading, spacing: 12) {
-                title
-                HStack {
-                    Spacer()
-                    refreshButton
-                }
-            }
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 22)
-        .padding(.bottom, 14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated)
-    }
-
-    private var title: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("AI Day").font(ATMFont.font(.title1, weight: .semibold))
-            Text("每天一个概念、一枚徽章、一组可验证证据")
-                .font(ATMFont.footnote)
-                .foregroundStyle(ATMTheme.secondary)
         }
     }
 

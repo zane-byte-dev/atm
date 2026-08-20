@@ -78,14 +78,14 @@ enum ATMTodoNotifyEvent: String, Equatable {
     case created
     case review
     case completed
-    case dropped
+    case archived
 
     var categoryIdentifier: String {
         switch self {
         case .created: return "ATM_TODO_CREATED"
         case .review: return "ATM_TODO_REVIEW"
         case .completed: return "ATM_TODO_COMPLETED"
-        case .dropped: return "ATM_TODO_DROPPED"
+        case .archived: return "ATM_TODO_ARCHIVED"
         }
     }
 }
@@ -120,8 +120,11 @@ struct ATMNotificationPayload: Equatable {
         )
     }
 
-    static func todoDropped(_ todo: ATMTodo) -> ATMNotificationPayload {
-        base(todo, event: .dropped, subtitle: "\(todo.id) 已放弃", body: todo.title)
+    /// 放弃 is no longer a state of its own: setting work aside archives it, and
+    /// an archived Todo can be restored, so the copy says 已归档 rather than
+    /// announcing something final.
+    static func todoArchived(_ todo: ATMTodo) -> ATMNotificationPayload {
+        base(todo, event: .archived, subtitle: "\(todo.id) 已归档", body: todo.title)
     }
 
     private static func base(
@@ -301,7 +304,7 @@ struct ATMCollectionNotificationPayload: Equatable {
 /// Diff two todo snapshots for external human-relevant changes (agent CLI, other
 /// terminals). First observation is a baseline only — no flood of historical work.
 ///
-/// Done/dropped stay out of the refresh path: local UI complete already notifies,
+/// Done/archived stay out of the refresh path: local UI complete already notifies,
 /// and agent `todo done` fires the CLI banner. Create + review are the gaps the
 /// menubar must close when an agent mutates work while the app is open.
 enum ATMTodoNotificationDiff {
@@ -335,7 +338,7 @@ enum ATMTodoNotificationDiff {
         case .created: return .todoCreated(todo)
         case .review: return .todoNeedsReview(todo)
         case .completed: return .todoCompleted(todo)
-        case .dropped: return .todoDropped(todo)
+        case .archived: return .todoArchived(todo)
         }
     }
 }

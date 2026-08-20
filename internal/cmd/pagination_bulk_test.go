@@ -32,7 +32,7 @@ func TestTodoListQueryPaginationAndBulkWake(t *testing.T) {
 	})
 	if err := seedTodos(store.Todo{ID: "t1", Title: "Alpha first", Priority: "P1", Status: "open", Created: store.Today()},
 		store.Todo{ID: "t2", Title: "Beta", Priority: "P1", Status: "open", Created: store.Today()},
-		store.Todo{ID: "t3", Title: "Alpha dependent", Priority: "P1", Status: store.TodoStatusWaiting, DependsOn: []string{"t1", "t2"}, Created: store.Today()}); err != nil {
+		store.Todo{ID: "t3", Title: "Alpha dependent", Priority: "P1", Status: store.TodoStatusInProgress, WakeCondition: "waiting for todos: t1, t2", DependsOn: []string{"t1", "t2"}, Created: store.Today()}); err != nil {
 		t.Fatal(err)
 	}
 	jsonOutput = true
@@ -58,7 +58,7 @@ func TestTodoListQueryPaginationAndBulkWake(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if store.FindTodo(tf, "t1").Status != "done" || store.FindTodo(tf, "t2").Status != "done" || store.FindTodo(tf, "t3").Status != store.TodoStatusOpen {
+	if store.FindTodo(tf, "t1").Status != "done" || store.FindTodo(tf, "t2").Status != "done" || store.FindTodo(tf, "t3").Status != store.TodoStatusInProgress {
 		t.Fatalf("todos after bulk = %#v", tf.Items)
 	}
 }

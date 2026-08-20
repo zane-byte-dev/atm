@@ -54,30 +54,11 @@ type BindInput struct {
 	CWD              string `json:"cwd,omitempty"`
 	WorkspaceProject string `json:"workspace_project,omitempty"`
 	Force            bool   `json:"force,omitempty"`
-	// RunID and RunTodoID are execution provenance derived by the adapter from
-	// the controller environment. When both identify this Todo, Bind records the
-	// authoritative Agent session on that run after the binding transaction.
-	RunID     string `json:"run_id,omitempty"`
-	RunTodoID string `json:"run_todo_id,omitempty"`
 }
 
 type BindResult struct {
-	Binding  store.TodoSessionBinding `json:"binding"`
-	Todo     store.Todo               `json:"todo"`
-	Warnings []BindWarning            `json:"-"`
-}
-
-type BindWarningCode string
-
-const BindWarningTaskRunLinkFailed BindWarningCode = "task_run_link_failed"
-
-// BindWarning is a non-fatal after-commit failure. The binding is already
-// durable, so the adapter may report the warning but must not tell the Agent to
-// retry the whole bind operation.
-type BindWarning struct {
-	Code  BindWarningCode
-	RunID string
-	Cause error
+	Binding store.TodoSessionBinding `json:"binding"`
+	Todo    store.Todo               `json:"todo"`
 }
 
 type CurrentInput struct{}
@@ -135,6 +116,14 @@ func (service Service) Bind(
 			}
 			return appErr
 		}
+		if unmet := store.UnmetTodoDependencies(transaction.Todos(), *todo); len(unmet) > 0 {
+			appErr := application.NewError(
+				application.CodeConflict,
+				fmt.Sprintf("cannot bind todo %s until dependencies are done: %s", todo.ID, strings.Join(unmet, ", ")),
+			)
+			appErr.Details = map[string]any{"todo_id": todo.ID, "unmet_dependencies": unmet}
+			return appErr
+		}
 		if err := validateBindingWorkspace(*todo, input); err != nil {
 			return err
 		}
@@ -163,26 +152,10 @@ func (service Service) Bind(
 	if err != nil {
 		return BindResult{}, bindingApplicationError("bind session", err)
 	}
-	if input.RunID != "" && input.RunTodoID == result.Todo.ID {
-		if err := linkTaskRunSession(input.RunID, result.Todo.ID, sessionID); err != nil {
-			result.Warnings = append(result.Warnings, BindWarning{
-				Code: BindWarningTaskRunLinkFailed, RunID: input.RunID, Cause: err,
-			})
-		}
-	}
 	if _, err := store.EnsureTodoDoc(&result.Todo); err != nil {
 		return BindResult{}, bindingApplicationError("ensure todo document after binding", err)
 	}
 	return result, nil
-}
-
-func linkTaskRunSession(runID, todoID, sessionID string) error {
-	db, err := store.Open()
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	return store.LinkTaskRunSession(db, runID, todoID, sessionID)
 }
 
 // Current returns both the durable binding and its lifecycle validity. Stale
@@ -303,8 +276,6 @@ func normalizeBindInput(input BindInput) (BindInput, error) {
 		return BindInput{}, bindingInvalidArgument("binding cwd must be an absolute path", "cwd", input.CWD)
 	}
 	input.Agent = strings.TrimSpace(input.Agent)
-	input.RunID = strings.TrimSpace(input.RunID)
-	input.RunTodoID = store.NormalizeTodoID(input.RunTodoID)
 	if input.Agent != "" {
 		normalized := config.NormalizeAgent(input.Agent)
 		if normalized == "" {

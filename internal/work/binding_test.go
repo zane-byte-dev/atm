@@ -69,64 +69,27 @@ func TestBindStartsTodoAndSessionInOneUseCase(t *testing.T) {
 	}
 }
 
-func TestBindOwnsTaskRunLinkAndTodoDocumentAfterCommit(t *testing.T) {
+// Bind materializes the Todo document as an after-commit effect. It used to
+// record the dispatched run's session identity in the same place, which is why
+// this once also covered a typed non-fatal warning; with background dispatch
+// removed, the document is the only after-commit effect left.
+func TestBindMaterializesTodoDocumentAfterCommit(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t, store.Todo{
 		ID: "t1", Title: "Bind all effects", Priority: "P1", Status: store.TodoStatusOpen,
 		Project: "atm", Created: store.Today(),
 	})
-	db, err := store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CreateTaskRun(db, store.TaskRun{
-		ID: "run-1", TodoID: "t1", Agent: "codex", Project: "atm", WorkDir: "/tmp/atm",
-		Policy: "guarded", LogPath: "/tmp/run.log", Status: store.TaskRunRunning, StartTS: 1,
-	}); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	db.Close()
 
-	result, err := Default.Bind(
+	if _, err := Default.Bind(
 		context.Background(), bindingCall(application.ActorAgent, "actual-session"),
-		BindInput{TodoID: "t1", RunID: "run-1", RunTodoID: "#T01"},
-	)
-	if err != nil || len(result.Warnings) != 0 {
-		t.Fatalf("Bind = %+v, err=%v", result, err)
+		BindInput{TodoID: "t1"},
+	); err != nil {
+		t.Fatalf("Bind: %v", err)
 	}
 	if !store.TodoDocExists("t1") {
 		t.Fatal("Bind did not materialize the Todo document")
 	}
-	db, err = store.OpenReadOnly()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	run, err := store.GetTaskRun(db, "run-1")
-	if err != nil || run == nil || run.SessionID == nil || *run.SessionID != "actual-session" {
-		t.Fatalf("run = %+v, err=%v", run, err)
-	}
-}
-
-func TestBindReportsMissingTaskRunAsNonFatalTypedWarning(t *testing.T) {
-	withTempWorkStore(t)
-	seedWorkTodos(t, store.Todo{
-		ID: "t1", Title: "Keep successful binding", Priority: "P1",
-		Status: store.TodoStatusOpen, Created: store.Today(),
-	})
-	result, err := Default.Bind(
-		context.Background(), bindingCall(application.ActorAgent, "session-1"),
-		BindInput{TodoID: "t1", RunID: "missing-run", RunTodoID: "t1"},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Warnings) != 1 || result.Warnings[0].Code != BindWarningTaskRunLinkFailed ||
-		result.Warnings[0].RunID != "missing-run" || result.Warnings[0].Cause == nil {
-		t.Fatalf("warnings = %+v", result.Warnings)
-	}
-	binding, err := store.CurrentTodoBinding("session-1")
+	binding, err := store.CurrentTodoBinding("actual-session")
 	if err != nil || binding == nil || binding.TodoID != "t1" {
 		t.Fatalf("binding = %+v, err=%v", binding, err)
 	}

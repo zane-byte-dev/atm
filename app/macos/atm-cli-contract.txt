@@ -34,21 +34,12 @@ quota --json
 session status --json
 stats --agent-session --by --days --json
 sync
-todo agents --json
 todo delete --yes
+todo archive
 todo done --reason
-todo drop --reason
-todo handoff --json
-todo interrupt --json
-todo prompt --json
+todo handoff --copy --json
 todo restore
-todo run --agent --continue --json --policy
-todo runs --json
 todo start
-todo tail --bytes
-todo trash
-todo wait --wake
-todo wake --reason --status
 version
 
 # `atm _ipc <verb>` 是 App 专用的隐藏协议：整个面共用 contract.IPCProtocolVersion 一个

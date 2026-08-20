@@ -50,8 +50,8 @@ type ListDependenciesResult struct {
 	Dependencies []DependencyView `json:"dependencies"`
 }
 
-// AddDependency atomically adds one graph edge, derives the Todo's waiting
-// state, closes stale bindings and reconciles every dependency-satisfied Todo.
+// AddDependency atomically adds one graph edge. Open work remains backlog;
+// already-started work receives waiting presentation metadata and is unbound.
 // Filesystem projections are represented by durable Work effects.
 func (service Service) AddDependency(
 	ctx context.Context,
@@ -89,11 +89,10 @@ func (service Service) AddDependency(
 			appErr.Details = map[string]any{"todo_id": todoID, "dependency_id": dependencyID}
 			return appErr
 		}
-		if store.TodoIsActive(*todo) && len(store.UnmetTodoDependencies(transaction.Todos(), *todo)) > 0 {
-			todo.Status = store.TodoStatusWaiting
+		if todo.Status == store.TodoStatusInProgress && len(store.UnmetTodoDependencies(transaction.Todos(), *todo)) > 0 {
 			todo.WakeCondition = store.TodoDependencyWakeCondition(*todo)
 		}
-		if todo.Status == store.TodoStatusWaiting &&
+		if todo.Status == store.TodoStatusInProgress &&
 			(todo.Status != previousStatus || todo.WakeCondition != previousWake) {
 			if enqueueErr := transaction.enqueueOrReplaceEffect(call, EffectTodoWaiting, *todo, ""); enqueueErr != nil {
 				return fmt.Errorf("enqueue dependency wait effect: %w", enqueueErr)
@@ -106,7 +105,7 @@ func (service Service) AddDependency(
 		}
 		result.Awakened = reconciled.Awakened
 		result.Effects = append(result.Effects, reconciled.Effects...)
-		if todo.Status != store.TodoStatusInProgress {
+		if todo.Status == store.TodoStatusInProgress && todo.WakeCondition != "" {
 			if _, unbindErr := transaction.UnbindTodoSessions(todo.ID, "dependency:"+todo.Status); unbindErr != nil {
 				return fmt.Errorf("unbind todo sessions before dependency wait: %w", unbindErr)
 			}
@@ -149,19 +148,15 @@ func (service Service) RemoveDependency(
 			return findErr
 		}
 
-		if result.Removed && todo.Status == store.TodoStatusWaiting &&
+		if result.Removed && todo.Status == store.TodoStatusInProgress &&
 			strings.HasPrefix(todo.WakeCondition, "waiting for todos: ") {
 			if len(todo.DependsOn) == 0 {
-				todo.Status = store.TodoStatusOpen
 				todo.WakeCondition = ""
 				todo.ReviewAt = ""
 				event := store.TodoWakeEvent{
 					TodoID: todo.ID, Dependencies: []string{}, Reason: "all structured dependencies removed",
 				}
 				result.Awakened = append(result.Awakened, event)
-				if _, unbindErr := transaction.UnbindTodoSessions(todo.ID, "dependency:"+todo.Status); unbindErr != nil {
-					return fmt.Errorf("unbind todo sessions after dependency removal: %w", unbindErr)
-				}
 				if enqueueErr := transaction.enqueueEffectWithCause(
 					call, EffectTodoDependencyAwakened, *todo, "[wake] "+event.Reason, todoID,
 				); enqueueErr != nil {

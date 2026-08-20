@@ -21,20 +21,16 @@ type batchInput struct {
 	Source   string      `yaml:"source" json:"source"`
 	Creator  string      `yaml:"creator" json:"creator"`
 	Priority string      `yaml:"priority" json:"priority"`
-	Status   string      `yaml:"status" json:"status"`
 	Items    []batchItem `yaml:"items" json:"items"`
 }
 
 type batchItem struct {
-	Title         string `yaml:"title" json:"title"`
-	Desc          string `yaml:"desc" json:"desc"`
-	Priority      string `yaml:"priority" json:"priority"`
-	Project       string `yaml:"project" json:"project"`
-	Source        string `yaml:"source" json:"source"`
-	Creator       string `yaml:"creator" json:"creator"`
-	Status        string `yaml:"status" json:"status"`
-	WakeCondition string `yaml:"wake" json:"wake"`
-	ReviewAt      string `yaml:"review_at" json:"review_at"`
+	Title    string `yaml:"title" json:"title"`
+	Desc     string `yaml:"desc" json:"desc"`
+	Priority string `yaml:"priority" json:"priority"`
+	Project  string `yaml:"project" json:"project"`
+	Source   string `yaml:"source" json:"source"`
+	Creator  string `yaml:"creator" json:"creator"`
 }
 
 func runTodoAdd(cmd *cobra.Command, args []string) error {
@@ -62,17 +58,14 @@ func runTodoAdd(cmd *cobra.Command, args []string) error {
 	}
 	call := cliApplicationCall("todo-add", "")
 	result, err := workapp.Default.Add(cmd.Context(), call, workapp.AddInput{
-		Title:         title,
-		Description:   description,
-		Priority:      todoAddPriorityFlag,
-		Status:        todoAddStatusFlag,
-		Project:       todoAddProjectFlag,
-		WakeCondition: todoAddWakeFlag,
-		ReviewAt:      todoAddReviewAtFlag,
-		Source:        source,
-		Creator:       todoAddCreatorFlag,
-		OnDone:        todoOnDoneFlag,
-		ImagePaths:    todoAddImageFlags,
+		Title:       title,
+		Description: description,
+		Priority:    todoAddPriorityFlag,
+		Project:     todoAddProjectFlag,
+		Source:      source,
+		Creator:     todoAddCreatorFlag,
+		OnDone:      todoOnDoneFlag,
+		ImagePaths:  todoAddImageFlags,
 	})
 	if err != nil {
 		return err
@@ -149,13 +142,6 @@ func runTodoBatchAdd(cmd *cobra.Command) error {
 	if todoAddProjectFlag != "" {
 		defaultProject = todoAddProjectFlag
 	}
-	defaultStatus := batch.Status
-	if defaultStatus == "" {
-		defaultStatus = "open"
-	}
-	if todoAddStatusFlag != "open" {
-		defaultStatus = todoAddStatusFlag
-	}
 	defaultSource := batch.Source
 	if todoSourceFlag != "" {
 		defaultSource = todoSourceFlag
@@ -168,21 +154,17 @@ func runTodoBatchAdd(cmd *cobra.Command) error {
 	items := make([]workapp.BatchAddItem, len(batch.Items))
 	for index, item := range batch.Items {
 		items[index] = workapp.BatchAddItem{
-			Title:         item.Title,
-			Description:   item.Desc,
-			Priority:      item.Priority,
-			Project:       item.Project,
-			Source:        item.Source,
-			Creator:       item.Creator,
-			Status:        item.Status,
-			WakeCondition: item.WakeCondition,
-			ReviewAt:      item.ReviewAt,
+			Title:       item.Title,
+			Description: item.Desc,
+			Priority:    item.Priority,
+			Project:     item.Project,
+			Source:      item.Source,
+			Creator:     item.Creator,
 		}
 	}
 	result, err := workapp.Default.BatchAdd(cmd.Context(), cliApplicationCall("todo-batch-add", ""), workapp.BatchAddInput{
 		Defaults: workapp.BatchAddDefaults{
 			Priority: defaultPriority,
-			Status:   defaultStatus,
 			Project:  defaultProject,
 			Source:   defaultSource,
 			Creator:  defaultCreator,
@@ -232,6 +214,9 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 		patch.Source = stringValue(todoEditSourceFlag)
 	}
 	if cmd.Flags().Changed("status") {
+		if todoEditStatusFlag != "open" {
+			return fmt.Errorf("--status only accepts open; use todo start or todo submit for lifecycle transitions")
+		}
 		patch.Status = stringValue(todoEditStatusFlag)
 	}
 	if cmd.Flags().Changed("wake") {
@@ -239,6 +224,9 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 	}
 	if cmd.Flags().Changed("review-at") {
 		patch.ReviewAt = stringValue(todoEditReviewAtFlag)
+	}
+	if cmd.Flags().Changed("maintenance-limit") {
+		patch.MaintenanceLimit = intValue(todoEditMaintenanceLimitFlag)
 	}
 
 	result, err := workapp.Default.Edit(cmd.Context(), cliApplicationCall("todo-edit", ""), workapp.EditInput{
@@ -257,26 +245,6 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runTodoMove(cmd *cobra.Command, args []string) error {
-	result, err := workapp.Default.Move(cmd.Context(), cliApplicationCall("todo-move", ""), workapp.MoveInput{
-		TodoID:  args[0],
-		Project: todoMoveProjectFlag,
-	})
-	if err != nil {
-		return err
-	}
-	if jsonOutput {
-		output.JSON(result.Todo)
-		return nil
-	}
-	if result.PreviousProject != "" {
-		fmt.Printf("Moved %s: %s → %s\n", result.Todo.ID, result.PreviousProject, result.Todo.Project)
-	} else {
-		fmt.Printf("Moved %s → %s\n", result.Todo.ID, result.Todo.Project)
-	}
-	return nil
-}
-
 func deliverTodoMetadataEffects(effects []workapp.MetadataEffect) {
 	for _, effect := range effects {
 		todo := effect.Todo
@@ -290,6 +258,11 @@ func deliverTodoMetadataEffects(effects []workapp.MetadataEffect) {
 }
 
 func stringValue(value string) *string {
+	copy := value
+	return &copy
+}
+
+func intValue(value int) *int {
 	copy := value
 	return &copy
 }

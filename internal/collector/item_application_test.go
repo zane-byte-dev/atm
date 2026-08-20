@@ -72,10 +72,3 @@ func TestItemUseCasesReturnStableNotFoundAndConflictErrors(t *testing.T) {
 		t.Fatalf("empty correction error = %v, want invalid_argument", err)
 	}
 }
-
-func TestDefaultCollectorServiceLeavesDispatchImplementationToAdapter(t *testing.T) {
-	service := DefaultService()
-	if service.Dispatcher != nil {
-		t.Fatalf("default collector service installed delivery adapter %T", service.Dispatcher)
-	}
-}

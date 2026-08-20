@@ -55,11 +55,10 @@ func (localWorkEffectExecutor) ApplyWorkEffect(event workapp.Effect) error {
 				return fmt.Errorf("append todo close log: %w", err)
 			}
 		}
-		notifyEvent := notifyEventDone
-		if todo.Status == "dropped" {
-			notifyEvent = notifyEventDropped
-		}
-		notifyTodoEvent(&todo, notifyEvent)
+		// The close effect only ever means accepted-as-done now. It used to also
+		// carry 放弃, which was a status this branch checked for; setting work
+		// aside archives it instead, and archival is not a close.
+		notifyTodoEvent(&todo, notifyEventDone)
 		if todo.Status == "done" && strings.TrimSpace(todo.OnDone) != "" {
 			// Delivery is at-least-once. A process crash after Start and before the
 			// outbox acknowledgement can launch this command again; OnDone hooks

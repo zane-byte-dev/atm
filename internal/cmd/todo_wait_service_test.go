@@ -49,7 +49,7 @@ func TestRunTodoWaitIsAThinServiceAdapter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(doc, "- **状态**: waiting（等待中）") {
+	if !strings.Contains(doc, "- **状态**: in_progress（进行中）") {
 		t.Fatalf("todo document was not synchronized after commit:\n%s", doc)
 	}
 }

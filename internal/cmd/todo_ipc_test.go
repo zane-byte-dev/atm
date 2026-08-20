@@ -151,7 +151,7 @@ func TestIPCTodoRefineDeliversEffectsAndHonorsSplitLimit(t *testing.T) {
 	if !response.Changed || !response.Split || response.DryRun || len(response.Children) != 2 {
 		t.Fatalf("response = %+v", response)
 	}
-	if response.Todo.Title != "实现可验收闭环" || response.Todo.Status != store.TodoStatusWaiting {
+	if response.Todo.Title != "实现可验收闭环" || response.Todo.Status != store.TodoStatusOpen {
 		t.Fatalf("refined parent = %+v", response.Todo)
 	}
 	if modelInput.Options.Hint != "补验收标准" || !modelInput.Options.AllowSplit || modelInput.Options.MaxChildren != 2 {

@@ -63,7 +63,7 @@ func TestApplyTodoRefineSplitsOpenParent(t *testing.T) {
 	if updated == nil {
 		t.Fatal("refined parent missing")
 	}
-	if updated.Title != "实现收集闭环" || updated.Status != store.TodoStatusWaiting {
+	if updated.Title != "实现收集闭环" || updated.Status != store.TodoStatusOpen {
 		t.Fatalf("parent = %+v", updated)
 	}
 	if len(updated.DependsOn) != 2 {

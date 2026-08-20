@@ -311,150 +311,6 @@ struct ATMTodoPrompt: Decodable {
     let prompt: String
 }
 
-struct ATMTaskRun: Decodable, Identifiable, Equatable {
-    let id: String
-    let todoID: String
-    let agent: String
-    let project: String?
-    let workDir: String
-    let policy: String
-    let logPath: String
-    let status: String
-    let pid: Int?
-    let startTS: Int64
-    let endTS: Int64?
-    let exitCode: Int?
-    let message: String?
-    let sessionID: String?
-
-    enum CodingKeys: String, CodingKey {
-        case id, agent, project, policy, status, pid, message
-        case todoID = "todo_id"
-        case workDir = "work_dir"
-        case logPath = "log_path"
-        case startTS = "start_ts"
-        case endTS = "end_ts"
-        case exitCode = "exit_code"
-        case sessionID = "session_id"
-    }
-
-    var isActive: Bool { status == "starting" || status == "running" }
-}
-
-/// The dispatch target as `atm todo agents --json` reports it.
-///
-/// One row: dispatch is Codex only. What is still worth asking the CLI is
-/// whether the binary is on PATH and what a run costs — both change without the
-/// App being rebuilt.
-struct ATMTaskRunAgent: Decodable, Identifiable, Equatable {
-    let id: String
-    let name: String
-    let binary: String
-    let available: Bool
-    let costNote: String
-
-    enum CodingKeys: String, CodingKey {
-        case id, name, binary, available
-        case costNote = "cost_note"
-    }
-
-    /// Codex runs guarded: `--sandbox workspace-write` is a boundary ATM can
-    /// actually enforce, which is why it is the only dispatch target left.
-    /// Trusted stays a deliberate CLI choice (`atm todo run --policy trusted`)
-    /// rather than something a sheet can produce by accident.
-    var dispatchPolicy: String { "guarded" }
-}
-
-enum ATMTaskRunSessionRouting {
-    /// Resolve the Agent row for a dispatched run. A live Todo binding is the
-    /// strongest signal while the run is active; the durable run/session link
-    /// keeps navigation working after the Todo moves to review and the binding
-    /// closes. Stable-fragment matching bridges the index's rollout id, Codex's
-    /// resume UUID, and the eight-character id exposed by live status.
-    static func session(
-        for run: ATMTaskRun,
-        todoID: String,
-        in sessions: [ATMLiveSession]
-    ) -> ATMLiveSession? {
-        let bound = sessions.filter {
-            $0.bindingTodoID?.caseInsensitiveCompare(todoID) == .orderedSame
-        }
-        if let linked = bound.first(where: { identifiersMatch(run.sessionID, $0) }) {
-            return linked
-        }
-        if let active = bound.first(where: \.isCurrentlyActive) {
-            return active
-        }
-        if let recent = bound.first {
-            return recent
-        }
-        return sessions.first(where: { identifiersMatch(run.sessionID, $0) })
-    }
-
-    static func run(for session: ATMLiveSession, in runs: [ATMTaskRun]) -> ATMTaskRun? {
-        if let linked = runs.first(where: { identifiersMatch($0.sessionID, session) }) {
-            return linked
-        }
-        guard let todoID = session.bindingTodoID else { return nil }
-        return runs.first {
-            $0.todoID.caseInsensitiveCompare(todoID) == .orderedSame
-        }
-    }
-
-    static func identifiersMatch(_ runSessionID: String?, _ session: ATMLiveSession) -> Bool {
-        guard let runID = normalized(runSessionID) else { return false }
-        let candidates = [session.resumeID, session.sessionID].compactMap(normalized)
-        return candidates.contains { candidate in
-            runID == candidate || (
-                min(runID.count, candidate.count) >= 8 &&
-                (runID.contains(candidate) || candidate.contains(runID))
-            )
-        }
-    }
-
-    /// The thread id `codex exec resume` will accept, mirroring the CLI's own
-    /// rule. The stored id is either the bare UUID an Agent reports through
-    /// `atm session bind` or the `rollout-<timestamp>-<uuid>` form transcript
-    /// sync derives from the rollout filename — and Codex reads anything that is
-    /// not a UUID as a thread *name*, silently starting a new session instead of
-    /// failing. The App has to apply the same test as the CLI, otherwise it
-    /// offers “继续修改” for a run the CLI will refuse.
-    static func resumableThreadID(_ sessionID: String?) -> String? {
-        guard let value = normalized(sessionID) else { return nil }
-        // The rollout form carries its timestamp first, so the id is the last match.
-        guard let range = value.range(of: threadIDPattern, options: [.regularExpression, .backwards]) else {
-            return nil
-        }
-        return String(value[range])
-    }
-
-    private static let threadIDPattern =
-        "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
-
-    private static func normalized(_ value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-              !value.isEmpty else { return nil }
-        return value
-    }
-}
-
-struct ATMTaskRunDispatch: Decodable {
-    let run: ATMTaskRun
-}
-
-enum ATMTaskRunLogPolicy {
-    /// The raw stream moved behind an explicit “全部日志” tab, so it can afford far
-    /// more than the old inline excerpt — but not everything: a long
-    /// `codex exec --json` run writes megabytes of events, and all of it would
-    /// land in one Swift String and one NSTextView. The CLI prefixes a
-    /// truncation notice when it seeks, so the tab stays honest about the bound.
-    static let maximumBytes = 1024 * 1024
-
-    static func arguments(todoID: String) -> [String] {
-        ["todo", "tail", todoID, "--bytes", String(maximumBytes)]
-    }
-}
-
 enum ATMProjectFolderResolver {
     static func resolve(
         todo: ATMTodo,
@@ -677,23 +533,15 @@ enum ATMLiveStatusRefreshPolicy {
 enum ATMTodoAction: Equatable {
     case start
     case complete
-    case drop
     /// Recoverable removal from the working set.
-    case trash
+    case archive
     /// Bring a recoverably removed todo back with its lifecycle state intact.
     case restore
-    /// Irreversible removal, exposed only from the trash.
+    /// Irreversible removal, exposed only from the archive.
     case delete
-    /// Park for later: `todo wait --wake 暂不处理`.
-    case deferLater
     /// Back to the open backlog: stop work in progress, reject review, or
-    /// unpark deferred work.
+    /// clear waiting presentation metadata.
     case returnToOpen
-}
-
-/// Human-parked todos use waiting + this exact wake string (no new CLI status).
-enum ATMTodoDeferred {
-    static let wakeCondition = "暂不处理"
 }
 
 /// One lifecycle control exposed in the detail toolbar and/or context menu.
@@ -713,20 +561,11 @@ struct ATMTodoLifecycleItem: Equatable, Identifiable {
 /// Lifecycle actions. Utility items (edit, copy prompt, delete) stay available
 /// everywhere; these only cover work-state transitions.
 ///
-/// There is one set for every open todo — 开始 / 标记完成 / 回到待办 / 暂不处理 /
-/// 放弃 — minus whatever the todo is already in (no 开始 while in_progress, no
-/// 回到待办 while open, no 暂不处理 while parked). A closed todo only offers
-/// 重新开始. Per-status action sets were tried first and only made the same
-/// controls come and go for no reason the user could predict.
+/// Lifecycle controls expose only the four-state transitions. Archive is a
+/// separate retention action supplied by the surrounding menu.
 enum ATMTodoStatusActions {
-    static func isDeferred(_ todo: ATMTodo) -> Bool {
-        todo.status == "waiting"
-            && (todo.wakeCondition ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            == ATMTodoDeferred.wakeCondition
-    }
-
     static func isClosed(_ todo: ATMTodo) -> Bool {
-        todo.status == "done" || todo.status == "dropped"
+        todo.status == "done"
     }
 
     static func items(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
@@ -766,10 +605,6 @@ enum ATMTodoStatusActions {
                 )
             )
         }
-        if !isDeferred(todo) {
-            actions.append(item(.deferLater, title: "暂不处理", help: "暂不处理", icon: "moon.zzz"))
-        }
-        actions.append(item(.drop, title: "放弃", help: "放弃此任务", icon: "xmark", primary: false))
         return actions
     }
 
@@ -785,7 +620,7 @@ enum ATMTodoStatusActions {
     }
 
     /// The rest of the lifecycle actions, inside the `···` overflow menu:
-    /// returnToOpen / deferLater / drop.
+    /// returnToOpen.
     static func overflowItems(for todo: ATMTodo) -> [ATMTodoLifecycleItem] {
         items(for: todo).filter { $0.action != .start && $0.action != .complete }
     }
@@ -793,7 +628,7 @@ enum ATMTodoStatusActions {
     /// Launch actions are for active work; review and closed states are human
     /// gates/history and must not silently restart implementation.
     static func showsLaunchPrompt(for todo: ATMTodo) -> Bool {
-        ["open", "in_progress", "waiting", "blocked"].contains(todo.status)
+        ["open", "in_progress"].contains(todo.status)
     }
 
     private static func item(
@@ -839,31 +674,15 @@ enum ATMCommandBuilder {
             return ["todo", "start", todo.id]
         case .complete:
             return ["todo", "done", todo.id, "--reason", "通过 ATM 菜单栏\(todo.completionVerb)"]
-        case .drop:
-            return ["todo", "drop", todo.id, "--reason", "通过 ATM 菜单栏放弃"]
-        case .trash:
-            return ["todo", "trash", todo.id]
+        case .archive:
+            return ["todo", "archive", todo.id]
         case .restore:
             return ["todo", "restore", todo.id]
         case .delete:
-            // Permanent deletion exists only inside the trash, after the desktop
+            // Permanent deletion exists only inside the archive, after the desktop
             // confirmation dialog. The CLI has no interactive stdin.
             return ["todo", "delete", todo.id, "--yes"]
-        case .deferLater:
-            return ["todo", "wait", todo.id, "--wake", ATMTodoDeferred.wakeCondition]
         case .returnToOpen:
-            // Waiting (incl. deferred) has a dedicated wake path that clears
-            // wake metadata and lands on open by default.
-            if todo.status == "waiting" {
-                let reason = ATMTodoStatusActions.isDeferred(todo)
-                    ? "通过 ATM 菜单栏移出暂不处理"
-                    : "通过 ATM 菜单栏回到待开始"
-                return [
-                    "todo", "wake", todo.id,
-                    "--status", "open",
-                    "--reason", reason,
-                ]
-            }
             return nil
         }
     }
@@ -872,21 +691,11 @@ enum ATMCommandBuilder {
         ["todo", "handoff", id, "--json"]
     }
 
-
+    /// `todo prompt` was merged into `todo handoff --copy`: both prepare the
+    /// pointer without starting anything, so they are one command with two
+    /// payloads. --copy returns the text and opens no window.
     static func todoPrompt(id: String) -> [String] {
-        ["todo", "prompt", id, "--json"]
-    }
-
-    static func dispatchTaskRun(id: String, agent: String, policy: String) -> [String] {
-        ["todo", "run", id, "--agent", agent, "--policy", policy, "--json"]
-    }
-
-    static func continueTaskRun(id: String, agent: String, policy: String, instructions: String) -> [String] {
-        ["todo", "run", id, "--agent", agent, "--policy", policy, "--continue", instructions, "--json"]
-    }
-
-    static func interruptTaskRun(id: String) -> [String] {
-        ["todo", "interrupt", id, "--json"]
+        ["todo", "handoff", id, "--copy", "--json"]
     }
 
     static func guardToolStatus() -> [String] {
@@ -1066,7 +875,7 @@ final class ATMDataStore: ObservableObject {
     private(set) var isLoading = false
     @Published private(set) var isSyncing = false
     @Published private(set) var isActing = false
-    @Published private(set) var trashedTodos: [ATMTodo] = []
+    @Published private(set) var archivedTodos: [ATMTodo] = []
     @Published private(set) var knowledgeCollections: [ATMKnowledgeCollection] = []
     @Published private(set) var isKnowledgeCatalogLoading = false
     @Published var knowledgeErrorMessage: String?
@@ -1078,13 +887,6 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var loadingProgressTodoIDs: Set<String> = []
     @Published private(set) var boundSessionsByTodoID: [String: [ATMBoundSession]] = [:]
     @Published private(set) var loadingBoundSessionTodoIDs: Set<String> = []
-    @Published private(set) var taskRunsByTodoID: [String: [ATMTaskRun]] = [:]
-    @Published private(set) var taskRunAgents: [ATMTaskRunAgent] = []
-    @Published private(set) var taskRunLogsByTodoID: [String: String] = [:]
-    @Published private(set) var taskRunLogErrorsByTodoID: [String: String] = [:]
-    @Published private(set) var loadingTaskRunTodoIDs: Set<String> = []
-    private var loadingTaskRunLogTodoIDs: Set<String> = []
-    private var isLoadingTaskRunAgents = false
     @Published private(set) var collectionOverview = ATMCollectionOverview.empty
     @Published private(set) var isCollecting = false
     @Published private(set) var collectingSourceIDs: Set<String> = []
@@ -1157,7 +959,7 @@ final class ATMDataStore: ObservableObject {
     /// their absence. This prevents an older in-flight refresh from restoring a
     /// row after the CLI has already removed it.
     private var optimisticallyDeletedTodoIDs: Set<String> = []
-    /// Keeps an older in-flight trash listing from resurrecting a row after the
+    /// Keeps an older in-flight archive listing from resurrecting a row after the
     /// irreversible delete command has succeeded.
     private var optimisticallyPermanentlyDeletedTodoIDs: Set<String> = []
     private var optimisticallyUpdatedTodos: [String: ATMTodo] = [:]
@@ -1857,7 +1659,6 @@ final class ATMDataStore: ObservableObject {
         strategy: String,
         decisionUnit: String,
         intervalMinutes: Int,
-        autoDispatch: Bool,
         enabled: Bool
     ) {
         let connectorID = connector.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1886,7 +1687,6 @@ final class ATMDataStore: ObservableObject {
                         decisionUnit: decisionUnit,
                         intervalMinutes: intervalMinutes,
                         priority: priority,
-                        autoDispatch: autoDispatch && strategy == "tasks",
                         enabled: enabled
                     )
                 )
@@ -2094,7 +1894,22 @@ final class ATMDataStore: ObservableObject {
         runCollectionItemAction { client in
             _ = try await client.call(
                 ATMCollectionIPCCommand.setItemsArchived,
-                request: ATMCollectionItemsArchivedRequest(itemIDs: ids, archived: archived)
+                request: ATMCollectionItemsArchivedRequest(itemIDs: ids, all: false, archived: archived)
+            )
+        }
+    }
+
+    /// Settles every conclusion already read and not saved to knowledge, in one
+    /// call. This is the bulk counterpart to 「了结记录」, and it exists because that
+    /// per-record action was never going to be pressed sixty times: the class it
+    /// clears is the only one with no lifecycle of its own, so before this the
+    /// realistic way to shrink the list was deleting rows — which took the audit
+    /// trail with them. Scope lives in Go; the App only asks.
+    func settleReadCollectionConclusions() {
+        runCollectionItemAction { client in
+            _ = try await client.call(
+                ATMCollectionIPCCommand.setItemsArchived,
+                request: ATMCollectionItemsArchivedRequest(itemIDs: [], all: true, archived: true)
             )
         }
     }
@@ -2432,15 +2247,15 @@ final class ATMDataStore: ObservableObject {
                     runner,
                     arguments: ["quota", "--json"]
                 )
-                async let trashTask: ATMCommandOutcome<[ATMTodo]> = decodeIPCCommand(
+                async let archiveTask: ATMCommandOutcome<[ATMTodo]> = decodeIPCCommand(
                     runner,
                     method: ATMTodoIPCCommand.list,
-                    request: ATMTodoListRequest(status: "trashed")
+                    request: ATMTodoListRequest(status: "archived")
                 )
-                let (dashboard, quotaOutcome, trashOutcome) = await (
+                let (dashboard, quotaOutcome, archiveOutcome) = await (
                     dashboardTask,
                     quotaTask,
-                    trashTask
+                    archiveTask
                 )
 
                 var nextState = dashboardState
@@ -2450,26 +2265,26 @@ final class ATMDataStore: ObservableObject {
                 if let error = quotaOutcome.error {
                     warnings.append("配额：\(error)")
                 }
-                if let error = trashOutcome.error {
-                    warnings.append("回收站：\(error)")
+                if let error = archiveOutcome.error {
+                    warnings.append("归档：\(error)")
                 }
                 if let value = quotaOutcome.value {
                     nextState.quota = value
                 }
-                if let value = trashOutcome.value {
+                if let value = archiveOutcome.value {
                     let permanentlyDeletedIDs = optimisticallyPermanentlyDeletedTodoIDs
                     let restoringIDs = Set(optimisticallyUpdatedTodos.keys)
-                    var incomingTrash = value.filter {
+                    var incomingArchive = value.filter {
                         !permanentlyDeletedIDs.contains($0.id) && !restoringIDs.contains($0.id)
                     }
-                    // A listing that started before `todo trash` may not include
+                    // A listing that started before `todo archive` may not include
                     // the newly moved row. Preserve the optimistic copy until the
                     // dashboard has observed that it left the working set.
-                    incomingTrash.append(contentsOf: trashedTodos.filter { optimistic in
+                    incomingArchive.append(contentsOf: archivedTodos.filter { optimistic in
                         optimisticallyDeletedTodoIDs.contains(optimistic.id)
-                            && !incomingTrash.contains(where: { $0.id == optimistic.id })
+                            && !incomingArchive.contains(where: { $0.id == optimistic.id })
                     })
-                    trashedTodos = incomingTrash
+                    archivedTodos = incomingArchive
                     optimisticallyPermanentlyDeletedTodoIDs.formIntersection(
                         Set(value.map(\.id))
                     )
@@ -2589,11 +2404,6 @@ final class ATMDataStore: ObservableObject {
                 switch action {
                 case .complete:
                     ATMNotificationManager.shared.sendTodoCompleted(todo)
-                case .drop:
-                    ATMNotificationManager.shared.send(
-                        .todoDropped(todo),
-                        todoID: todo.id
-                    )
                 default:
                     break
                 }
@@ -2605,9 +2415,9 @@ final class ATMDataStore: ObservableObject {
     }
 
     /// The CLI mutation is authoritative, so removal should update the working
-    /// set and trash immediately while a queued refresh reconciles other fields.
+    /// set and archive immediately while a queued refresh reconciles other fields.
     func applySuccessfulTodoAction(_ action: ATMTodoAction, on todo: ATMTodo) {
-        if action == .trash {
+        if action == .archive {
             let deletedIDs: Set<String> = [todo.id]
             optimisticallyDeletedTodoIDs.insert(todo.id)
             optimisticallyUpdatedTodos.removeValue(forKey: todo.id)
@@ -2616,14 +2426,14 @@ final class ATMDataStore: ObservableObject {
                 $0.snapshot = $0.snapshot.removingTodos(withIDs: deletedIDs)
             }
             progressByTodoID.removeValue(forKey: todo.id)
-            if !trashedTodos.contains(where: { $0.id == todo.id }) {
-                trashedTodos.insert(todo, at: 0)
+            if !archivedTodos.contains(where: { $0.id == todo.id }) {
+                archivedTodos.insert(todo, at: 0)
             }
             return
         }
 
         if action == .restore {
-            trashedTodos.removeAll { $0.id == todo.id }
+            archivedTodos.removeAll { $0.id == todo.id }
             optimisticallyDeletedTodoIDs.remove(todo.id)
             optimisticallyUpdatedTodos[todo.id] = todo
             updateDashboardState {
@@ -2636,7 +2446,7 @@ final class ATMDataStore: ObservableObject {
         }
 
         if action == .delete {
-            trashedTodos.removeAll { $0.id == todo.id }
+            archivedTodos.removeAll { $0.id == todo.id }
             let deletedIDs: Set<String> = [todo.id]
             optimisticallyDeletedTodoIDs.insert(todo.id)
             optimisticallyPermanentlyDeletedTodoIDs.insert(todo.id)
@@ -2655,16 +2465,9 @@ final class ATMDataStore: ObservableObject {
             updated = todo.replacingLifecycle(status: "in_progress")
         case .complete:
             updated = todo.replacingLifecycle(status: "done")
-        case .drop:
-            updated = todo.replacingLifecycle(status: "dropped")
-        case .deferLater:
-            updated = todo.replacingLifecycle(
-                status: "waiting",
-                wakeCondition: ATMTodoDeferred.wakeCondition
-            )
         case .returnToOpen:
             updated = todo.replacingLifecycle(status: "open")
-        case .trash, .restore, .delete:
+        case .archive, .restore, .delete:
             return
         }
         optimisticallyUpdatedTodos[todo.id] = updated
@@ -2732,8 +2535,10 @@ final class ATMDataStore: ObservableObject {
                     priority: edit.priority,
                     project: edit.project.trimmingCharacters(in: .whitespacesAndNewlines),
                     status: edit.status,
-                    wakeCondition: edit.wakeCondition.trimmingCharacters(in: .whitespacesAndNewlines),
-                    reviewAt: edit.reviewAt.trimmingCharacters(in: .whitespacesAndNewlines),
+                    wakeCondition: edit.status == "in_progress"
+                        ? edit.wakeCondition.trimmingCharacters(in: .whitespacesAndNewlines) : "",
+                    reviewAt: edit.status == "in_progress"
+                        ? edit.reviewAt.trimmingCharacters(in: .whitespacesAndNewlines) : "",
                     source: edit.source.trimmingCharacters(in: .whitespacesAndNewlines)
                 )
                 _ = try await makeTodoIPCClient().update(
@@ -2832,75 +2637,6 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
-    func taskRuns(for todoID: String) -> [ATMTaskRun] {
-        taskRunsByTodoID[todoID] ?? []
-    }
-
-    func taskRunLog(for todoID: String) -> String? {
-        taskRunLogsByTodoID[todoID]
-    }
-
-    func taskRunLogError(for todoID: String) -> String? {
-        taskRunLogErrorsByTodoID[todoID]
-    }
-
-    func loadTaskRuns(for todoID: String) {
-        guard !loadingTaskRunTodoIDs.contains(todoID) else { return }
-        loadingTaskRunTodoIDs.insert(todoID)
-        Task {
-            defer { loadingTaskRunTodoIDs.remove(todoID) }
-            do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(["todo", "runs", todoID, "--json"])
-                let runs = try JSONDecoder().decode([ATMTaskRun].self, from: data)
-                if taskRunsByTodoID[todoID] != runs {
-                    taskRunsByTodoID[todoID] = runs
-                }
-            } catch {
-                // Older CLI builds have no task-run endpoint. Leave the rest of
-                // task detail usable; explicit dispatch still surfaces its error.
-                taskRunsByTodoID[todoID] = taskRunsByTodoID[todoID] ?? []
-            }
-        }
-    }
-
-    func loadTaskRunLog(for todoID: String) {
-        guard !loadingTaskRunLogTodoIDs.contains(todoID) else { return }
-        guard !(taskRunsByTodoID[todoID] ?? []).isEmpty else { return }
-        loadingTaskRunLogTodoIDs.insert(todoID)
-        Task {
-            defer { loadingTaskRunLogTodoIDs.remove(todoID) }
-            do {
-                let runner = try ATMCommandRunner()
-                let log = try await runner.run(ATMTaskRunLogPolicy.arguments(todoID: todoID))
-                let text = String(decoding: log, as: UTF8.self)
-                taskRunLogErrorsByTodoID[todoID] = nil
-                if taskRunLogsByTodoID[todoID] != text {
-                    taskRunLogsByTodoID[todoID] = text
-                }
-            } catch {
-                // Preserve the last readable log, but make a first-load failure
-                // actionable instead of leaving “日志加载中…” on screen forever.
-                taskRunLogErrorsByTodoID[todoID] = ATMErrorText.compact(error.localizedDescription)
-            }
-        }
-    }
-
-    func loadTaskRunAgents() {
-        guard !isLoadingTaskRunAgents else { return }
-        isLoadingTaskRunAgents = true
-        Task {
-            defer { isLoadingTaskRunAgents = false }
-            do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(["todo", "agents", "--json"])
-                taskRunAgents = try JSONDecoder().decode([ATMTaskRunAgent].self, from: data)
-            } catch {
-                errorMessage = ATMErrorText.compact(error.localizedDescription)
-            }
-        }
-    }
-
     /// Opens the Todo in Codex Desktop and stops there.
     ///
     /// Deliberately changes nothing locally: `todo handoff` claims no run and
@@ -2922,86 +2658,10 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
-    func dispatchTodo(_ todo: ATMTodo, agent: ATMTaskRunAgent) {
-        guard !isActing else { return }
-        isActing = true
-        errorMessage = nil
-        Task {
-            defer { isActing = false }
-            do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(
-                    ATMCommandBuilder.dispatchTaskRun(
-                        id: todo.id,
-                        agent: agent.id,
-                        policy: agent.dispatchPolicy
-                    )
-                )
-                let result = try JSONDecoder().decode(ATMTaskRunDispatch.self, from: data)
-                let previous = taskRunsByTodoID[todo.id] ?? []
-                taskRunsByTodoID[todo.id] = [result.run] + previous.filter { $0.id != result.run.id }
-                refresh()
-            } catch {
-                errorMessage = error.localizedDescription
-                loadTaskRuns(for: todo.id)
-            }
-        }
-    }
-
-    func continueTodo(_ todo: ATMTodo, run: ATMTaskRun, instructions: String) {
-        let instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !isActing, !instructions.isEmpty else { return }
-        isActing = true
-        errorMessage = nil
-        Task {
-            defer { isActing = false }
-            do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(
-                    ATMCommandBuilder.continueTaskRun(
-                        id: todo.id,
-                        agent: run.agent,
-                        policy: run.policy,
-                        instructions: instructions
-                    )
-                )
-                let result = try JSONDecoder().decode(ATMTaskRunDispatch.self, from: data)
-                let previous = taskRunsByTodoID[todo.id] ?? []
-                taskRunsByTodoID[todo.id] = [result.run] + previous.filter { $0.id != result.run.id }
-                refresh()
-            } catch {
-                errorMessage = error.localizedDescription
-                loadTaskRuns(for: todo.id)
-            }
-        }
-    }
-
-    func interruptTaskRun(todoID: String) {
-        guard !isActing,
-              taskRunsByTodoID[todoID]?.first?.isActive == true else { return }
-        isActing = true
-        errorMessage = nil
-        Task {
-            defer { isActing = false }
-            do {
-                let runner = try ATMCommandRunner()
-                let data = try await runner.run(ATMCommandBuilder.interruptTaskRun(id: todoID))
-                let result = try JSONDecoder().decode(ATMTaskRunDispatch.self, from: data)
-                let previous = taskRunsByTodoID[todoID] ?? []
-                taskRunsByTodoID[todoID] = [result.run] + previous.filter { $0.id != result.run.id }
-                refreshLiveStatus()
-                refresh()
-            } catch {
-                errorMessage = error.localizedDescription
-                loadTaskRuns(for: todoID)
-            }
-        }
-    }
-
     /// Fetches the line a human pastes into a fresh agent session. The CLI owns
-    /// the wording, so the app cannot drift from `atm todo prompt`; the caller
-    /// writes it to the pasteboard, which is where every other copy action in
-    /// this app puts its result.
+    /// the wording, so the app cannot drift from `atm todo handoff --copy`; the
+    /// caller writes it to the pasteboard, which is where every other copy
+    /// action in this app puts its result.
     func launchPrompt(for todo: ATMTodo) async -> String? {
         errorMessage = nil
         do {

@@ -15,14 +15,13 @@ import (
 type RetentionAction string
 
 const (
-	RetentionArchive   RetentionAction = "archive"
-	RetentionUnarchive RetentionAction = "unarchive"
-	RetentionTrash     RetentionAction = "trash"
-	RetentionRestore   RetentionAction = "restore"
+	RetentionArchive RetentionAction = "archive"
+	RetentionRestore RetentionAction = "restore"
 )
 
 type RetentionInput struct {
-	TodoIDs []string `json:"todo_ids"`
+	TodoIDs   []string `json:"todo_ids"`
+	SessionID string   `json:"session_id,omitempty"`
 }
 
 type RetentionResult struct {
@@ -34,21 +33,12 @@ func (service Service) Archive(ctx context.Context, call application.Call, input
 	return service.moveRetention(ctx, call, input, RetentionArchive)
 }
 
-func (service Service) Unarchive(ctx context.Context, call application.Call, input RetentionInput) (RetentionResult, error) {
-	return service.moveRetention(ctx, call, input, RetentionUnarchive)
-}
-
-func (service Service) Trash(ctx context.Context, call application.Call, input RetentionInput) (RetentionResult, error) {
-	return service.moveRetention(ctx, call, input, RetentionTrash)
-}
-
 func (service Service) Restore(ctx context.Context, call application.Call, input RetentionInput) (RetentionResult, error) {
 	return service.moveRetention(ctx, call, input, RetentionRestore)
 }
 
-// moveRetention owns the distinction between archival (closed work only) and
-// trash (any lifecycle state). Repeating a move already in its requested state
-// is idempotent; a mixed batch is fully validated before any row is moved.
+// moveRetention implements the single archive layer. Lifecycle state is
+// preserved across archive and restore.
 func (service Service) moveRetention(
 	ctx context.Context,
 	call application.Call,
@@ -58,12 +48,28 @@ func (service Service) moveRetention(
 	if err := validateLifecycleCall(ctx, call); err != nil {
 		return RetentionResult{}, err
 	}
-	ids, err := normalizeRetentionIDs(input.TodoIDs)
-	if err != nil {
-		return RetentionResult{}, err
+	var ids []string
+	var err error
+	if len(input.TodoIDs) > 0 {
+		ids, err = normalizeRetentionIDs(input.TodoIDs)
+		if err != nil {
+			return RetentionResult{}, err
+		}
+	} else if strings.TrimSpace(input.SessionID) == "" {
+		return RetentionResult{}, lifecycleInvalidArgument("at least one todo ID is required", "todo_ids", input.TodoIDs)
 	}
 	result := RetentionResult{}
 	err = service.Mutate(func(transaction *Transaction) error {
+		if len(ids) == 0 {
+			binding, bindingErr := transaction.currentSessionBinding(strings.TrimSpace(input.SessionID))
+			if bindingErr != nil {
+				return bindingErr
+			}
+			if binding == nil {
+				return transitionTargetUnavailable(input.SessionID)
+			}
+			ids = []string{binding.TodoID}
+		}
 		move := make([]string, 0, len(ids))
 		for _, id := range ids {
 			todo := store.FindTodo(transaction.Todos(), id)
@@ -77,22 +83,8 @@ func (service Service) moveRetention(
 				if todo == nil {
 					return lifecycleTodoNotFound(id, store.TodoNotFoundError(transaction.Todos(), id))
 				}
-				if store.TodoIsActive(*todo) {
-					return lifecycleConflict(
-						fmt.Sprintf("cannot archive %s with status %s: finish or drop it first", id, todo.Status), id, todo.Status,
-					)
-				}
 				move = append(move, id)
-			case RetentionTrash:
-				if archived {
-					result.Unchanged = append(result.Unchanged, id)
-					continue
-				}
-				if todo == nil {
-					return lifecycleTodoNotFound(id, store.TodoNotFoundError(transaction.Todos(), id))
-				}
-				move = append(move, id)
-			case RetentionUnarchive, RetentionRestore:
+			case RetentionRestore:
 				if todo != nil {
 					result.Unchanged = append(result.Unchanged, id)
 					continue
@@ -113,12 +105,8 @@ func (service Service) moveRetention(
 		switch action {
 		case RetentionArchive:
 			result.Moved, moveErr = transaction.ArchiveTodos(move)
-		case RetentionTrash:
-			result.Moved, moveErr = transaction.TrashTodos(move)
-		case RetentionUnarchive:
-			result.Moved, moveErr = transaction.UnarchiveTodos(move)
 		case RetentionRestore:
-			result.Moved, moveErr = transaction.RestoreTodos(move)
+			result.Moved, moveErr = transaction.UnarchiveTodos(move)
 		}
 		return moveErr
 	})

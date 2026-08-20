@@ -147,10 +147,11 @@ func TestBuildWorkClassifiesDueAndSortsByPriority(t *testing.T) {
 	file := &store.TodoFile{Items: []store.Todo{
 		{ID: "t3", Priority: "P2", Status: store.TodoStatusOpen, Created: "2026-08-19"},
 		{ID: "t1", Priority: "P0", Status: store.TodoStatusOpen, Created: "2026-08-20", Tags: []string{store.TodoTagMaintenance}},
-		{ID: "t2", Priority: "P1", Status: store.TodoStatusWaiting, ReviewAt: "2026-08-20"},
+		{ID: "t2", Priority: "P1", Status: store.TodoStatusInProgress, ReviewAt: "2026-08-20"},
 	}}
 	view := buildWork(file, now)
-	if len(view.Open) != 2 || view.Open[0].ID != "t1" || len(view.Due) != 1 || view.Due[0].ID != "t2" {
+	if len(view.Open) != 2 || view.Open[0].ID != "t1" || len(view.Working) != 1 ||
+		len(view.Due) != 1 || view.Due[0].ID != "t2" {
 		t.Fatalf("work view = %+v", view)
 	}
 	if view.Summary.Maintenance != 1 || view.Summary.Due != 1 {

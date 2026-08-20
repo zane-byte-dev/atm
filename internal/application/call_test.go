@@ -33,7 +33,6 @@ func TestCallValidateAcceptsKnownShapeWithoutUseCasePolicy(t *testing.T) {
 			Origin:    OriginHook,
 			SessionID: "session-1",
 			BindingID: 7,
-			RunID:     "run-2",
 			Agent:     "codex",
 		},
 	}

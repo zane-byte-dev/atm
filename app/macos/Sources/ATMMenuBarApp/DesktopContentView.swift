@@ -54,40 +54,41 @@ enum ATMDesktopLocation: Equatable {
 
 enum ATMTaskListMode: Equatable {
     case active
-    case trash
+    case archive
 }
 
 /// Status color / icon / label used by the task list and detail header.
 enum ATMTodoStatusStyle {
-    /// Parked by the human via “暂不处理”. Stored as waiting with this wake string
-    /// so we do not need a new CLI status.
-    static var deferredWake: String { ATMTodoDeferred.wakeCondition }
-
-    static func isDeferred(_ todo: ATMTodo) -> Bool {
-        ATMTodoStatusActions.isDeferred(todo)
+    /// Waiting is presentation only: an in-progress Todo with either a wake
+    /// condition or review date stays in the same lifecycle group.
+    static func isWaiting(_ todo: ATMTodo) -> Bool {
+        guard todo.status == "in_progress" else { return false }
+        return !(todo.wakeCondition ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !(todo.reviewAt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// Waiting deliberately has no label of its own. It is not a lifecycle state,
+    /// and giving it one put a fifth word in a four-state vocabulary — a Todo read
+    /// as 等待中 in the list and 进行中 everywhere else. The orange clock in
+    /// `color(for:)` and `icon(for:)` is how waiting shows, alongside the wake
+    /// condition and review date the detail view already prints.
     static func label(for todo: ATMTodo) -> String {
-        if isDeferred(todo) { return "暂不处理" }
-        return label(forStatus: todo.status)
+        label(forStatus: todo.status)
     }
 
     static func label(forStatus status: String) -> String {
         switch status {
-        case "open": return "待开始"
-        case "in_progress": return "工作中"
-        case "waiting": return "等待中"
+        case "open": return "待办"
+        case "in_progress": return "进行中"
         case "review": return "待验收"
-        case "blocked": return "阻塞"
         case "done": return "已完成"
-        case "dropped": return "已放弃"
         default: return status
         }
     }
 
     static func color(for todo: ATMTodo) -> Color {
-        if isDeferred(todo) {
-            return Color(red: 117 / 255, green: 128 / 255, blue: 145 / 255)
+        if isWaiting(todo) {
+            return Color(red: 230 / 255, green: 139 / 255, blue: 24 / 255)
         }
         return color(forStatus: todo.status)
     }
@@ -98,23 +99,17 @@ enum ATMTodoStatusStyle {
             return Color(red: 117 / 255, green: 128 / 255, blue: 145 / 255)
         case "in_progress":
             return Color(red: 52 / 255, green: 112 / 255, blue: 246 / 255)
-        case "waiting":
-            return Color(red: 230 / 255, green: 139 / 255, blue: 24 / 255)
         case "review":
             return Color(red: 137 / 255, green: 87 / 255, blue: 229 / 255)
-        case "blocked":
-            return Color(red: 220 / 255, green: 50 / 255, blue: 67 / 255)
         case "done":
             return Color(red: 31 / 255, green: 157 / 255, blue: 104 / 255)
-        case "dropped":
-            return Color(red: 117 / 255, green: 128 / 255, blue: 145 / 255).opacity(0.55)
         default:
             return ATMTheme.secondary
         }
     }
 
     static func icon(for todo: ATMTodo) -> String {
-        if isDeferred(todo) { return "moon.zzz.fill" }
+        if isWaiting(todo) { return "clock.fill" }
         return icon(forStatus: todo.status)
     }
 
@@ -123,22 +118,19 @@ enum ATMTodoStatusStyle {
         case "open": return "circle"
         // Fallback SF Symbol when a ProgressView is not practical (menus, a11y).
         case "in_progress": return "circle.dotted"
-        case "waiting": return "clock.fill"
         case "review": return "person.crop.circle.badge.checkmark"
-        case "blocked": return "exclamationmark.octagon.fill"
         case "done": return "checkmark.circle.fill"
-        case "dropped": return "xmark.circle.fill"
         default: return "circle"
         }
     }
 
     /// True when the row should show a spinner instead of a static status glyph.
     static func usesLoadingIcon(for todo: ATMTodo) -> Bool {
-        todo.status == "in_progress" && !isDeferred(todo)
+        todo.status == "in_progress" && !isWaiting(todo)
     }
 
     static func usesStrikethrough(for todo: ATMTodo) -> Bool {
-        todo.status == "dropped"
+        false
     }
 }
 
@@ -199,17 +191,13 @@ enum ATMTaskQuery {
     /// part of a day's work silently showed up under 完成历史.
     static let recentCompletionDays = 7
 
-    /// Status sections in list order. 待验收 is first — it is the human gate.
-    /// 暂不处理 sits near the bottom: parked work, not a current queue.
+    /// Status sections in list order. Waiting-styled work remains in 进行中: the
+    /// orange clock marks it inside that group rather than splitting it out.
     static let groupSpecs: [(id: String, title: String)] = [
         ("review", "待验收"),
-        ("working", "工作中"),
-        ("waiting", "等待中"),
-        ("blocked", "阻塞"),
-        ("open", "待开始"),
-        ("deferred", "暂不处理"),
+        ("working", "进行中"),
+        ("open", "待办"),
         ("done", "最近完成"),
-        ("dropped", "已放弃"),
         ("history", "完成历史"),
     ]
 
@@ -229,20 +217,6 @@ enum ATMTaskQuery {
             [todo.id, todo.title, todo.description ?? "", todo.project ?? "", todo.source ?? ""]
                 .contains { $0.lowercased().contains(needle) }
         }
-    }
-
-    static func visibleTodos(from todos: [ATMTodo], showsDropped: Bool) -> [ATMTodo] {
-        guard !showsDropped else { return todos }
-        return todos.filter { $0.status != "dropped" }
-    }
-
-    static func shouldRevealDropped(
-        selectedID: String?,
-        in todos: [ATMTodo],
-        showsDropped: Bool
-    ) -> Bool {
-        guard !showsDropped, let selectedID else { return false }
-        return todos.first(where: { $0.id == selectedID })?.status == "dropped"
     }
 
     /// Newest first within a status group. `created` is YYYY-MM-DD; id breaks ties.
@@ -293,9 +267,6 @@ enum ATMTaskQuery {
     ) -> [(id: String, title: String, todos: [ATMTodo])] {
         let review = todos.filter { $0.status == "review" }
         let working = todos.filter { $0.status == "in_progress" }
-        let deferred = todos.filter(ATMTodoStatusStyle.isDeferred)
-        let waiting = todos.filter { $0.status == "waiting" && !ATMTodoStatusStyle.isDeferred($0) }
-        let blocked = todos.filter { $0.status == "blocked" }
         let open = todos.filter { $0.status == "open" }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
@@ -308,19 +279,14 @@ enum ATMTaskQuery {
         let completed = sortedByCompletionDescending(todos.filter { $0.status == "done" })
         let done = completed.filter { completionDay(for: $0) >= cutoffDay }
         let history = completed.filter { completionDay(for: $0) < cutoffDay }
-        let dropped = todos.filter { $0.status == "dropped" }
         let buckets: [String: [ATMTodo]] = [
             "review": review,
             "working": working,
-            "waiting": waiting,
-            "blocked": blocked,
             "open": open,
-            "deferred": deferred,
             "done": done,
-            "dropped": dropped,
             "history": history,
         ]
-        let completionGroups: Set<String> = ["done", "dropped", "history"]
+        let completionGroups: Set<String> = ["done", "history"]
         return groupSpecs.compactMap { spec in
             let items = completionGroups.contains(spec.id)
                 ? sortedByCompletionDescending(buckets[spec.id] ?? [])
@@ -330,19 +296,24 @@ enum ATMTaskQuery {
         }
     }
 
+    /// Flat mode removes only the section chrome. It keeps the grouped view's
+    /// status rank and each section's ordering so changing presentation never
+    /// changes which task is considered first.
+    static func flattened(
+        from todos: [ATMTodo],
+        now: Date = Date()
+    ) -> [ATMTodo] {
+        groups(from: todos, now: now).flatMap(\.todos)
+    }
+
     static func preferredDefault(in todos: [ATMTodo]) -> ATMTodo? {
         // Match list order: human review first, then active work; newest within rank.
-        // Deferred/parked work ranks just above closed.
         let statusRank: (ATMTodo) -> Int = { todo in
-            if ATMTodoStatusStyle.isDeferred(todo) { return 5 }
             switch todo.status {
             case "review": return 0
-            case "blocked": return 1
-            case "in_progress": return 2
-            case "waiting": return 3
-            case "open": return 4
-            case "done": return 6
-            case "dropped": return 7
+            case "in_progress": return 1
+            case "open": return 2
+            case "done": return 3
             default: return 99
             }
         }
@@ -374,7 +345,7 @@ final class ATMDesktopNavigation: ObservableObject {
     @Published var selectedTodoID: String? {
         didSet { if section == .tasks { navigationDidChange() } }
     }
-    /// Which task collection owns selectedTodoID. Direct links to trashed Todos
+    /// Which task collection owns selectedTodoID. Direct links to archived Todos
     /// switch this before the task view validates the selection.
     @Published var taskListMode: ATMTaskListMode = .active {
         didSet { if section == .tasks { navigationDidChange() } }
@@ -1107,18 +1078,22 @@ private struct DesktopTasksView: View {
 
     @State private var deleteCandidate: ATMTodo?
     @AppStorage("ATMCollapsedTaskGroups")
-    private var collapsedGroupsRaw = "done,deferred,dropped,history"
+    private var collapsedGroupsRaw = "done,history"
     @AppStorage("ATMDidApplyDefaultCollapsedTaskGroups") private var didApplyDefaultCollapsedGroups = false
     @AppStorage("ATMDidApplyClosedTaskGroupsV2") private var didApplyClosedTaskGroupsV2 = false
-    @AppStorage(ATMTodoListPreferences.showDroppedKey)
-    private var showsDropped = ATMTodoListPreferences.defaultShowsDropped
+    @AppStorage(ATMNavigatorPresentationPreferences.tasksKey)
+    private var taskListPresentationRaw = ATMNavigatorPresentationPreferences.defaultValue
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
     }
 
-    private var showingTrash: Bool {
-        navigation.taskListMode == .trash
+    private var showingArchive: Bool {
+        navigation.taskListMode == .archive
+    }
+
+    private var taskListPresentation: ATMNavigatorPresentation {
+        ATMNavigatorPresentation.resolve(taskListPresentationRaw)
     }
 
     private func expandedBinding(for group: ATMTaskGroup) -> Binding<Bool> {
@@ -1144,23 +1119,20 @@ private struct DesktopTasksView: View {
 
     private func groupAccent(_ id: String) -> Color {
         switch id {
-        case "trash": return ATMTheme.secondary
+        case "archive": return ATMTheme.secondary
         case "review": return ATMTodoStatusStyle.color(forStatus: "review")
         case "working": return ATMTodoStatusStyle.color(forStatus: "in_progress")
-        case "waiting": return ATMTodoStatusStyle.color(forStatus: "waiting")
-        case "blocked": return ATMTodoStatusStyle.color(forStatus: "blocked")
         case "done", "history": return ATMTodoStatusStyle.color(forStatus: "done")
         default: return ATMTheme.secondary
         }
     }
 
     private var todos: [ATMTodo] {
-        showingTrash ? store.trashedTodos : store.allTodos
+        showingArchive ? store.archivedTodos : store.allTodos
     }
 
     private var visibleTodos: [ATMTodo] {
-        if showingTrash { return todos }
-        return ATMTaskQuery.visibleTodos(from: todos, showsDropped: showsDropped)
+        todos
     }
 
     private var selectedTodo: ATMTodo? {
@@ -1169,12 +1141,16 @@ private struct DesktopTasksView: View {
     }
 
     private var groups: [ATMTaskGroup] {
-        if showingTrash {
-            return [ATMTaskGroup(id: "trash", title: "已删除", todos: visibleTodos)]
+        if showingArchive {
+            return [ATMTaskGroup(id: "archive", title: "已归档", todos: visibleTodos)]
         }
         return ATMTaskQuery.groups(from: visibleTodos).map {
             ATMTaskGroup(id: $0.id, title: $0.title, todos: $0.todos)
         }
+    }
+
+    private var flattenedTodos: [ATMTodo] {
+        showingArchive ? visibleTodos : ATMTaskQuery.flattened(from: visibleTodos)
     }
 
     var body: some View {
@@ -1193,7 +1169,7 @@ private struct DesktopTasksView: View {
                         todo: todo,
                         store: store,
                         navigation: navigation,
-                        isTrashed: showingTrash
+                        isArchived: showingArchive
                     )
                             // Identity is the Todo id alone. Folding title / description /
                             // status into it recreated the view on every background sync
@@ -1205,8 +1181,8 @@ private struct DesktopTasksView: View {
                 } else {
                     ATMDetailBodySurface {
                         ATMEmptyState(
-                            icon: showingTrash ? "trash" : "checklist",
-                            title: showingTrash ? "选择一个已删除任务" : "选择一个任务",
+                            icon: showingArchive ? "archivebox" : "checklist",
+                            title: showingArchive ? "选择一个已归档任务" : "选择一个任务",
                             detail: "从中栏查看详情、编辑 Markdown 或执行快捷操作。",
                             size: .inline,
                             minHeight: 180
@@ -1216,7 +1192,7 @@ private struct DesktopTasksView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .atmAnimatedSwap(
-                "todo:\(selectedTodo?.id ?? "empty"):\(showingTrash)",
+                "todo:\(selectedTodo?.id ?? "empty"):\(showingArchive)",
                 style: .detail
             )
         }
@@ -1232,19 +1208,19 @@ private struct DesktopTasksView: View {
         // (e.g. 已完成). Only pick a default when the current selection is gone;
         // reveal stays on selection change / first appear.
         .onChange(of: todos.map(\.id)) { _ in selectFirstIfNeeded() }
-        .onChange(of: showsDropped) { _ in selectFirstIfNeeded() }
         .onChange(of: navigation.taskListMode) { _ in selectFirstIfNeeded() }
         .onChange(of: navigation.selectedTodoID) { _ in
             revealSelectedTodoIfFiltered()
             selectFirstIfNeeded()
             revealSelectedGroup()
         }
+        .onChange(of: taskListPresentationRaw) { _ in revealSelectedGroup() }
     }
 
     private var taskList: some View {
         ATMGroupedNavigator {
-            ATMDrawerHeader(title: showingTrash ? "回收站" : "任务", count: visibleTodos.count) {
-                if showingTrash {
+            ATMDrawerHeader(title: showingArchive ? "归档" : "任务", count: visibleTodos.count) {
+                if showingArchive {
                     Button {
                         navigation.taskListMode = .active
                     } label: {
@@ -1253,16 +1229,18 @@ private struct DesktopTasksView: View {
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                 } else {
+                    ATMNavigatorPresentationToggle(storedValue: $taskListPresentationRaw)
+
                     // 纯图标一律走 ATMIconButton——原生 `.bordered` 的方框让它比收集 / 知识
                     // 同一位置的图标多一圈边，而带文字的「新建」「返回任务」才留给原生按钮。
                     ATMIconButton(
-                        systemImage: "trash",
-                        help: "回收站",
+                        systemImage: "archivebox",
+                        help: "归档",
                         chrome: .bare,
                         side: 30,
                         iconTier: .bodyLarge
                     ) {
-                        navigation.taskListMode = .trash
+                        navigation.taskListMode = .archive
                     }
 
                     Button {
@@ -1294,27 +1272,22 @@ private struct DesktopTasksView: View {
             }
 
             ATMGroupedNavigatorScroll {
-                ForEach(groups) { group in
-                    let expanded = expandedBinding(for: group)
-                    ATMNavigatorGroup {
-                        groupHeader(group, expanded: expanded)
-                    } content: {
-                        if expanded.wrappedValue {
-                            ForEach(group.todos) { todo in
-                                Button {
-                                    navigation.selectedTodoID = todo.id
-                                } label: {
-                                    DesktopTodoRow(
-                                        todo: todo,
-                                        isSelected: navigation.selectedTodoID == todo.id
-                                    )
+                if taskListPresentation == .grouped {
+                    ForEach(groups) { group in
+                        let expanded = expandedBinding(for: group)
+                        ATMNavigatorGroup {
+                            groupHeader(group, expanded: expanded)
+                        } content: {
+                            if expanded.wrappedValue {
+                                ForEach(group.todos) { todo in
+                                    todoRow(todo, showsStatus: false)
                                 }
-                                    .buttonStyle(.atmRow)
-                                    .focusable(false)
-                                    .atmContentStackRow()
-                                    .atmRightClickMenu { todoMenuEntries(for: todo) }
                             }
                         }
+                    }
+                } else {
+                    ForEach(flattenedTodos) { todo in
+                        todoRow(todo, showsStatus: true)
                     }
                 }
             }
@@ -1322,7 +1295,7 @@ private struct DesktopTasksView: View {
                 if visibleTodos.isEmpty {
                     ATMEmptyState(
                         icon: "magnifyingglass",
-                        title: showingTrash ? "回收站为空" : "没有匹配的任务"
+                        title: showingArchive ? "归档为空" : "没有匹配的任务"
                     )
                     .allowsHitTesting(false)
                 }
@@ -1348,11 +1321,27 @@ private struct DesktopTasksView: View {
         }
     }
 
+    private func todoRow(_ todo: ATMTodo, showsStatus: Bool) -> some View {
+        Button {
+            navigation.selectedTodoID = todo.id
+        } label: {
+            DesktopTodoRow(
+                todo: todo,
+                isSelected: navigation.selectedTodoID == todo.id,
+                showsStatus: showsStatus
+            )
+        }
+        .buttonStyle(.atmRow)
+        .focusable(false)
+        .atmContentStackRow()
+        .atmRightClickMenu { todoMenuEntries(for: todo) }
+    }
+
     private func todoMenuEntries(for todo: ATMTodo) -> [ATMMenuEntry] {
         ATMTodoMenu.entries(
             for: todo,
             store: store,
-            isTrashed: showingTrash,
+            isArchived: showingArchive,
             // Editing lives in the detail pane's form, so the row menu selects the
             // todo and asks the detail to open straight into it.
             onEdit: {
@@ -1373,28 +1362,18 @@ private struct DesktopTasksView: View {
         navigation.selectedTodoID = ATMTaskQuery.preferredDefault(in: visibleTodos)?.id
     }
 
-    /// A collection record can point at a dropped Todo. Reveal the dropped group
-    /// before validating that direct selection; otherwise selectFirstIfNeeded
-    /// silently replaces it with an unrelated first row.
     private func revealSelectedTodoIfFiltered() {
-        guard !showingTrash,
-              ATMTaskQuery.shouldRevealDropped(
-                selectedID: navigation.selectedTodoID,
-                in: store.allTodos,
-                showsDropped: showsDropped
-              ) else { return }
-        showsDropped = true
+        // Archived Todos live in the archive view and lifecycle filtering no
+        // longer hides a fifth state from the active list.
     }
 
     private func applyDefaultCollapsedGroupsIfNeeded() {
         var set = collapsedGroups
         if !didApplyDefaultCollapsedGroups {
             set.insert("done")
-            set.insert("deferred")
             didApplyDefaultCollapsedGroups = true
         }
         if !didApplyClosedTaskGroupsV2 {
-            set.insert("dropped")
             set.insert("history")
             didApplyClosedTaskGroupsV2 = true
         }
@@ -1402,7 +1381,8 @@ private struct DesktopTasksView: View {
     }
 
     private func revealSelectedGroup() {
-        guard let selected = navigation.selectedTodoID,
+        guard taskListPresentation == .grouped,
+              let selected = navigation.selectedTodoID,
               let group = groups.first(where: { group in group.todos.contains(where: { $0.id == selected }) }),
               collapsedGroups.contains(group.id) else { return }
         var set = collapsedGroups
@@ -1414,19 +1394,21 @@ private struct DesktopTasksView: View {
 private struct DesktopTodoRow: View {
     let todo: ATMTodo
     let isSelected: Bool
+    var showsStatus = false
 
     var body: some View {
-        // No status glyph. It sat in a 28pt tile at the head of every row and said
-        // only what the section header the row is filed under already says — every
-        // row in 工作中 carried the same spinner, every row in 等待中 the same clock.
-        // Dropping it gives the title back ~38pt of a 260–420pt column and takes a
-        // line's worth of height off each row, which is the whole point of the list:
-        // scan ids and titles, not re-read the section you are already inside.
+        // Grouped rows omit the status glyph because their section already says it.
+        // Flat rows restore a caption-sized glyph: status remains scannable without
+        // bringing back the old 28pt leading tile that cost the title about 38pt.
         ATMNavigatorRow(isSelected: isSelected) {
             VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                 // The id leads the title rather than sitting in the meta line: it
                 // is what you scan the list for and what you type back at the CLI.
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if showsStatus {
+                        ATMTodoStatusGlyph(todo: todo, tier: .caption)
+                            .help(ATMTodoStatusStyle.label(for: todo))
+                    }
                     Text(todo.id.uppercased())
                         .font(ATMFont.mono(.caption, .medium))
                         .foregroundStyle(
@@ -1469,7 +1451,7 @@ private struct DesktopTodoRow: View {
     }
 
     private var isClosed: Bool {
-        todo.status == "done" || todo.status == "dropped"
+        todo.status == "done"
     }
 
     private var projectLabel: String? {
@@ -1485,26 +1467,20 @@ struct DesktopTodoDetail: View {
     private enum DetailTab: String, CaseIterable {
         case detail
         case activity
-        case taskRun
         case sessions
     }
 
     let todo: ATMTodo
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
-    let isTrashed: Bool
+    let isArchived: Bool
 
     @State private var isEditing = false
     @State private var selectedTab: DetailTab = .detail
     @State private var copiedPrompt = false
     @State private var deleteCandidate: ATMTodo?
-    @State private var showingDispatchSheet = false
-    @State private var showingCodexContinuation = false
     @State private var showingRefineSheet = false
     @State private var refineHint = ""
-    @State private var showingTaskRunInterruptConfirmation = false
-    @State private var taskRunLaunchError: String?
-    @State private var codexContinuationInstructions = ""
     @State private var isEditingSource = false
     @State private var title = ""
     @State private var description = ""
@@ -1542,8 +1518,6 @@ struct DesktopTodoDetail: View {
                             readContent
                         } else if selectedTab == .activity {
                             activityContent
-                        } else if selectedTab == .taskRun, hasTaskRuns {
-                            taskRunContent
                         } else {
                             sessionContent
                         }
@@ -1553,10 +1527,8 @@ struct DesktopTodoDetail: View {
         }
         .background(Color.clear)
         .onAppear {
-            if !isTrashed {
+            if !isArchived {
                 store.loadBoundSessions(for: todo.id)
-                store.loadTaskRuns(for: todo.id)
-                store.loadTaskRunAgents()
                 store.loadProgress(for: todo.id)
             }
             // Selecting another row rebuilds this view (`.id(todo.id)`), so a
@@ -1566,33 +1538,11 @@ struct DesktopTodoDetail: View {
         }
         .onChange(of: navigation.editTodoID) { _ in consumeEditRequest() }
         .onChange(of: store.snapshot.refreshedAt) { _ in
-            if !isTrashed {
+            if !isArchived {
                 store.loadBoundSessions(for: todo.id)
-                store.loadTaskRuns(for: todo.id)
             }
         }
-        // Both of these can remove the page that is currently selected: trashing
-        // hides three of them, and 「Agent 执行」 only exists while a run does.
-        .onChange(of: isTrashed) { _ in normalizeSelectedTab() }
-        .onChange(of: hasTaskRuns) { _ in normalizeSelectedTab() }
-        .task(id: taskRunRefreshKey) {
-            guard !isTrashed else { return }
-            store.loadTaskRuns(for: todo.id)
-            if selectedTab == .taskRun {
-                store.refreshLiveStatus()
-            }
-            while latestTaskRun?.isActive == true, !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: 2_000_000_000)
-                } catch {
-                    break
-                }
-                store.loadTaskRuns(for: todo.id)
-                if selectedTab == .taskRun {
-                    store.refreshLiveStatus()
-                }
-            }
-        }
+        .onChange(of: isArchived) { _ in normalizeSelectedTab() }
         .confirmationDialog(
             "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
             isPresented: Binding(
@@ -1611,38 +1561,68 @@ struct DesktopTodoDetail: View {
         } message: {
             Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
         }
-        .confirmationDialog(
-            "中断当前 Codex 执行？",
-            isPresented: $showingTaskRunInterruptConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("中断执行", role: .destructive) {
-                store.interruptTaskRun(todoID: todo.id)
-            }
-            Button("继续执行", role: .cancel) {}
-        } message: {
-            Text("Agent 进程会停止，Todo 保持工作中；之后可以重新执行或继续该会话。")
-        }
-        .sheet(isPresented: $showingCodexContinuation) {
-            codexContinuationSheet
-        }
         .sheet(isPresented: $showingRefineSheet) {
             refineSheet
         }
-        .sheet(isPresented: $showingDispatchSheet) {
-            taskRunDispatchSheet
+    }
+
+    /// 优化 always goes through this sheet, including the first pass: the hint is
+    /// what makes a second pass do anything, and a sheet is also the only place
+    /// to say that up front.
+    private var refineSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("优化任务")
+                    .font(ATMFont.font(.title2, weight: .semibold))
+                Text("一次模型调用，润色标题和需求；复杂工作会写一份计划并拆成子任务。可以留空直接优化。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $refineHint)
+                    .font(ATMFont.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(7)
+                    .frame(minHeight: 96)
+                    .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ATMTheme.border))
+                if refineHint.isEmpty {
+                    Text("这一遍想改什么？例如：拆细一点，或把验收标准写成可观察行为")
+                        .font(ATMFont.body)
+                        .foregroundStyle(ATMTheme.secondary.opacity(0.72))
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 15)
+                        .allowsHitTesting(false)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("取消") { showingRefineSheet = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("开始优化") { submitRefine() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(store.refiningTodoIDs.contains(todo.id))
+            }
         }
-        .alert(
-            "无法打开 Agent 会话",
-            isPresented: Binding(
-                get: { taskRunLaunchError != nil },
-                set: { if !$0 { taskRunLaunchError = nil } }
-            )
-        ) {
-            Button("好") { taskRunLaunchError = nil }
-        } message: {
-            Text(taskRunLaunchError ?? "")
-        }
+        .padding(22)
+        .frame(width: 520)
+        .background(ATMTheme.canvas)
+    }
+
+    private func presentRefineSheet() {
+        refineHint = ""
+        store.dismissRefineUnchanged(for: todo.id)
+        store.dismissRefineError(for: todo.id)
+        showingRefineSheet = true
+    }
+
+    private func submitRefine() {
+        let hint = refineHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        showingRefineSheet = false
+        store.refineTodo(id: todo.id, hint: hint)
     }
 
     /// 这个 Todo 的消息区，在 tab 与正文之间，是页面上唯一放横幅的地方。
@@ -1652,10 +1632,10 @@ struct DesktopTodoDetail: View {
     /// 消失。现在位置只有一个，跟 tab 同级：谁要说话都排到这里，正文只管内容。
     ///
     /// 排序是「要你动手的在前」：优化的进行/失败/无改动是刚发生的事，「下一步」
-    /// 是一直挂着的状态。回收站里的任务不说话。
+    /// 是一直挂着的状态。归档里的任务不说话。
     @ViewBuilder
     private var noticeRegion: some View {
-        if !isTrashed, hasNotice {
+        if !isArchived, hasNotice {
             VStack(spacing: 8) {
                 if store.refiningTodoIDs.contains(todo.id) {
                     ATMInlineNotice(
@@ -1710,32 +1690,16 @@ struct DesktopTodoDetail: View {
         return latestNextAction != nil
     }
 
-    /// 「Agent 执行」只在真的有执行记录时出现。
-    ///
-    /// 默认的交接路径（`todo handoff` / 「在 Codex 里打开」）不产生 `task_runs`
-    /// ——会话由 Codex 自己拥有，ATM 通过 `session bind` 认识它——所以这个页在
-    /// 默认路径上永远是空的，而它的空态还在指路一个已经不存在的「选择 Agent」
-    /// 动作。有执行记录才显示，跟 Agent 页的「全部日志」是同一条规矩。
-    private var hasTaskRuns: Bool { !store.taskRuns(for: todo.id).isEmpty }
-
     private var detailTabItems: [(value: DetailTab, title: String)] {
         var items: [(value: DetailTab, title: String)] = [(.detail, "任务描述")]
-        if !isTrashed {
+        if !isArchived {
             items.append((.activity, "动态"))
-            if hasTaskRuns {
-                items.append((.taskRun, "Agent 执行"))
-            }
             items.append((.sessions, sessionTabTitle))
         }
         return items
     }
 
-    /// 选中的页消失时把选择拉回来。
-    ///
-    /// `selectedTab` 是 `@State`，在任务之间切换时不会重置：从一个有执行记录的
-    /// 任务切到没有的，选择会停在一个已经不在胶囊里的值上，于是内容区落到
-    /// 兜底分支、而胶囊一个都不高亮。回收站视图早就有这个问题（它藏掉三个页），
-    /// 只是没人注意。
+    /// 选中的页消失时把选择拉回来。归档会藏掉动态和会话页。
     private func normalizeSelectedTab() {
         if !detailTabItems.contains(where: { $0.value == selectedTab }) {
             selectedTab = .detail
@@ -1769,7 +1733,7 @@ struct DesktopTodoDetail: View {
     @ViewBuilder
     private var detailActions: some View {
         HStack(spacing: 3) {
-            if isTrashed {
+            if isArchived {
                 actionButton("arrow.uturn.backward", help: "恢复任务") {
                     store.perform(.restore, on: todo)
                 }
@@ -1798,23 +1762,17 @@ struct DesktopTodoDetail: View {
                         store.perform(item.action, on: todo)
                     }
                 }
-                if canContinueTaskRun {
-                    actionButton("arrow.trianglehead.clockwise", help: "继续上次 Agent 任务") {
-                        presentCodexContinuation()
-                    }
-                    .disabled(store.isActing)
-                }
                 if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
                     Button {
-                        presentDispatchSheet()
+                        store.handoffTodo(todo)
                     } label: {
-                        Label(taskRunActionTitle, systemImage: taskRunActionIcon)
+                        Label("在 Codex 里打开", systemImage: "paperplane.fill")
                             .font(ATMFont.font(.footnote, weight: .semibold))
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .help(taskRunActionHelp)
-                    .disabled(latestTaskRun?.isActive == true || store.isActing)
+                    .help("打开 Codex 并填好这条任务的指针，等你按回车")
+                    .disabled(store.isActing)
                     actionButton(
                         copiedPrompt ? "checkmark" : "doc.on.doc",
                         help: copiedPrompt ? "已复制启动提示" : "复制启动提示"
@@ -1962,536 +1920,6 @@ struct DesktopTodoDetail: View {
         .overlay(alignment: .bottom) { Divider() }
     }
 
-    private var latestTaskRun: ATMTaskRun? {
-        store.taskRuns(for: todo.id).first
-    }
-
-    private var canContinueTaskRun: Bool {
-        guard !isTrashed,
-              let run = latestTaskRun,
-              !run.isActive,
-              run.status == "completed" || run.status == "failed" || run.status == "interrupted" else {
-            return false
-        }
-        // Same test as `atm todo run --continue`: an id Codex cannot resolve to a
-        // thread would quietly start a fresh session, so don't offer the action.
-        return ATMTaskRunSessionRouting.resumableThreadID(run.sessionID) != nil
-    }
-
-    private var taskRunSession: ATMLiveSession? {
-        guard let run = latestTaskRun else { return nil }
-        let visible = store.snapshot.liveStatus.sessions.filter { $0.activityState != "unobserved" }
-        return ATMTaskRunSessionRouting.session(for: run, todoID: todo.id, in: visible)
-    }
-
-    private var taskRunLaunchRoute: ATMAgentSessionLaunchRoute? {
-        guard let run = latestTaskRun else { return nil }
-        return ATMAgentSessionLaunchRoute.resolve(for: run, live: taskRunSession)
-    }
-
-    /// The run's session as the index knows it, used once it has aged out of live
-    /// status. Without this the outcome text disappears from the Todo the moment
-    /// the session goes quiet, even though ATM has it indexed.
-    private var taskRunArchivedSession: ATMBoundSession? {
-        guard let run = latestTaskRun, let sessionID = run.sessionID else { return nil }
-        return store.boundSessions(for: todo.id).first {
-            $0.sessionID == sessionID || $0.indexedID == sessionID
-        }
-    }
-
-    private var taskRunRefreshKey: String {
-        [
-            todo.id,
-            selectedTab.rawValue,
-            latestTaskRun?.id ?? "none",
-            latestTaskRun?.status ?? "none",
-        ].joined(separator: "|")
-    }
-
-    private var taskRunActionHelp: String {
-        switch latestTaskRun?.status {
-        case "starting", "running": return "Agent 正在处理"
-        case "failed", "interrupted": return "重新委派"
-        default: return "委派给 Codex"
-        }
-    }
-
-    private var taskRunActionTitle: String {
-        switch latestTaskRun?.status {
-        case "starting", "running": return "委派中"
-        case "failed": return "重新委派"
-        default: return "委派"
-        }
-    }
-
-    private var taskRunActionIcon: String {
-        switch latestTaskRun?.status {
-        case "starting", "running": return "gearshape.2"
-        case "failed": return "arrow.clockwise"
-        default: return "paperplane.fill"
-        }
-    }
-
-    @ViewBuilder
-    private var taskRunContent: some View {
-        if let run = latestTaskRun {
-            VStack(alignment: .leading, spacing: 14) {
-                    taskRunSummary(run)
-
-                    if let session = taskRunSession {
-                        taskRunAgentPreview(session)
-                    } else if let archived = taskRunArchivedSession {
-                        taskRunArchivedPreview(archived)
-                    } else {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Label(
-                                run.isActive ? "正在建立 Agent 会话" : "未找到关联 Agent 会话",
-                                systemImage: run.isActive ? "arrow.triangle.2.circlepath" : "person.crop.circle.badge.questionmark"
-                            )
-                            .font(ATMFont.font(.body, weight: .semibold))
-                            Text(taskRunMissingSessionMessage(run))
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .atmWorkspaceCard()
-                    }
-            }
-            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-            .padding(.vertical, 18)
-            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        } else {
-            // 这一页已经只在有执行记录时出现，所以这里只可能是加载中的一瞬，或者
-            // 记录刚被清掉。不再摆一个空状态插画和一个「委派任务」按钮：委派入口
-            // 在头部，而一个装着引导的空页会让人以为自己找错了地方。
-            VStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("正在读取执行记录…")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-            .frame(maxWidth: .infinity, minHeight: 180)
-        }
-    }
-
-    private func taskRunSummary(_ run: ATMTaskRun) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(taskRunColor(run.status))
-                    .frame(width: 8, height: 8)
-                Text(taskRunStatusLabel(run.status))
-                    .font(ATMFont.font(.body, weight: .semibold))
-                if run.isActive { ProgressView().controlSize(.small) }
-                Spacer(minLength: 12)
-                if let route = taskRunLaunchRoute, route.isAvailable {
-                    Button {
-                        openTaskRunSession(route)
-                    } label: {
-                        Label(route.actionTitle, systemImage: "arrow.up.forward.app")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .help("\(route.actionTitle)（\(route.destinationLabel)）；交互控制由原生 Agent 提供")
-                }
-                if run.isActive {
-                    Button("中断", role: .destructive) {
-                        showingTaskRunInterruptConfirmation = true
-                    }
-                    .controlSize(.small)
-                    .disabled(store.isActing)
-                }
-                if canContinueTaskRun {
-                    Button("继续修改") { presentCodexContinuation() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                        .disabled(store.isActing)
-                }
-                if run.status == "failed" || run.status == "interrupted" {
-                    Button("重新委派") { presentDispatchSheet() }
-                        .controlSize(.small)
-                        .disabled(store.isActing)
-                }
-                Button("刷新") {
-                    store.loadTaskRuns(for: todo.id)
-                    store.refreshLiveStatus()
-                }
-                .controlSize(.small)
-            }
-
-            Text(run.message ?? "run \(run.id)")
-                .font(ATMFont.footnote)
-                .foregroundStyle(ATMTheme.secondary)
-                .textSelection(.enabled)
-            if let route = taskRunLaunchRoute, route.isAvailable {
-                Label(
-                    "需要输入、处理授权或使用更多控制时，请在 \(route.destinationLabel) 中继续；ATM 仍会同步状态和日志。",
-                    systemImage: "arrow.up.forward.app"
-                )
-                .font(ATMFont.footnote)
-                .foregroundStyle(ATMTheme.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            Label(run.workDir, systemImage: "folder")
-                .font(ATMFont.mono(.caption))
-                .foregroundStyle(ATMTheme.secondary)
-                .lineLimit(1)
-                .textSelection(.enabled)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .atmWorkspaceCard()
-    }
-
-    private func taskRunMissingSessionMessage(_ run: ATMTaskRun) -> String {
-        if taskRunLaunchRoute?.isAvailable == true {
-            return run.isActive
-                ? "原生会话已经可以打开；ATM 活动索引就绪后，这里还会显示执行动态。"
-                : "该执行已超出最近活动窗口，但仍可回到原生 Agent 会话。"
-        }
-        return run.isActive
-            ? "会话进入 Agent 列表后，可在详情中查看执行动态与全部日志。"
-            : "该执行可能已超出 Agent 列表的最近活动窗口。"
-    }
-
-    private func taskRunAgentPreview(_ session: ATMLiveSession) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                ATMAgentMark(agent: session.tool, size: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Agent 详情")
-                        .font(ATMFont.font(.body, weight: .semibold))
-                    Text("\(ATMAgentDisplay.clientName(session)) · \(ATMAgentDisplay.projectName(session))")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer(minLength: 8)
-                Button {
-                    navigation.selectedAgentID = session.id
-                    navigation.selectedAgentRunTodoID = todo.id
-                    navigation.section = .agents
-                } label: {
-                    Label("查看详情", systemImage: "chevron.right")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-
-            Text(session.presenceTitle)
-                .font(ATMFont.font(.bodyLarge, weight: .medium))
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let result = session.latestResultText {
-                Divider()
-                ATMMarkdownContentView(source: result)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if let update = session.visibleUpdates.last {
-                Divider()
-                ATMMarkdownContentView(source: update)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .atmWorkspaceCard()
-    }
-
-    /// 会话已经不在实时窗口里时的执行结果，取自持久索引。
-    ///
-    /// 刻意和实时卡片长得一样但不假装实时：没有状态点、没有「查看详情」跳转（那条路
-    /// 指向的是实时列表，这个会话不在里面），只保留 Agent 自己最后说的那段话——
-    /// 而它正是验收时唯一要读的东西。
-    private func taskRunArchivedPreview(_ session: ATMBoundSession) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                ATMAgentMark(agent: session.agent, size: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Agent 执行结果")
-                        .font(ATMFont.font(.body, weight: .semibold))
-                    Text("\(ATMAgentDisplay.name(session.agent)) · \(session.shortID)")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer(minLength: 8)
-            }
-
-            if let summary = session.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !summary.isEmpty {
-                Text(summary)
-                    .font(ATMFont.font(.bodyLarge, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let result = session.latestResult?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !result.isEmpty {
-                Divider()
-                ATMMarkdownContentView(source: result)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .atmWorkspaceCard()
-    }
-
-    private func openTaskRunSession(_ route: ATMAgentSessionLaunchRoute) {
-        do {
-            try ATMAgentSessionLauncher.open(route)
-        } catch {
-            taskRunLaunchError = error.localizedDescription
-        }
-    }
-
-    private func taskRunStatusLabel(_ status: String) -> String {
-        switch status {
-        case "starting": return "正在启动"
-        case "running": return "正在处理"
-        case "completed": return todo.status == "review" ? "已提交验收" : "Agent 已完成"
-        case "failed": return "执行失败"
-        case "interrupted": return "已中断"
-        default: return status
-        }
-    }
-
-    private func taskRunColor(_ status: String) -> Color {
-        switch status {
-        case "starting", "running": return ATMTheme.accent
-        case "completed": return ATMTheme.success
-        case "failed": return ATMTheme.danger
-        case "interrupted": return ATMTheme.warning
-        default: return ATMTheme.secondary
-        }
-    }
-
-    private var dispatchAgent: ATMTaskRunAgent? { store.taskRunAgents.first }
-
-    /// Confirms one dispatch. Not a picker any more: Codex is the only target, and
-    /// a radio list of one presents a choice that does not exist. What the sheet
-    /// still owes the user is what will run, that it is installed, and that it
-    /// costs model usage.
-    private var taskRunDispatchSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("委派这个任务")
-                    .font(ATMFont.font(.title2, weight: .semibold))
-                Text("两种方式：在 Codex 里打开由你盯着做，或者没人在场时让它在后台跑完。都会产生模型用量。")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-
-            if let agent = dispatchAgent {
-                HStack(alignment: .top, spacing: 12) {
-                    ATMAgentMark(agent: agent.id, size: 22)
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 7) {
-                            Text(agent.name)
-                                .font(ATMFont.font(.body, weight: .semibold))
-                            Text(agent.available ? "已安装" : "未安装")
-                                .font(ATMFont.caption)
-                                .foregroundStyle(agent.available ? ATMTheme.success : ATMTheme.secondary)
-                        }
-                        Text(agent.costNote)
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if !agent.available {
-                            Label("PATH 里找不到 \(agent.binary)，先安装 Codex CLI 再委派。",
-                                  systemImage: "exclamationmark.shield")
-                                .font(ATMFont.caption)
-                                .foregroundStyle(ATMTheme.warning)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    Spacer(minLength: 8)
-                }
-                .padding(13)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
-                .overlay { RoundedRectangle(cornerRadius: 10).stroke(ATMTheme.border) }
-                .opacity(agent.available ? 1 : 0.58)
-            } else {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("正在检查 Codex 是否已安装…")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 96)
-            }
-
-            // 「在 Codex 里打开」是主动作，不是因为它更常用，而是因为它是可逆的：
-            // 输入框填好但不提交，人还能改、能撤、能换目录。后台跑完是不可逆的那一个。
-            Text("在 Codex 里打开：填好这条任务的指针，等你按回车。后台跑完：无人应答的授权请求会让它失败。")
-                .font(ATMFont.caption)
-                .foregroundStyle(ATMTheme.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Spacer()
-                Button("取消") { showingDispatchSheet = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("后台跑完") { dispatchToAgent() }
-                    .disabled(dispatchAgent?.available != true || store.isActing)
-                Button("在 Codex 里打开") { handoffToCodex() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(dispatchAgent?.available != true || store.isActing)
-            }
-        }
-        .padding(22)
-        .frame(width: 520)
-        .background(ATMTheme.canvas)
-    }
-
-    private func presentDispatchSheet() {
-        showingDispatchSheet = true
-        store.loadTaskRunAgents()
-    }
-
-    private func dispatchToAgent() {
-        guard let agent = dispatchAgent, agent.available else { return }
-        showingDispatchSheet = false
-        store.dispatchTodo(todo, agent: agent)
-    }
-
-    private func handoffToCodex() {
-        guard dispatchAgent?.available == true else { return }
-        showingDispatchSheet = false
-        store.handoffTodo(todo)
-    }
-
-    private var codexContinuationSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("继续上次 \(latestTaskRunAgentName) 任务")
-                    .font(ATMFont.font(.title2, weight: .semibold))
-                Text("\(latestTaskRunAgentName) 会保留上次执行的上下文，并把这次修改记录为新的执行轮次和模型用量。")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $codexContinuationInstructions)
-                    .font(ATMFont.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(7)
-                    .frame(minHeight: 150)
-                    .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ATMTheme.border))
-                if codexContinuationInstructions.isEmpty {
-                    Text("描述要调整的内容，例如：按钮改成主操作，并补充失败态测试")
-                        .font(ATMFont.body)
-                        .foregroundStyle(ATMTheme.secondary.opacity(0.72))
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 15)
-                        .allowsHitTesting(false)
-                }
-            }
-
-            HStack {
-                Spacer()
-                Button("取消") { showingCodexContinuation = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("继续修改") { submitCodexContinuation() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(
-                        codexContinuationInstructions
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                            .isEmpty || store.isActing
-                    )
-            }
-        }
-        .padding(22)
-        .frame(width: 520)
-        .background(ATMTheme.canvas)
-    }
-
-    /// 优化 always goes through this sheet, including the first pass: the hint is
-    /// what makes a second pass do anything, and a sheet is also the only place
-    /// to say that up front.
-    private var refineSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("优化任务")
-                    .font(ATMFont.font(.title2, weight: .semibold))
-                Text("一次模型调用，润色标题和需求；复杂工作会写一份计划并拆成子任务。可以留空直接优化。")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $refineHint)
-                    .font(ATMFont.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(7)
-                    .frame(minHeight: 96)
-                    .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ATMTheme.border))
-                if refineHint.isEmpty {
-                    Text("这一遍想改什么？例如：拆细一点，或把验收标准写成可观察行为")
-                        .font(ATMFont.body)
-                        .foregroundStyle(ATMTheme.secondary.opacity(0.72))
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 15)
-                        .allowsHitTesting(false)
-                }
-            }
-
-            HStack {
-                Spacer()
-                Button("取消") { showingRefineSheet = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("开始优化") { submitRefine() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(store.refiningTodoIDs.contains(todo.id))
-            }
-        }
-        .padding(22)
-        .frame(width: 520)
-        .background(ATMTheme.canvas)
-    }
-
-    private func presentRefineSheet() {
-        refineHint = ""
-        store.dismissRefineUnchanged(for: todo.id)
-        store.dismissRefineError(for: todo.id)
-        showingRefineSheet = true
-    }
-
-    private func submitRefine() {
-        let hint = refineHint.trimmingCharacters(in: .whitespacesAndNewlines)
-        showingRefineSheet = false
-        store.refineTodo(id: todo.id, hint: hint)
-    }
-
-    private func presentCodexContinuation() {
-        codexContinuationInstructions = ""
-        showingCodexContinuation = true
-    }
-
-    private func submitCodexContinuation() {
-        let instructions = codexContinuationInstructions
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !instructions.isEmpty, let run = latestTaskRun else { return }
-        showingCodexContinuation = false
-        store.continueTodo(todo, run: run, instructions: instructions)
-    }
-
-    private var latestTaskRunAgentName: String {
-        guard let id = latestTaskRun?.agent else { return "Agent" }
-        if let name = store.taskRunAgents.first(where: { $0.id == id })?.name { return name }
-        switch id {
-        case "codex": return "Codex"
-        case "grokbuild": return "Grok Build"
-        case "antigravity": return "Antigravity"
-        case "pi": return "Pi"
-        default: return "Agent"
-        }
-    }
-
     /// Dynamic entries have their own destination, so the timeline no longer sits
     /// inside a second titled card. The latest next action is not repeated here as
     /// history — it lives in `noticeRegion`, above every tab, where it can guide
@@ -2515,7 +1943,7 @@ struct DesktopTodoDetail: View {
     }
 
     private var latestNextAction: String? {
-        guard todo.status != "done", todo.status != "dropped" else { return nil }
+        guard todo.status != "done" else { return nil }
         return store.progress(for: todo.id).reversed().compactMap(\.nextAction).first
     }
 
@@ -2579,7 +2007,7 @@ struct DesktopTodoDetail: View {
             GridRow {
                 gridLabel("状态")
                 Picker("", selection: $status) {
-                    ForEach(["open", "in_progress", "waiting", "review", "blocked"], id: \.self) { value in
+                    ForEach(["open", "in_progress", "review"], id: \.self) { value in
                         Text(ATMTodoStatusStyle.label(forStatus: value)).tag(value)
                     }
                 }
@@ -2594,13 +2022,12 @@ struct DesktopTodoDetail: View {
                     .frame(width: 190)
                     .gridCellColumns(3)
             }
-            GridRow {
-                gridLabel("复查日期")
-                reviewDateControl.gridCellColumns(3)
-            }
-            // 唤醒条件 only means anything while a Todo waits, so it stays out of the
-            // way otherwise — but never hides a value that is already set.
-            if status == "waiting" || !wakeCondition.trimmingCharacters(in: .whitespaces).isEmpty {
+            if status == "in_progress" {
+                GridRow {
+                    gridLabel("复查日期")
+                    reviewDateControl.gridCellColumns(3)
+                }
+                // Waiting metadata styles in-progress work without creating a group.
                 GridRow {
                     gridLabel("唤醒条件")
                     TextField("等待什么条件", text: $wakeCondition)
@@ -2723,7 +2150,7 @@ struct DesktopTodoDetail: View {
     private func consumeEditRequest() {
         guard navigation.editTodoID == todo.id else { return }
         navigation.editTodoID = nil
-        guard !isTrashed, !isEditing else { return }
+        guard !isArchived, !isEditing else { return }
         beginEditing()
     }
 
@@ -2782,7 +2209,7 @@ struct DesktopTodoDetail: View {
         )
     }
 
-    /// 「···」溢出菜单：编辑、剩余 lifecycle（暂不处理/回到待办/放弃等）、删除。
+    /// 「···」溢出菜单：编辑、返回待办与归档。
     /// 形状恒定，内容随状态拼装。与 `actionButton` 同样的 chip 外观。
     @ViewBuilder
     private func overflowMenu(
@@ -2804,9 +2231,9 @@ struct DesktopTodoDetail: View {
             }
             Divider()
             Button {
-                store.perform(.trash, on: todo)
+                store.perform(.archive, on: todo)
             } label: {
-                Label("移到回收站", systemImage: "trash")
+                Label("归档", systemImage: "archivebox")
             }
         } label: {
             ATMIconMenuLabel(
@@ -2833,14 +2260,14 @@ struct DesktopTodoDetail: View {
     }
 
     private var statusBadge: some View {
-        let color = isTrashed ? ATMTheme.secondary : ATMTodoStatusStyle.color(for: todo)
+        let color = isArchived ? ATMTheme.secondary : ATMTodoStatusStyle.color(for: todo)
         return HStack(spacing: 3) {
-            if isTrashed {
-                Image(systemName: "trash")
+            if isArchived {
+                Image(systemName: "archivebox")
             } else {
                 ATMTodoStatusGlyph(todo: todo, tier: .caption)
             }
-            Text(isTrashed ? "已删除" : ATMTodoStatusStyle.label(for: todo))
+            Text(isArchived ? "已归档" : ATMTodoStatusStyle.label(for: todo))
                 .font(ATMFont.mono(.caption, .semibold))
         }
         .foregroundStyle(color)
@@ -3430,9 +2857,14 @@ private struct DesktopUsageContent: View, Equatable {
 
     var body: some View {
         VStack(spacing: 0) {
-            usageModuleChrome
-            Divider()
-            ATMDetailTabs { usagePagePicker }
+            ATMDetailTabs {
+                HStack(spacing: 16) {
+                    usagePagePicker
+                    Spacer(minLength: 0)
+                    dataHealthButton
+                }
+                .frame(maxWidth: .infinity)
+            }
             ATMDetailBodySurface {
                 LazyVStack(alignment: .leading, spacing: 20) {
                     usageFilterToolbar
@@ -3567,60 +2999,6 @@ private struct DesktopUsageContent: View, Equatable {
             items: ATMUsagePageTab.allCases.map { (value: $0, title: $0.title) }
         )
         .accessibilityLabel("用量页面")
-    }
-
-    /// The header owns identity and global health only. The page switch is the
-    /// separate strip between this band and the content card.
-    private var usageModuleChrome: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 16) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("用量")
-                        .font(ATMFont.font(.title1, weight: .bold))
-                    Text("额度、成本与模型效率")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(ATMTheme.success)
-                            .frame(width: 7, height: 7)
-                        Text(usageScopeLabel)
-                    }
-                    .font(ATMFont.font(.caption, weight: .medium))
-                    .foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer(minLength: 8)
-                dataHealthButton
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("用量")
-                        .font(ATMFont.font(.title1, weight: .bold))
-                    Text("额度、成本与模型效率")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(ATMTheme.success)
-                            .frame(width: 7, height: 7)
-                        Text(usageScopeLabel)
-                    }
-                    .font(ATMFont.font(.caption, weight: .medium))
-                    .foregroundStyle(ATMTheme.secondary)
-                }
-                HStack {
-                    Spacer()
-                    dataHealthButton
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 28)
-        .padding(.top, 24)
-        .padding(.bottom, 18)
-        .background(ATMTheme.elevated)
     }
 
     private var dataHealthButton: some View {
@@ -4973,11 +4351,6 @@ private struct DesktopUsageContent: View, Equatable {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 4)
-    }
-
-    private var usageScopeLabel: String {
-        let scope = pageTab == .todaySessions ? "今天" : range.pickerTitle
-        return "\(scope) · 本地统计"
     }
 
     private func usageCard<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {

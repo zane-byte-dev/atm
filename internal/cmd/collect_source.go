@@ -24,7 +24,6 @@ var (
 	collectSourceUnit       string
 	collectSourceInterval   int
 	collectSourcePriority   string
-	collectSourceAutoRun    bool
 	collectSourceDisabled   bool
 	collectSearchKind       string
 	collectSearchConnector  string
@@ -55,8 +54,6 @@ func init() {
 	collectSourceAddCmd.Flags().IntVar(&collectSourceInterval, "interval", 0,
 		"collection interval in minutes (default 5 for tasks, 60 for observe)")
 	collectSourceAddCmd.Flags().StringVar(&collectSourcePriority, "priority", "P2", "default priority: P0, P1, P2, P3")
-	collectSourceAddCmd.Flags().BoolVar(&collectSourceAutoRun, "auto-dispatch", false,
-		"automatically dispatch newly created Todos to Codex (tasks strategy only)")
 	collectSourceAddCmd.Flags().BoolVar(&collectSourceDisabled, "disabled", false, "add the source disabled")
 	collectSourceDeleteCmd.Flags().BoolVarP(&collectYes, "yes", "y", false, "skip confirmation")
 }
@@ -94,9 +91,6 @@ var collectSourceListCmd = &cobra.Command{
 				source.Strategy, source.IntervalMinutes, emptyAs(source.Project, "-"),
 				emptyAs(source.KnowledgeCollection, config.CollectionDigestCollection),
 				source.Enabled, source.Name)
-			if source.AutoDispatch {
-				fmt.Printf("%-20s 新 Todo 自动交给 Codex\n", "")
-			}
 			if source.Muted {
 				fmt.Printf("%-20s 桌面通知已静默，仍照常收集并计入未读\n", "")
 			}
@@ -193,7 +187,6 @@ var collectSourceAddCmd = &cobra.Command{
 				DecisionUnit:        collectSourceUnit,
 				IntervalMinutes:     collectSourceInterval,
 				Priority:            collectSourcePriority,
-				AutoDispatch:        collectSourceAutoRun,
 				Enabled:             !collectSourceDisabled,
 			},
 		)

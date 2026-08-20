@@ -15,6 +15,23 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ## [0.2.0] — unreleased
 
+### Removed
+
+- **不再后台派发 Agent，整条链路连库一起删。** `atm todo run` / `todo interrupt` / `todo tail` /
+  `todo agents` / `todo runs`、收集器 `--auto-dispatch`、以及 App 里的「后台跑完 / 继续修改 /
+  中断执行」都删了。ATM 不替人启动会话：把任务交给 Codex 只用 `todo handoff`——打开并填好指针，
+  等你按回车；只要那段文字就 `todo handoff --copy`。收集器仍然只创建或补充 Todo。
+
+  持久层跟着一起收：v52 删掉 `task_runs` 表、`collection_sources.auto_dispatch`、
+  `collection_items.dispatch_status` / `dispatch_error`，以及 `todo_plan_revisions.run_id`。
+  留着它们没有中间状态可言——派发器一走，这些列谁都写不进去了，只会永远是默认值，却还要让以后
+  每个读这几张表的人绕过去。真库里的 27 行 `task_runs` 全部来自功能存在的那三天，「Agent 执行」
+  页删掉之后就没有任何地方还显示它们；三个 dispatch 列从来没离开过默认值。跑过这些 Run 的 Todo
+  一个不动：生命周期一直在 `todos` 里，Run 只是旁边的执行证据，从来不是「这件事是什么」的记录。
+
+  `ATM_RUN_ID` 那条溯源链也一并拆掉（`Actor.RunID`、`session bind` 的 run 关联及其
+  `BindWarning` 机制、`artifact --run-id`）：设置这个变量的只有已经删掉的 controller。
+
 ### Added
 
 - **新建任务可以带图片。** macOS 新建任务支持选择、拖拽和直接粘贴截图，创建前显示可移除的缩略图；
@@ -31,6 +48,17 @@ a database from a much older version. `atm backup` exists for exactly that case.
   `atm collect source mute <source-id>` 只掐这个来源的桌面通知——它照常采集、结果照常计入未读、
   徽标照常涨，只是不再弹窗（要停采集才是 `collect source disable`）。静默由 `mute`/`unmute` 独占，
   编辑来源不会顺手把它改回来；找不到来源的历史 Run 仍然通知，因为「查不到」不等于「已静默」。
+
+- **「全部了结」一次清掉看过的结论。** 收集页会涨，但涨的不是活儿：`create`/`append` 由 Todo
+  关掉时一并了结，`ignore` 从来不是活儿，只有「结论」这一类没有自己的生命周期——一条结论看过之后
+  觉得不值得进知识库，这个决定以前没有任何落点，只能一条一条 `collect item archive`。真实库里
+  因此攒到 58 条已读未保存的结论对 16 条真正欠动作的跟进，主列表四分之三是历史；实际清理方式
+  是删行，审计记录跟着一起没。现在 `atm collect item archive --all` 和 App 记录页的「全部了结」
+  按钮批量了结这一类：已读、且没保存进知识库的结论。记录保留、Todo 不动、消息不会被重新采集，
+  单条仍可「重新打开」。还欠动作的一律扫不到——未读结论、Todo 还开着的跟进、重试用尽的失败都得
+  点名 ID；批量只会关不会开。它也不会顺手把记录标成已读，因为已读是入选前提，写它就等于让这个
+  动作自己制造入选资格。`collect status` 多一行 `Read conclusions to settle: 58`，按钮只在真有
+  可了结记录时出现。
 
 - **外发动作闸门：Agent 用本地 CLI 发消息之前，先问你一句。** 起因是真的发出去过——驱动这些 CLI 的
   技能文档给出的命令自带 `-y`，把 CLI 自己的二次确认关掉了，于是「发钉钉群消息」和「读群消息」一样
@@ -283,6 +311,25 @@ a database from a much older version. `atm backup` exists for exactly that case.
   不输出这个键，那张卡因此永远不可能渲染出来。
 
 ### Changed
+
+- **Todo 生命周期收敛为四态，命令和词汇跟着收。** `open / in_progress / review / done` 是唯一
+  生命周期；等待只是在 `in_progress` 上保留唤醒条件或复查日期。`blocked` 随升级并入这种表达，
+  “暂不处理”回到待办。放弃、回收站和冷归档统一为可恢复的归档层，App 只保留“归档 / 恢复 /
+  永久删除”。
+
+  界面上四个状态只有四个词：**待办 / 进行中 / 待验收 / 已完成**。`open` 不再叫“待开始”，
+  `in_progress` 不再一处“工作中”一处“进行中”。等待的任务仍然显示“进行中”，只多一个橙色时钟和
+  它的唤醒条件、复查日期——“等待中”这个标签删了，因为它是四态词汇里的第五个词：同一个任务在列表里
+  读作“等待中”、别处读作“进行中”，看起来像两种状态。Todo 卡片里的 `- **状态**:` 行也用同一批词。
+
+  重复的命令合并掉：`move` → `edit --project`，`maintain` → 普通元数据编辑
+  （`edit --maintenance-limit`），`prompt` → `handoff --copy`，`bulk drop` 删除（`archive`
+  本来就收多个 ID）。创建固定为 `open`：`add --status` / `add --wake` 去掉，开始和提交验收必须走
+  明确的生命周期动作，不能在创建时直接跳状态。兼容入口 `wait/wake/drop/trash/unarchive/reconcile`
+  仍然可用，但从 `atm todo --help` 里隐藏——它们要接住已经写在别处的命令，同时不再向新读者推荐一套
+  界面已经不用的词汇。内部命名一并统一为 archive（`trashedTodos`/`isTrashed` →
+  `archivedTodos`/`isArchived`，`.dropped/已放弃` 通知 → `.archived/已归档`），归档任务的报错也改
+  指 `atm todo restore`。
 
 - **收集结论不再自动进入 inbox。** `insight` 先作为一条“待保存”结论留在收集工作区，用户在
   结论详情明确点击后，才由 `atm collect item save <item-id>` 写入来源配置的知识库（默认 inbox）；

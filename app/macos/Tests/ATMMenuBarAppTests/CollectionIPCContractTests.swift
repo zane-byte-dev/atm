@@ -40,10 +40,9 @@ final class CollectionIPCContractTests: XCTestCase {
             connector: "example", kind: "group", externalID: "g1", name: "产品群",
             project: "atm", excludePattern: "bot", instruction: "只看需求",
             knowledgeCollection: "shared", strategy: "tasks", decisionUnit: "window",
-            intervalMinutes: 5, priority: "P1", autoDispatch: true, enabled: true
+            intervalMinutes: 5, priority: "P1", enabled: true
         )))
         XCTAssertEqual(save["external_id"] as? String, "g1")
-        XCTAssertEqual(save["auto_dispatch"] as? Bool, true)
         XCTAssertNil(save["arguments"])
         XCTAssertNil(save["action"])
 
@@ -52,6 +51,20 @@ final class CollectionIPCContractTests: XCTestCase {
         )))
         XCTAssertEqual(read["item_ids"] as? [String], ["ci1", "ci2"])
         XCTAssertEqual(read["read"] as? Bool, true)
+
+        // 批量了结靠 `all` 而不是把台账里的 ID 抄一遍发过去：范围由 Go 判定，App 只表达
+        // 意图。这里也钉住「批量只关不开」——`all` 永远配 `archived: true`。
+        let settleAll = try object(encoder.encode(ATMCollectionItemsArchivedRequest(
+            itemIDs: [], all: true, archived: true
+        )))
+        XCTAssertEqual(settleAll["all"] as? Bool, true)
+        XCTAssertEqual(settleAll["archived"] as? Bool, true)
+        XCTAssertEqual(settleAll["item_ids"] as? [String], [])
+        let settleOne = try object(encoder.encode(ATMCollectionItemsArchivedRequest(
+            itemIDs: ["ci1"], all: false, archived: false
+        )))
+        XCTAssertEqual(settleOne["all"] as? Bool, false)
+        XCTAssertEqual(settleOne["item_ids"] as? [String], ["ci1"])
 
         let correction = try object(encoder.encode(ATMCollectionCorrectRequest(
             itemID: "ci1",
@@ -85,6 +98,9 @@ final class CollectionIPCContractTests: XCTestCase {
         XCTAssertEqual(envelope.verb, "collect.snapshot")
         XCTAssertTrue(envelope.data.enabled)
         XCTAssertEqual(envelope.data.items, [])
+        // 这份 payload 是「没有 settleable_count 的旧 CLI」。读成 nil 而不是 0 说明不了
+        // 什么，读成 nil 的用处是「全部了结」按钮不出现——按了也没有对应的 CLI 能接。
+        XCTAssertNil(envelope.data.summary.settleableCount)
     }
 
     private func object(_ data: Data) throws -> [String: Any] {

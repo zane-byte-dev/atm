@@ -98,28 +98,6 @@ enum ATMAgentSessionLaunchRoute: Equatable {
         return .unavailable(reason: "这个会话已经结束，ATM 只能给你完整对话记录")
     }
 
-    /// An ATM-dispatched process is intentionally headless, but Codex still
-    /// gives every run a durable thread that its desktop app can open. Handing
-    /// that thread back to Codex keeps interactive controls (interrupt, input,
-    /// approvals, and so on) in the Agent that owns them instead of duplicating
-    /// those controls in ATM. Other CLI agents are only openable when their live
-    /// presence reports an exact host session such as a terminal TTY; opening a
-    /// fresh terminal at the same cwd would not be the delegated session.
-    static func resolve(for run: ATMTaskRun, live session: ATMLiveSession?) -> Self {
-        if normalized(run.agent).contains("codex"),
-           let sessionID = nonEmpty(run.sessionID),
-           isThreadID(sessionID) {
-            return .codexThread(threadID: sessionID)
-        }
-        if let session {
-            let route = resolve(for: session)
-            if route.isExact {
-                return route
-            }
-        }
-        return .unavailable(reason: "这个后台执行还没有可交互的原生 Agent 会话")
-    }
-
     private static func isSameSession(_ live: ATMLiveSession, _ bound: ATMBoundSession) -> Bool {
         let liveIDs = [live.sessionID, live.resumeID]
         let boundIDs = [bound.sessionID, bound.indexedID, bound.shortID]

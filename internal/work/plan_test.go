@@ -16,7 +16,7 @@ func planCall(requestID, sessionID string) application.Call {
 		RequestID: requestID,
 		Actor: application.Actor{
 			Kind: application.ActorAgent, Origin: application.OriginCLI,
-			SessionID: sessionID, RunID: "run-plan", Agent: "codex",
+			SessionID: sessionID, Agent: "codex",
 		},
 	}
 }
@@ -47,7 +47,7 @@ func TestSetPlanAppendsRevisionWithBindingProvenanceAndSyncsReaders(t *testing.T
 	}
 	if !result.Changed || result.Plan.TodoID != "t1" || result.Plan.Revision != 1 ||
 		result.Plan.Explanation != "entering verification" || result.Plan.BindingID != binding.ID ||
-		result.Plan.SessionID != "session-plan" || result.Plan.RunID != "run-plan" || result.Plan.Agent != "codex" {
+		result.Plan.SessionID != "session-plan" || result.Plan.Agent != "codex" {
 		t.Fatalf("result = %+v, binding=%+v", result, binding)
 	}
 	if result.Plan.ActorKind != application.ActorAgent || result.Plan.Origin != application.OriginCLI {

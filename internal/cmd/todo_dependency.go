@@ -8,11 +8,6 @@ import (
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
-var (
-	todoWakeStatusFlag string
-	todoWakeReasonFlag string
-)
-
 var todoDependCmd = &cobra.Command{
 	Use:   "depend",
 	Short: "Manage structured dependencies between todos",
@@ -22,8 +17,8 @@ var todoDependCmd = &cobra.Command{
 
 var todoDependAddCmd = &cobra.Command{
 	Use:   "add <todo-id> <dependency-id>",
-	Short: "Make a todo wait for another todo to complete",
-	Example: `  # t77 waits until t76 is done
+	Short: "Make a todo depend on another todo",
+	Example: `  # t77 depends on t76 being done
   atm todo depend add t77 t76`,
 	Args: cobra.ExactArgs(2),
 	RunE: runTodoDependAdd,
@@ -43,25 +38,9 @@ var todoDependListCmd = &cobra.Command{
 	RunE:  runTodoDependList,
 }
 
-var todoWakeCmd = &cobra.Command{
-	Use:   "wake <todo-id>",
-	Short: "Wake a waiting todo from an external event or manual decision",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTodoWake,
-}
-
-var todoReconcileCmd = &cobra.Command{
-	Use:   "reconcile",
-	Short: "Wake satisfied dependencies and audit the dependency graph",
-	Args:  cobra.NoArgs,
-	RunE:  runTodoReconcile,
-}
-
 func init() {
 	todoDependCmd.AddCommand(todoDependAddCmd, todoDependRemoveCmd, todoDependListCmd)
-	todoWakeCmd.Flags().StringVar(&todoWakeStatusFlag, "status", "open", "status after waking: open or review (use todo submit for normal review submission)")
-	todoWakeCmd.Flags().StringVar(&todoWakeReasonFlag, "reason", "external wake event", "reason recorded in todo progress")
-	todoCmd.AddCommand(todoDependCmd, todoWakeCmd, todoReconcileCmd)
+	todoCmd.AddCommand(todoDependCmd)
 }
 
 func runTodoDependAdd(cmd *cobra.Command, args []string) error {
@@ -80,7 +59,7 @@ func runTodoDependAdd(cmd *cobra.Command, args []string) error {
 		output.JSON(result)
 		return nil
 	}
-	fmt.Printf("Added dependency: %s waits for %s\n", args[0], args[1])
+	fmt.Printf("Added dependency: %s depends on %s\n", args[0], args[1])
 	for _, event := range result.Awakened {
 		fmt.Printf("Awakened %s: %s\n", event.TodoID, event.Reason)
 	}

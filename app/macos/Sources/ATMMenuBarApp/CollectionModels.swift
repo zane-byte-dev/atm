@@ -17,6 +17,10 @@ struct ATMCollectionSummary: Decodable, Equatable {
     /// 自动重试已用尽、正在等人处理的记录数。按整个台账统计，不限今天：值为 0 时界面
     /// 什么都不说，非 0 才是唯一需要人看一眼的失败信号。旧版 CLI 不返回，按 0 读。
     let retryStopped: Int?
+    /// 「全部了结」一按会关掉多少条：已读、且没存进知识库的结论。和 unreadCount 是两
+    /// 个轴——那个数的是还要人看的，这个数的是已经看过、只是没地方消掉的。旧版 CLI 不
+    /// 返回，按 0 读，按钮因此不出现。
+    let settleableCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case sources
@@ -29,12 +33,13 @@ struct ATMCollectionSummary: Decodable, Equatable {
         case failedToday = "failed_today"
         case retryStopped = "retry_stopped"
         case unreadCount = "unread_count"
+        case settleableCount = "settleable_count"
     }
 
     static let empty = ATMCollectionSummary(
         sources: 0, enabledSources: 0, fetchedToday: 0, createdToday: 0,
         appendedToday: 0, insightToday: 0, ignoredToday: 0, failedToday: 0,
-        unreadCount: 0, retryStopped: 0
+        unreadCount: 0, retryStopped: 0, settleableCount: 0
     )
 }
 
@@ -52,7 +57,6 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     let decisionUnit: String?
     let intervalMinutes: Int?
     let priority: String
-    let autoDispatch: Bool?
     let enabled: Bool
     let muted: Bool?
     let createdAt: Int64
@@ -60,7 +64,6 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, connector, kind, name, project, priority, enabled, muted, strategy, instruction
-        case autoDispatch = "auto_dispatch"
         case externalID = "external_id"
         case decisionUnit = "decision_unit"
         case excludePattern = "exclude_pattern"
@@ -76,7 +79,6 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     }
 
     var effectiveStrategy: String { strategy == "observe" ? "observe" : "tasks" }
-    var automaticallyDispatches: Bool { effectiveStrategy == "tasks" && autoDispatch == true }
 
     /// Whether this source's new results are allowed to raise a desktop banner.
     /// Muting is only about the banner: a muted source keeps collecting, its
@@ -490,8 +492,6 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     /// describes an item the next run will pick up rather than one already
     /// retired.
     let attempts: Int?
-    let dispatchStatus: String?
-    let dispatchError: String?
     /// Whether the automatic retry has stopped. Derived by the CLI so the
     /// attempt ceiling lives in one place instead of being restated here.
     let retryStopped: Bool?
@@ -509,8 +509,6 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
         case proposedAction = "proposed_action"
         case readAt = "read_at"
         case archivedAt = "archived_at"
-        case dispatchStatus = "dispatch_status"
-        case dispatchError = "dispatch_error"
         case sourceID = "source_id"
         case conversationID = "conversation_id"
         case messageIDs = "message_ids"
@@ -577,11 +575,11 @@ extension ATMCollectionItem {
         return action == "create" || action == "append" || action == "insight"
     }
 
-    /// True once the Todo this record filed has been finished or dropped. The
+    /// True once the Todo this record filed has been finished or archived. The
     /// request that came in from the source has been answered, so the record is
     /// done too — whoever closed the Todo, and whenever.
     var todoClosed: Bool {
-        todoStatus == "done" || todoStatus == "dropped"
+        todoStatus == "done" || todoArchived == true
     }
 
     var isArchived: Bool { (archivedAt ?? 0) > 0 }

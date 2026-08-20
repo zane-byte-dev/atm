@@ -46,7 +46,10 @@ func TestNonWorkingTodoTransitionsUnbindSessions(t *testing.T) {
 		if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "edit-session", TodoID: "t1"}); err != nil {
 			t.Fatal(err)
 		}
-		setCommandFlagForTest(t, todoEditCmd, "status", store.TodoStatusReview)
+		// `edit --status` now only returns work to open; review and done are
+		// reached through submit and done. Returning to open is still a
+		// transition out of in_progress, which is what has to release the session.
+		setCommandFlagForTest(t, todoEditCmd, "status", store.TodoStatusOpen)
 		if err := runTodoEdit(todoEditCmd, []string{"t1"}); err != nil {
 			t.Fatalf("edit: %v", err)
 		}

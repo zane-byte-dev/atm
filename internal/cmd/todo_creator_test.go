@@ -14,18 +14,18 @@ func withTodoAddFlags(t *testing.T) {
 	t.Helper()
 	oldJSON := jsonOutput
 	oldPriority, oldProject := todoAddPriorityFlag, todoAddProjectFlag
-	oldStatus, oldCreator := todoAddStatusFlag, todoAddCreatorFlag
+	oldCreator := todoAddCreatorFlag
 	oldSource, oldDesc, oldDescFile := todoSourceFlag, todoDescFlag, todoDescFileFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		todoAddPriorityFlag, todoAddProjectFlag = oldPriority, oldProject
-		todoAddStatusFlag, todoAddCreatorFlag = oldStatus, oldCreator
+		todoAddCreatorFlag = oldCreator
 		todoSourceFlag, todoDescFlag, todoDescFileFlag = oldSource, oldDesc, oldDescFile
 		todoAddCmd.SetErr(os.Stderr)
 	})
 	jsonOutput = false
 	todoAddPriorityFlag, todoAddProjectFlag = "P1", "atm"
-	todoAddStatusFlag, todoAddCreatorFlag = store.TodoStatusOpen, ""
+	todoAddCreatorFlag = ""
 	todoSourceFlag, todoDescFlag, todoDescFileFlag = "", "", ""
 	todoAddCmd.SetErr(io.Discard)
 }

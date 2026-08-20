@@ -212,8 +212,7 @@ func (service Service) Refine(
 					return err
 				}
 			}
-			if store.TodoIsActive(*current) && len(store.UnmetTodoDependencies(transaction.Todos(), *current)) > 0 {
-				current.Status = store.TodoStatusWaiting
+			if current.Status == store.TodoStatusInProgress && len(store.UnmetTodoDependencies(transaction.Todos(), *current)) > 0 {
 				current.WakeCondition = store.TodoDependencyWakeCondition(*current)
 				current.ReviewAt = ""
 				if _, err := transaction.UnbindTodoSessions(current.ID, "refine:waiting"); err != nil {

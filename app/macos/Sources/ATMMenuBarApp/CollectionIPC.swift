@@ -97,7 +97,6 @@ struct ATMCollectionSourceSaveRequest: Encodable {
     let decisionUnit: String
     let intervalMinutes: Int
     let priority: String
-    let autoDispatch: Bool
     let enabled: Bool
 
     enum CodingKeys: String, CodingKey {
@@ -107,7 +106,6 @@ struct ATMCollectionSourceSaveRequest: Encodable {
         case knowledgeCollection = "knowledge_collection"
         case decisionUnit = "decision_unit"
         case intervalMinutes = "interval_minutes"
-        case autoDispatch = "auto_dispatch"
     }
 }
 
@@ -237,11 +235,15 @@ struct ATMCollectionItemsReadResult: Decodable {
 
 struct ATMCollectionItemsArchivedRequest: Encodable {
     let itemIDs: [String]
+    /// 只与 `archived: true` 搭配：批量只会了结，不会批量重新打开。范围是「已读且没
+    /// 存进知识库的结论」，不是「列表里看得见的一切」——判定在 Go 侧
+    /// （store.ArchiveSettledCollectionItems），这里不重算。
+    let all: Bool
     let archived: Bool
 
     enum CodingKeys: String, CodingKey {
         case itemIDs = "item_ids"
-        case archived
+        case all, archived
     }
 }
 

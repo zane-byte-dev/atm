@@ -64,7 +64,6 @@ var (
 	memoryLimit                int
 	artifactFile               string
 	artifactProducer           string
-	artifactRunID              string
 	artifactSourceRaw          []string
 )
 
@@ -127,7 +126,6 @@ func init() {
 
 	artifactSaveCmd.Flags().StringVar(&artifactFile, "file", "", "read Markdown body from file (use - for stdin)")
 	artifactSaveCmd.Flags().StringVar(&artifactProducer, "producer", "atm-cli", "artifact producer")
-	artifactSaveCmd.Flags().StringVar(&artifactRunID, "run-id", "", "related ATM run id")
 	artifactSaveCmd.Flags().StringSliceVar(&artifactSourceRaw, "source", nil, "source as document-id[#start-end]")
 	artifactCmd.AddCommand(artifactSaveCmd)
 
@@ -609,7 +607,7 @@ var artifactSaveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		artifact, err := knowledge.SaveArtifact(config.AtmDir, args[0], body, artifactProducer, artifactRunID, sources)
+		artifact, err := knowledge.SaveArtifact(config.AtmDir, args[0], body, artifactProducer, sources)
 		if err != nil {
 			return err
 		}

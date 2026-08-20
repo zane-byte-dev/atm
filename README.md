@@ -42,7 +42,7 @@ atm stats --days 7      # 这周花了多少 token 和钱
 
 ## 命令
 
-完整命令与参数一律看 `atm <命令> --help`（比如 `atm todo run --help`）——那里是唯一不会过期的
+完整命令与参数一律看 `atm <命令> --help`（比如 `atm todo handoff --help`）——那里是唯一不会过期的
 真相。下面只列日常最常用的：
 
 **看 AI 在干什么**（别名 `atm s`）
@@ -62,13 +62,13 @@ atm todo add "<标题>"                    # 加一条；--refine 立刻润色�
 atm todo add "<标题>" --image a.png       # 附本地图片；--image 可重复，最多 10 张
 atm todo list                           # 看列表
 atm todo start <id>                     # 进入工作中
-atm todo prompt <id> --copy             # 复制一行提示，粘贴进新的 Agent 会话
-atm todo run <id>                       # 后台派发给 Codex（默认沙箱受限）
-atm todo tail <id> -f                   # 跟随派发日志
+atm todo handoff <id>                   # 在 Codex Desktop 打开并填好指针，不按回车
+atm todo handoff <id> --copy            # 只复制那行指针，粘贴进新的 Agent 会话
 atm todo plan set [id] --file -         # 原子替换结构化执行计划快照
 atm todo submit <id> --reason "实现及证据" # 提交待确认
 atm todo done <id>                      # 验收完成
-atm todo trash <id>                     # 移到回收站（可恢复）
+atm todo archive <id>                   # 归档（可恢复，保留生命周期与历史）
+atm todo restore <id>                   # 从归档恢复
 ```
 
 **统计与诊断**
@@ -117,6 +117,7 @@ atm collect item read <item-id>          # 标记一条收集结果已读
 atm collect item read --all              # 全部标为已读
 atm collect item unread <item-id>        # 重新标为未读
 atm collect item archive <item-id>       # 了结记录（保留审计和关联 Todo）
+atm collect item archive --all           # 批量了结已读、未保存进知识库的结论
 atm collect item unarchive <item-id>     # 重新打开已了结记录
 atm collect source mute <source-id>      # 这个来源不再弹通知（照常收集、照常算未读）
 atm collect source unmute <source-id>    # 恢复通知
@@ -254,7 +255,7 @@ Qoder 装完要重启才生效；Pi 需要手动复制
 - macOS / Linux 支持默认数据源路径自动检测；所有数据源路径可通过 `~/.atm/config.json` 覆盖
 - `atm session clip` 支持 macOS `pbcopy`、Linux `wl-copy`/`xclip`/`xsel`、Windows `clip`
 - todo 人向通知支持 macOS `terminal-notifier`/`osascript` 和 Linux `notify-send`：新建、待验收
-  （submit/review）、完成、放弃都会提醒；`--json` 同样发送；缺少通知命令时静默跳过，不影响任务状态。
+  （submit/review）、完成都会提醒；`--json` 同样发送；缺少通知命令时静默跳过，不影响任务状态。
   菜单栏 App 在刷新时也会对外部新建/进入待验收发原生通知。设 `ATM_SKIP_LOCAL_NOTIFICATION=1`
   可关闭 CLI 本地通知
 - 外发动作闸门只支持 macOS / Linux：它靠 `exec` 替换当前进程，装的 shim 也是 POSIX shell 脚本。

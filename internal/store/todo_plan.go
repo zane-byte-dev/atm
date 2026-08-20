@@ -21,7 +21,6 @@ type TodoPlanRevision struct {
 	Origin       string
 	SessionID    string
 	BindingID    *int64
-	RunID        string
 	Agent        string
 	CreatedAt    int64
 }
@@ -39,7 +38,6 @@ func scanTodoPlanRevision(scanner interface{ Scan(...any) error }) (*TodoPlanRev
 		&revision.Origin,
 		&revision.SessionID,
 		&revision.BindingID,
-		&revision.RunID,
 		&revision.Agent,
 		&revision.CreatedAt,
 	)
@@ -55,7 +53,7 @@ func scanTodoPlanRevision(scanner interface{ Scan(...any) error }) (*TodoPlanRev
 func latestTodoPlanRevision(queryer sqlQueryer, todoID string) (*TodoPlanRevision, error) {
 	return scanTodoPlanRevision(queryer.QueryRow(`SELECT
 		todo_id,revision,base_revision,snapshot_json,snapshot_hash,request_id,
-		actor_kind,origin,session_id,binding_id,run_id,agent,created_at
+		actor_kind,origin,session_id,binding_id,agent,created_at
 		FROM todo_plan_revisions WHERE todo_id=? ORDER BY revision DESC LIMIT 1`, todoID))
 }
 
@@ -86,12 +84,12 @@ func (state *WorkStateTx) AppendTodoPlanRevision(revision TodoPlanRevision) erro
 	}
 	_, err := state.tx.Exec(`INSERT INTO todo_plan_revisions
 		(todo_id,revision,base_revision,snapshot_json,snapshot_hash,request_id,
-		 actor_kind,origin,session_id,binding_id,run_id,agent,created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 actor_kind,origin,session_id,binding_id,agent,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		revision.TodoID, revision.Revision, revision.BaseRevision,
 		revision.SnapshotJSON, revision.SnapshotHash, revision.RequestID,
 		revision.ActorKind, revision.Origin, revision.SessionID,
-		revision.BindingID, revision.RunID, revision.Agent, revision.CreatedAt,
+		revision.BindingID, revision.Agent, revision.CreatedAt,
 	)
 	return err
 }

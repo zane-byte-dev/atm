@@ -59,7 +59,6 @@ type SaveSourceInput struct {
 	DecisionUnit        string `json:"decision_unit,omitempty"`
 	IntervalMinutes     int    `json:"interval_minutes,omitempty"`
 	Priority            string `json:"priority,omitempty"`
-	AutoDispatch        bool   `json:"auto_dispatch,omitempty"`
 	Enabled             bool   `json:"enabled"`
 }
 
@@ -322,7 +321,6 @@ func validateSaveSourceInput(input SaveSourceInput) (Source, error) {
 		DecisionUnit:        strings.ToLower(strings.TrimSpace(input.DecisionUnit)),
 		IntervalMinutes:     input.IntervalMinutes,
 		Priority:            strings.ToUpper(strings.TrimSpace(input.Priority)),
-		AutoDispatch:        input.AutoDispatch,
 		Enabled:             input.Enabled,
 	}
 	if source.Connector == "" {
@@ -362,11 +360,6 @@ func validateSaveSourceInput(input SaveSourceInput) (Source, error) {
 		return Source{}, sourceInvalidArgument(
 			"collection interval must be zero for the strategy default or between 1 and 1440 minutes",
 			"interval_minutes", input.IntervalMinutes,
-		)
-	}
-	if source.AutoDispatch && source.Strategy != SourceStrategyObserve && strings.TrimSpace(source.Project) == "" {
-		return Source{}, sourceInvalidArgument(
-			"automatic dispatch requires a source project", "project", input.Project,
 		)
 	}
 	return source, nil

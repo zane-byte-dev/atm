@@ -55,7 +55,6 @@ type Actor struct {
 	Origin    Origin    `json:"origin"`
 	SessionID string    `json:"session_id,omitempty"`
 	BindingID int64     `json:"binding_id,omitempty"`
-	RunID     string    `json:"run_id,omitempty"`
 	Agent     string    `json:"agent,omitempty"`
 }
 

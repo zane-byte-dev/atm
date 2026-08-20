@@ -108,7 +108,7 @@ func TestSubmitAcceptsEveryAuthorizedActorKind(t *testing.T) {
 		{name: "controller", call: application.Call{
 			RequestID: "controller-submit",
 			Actor: application.Actor{Kind: application.ActorController, Origin: application.OriginController,
-				SessionID: "session-1", RunID: "run-1", Agent: "codex"},
+				SessionID: "session-1", Agent: "codex"},
 		}},
 	}
 	for _, test := range tests {

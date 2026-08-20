@@ -19,10 +19,9 @@ func TestGuardCLICallDerivesAgentAuthorityFromEnvironment(t *testing.T) {
 	}
 
 	t.Setenv("CODEX_THREAD_ID", "codex-thread-42")
-	t.Setenv("ATM_RUN_ID", "run-7")
 	call := guardCLICall()
 	if call.Actor.Kind != application.ActorAgent || call.Actor.Agent != "codex" ||
-		call.Actor.SessionID != "codex-thread-42" || call.Actor.RunID != "run-7" {
+		call.Actor.SessionID != "codex-thread-42" {
 		t.Fatalf("Agent CLI call = %#v", call.Actor)
 	}
 }

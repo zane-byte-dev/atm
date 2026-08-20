@@ -41,6 +41,9 @@ struct DesktopKnowledgeView: View {
     @State private var showingArchiveConfirmation = false
     @State private var deleteSummary: ATMKnowledgeDocumentSummary?
     @State private var isImporting = false
+    @State private var isFlatListLoading = false
+    @State private var flatListError: String?
+    @State private var flatLoadedRefreshGeneration: Int?
     @State private var operationError: KnowledgeOperationError?
     @State private var renameSummary: ATMKnowledgeDocumentSummary?
     @State private var renameText = ""
@@ -51,7 +54,13 @@ struct DesktopKnowledgeView: View {
     @State private var drawerTab = KnowledgeDrawerTab.articles
     @State private var draggedLibraryID: String?
     @AppStorage(ATMManualOrder.knowledgeCollectionsKey) private var knowledgeCollectionOrder = ""
+    @AppStorage(ATMNavigatorPresentationPreferences.knowledgeKey)
+    private var articleListPresentationRaw = ATMNavigatorPresentationPreferences.defaultValue
     @FocusState private var editorFocused: Bool
+
+    private var articleListPresentation: ATMNavigatorPresentation {
+        ATMNavigatorPresentation.resolve(articleListPresentationRaw)
+    }
 
     private var selectedLibraryID: String {
         navigation.selectedKnowledgeLibraryID ?? "atm"
@@ -299,16 +308,50 @@ struct DesktopKnowledgeView: View {
             )
         } trailing: {
             if drawerTab == .articles {
-                ATMIconButton(
-                    systemImage: isListLoading ? "hourglass" : "arrow.clockwise",
-                    help: "刷新当前知识库",
-                    chrome: .bare,
-                    isEnabled: !isListLoading,
-                    side: 30,
-                    iconTier: .bodyLarge
-                ) {
-                    documentCache.removeAll()
-                    refreshGeneration += 1
+                HStack(spacing: ATMSpacing.xSmall) {
+                    ATMNavigatorPresentationToggle(storedValue: $articleListPresentationRaw)
+                    if articleListPresentation == .flat {
+                        Menu {
+                            Button {
+                                showingCreateSheet = true
+                            } label: {
+                                Label("新建知识", systemImage: "square.and.pencil")
+                            }
+                            Button {
+                                showingImporter = true
+                            } label: {
+                                Label("导入 Markdown…", systemImage: "square.and.arrow.down")
+                            }
+                            Divider()
+                            Button {
+                                showingGovernanceSheet = true
+                            } label: {
+                                Label("知识健康", systemImage: "checkmark.shield")
+                            }
+                        } label: {
+                            ATMIconMenuLabel(
+                                systemImage: isImporting ? "hourglass" : "plus",
+                                help: "添加知识",
+                                isEnabled: !isImporting,
+                                side: 30,
+                                iconTier: .bodyLarge
+                            )
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .disabled(isImporting)
+                    }
+                    ATMIconButton(
+                        systemImage: isListLoading || isFlatListLoading ? "hourglass" : "arrow.clockwise",
+                        help: articleListPresentation == .flat ? "刷新全部知识库" : "刷新当前知识库",
+                        chrome: .bare,
+                        isEnabled: !isListLoading && !isFlatListLoading,
+                        side: 30,
+                        iconTier: .bodyLarge
+                    ) {
+                        documentCache.removeAll()
+                        refreshGeneration += 1
+                    }
                 }
             } else {
                 HStack(spacing: 4) {
@@ -336,38 +379,112 @@ struct DesktopKnowledgeView: View {
     }
 
     private var articleGroups: some View {
-        ScrollView {
-            LazyVStack(spacing: ATMGroupedNavigatorMetrics.groupSpacing) {
-                knowledgeLibraryGroup(
-                    id: ATMKnowledgeLibrary.memoryID,
-                    title: "共享记忆",
-                    count: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? items.count : nil,
-                    icon: "brain.head.profile",
-                    collection: nil
-                )
+        Group {
+            if articleListPresentation == .grouped {
+                ScrollView {
+                    LazyVStack(spacing: ATMGroupedNavigatorMetrics.groupSpacing) {
+                        knowledgeLibraryGroup(
+                            id: ATMKnowledgeLibrary.memoryID,
+                            title: "共享记忆",
+                            count: selectedLibraryID == ATMKnowledgeLibrary.memoryID ? items.count : nil,
+                            icon: "brain.head.profile",
+                            collection: nil
+                        )
 
-                ForEach(sortedKnowledgeCollections) { collection in
-                    knowledgeLibraryGroup(
-                        id: collection.id,
-                        title: collection.name,
-                        count: collection.documentCount,
-                        icon: collection.id == "inbox" ? "tray" : "folder",
-                        collection: collection
-                    )
+                        ForEach(sortedKnowledgeCollections) { collection in
+                            knowledgeLibraryGroup(
+                                id: collection.id,
+                                title: collection.name,
+                                count: collection.documentCount,
+                                icon: collection.id == "inbox" ? "tray" : "folder",
+                                collection: collection
+                            )
+                        }
+
+                        knowledgeLibraryGroup(
+                            id: ATMKnowledgeLibrary.archiveID,
+                            title: "归档",
+                            count: selectedLibraryID == ATMKnowledgeLibrary.archiveID ? items.count : nil,
+                            icon: "archivebox",
+                            collection: nil
+                        )
+                    }
+                    .padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
+                    .padding(.vertical, ATMGroupedNavigatorMetrics.contentVerticalInset)
                 }
-
-                knowledgeLibraryGroup(
-                    id: ATMKnowledgeLibrary.archiveID,
-                    title: "归档",
-                    count: selectedLibraryID == ATMKnowledgeLibrary.archiveID ? items.count : nil,
-                    icon: "archivebox",
-                    collection: nil
-                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                flatArticleList
             }
-            .padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
-            .padding(.vertical, ATMGroupedNavigatorMetrics.contentVerticalInset)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: flatArticleLoadKey) {
+            guard articleListPresentation == .flat else { return }
+            await loadFlatArticleItems()
+        }
+    }
+
+    private var flatArticleList: some View {
+        VStack(spacing: 0) {
+            if let flatListError {
+                ATMInlineNotice(
+                    severity: .warning,
+                    title: "部分知识库加载失败",
+                    message: flatListError,
+                    actionTitle: "重试",
+                    onAction: {
+                        flatLoadedRefreshGeneration = nil
+                        refreshGeneration += 1
+                    },
+                    onDismiss: { self.flatListError = nil }
+                )
+                .padding(8)
+            }
+
+            if flatArticleItemCount == 0 {
+                ATMEmptyState(
+                    icon: isFlatListLoading ? "hourglass" : "doc",
+                    title: isFlatListLoading ? "正在读取全部知识" : "还没有知识内容"
+                )
+            } else {
+                ATMGroupedNavigatorScroll(spacing: 0) {
+                    ForEach(articleLibraryIDs, id: \.self) { libraryID in
+                        ForEach(articleItems(for: libraryID)) { item in
+                            knowledgeRow(
+                                item,
+                                libraryID: libraryID,
+                                libraryTitle: articleLibraryTitle(for: libraryID)
+                            )
+                            .atmContentStackRow()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var articleLibraryIDs: [String] {
+        [ATMKnowledgeLibrary.memoryID]
+            + sortedKnowledgeCollections.map(\.id)
+            + [ATMKnowledgeLibrary.archiveID]
+    }
+
+    private var flatArticleItemCount: Int {
+        articleLibraryIDs.reduce(0) { $0 + articleItems(for: $1).count }
+    }
+
+    private var flatArticleLoadKey: String {
+        "\(articleListPresentationRaw)|\(refreshGeneration)|\(articleLibraryIDs.joined(separator: ","))"
+    }
+
+    private func articleItems(for libraryID: String) -> [KnowledgeListItem] {
+        if let cached = itemsByLibraryID[libraryID] { return cached }
+        return selectedLibraryID == libraryID ? items : []
+    }
+
+    private func articleLibraryTitle(for libraryID: String) -> String {
+        if libraryID == ATMKnowledgeLibrary.memoryID { return "共享记忆" }
+        if libraryID == ATMKnowledgeLibrary.archiveID { return "归档" }
+        return sortedKnowledgeCollections.first { $0.id == libraryID }?.name ?? libraryID
     }
 
     private var knowledgeLibraryList: some View {
@@ -714,7 +831,11 @@ struct DesktopKnowledgeView: View {
         navigation.selectedKnowledgeLibraryID = sortedKnowledgeCollections.first?.id
     }
 
-    private func knowledgeRow(_ item: KnowledgeListItem, libraryID: String) -> some View {
+    private func knowledgeRow(
+        _ item: KnowledgeListItem,
+        libraryID: String,
+        libraryTitle: String? = nil
+    ) -> some View {
         let selected = selectedItemID == item.id
         let iconColor = selected ? ATMTheme.accent : ATMTheme.secondary
         return Button {
@@ -749,6 +870,10 @@ struct DesktopKnowledgeView: View {
                             .multilineTextAlignment(.leading)
                     }
                     HStack(spacing: 5) {
+                        if let libraryTitle {
+                            Text(libraryTitle)
+                            Text("·")
+                        }
                         Text(item.kindTitle)
                         if let date = item.dateText, !date.isEmpty {
                             Text("·")
@@ -1473,18 +1598,7 @@ struct DesktopKnowledgeView: View {
         defer { isListLoading = false }
 
         do {
-            let loaded: [KnowledgeListItem]
-            if libraryID == ATMKnowledgeLibrary.memoryID {
-                loaded = try await store.memories(query: "").map(KnowledgeListItem.memory)
-            } else if libraryID == ATMKnowledgeLibrary.archiveID {
-                loaded = try await store.archivedKnowledgeDocuments().map(KnowledgeListItem.document)
-            } else {
-                loaded = try await store.knowledgeDocuments(
-                    collectionID: libraryID,
-                    status: "active"
-                )
-                    .map(KnowledgeListItem.document)
-            }
+            let loaded = try await fetchItems(for: libraryID)
             guard !Task.isCancelled, selectedLibraryID == libraryID else { return }
             itemsByLibraryID[libraryID] = loaded
             items = loaded
@@ -1499,6 +1613,50 @@ struct DesktopKnowledgeView: View {
             document = nil
             listError = error.localizedDescription
         }
+    }
+
+    @MainActor
+    private func loadFlatArticleItems() async {
+        let libraryIDs = articleLibraryIDs
+        if flatLoadedRefreshGeneration == refreshGeneration,
+           libraryIDs.allSatisfy({ itemsByLibraryID[$0] != nil }) {
+            return
+        }
+
+        isFlatListLoading = true
+        flatListError = nil
+        defer { isFlatListLoading = false }
+
+        var firstError: Error?
+        for libraryID in libraryIDs {
+            guard !Task.isCancelled else { return }
+            do {
+                let loaded = try await fetchItems(for: libraryID)
+                guard !Task.isCancelled else { return }
+                itemsByLibraryID[libraryID] = loaded
+                if selectedLibraryID == libraryID { items = loaded }
+            } catch is CancellationError {
+                return
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+
+        guard !Task.isCancelled else { return }
+        flatLoadedRefreshGeneration = refreshGeneration
+        flatListError = firstError?.localizedDescription
+        selectFirstItemIfNeeded()
+    }
+
+    private func fetchItems(for libraryID: String) async throws -> [KnowledgeListItem] {
+        if libraryID == ATMKnowledgeLibrary.memoryID {
+            return try await store.memories(query: "").map(KnowledgeListItem.memory)
+        }
+        if libraryID == ATMKnowledgeLibrary.archiveID {
+            return try await store.archivedKnowledgeDocuments().map(KnowledgeListItem.document)
+        }
+        return try await store.knowledgeDocuments(collectionID: libraryID, status: "active")
+            .map(KnowledgeListItem.document)
     }
 
     @MainActor

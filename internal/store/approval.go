@@ -185,8 +185,8 @@ func CreateApproval(db *sql.DB, a Approval) (Approval, error) {
 		a.PreviewTarget, a.PreviewTitle, a.PreviewBody, a.Status, boolInt(a.StdinPiped),
 		a.GatePID, a.GateDeadline, a.AttachCount, a.RequestedAt, a.ExpiresAt)
 	if err != nil {
-		// The driver names the column, not the index, so both forms are matched
-		// for the same reason CreateTaskRun matches both.
+		// The driver names the column, not the index, so both forms are matched:
+		// which one appears depends on how the constraint was violated.
 		if strings.Contains(err.Error(), "idx_approvals_pending_dedup") ||
 			strings.Contains(err.Error(), "approvals.dedup_key") {
 			return Approval{}, ErrApprovalPending

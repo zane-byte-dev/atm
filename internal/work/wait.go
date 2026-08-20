@@ -29,9 +29,9 @@ type WaitResult struct {
 	Effects         []Effect   `json:"-"`
 }
 
-// Wait atomically moves an active Todo to waiting and releases every session
-// bound to it. Its document-sync request is persisted in the same transaction;
-// identical retries reuse a pending effect and never accumulate duplicates.
+// Wait is a compatibility operation that adds waiting presentation metadata to
+// in-progress work and releases every bound session. It does not introduce a
+// lifecycle state: the Todo remains in_progress.
 func (service Service) Wait(
 	ctx context.Context,
 	call application.Call,
@@ -105,7 +105,7 @@ func (service Service) Wait(
 			return appErr
 		}
 
-		changed := todo.Status != store.TodoStatusWaiting ||
+		changed := todo.Status != store.TodoStatusInProgress ||
 			todo.WakeCondition != wakeCondition || todo.ReviewAt != reviewAt
 		if !changed {
 			result.Todo = *todo
@@ -119,7 +119,11 @@ func (service Service) Wait(
 
 		todo.WakeCondition = wakeCondition
 		todo.ReviewAt = reviewAt
-		todo.Status = store.TodoStatusWaiting
+		todo.Status = store.TodoStatusInProgress
+		if todo.StartTS == nil {
+			now := time.Now().In(config.Loc).Unix()
+			todo.StartTS = &now
+		}
 		result.Todo = *todo
 		if err := transaction.enqueueOrReplaceEffect(call, EffectTodoWaiting, *todo, ""); err != nil {
 			return fmt.Errorf("enqueue wait effect: %w", err)

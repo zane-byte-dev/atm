@@ -85,11 +85,14 @@ type ArchivedTodo struct {
 const (
 	TodoStatusOpen       = "open"
 	TodoStatusInProgress = "in_progress"
-	TodoStatusWaiting    = "waiting"
 	TodoStatusReview     = "review"
-	TodoStatusBlocked    = "blocked"
 	TodoStatusDone       = "done"
-	TodoStatusDropped    = "dropped"
+
+	// Legacy values remain readable for migrations, backups and compatibility
+	// tests. Public mutation paths never write them after schema v51.
+	TodoStatusWaiting = "waiting"
+	TodoStatusBlocked = "blocked"
+	TodoStatusDropped = "dropped"
 
 	TodoTagMaintenance = "maintenance"
 )
@@ -206,10 +209,10 @@ func ArchivedStatus(tf *TodoFile, id string) (string, bool) {
 func TodoNotFoundError(tf *TodoFile, id string) error {
 	if status, archived := ArchivedStatus(tf, id); archived {
 		// The suggested command names the canonical id, not whatever spelling was
-		// typed: it is meant to be pasted, and `atm todo unarchive #275` would have
+		// typed: it is meant to be pasted, and `atm todo restore #275` would have
 		// worked but reads like a typo.
 		canonical := NormalizeTodoID(id)
-		return fmt.Errorf("todo %s is archived (%s): run `atm todo unarchive %s` to work on it again, "+
+		return fmt.Errorf("todo %s is archived (%s): run `atm todo restore %s` to work on it again, "+
 			"or `atm todo list --status archived` to read it", canonical, status, canonical)
 	}
 	// Echoes what was typed rather than the normalised form: the reader is looking
@@ -552,22 +555,24 @@ func SyncTodoDocPlan(todoID, explanation string, items []TodoPlanDocumentItem) e
 	return os.WriteFile(path, []byte(content), 0644)
 }
 
+// todoStatusDisplay writes the Status line on a Todo's markdown card. The four
+// labels are the same words the App shows, so a card and the UI never describe
+// one Todo differently.
+//
+// waiting, blocked and dropped were labelled here too. They are no longer
+// lifecycle states — waiting is presentation on in_progress, and dropped became
+// archival — so a card still carrying one falls through and prints the raw
+// value rather than being translated into a vocabulary nothing else uses.
 func todoStatusDisplay(status string) string {
 	switch status {
 	case "open":
-		return "open（待处理）"
+		return "open（待办）"
 	case "in_progress":
-		return "in_progress（工作中）"
-	case "waiting":
-		return "waiting（等待中）"
+		return "in_progress（进行中）"
 	case "review":
 		return "review（待验收）"
-	case "blocked":
-		return "blocked（阻塞）"
 	case "done":
 		return "done（已完成）"
-	case "dropped":
-		return "dropped（已放弃）"
 	default:
 		return status
 	}

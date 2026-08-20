@@ -62,9 +62,6 @@ func TestRefineSplitsAndEnqueuesOneAtomicProjection(t *testing.T) {
 		ID: "t1", Title: "做完整的收集闭环", Priority: "P1", Status: store.TodoStatusOpen,
 		Project: "atm", Created: store.Today(), Creator: store.TodoCreatorMe,
 	})
-	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "refine-session", TodoID: "t1"}); err != nil {
-		t.Fatal(err)
-	}
 	service := Service{RefinementModel: refinementModel(complexRefinementProposal())}
 	result, err := service.Refine(context.Background(), lifecycleCall(application.ActorAgent, "refine-split"), RefineInput{
 		TodoID: "#T01", AllowSplit: true, MaxChildren: 5,
@@ -72,7 +69,7 @@ func TestRefineSplitsAndEnqueuesOneAtomicProjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Refine: %v", err)
 	}
-	if !result.Changed || !result.Prepared.Split || result.Todo.Status != store.TodoStatusWaiting ||
+	if !result.Changed || !result.Prepared.Split || result.Todo.Status != store.TodoStatusOpen ||
 		len(result.Children) != 2 || len(result.Todo.DependsOn) != 2 || len(result.Effects) != 1 {
 		t.Fatalf("result = %+v", result)
 	}
@@ -84,13 +81,6 @@ func TestRefineSplitsAndEnqueuesOneAtomicProjection(t *testing.T) {
 	if result.Children[0].Source != refine.ChildSource("t1") || result.Children[0].Creator != "codex" ||
 		len(result.Children[1].DependsOn) != 1 || result.Children[1].DependsOn[0] != result.Children[0].ID {
 		t.Fatalf("children = %+v", result.Children)
-	}
-	if binding, err := store.CurrentTodoBinding("refine-session"); err != nil || binding != nil {
-		t.Fatalf("binding after split = %+v, err=%v", binding, err)
-	}
-	history, err := store.ListTodoSessionBindings("t1")
-	if err != nil || len(history) != 1 || history[0].Reason != "refine:waiting" {
-		t.Fatalf("binding history = %+v, err=%v", history, err)
 	}
 	if store.TodoDocExists("t1") || store.TodoDocExists(result.Children[0].ID) {
 		t.Fatal("Refine touched filesystem before its durable effect was delivered")

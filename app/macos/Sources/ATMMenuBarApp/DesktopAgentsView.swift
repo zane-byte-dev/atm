@@ -24,9 +24,15 @@ struct DesktopAgentsView: View {
     @State private var scope: ListScope = .live
     @State private var selectedIndexedSessionID: String?
     @AppStorage("ATMCollapsedAgentGroups") private var collapsedGroupsRaw = ""
+    @AppStorage(ATMNavigatorPresentationPreferences.agentsKey)
+    private var liveListPresentationRaw = ATMNavigatorPresentationPreferences.defaultValue
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private var liveListPresentation: ATMNavigatorPresentation {
+        ATMNavigatorPresentation.resolve(liveListPresentationRaw)
     }
 
     private func expandedBinding(for state: ATMAgentPresenceState) -> Binding<Bool> {
@@ -72,7 +78,6 @@ struct DesktopAgentsView: View {
                             DesktopAgentPresenceDetail(
                                 session: session,
                                 relatedTodo: relatedTodo(for: session),
-                                runTodoID: navigation.selectedAgentRunTodoID ?? session.bindingTodoID,
                                 store: store,
                                 navigation: navigation,
                                 onOpenSession: { openSession(session) }
@@ -118,6 +123,7 @@ struct DesktopAgentsView: View {
             selectedIndexedSessionID = ids.first
         }
         .onChange(of: navigation.selectedAgentID) { _ in revealSelectedGroup() }
+        .onChange(of: liveListPresentationRaw) { _ in revealSelectedGroup() }
         .alert(
             "无法打开来源会话",
             isPresented: Binding(
@@ -139,7 +145,9 @@ struct DesktopAgentsView: View {
                     items: ListScope.allCases.map { (value: $0, title: $0.title) }
                 )
             } trailing: {
-                EmptyView()
+                if scope == .live {
+                    ATMNavigatorPresentationToggle(storedValue: $liveListPresentationRaw)
+                }
             }
         } content: {
             if scope == .all {
@@ -160,36 +168,30 @@ struct DesktopAgentsView: View {
                 )
             } else {
                 ATMGroupedNavigatorScroll {
-                    ForEach(ATMAgentPresenceState.allCases) { state in
-                        let values = sessions.filter { $0.presenceState == state }
-                        if !values.isEmpty {
-                            let expanded = expandedBinding(for: state)
-                            ATMNavigatorGroup {
-                                ATMNavigatorGroupHeader(
-                                    title: state.title,
-                                    count: values.count,
-                                    tint: state.tint,
-                                    isExpanded: expanded
-                                )
-                            } content: {
-                                if expanded.wrappedValue {
-                                    ForEach(values) { session in
-                                        Button {
-                                            navigation.selectedAgentID = session.id
-                                            navigation.selectedAgentRunTodoID = nil
-                                        } label: {
-                                            DesktopAgentPresenceRow(
-                                                session: session,
-                                                isSelected: navigation.selectedAgentID == session.id
-                                            )
+                    if liveListPresentation == .grouped {
+                        ForEach(ATMAgentPresenceState.allCases) { state in
+                            let values = sessions.filter { $0.presenceState == state }
+                            if !values.isEmpty {
+                                let expanded = expandedBinding(for: state)
+                                ATMNavigatorGroup {
+                                    ATMNavigatorGroupHeader(
+                                        title: state.title,
+                                        count: values.count,
+                                        tint: state.tint,
+                                        isExpanded: expanded
+                                    )
+                                } content: {
+                                    if expanded.wrappedValue {
+                                        ForEach(values) { session in
+                                            liveSessionRow(session, showsPresence: false)
                                         }
-                                        .buttonStyle(.atmRow)
-                                        // 行里不再逐张画来源，tooltip 兜住完整来源。
-                                        .help(originLabel(session))
-                                        .atmContentStackRow()
                                     }
                                 }
                             }
+                        }
+                    } else {
+                        ForEach(sessions) { session in
+                            liveSessionRow(session, showsPresence: true)
                         }
                     }
                 }
@@ -272,6 +274,23 @@ struct DesktopAgentsView: View {
         return store.indexedSessions.first { $0.id == id }
     }
 
+    private func liveSessionRow(_ session: ATMLiveSession, showsPresence: Bool) -> some View {
+        Button {
+            navigation.selectedAgentID = session.id
+            navigation.selectedAgentRunTodoID = nil
+        } label: {
+            DesktopAgentPresenceRow(
+                session: session,
+                isSelected: navigation.selectedAgentID == session.id,
+                showsPresence: showsPresence
+            )
+        }
+        .buttonStyle(.atmRow)
+        // 行里不再逐张画来源，tooltip 兜住完整来源。
+        .help(originLabel(session))
+        .atmContentStackRow()
+    }
+
     private var detailIdentity: String {
         switch scope {
         case .live: return selectedSession?.id ?? "empty"
@@ -280,7 +299,7 @@ struct DesktopAgentsView: View {
     }
 
     private func revealSelectedGroup() {
-        guard let session = selectedSession else { return }
+        guard liveListPresentation == .grouped, let session = selectedSession else { return }
         var set = collapsedGroups
         guard set.remove(session.presenceState.id) != nil else { return }
         collapsedGroupsRaw = set.sorted().joined(separator: ",")
@@ -363,6 +382,7 @@ private extension ATMAgentPresenceState {
 private struct DesktopAgentPresenceRow: View {
     let session: ATMLiveSession
     let isSelected: Bool
+    var showsPresence = false
 
     var body: some View {
         ATMNavigatorRow(isSelected: isSelected) {
@@ -409,7 +429,16 @@ private struct DesktopAgentPresenceRow: View {
     /// 尾部整块 `fixedSize`：让长标题先被截断，而不是把介入状态和时长挤没。
     private var trailingMeta: some View {
         HStack(spacing: 6) {
-            if session.presenceState == .attention {
+            if showsPresence {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(session.presenceState.tint)
+                        .frame(width: 6, height: 6)
+                    Text(session.presenceState.title)
+                }
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(session.presenceState.tint)
+            } else if session.presenceState == .attention {
                 Text("需要你")
                     .font(ATMFont.font(.caption, weight: .semibold))
                     .foregroundStyle(ATMTheme.danger)
@@ -427,7 +456,6 @@ private struct DesktopAgentPresenceDetail: View {
         case overview
         case updates
         case transcript
-        case logs
     }
 
     /// 执行动态 tab 里默认展开的条数；更早的收进 DisclosureGroup。
@@ -436,7 +464,6 @@ private struct DesktopAgentPresenceDetail: View {
 
     let session: ATMLiveSession
     let relatedTodo: ATMTodo?
-    let runTodoID: String?
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
     let onOpenSession: () -> Void
@@ -444,7 +471,6 @@ private struct DesktopAgentPresenceDetail: View {
     @State private var selectedTab: DetailTab = .overview
     @State private var transcriptMode: ATMSessionReadMode = .brief
     @State private var copied = false
-    @State private var showingInterruptConfirmation = false
 
     var body: some View {
         ATMDetailScaffold {
@@ -486,40 +512,9 @@ private struct DesktopAgentPresenceDetail: View {
                         mode: $transcriptMode,
                         showsReadControls: false
                     )
-                case .logs:
-                    fullLogsContent
                 }
             }
             .atmAnimatedSwap(selectedTab.rawValue, style: .detail)
-        }
-        .confirmationDialog(
-            "中断当前 Agent 执行？",
-            isPresented: $showingInterruptConfirmation,
-            titleVisibility: .visible
-        ) {
-            // Interrupt the run this session *is*, never a same-Todo run that
-            // belongs to somebody else's process.
-            if let run = taskRun {
-                Button("中断执行", role: .destructive) {
-                    store.interruptTaskRun(todoID: run.todoID)
-                }
-            }
-            Button("继续执行", role: .cancel) {}
-        } message: {
-            Text("Agent 进程会停止，关联 Todo 保持工作中。")
-        }
-        .onAppear { loadTaskRunIfNeeded() }
-        .onChange(of: session.id) { _ in
-            // 全部日志 only exists for a dispatched run, so a different session
-            // must not keep a tab that is no longer on screen selected.
-            if selectedTab == .logs { selectedTab = .overview }
-        }
-        .task(id: fullLogRefreshKey) {
-            guard selectedTab == .logs, let todoID = runTodoID else { return }
-            store.loadTaskRuns(for: todoID)
-            if taskRun != nil {
-                store.loadTaskRunLog(for: todoID)
-            }
         }
     }
 
@@ -558,18 +553,6 @@ private struct DesktopAgentPresenceDetail: View {
 
     private var headerActions: some View {
         HStack(spacing: 6) {
-            if taskRun?.isActive == true {
-                Button {
-                    showingInterruptConfirmation = true
-                } label: {
-                    Label("中断", systemImage: "stop.fill")
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(ATMTheme.danger)
-                .disabled(store.isActing)
-                .help("中断当前 Agent 执行")
-            }
             Menu {
                 Button {
                     copySessionID()
@@ -597,16 +580,11 @@ private struct DesktopAgentPresenceDetail: View {
     }
 
     private var detailTabItems: [(value: DetailTab, title: String)] {
-        var items: [(value: DetailTab, title: String)] = [
+        [
             (.overview, "概览"),
             (.updates, "执行动态"),
             (.transcript, "对话"),
         ]
-        // Only a session that is itself a dispatched run has a raw log.
-        if taskRun != nil {
-            items.append((.logs, "全部日志"))
-        }
-        return items
     }
 
     private var transcriptReadControls: some View {
@@ -650,106 +628,6 @@ private struct DesktopAgentPresenceDetail: View {
         .padding(.horizontal, ATMDetailLayout.horizontalPadding)
         .padding(.vertical, 20)
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private var fullLogsContent: some View {
-        if let todoID = runTodoID, taskRun != nil {
-            VStack(spacing: 0) {
-                HStack(spacing: 8) {
-                    Label("Codex 原始执行日志", systemImage: "terminal")
-                        .font(ATMFont.font(.body, weight: .semibold))
-                    Spacer(minLength: 12)
-                    Button("刷新") { store.loadTaskRunLog(for: todoID) }
-                        .controlSize(.small)
-                }
-                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
-                .frame(height: 42)
-                .background(ATMTheme.listPane)
-
-                if let log = store.taskRunLog(for: todoID) {
-                    ATMTranscriptTextView(
-                        text: log.isEmpty ? "该执行尚未产生日志。" : log,
-                        font: .monospacedSystemFont(ofSize: ATMFont.Tier.caption.size, weight: .regular),
-                        insets: NSSize(width: ATMDetailLayout.horizontalPadding, height: 14),
-                        accessibilityLabel: "Codex 全部执行日志",
-                        scrollsToEndOnUpdate: true
-                    )
-                    .background(ATMTheme.canvas)
-                } else if let error = store.taskRunLogError(for: todoID) {
-                    VStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .font(ATMFont.font(.display, weight: .light))
-                        Text("无法读取执行日志")
-                            .font(ATMFont.font(.title3, weight: .semibold))
-                        Text(error)
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                            .multilineTextAlignment(.center)
-                        Button("重试") { store.loadTaskRunLog(for: todoID) }
-                            .buttonStyle(.borderedProminent)
-                    }
-                    .padding(28)
-                    .frame(maxWidth: .infinity, minHeight: 240)
-                } else {
-                    VStack(spacing: 10) {
-                        ProgressView()
-                        Text("正在读取全部日志")
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 240)
-                }
-            }
-        } else {
-            VStack(spacing: 10) {
-                Image(systemName: "terminal")
-                    .font(ATMFont.font(.display, weight: .light))
-                Text("没有 Codex 执行日志")
-                    .font(ATMFont.font(.title3, weight: .semibold))
-                Text("只有通过 Todo 的“交给 Codex”启动的 Agent 会话会保存原始执行日志。")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .multilineTextAlignment(.center)
-            }
-            .padding(28)
-            .frame(maxWidth: .infinity, minHeight: 240)
-        }
-    }
-
-    /// The dispatched run this session actually *is* — never merely a run of the
-    /// same Todo. A hand-bound session (you working the same Todo in another
-    /// Agent) would otherwise inherit that Todo's Codex run, and the raw-log tab
-    /// would present somebody else's log while 中断 would stop somebody else's
-    /// process.
-    private var taskRun: ATMTaskRun? {
-        guard let todoID = runTodoID else { return nil }
-        let runs = store.taskRuns(for: todoID)
-        if let linked = runs.first(where: {
-            ATMTaskRunSessionRouting.identifiersMatch($0.sessionID, session)
-        }) {
-            return linked
-        }
-        // Arriving from that Todo's “Codex 执行” card is itself the pairing: the
-        // card resolved this session from that run, and a run that has not
-        // reported its session id yet has nothing else to match on.
-        guard navigation.selectedAgentRunTodoID == todoID else { return nil }
-        return runs.first
-    }
-
-    private var fullLogRefreshKey: String {
-        [
-            session.id,
-            runTodoID ?? "none",
-            selectedTab.rawValue,
-            taskRun?.id ?? "none",
-            taskRun?.status ?? "none",
-        ].joined(separator: "|")
-    }
-
-    private func loadTaskRunIfNeeded() {
-        guard let runTodoID else { return }
-        store.loadTaskRuns(for: runTodoID)
     }
 
     private var attentionBanner: some View {

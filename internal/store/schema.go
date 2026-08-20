@@ -66,7 +66,9 @@ import (
 // committed together, so a process crash cannot make a successful transition
 // permanently lose its follow-up work. v50 adds append-only Todo plan revisions.
 // A plan is execution state, not Todo lifecycle: completing every item never
-// submits or closes the Todo.
+// submits or closes the Todo. v52 removes the background-dispatch subsystem:
+// task_runs, the collection dispatch columns and todo_plan_revisions.run_id all
+// go, because ATM no longer starts an Agent and nothing can write them.
 //
 // Keep the minimum at 21 while those upgrade steps exist; after the live database
 // has been upgraded, raise this to SchemaVersion and delete the steps. Note what a
@@ -75,7 +77,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 50
+	SchemaVersion        = 52
 	minUpgradableVersion = 21
 )
 
@@ -433,35 +435,6 @@ func createSchema(tx *sql.Tx) error {
 		// every caller remembering to close the previous one.
 		`CREATE UNIQUE INDEX idx_todo_bindings_active_session
 			ON todo_session_bindings(session_id) WHERE unbound_at IS NULL`,
-		// One row per explicit Agent dispatch. Todo lifecycle remains separate:
-		// a completed run may submit a Todo to review, but never marks it done.
-		`CREATE TABLE task_runs (
-			id         TEXT PRIMARY KEY,
-			todo_id    TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
-			agent      TEXT NOT NULL,
-			project    TEXT NOT NULL DEFAULT '',
-			work_dir   TEXT NOT NULL,
-			prompt     TEXT NOT NULL DEFAULT '',
-			policy     TEXT NOT NULL CHECK (policy IN ('guarded','trusted')),
-			log_path   TEXT NOT NULL,
-			status     TEXT NOT NULL CHECK (status IN ('starting','running','completed','failed','interrupted')),
-			pid        INTEGER NOT NULL DEFAULT 0,
-			start_ts   INTEGER NOT NULL,
-			end_ts     INTEGER,
-			exit_code  INTEGER,
-			message    TEXT NOT NULL DEFAULT '',
-			session_id TEXT,
-			-- The thread this run was told to continue, as opposed to session_id,
-			-- which is the session this run turned out to be. Keeping intent in
-			-- its own column is what lets the controller decide between a fresh
-			-- dispatch and an agent resume without reading display text.
-			resume_session_id TEXT
-		)`,
-		`CREATE INDEX idx_task_runs_todo_started ON task_runs(todo_id, start_ts DESC)`,
-		// Creating the starting row is the claim. Two App/CLI callers racing to
-		// dispatch the same Todo cannot both launch an Agent.
-		`CREATE UNIQUE INDEX idx_task_runs_active_todo ON task_runs(todo_id)
-			WHERE status IN ('starting','running')`,
 		// work_state_meta holds the cross-process write lock row. See
 		// acquireWorkWriteLock.
 		`CREATE TABLE work_state_meta (
@@ -501,7 +474,6 @@ func createSchema(tx *sql.Tx) error {
 			origin        TEXT NOT NULL,
 			session_id    TEXT NOT NULL DEFAULT '',
 			binding_id    INTEGER,
-			run_id        TEXT NOT NULL DEFAULT '',
 			agent         TEXT NOT NULL DEFAULT '',
 			created_at    INTEGER NOT NULL,
 			PRIMARY KEY (todo_id, revision)
@@ -605,9 +577,6 @@ func createSchema(tx *sql.Tx) error {
 				CHECK (interval_minutes BETWEEN 1 AND 1440),
 			priority    TEXT NOT NULL DEFAULT 'P2'
 				CHECK (priority IN ('P0','P1','P2','P3')),
-			-- Disabled by default: collecting a requirement and executing code have
-			-- different authority. Observe sources can never dispatch.
-			auto_dispatch INTEGER NOT NULL DEFAULT 0 CHECK (auto_dispatch IN (0,1)),
 			enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
 			-- Whether this source's new results stay out of desktop notifications.
 			-- Only the banner: muted results still collect, still count as unread
@@ -692,11 +661,6 @@ func createSchema(tx *sql.Tx) error {
 			-- MaxCollectionAttempts stops the automatic retry and leaves the item
 			-- to an explicit reprocess.
 			attempts        INTEGER NOT NULL DEFAULT 0,
-			-- Agent handoff is a second outcome after classification. Keeping it
-			-- separate makes a created Todo durable even when Codex is unavailable.
-			dispatch_status TEXT NOT NULL DEFAULT ''
-				CHECK (dispatch_status IN ('','pending','dispatched','failed')),
-			dispatch_error  TEXT NOT NULL DEFAULT '',
 			error           TEXT NOT NULL DEFAULT '',
 			created_at      INTEGER NOT NULL,
 			updated_at      INTEGER NOT NULL,

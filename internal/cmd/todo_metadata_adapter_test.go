@@ -17,26 +17,24 @@ func TestRunTodoBatchAddReadsCommandInputAndKeepsOutputShape(t *testing.T) {
 	withHumanCLI(t)
 
 	oldJSON := jsonOutput
-	oldPriority, oldProject, oldStatus := todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag
+	oldPriority, oldProject := todoAddPriorityFlag, todoAddProjectFlag
 	oldSource, oldCreator := todoSourceFlag, todoAddCreatorFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
-		todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag = oldPriority, oldProject, oldStatus
+		todoAddPriorityFlag, todoAddProjectFlag = oldPriority, oldProject
 		todoSourceFlag, todoAddCreatorFlag = oldSource, oldCreator
 		todoAddCmd.SetIn(os.Stdin)
 		todoAddCmd.SetErr(os.Stderr)
 	})
 	jsonOutput = false
-	todoAddPriorityFlag, todoAddProjectFlag, todoAddStatusFlag = "P1", "", "open"
+	todoAddPriorityFlag, todoAddProjectFlag = "P1", ""
 	todoSourceFlag, todoAddCreatorFlag = "", ""
 	todoAddCmd.SetErr(io.Discard)
 	todoAddCmd.SetIn(strings.NewReader(`project: atm
 source: adapter-test
 items:
   - title: First batch item
-  - title: Waiting batch item
-    status: waiting
-    wake: external result
+  - title: Second batch item
     creator: claude
 `))
 
@@ -45,21 +43,27 @@ items:
 	if runErr != nil {
 		t.Fatalf("runTodoBatchAdd: %v", runErr)
 	}
-	if output != "Added t1: First batch item\nAdded t2: Waiting batch item\n" {
+	if output != "Added t1: First batch item\nAdded t2: Second batch item\n" {
 		t.Fatalf("output = %q", output)
 	}
 	todos, err := store.LoadTodosReadOnly()
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Batch items carry metadata only: every created Todo is open, with no
+	// waiting presentation to inherit.
 	if len(todos.Items) != 2 || todos.Items[0].Project != "atm" || todos.Items[0].Source != "adapter-test" ||
 		todos.Items[0].Creator != "me" || todos.Items[1].Creator != "claude" ||
-		todos.Items[1].WakeCondition != "external result" {
+		todos.Items[0].Status != store.TodoStatusOpen || todos.Items[1].Status != store.TodoStatusOpen ||
+		todos.Items[1].WakeCondition != "" {
 		t.Fatalf("todos = %+v", todos.Items)
 	}
 }
 
-func TestRunTodoMoveKeepsHumanRenderingWhileUsingWorkService(t *testing.T) {
+// `todo move` was merged into `todo edit --project`: reassigning a project is
+// one metadata field, not its own verb. The shorthand ID still has to resolve,
+// which is why this goes through the adapter rather than the work service.
+func TestRunTodoEditReassignsProjectThroughTheMetadataAdapter(t *testing.T) {
 	withTempAtmDir(t)
 	if err := seedTodos(store.Todo{
 		ID: "t1", Title: "Move through adapter", Priority: "P1",
@@ -67,19 +71,28 @@ func TestRunTodoMoveKeepsHumanRenderingWhileUsingWorkService(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	oldJSON, oldProject := jsonOutput, todoMoveProjectFlag
+	oldJSON, oldProject := jsonOutput, todoEditProjectFlag
 	t.Cleanup(func() {
-		jsonOutput, todoMoveProjectFlag = oldJSON, oldProject
+		jsonOutput, todoEditProjectFlag = oldJSON, oldProject
+		todoEditCmd.Flags().Lookup("project").Changed = false
 	})
 	jsonOutput = false
-	todoMoveProjectFlag = "atm"
+	todoEditProjectFlag = "atm"
+	todoEditCmd.Flags().Lookup("project").Changed = true
 
 	var runErr error
-	output := captureStdout(t, func() { runErr = runTodoMove(todoMoveCmd, []string{"#T01"}) })
+	output := captureStdout(t, func() { runErr = runTodoEdit(todoEditCmd, []string{"#T01"}) })
 	if runErr != nil {
-		t.Fatalf("runTodoMove: %v", runErr)
+		t.Fatalf("runTodoEdit: %v", runErr)
 	}
-	if output != "Moved t1: old → atm\n" {
+	if output != "Updated t1: Move through adapter\n" {
 		t.Fatalf("output = %q", output)
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if todo := store.FindTodo(todos, "t1"); todo == nil || todo.Project != "atm" {
+		t.Fatalf("todo = %+v", todo)
 	}
 }

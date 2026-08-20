@@ -139,11 +139,6 @@ func CanSplit(todo store.Todo, existingChildren int, allowSplit bool) (bool, str
 	switch todo.Status {
 	case store.TodoStatusOpen:
 		return true, ""
-	case store.TodoStatusWaiting:
-		if todo.WakeCondition == "" || strings.HasPrefix(todo.WakeCondition, "waiting for todos: ") {
-			return true, ""
-		}
-		return false, "waiting on a non-todo condition"
 	case store.TodoStatusInProgress:
 		return false, "in_progress todos are polished but not split"
 	default:

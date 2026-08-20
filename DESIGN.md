@@ -25,8 +25,8 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 - **ATM 数据自有**：ATM 产生和管理的数据全部位于 `~/.atm`，不会静默写入项目目录或探测其他产品的私有目录。
 - **显式导入**：外部知识和历史数据通过 add/import 进入 ATM，不在日常查询路径中做兼容扫描。
 - **旁路而非主路**：普通 coding/chat 由客户端直接连接 Agent；ATM 停止不能阻断普通会话。
-- **不实现 agent loop 或 Agent scheduler**：常驻 App 可定时运行连接器采集；任务来源可显式 opt-in，在新建 Todo 后派发一次 Codex，但失败不会无限重跑，Agent 也不能自行生成下一轮调度。与历史任务有关时只记录关联上下文，不合并事项。
-- **执行必须授权且可追踪**：`todo prompt` 把指针交给可见会话；`todo run` 或来源上的 `auto_dispatch` 才能启动本地 Agent。每次 Run 先持久化 claim 再起进程，默认受限权限，同一 Todo 不并发执行；进程退出只形成执行证据，成功最多提交 `review`，不能替人验收为 `done`。
+- **不实现 agent loop 或 Agent scheduler**：常驻 App 可定时运行连接器采集。ATM 不代为启动 Agent 会话；任务交给 Codex 只用 `todo handoff`（要指针文本就 `--copy`）。与历史任务有关时只记录关联上下文，不合并事项。
+- **执行必须授权且可追踪**：`todo handoff` 在 Codex Desktop 填好指针后停下，回车和审批都归人；`--copy` 只把指针交给人，由人自己开会话。ATM 不在后台启动 Agent。
 - **事实分域**：Todo 保存工作目标与生命周期，Git 保存实现状态，测试/CI 提供验证证据，Session 保存过程追溯；ATM 提供关联视图，不复制或覆盖其他事实源。
 - **状态正交**：live activity 是观测信号，Session binding 是显式关系，Todo status 是工作生命周期；三者独立展示，禁止按项目名或 `in_progress` 猜测绑定。
 - **单用户单库**：只有一个活的数据库，因此不背向后兼容成本；schema 变更的流程写在

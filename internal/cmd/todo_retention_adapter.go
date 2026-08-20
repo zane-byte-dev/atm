@@ -50,14 +50,6 @@ func runTodoArchive(cmd *cobra.Command, args []string) error {
 	return runTodoRetention(cmd, args, workapp.RetentionArchive, "archived", "Archived")
 }
 
-func runTodoUnarchive(cmd *cobra.Command, args []string) error {
-	return runTodoRetention(cmd, args, workapp.RetentionUnarchive, "unarchived", "Unarchived")
-}
-
-func runTodoTrash(cmd *cobra.Command, args []string) error {
-	return runTodoRetention(cmd, args, workapp.RetentionTrash, "trashed", "Trashed")
-}
-
 func runTodoRestore(cmd *cobra.Command, args []string) error {
 	return runTodoRetention(cmd, args, workapp.RetentionRestore, "restored", "Restored")
 }
@@ -78,10 +70,6 @@ func runTodoRetention(
 	switch action {
 	case workapp.RetentionArchive:
 		result, err = workapp.Default.Archive(cmd.Context(), call, input)
-	case workapp.RetentionUnarchive:
-		result, err = workapp.Default.Unarchive(cmd.Context(), call, input)
-	case workapp.RetentionTrash:
-		result, err = workapp.Default.Trash(cmd.Context(), call, input)
 	case workapp.RetentionRestore:
 		result, err = workapp.Default.Restore(cmd.Context(), call, input)
 	default:

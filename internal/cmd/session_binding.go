@@ -105,18 +105,11 @@ func runSessionBind(cmd *cobra.Command, args []string) error {
 		CWD:              cwd,
 		WorkspaceProject: config.ProjectFromPath(cwd),
 		Force:            sessionBindForceFlag,
-		RunID:            os.Getenv("ATM_RUN_ID"),
-		RunTodoID:        os.Getenv("ATM_TODO_ID"),
 	})
 	if err != nil {
 		return err
 	}
 	todo, binding := result.Todo, result.Binding
-	for _, warning := range result.Warnings {
-		if warning.Code == workapp.BindWarningTaskRunLinkFailed {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not link session to task run %s: %v\n", warning.RunID, warning.Cause)
-		}
-	}
 	if jsonOutput {
 		output.JSON(map[string]any{"binding": &binding, "todo": workapp.CompactTodo(todo)})
 		return nil

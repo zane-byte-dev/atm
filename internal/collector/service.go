@@ -27,15 +27,7 @@ type Service struct {
 	Fetcher    Fetcher
 	Extractor  Extractor
 	Summarizer Summarizer
-	Dispatcher TaskDispatcher
 	Now        func() time.Time
-}
-
-// TaskDispatcher is the narrow boundary between collection and task
-// execution. Its concrete process/controller adapter belongs at the delivery
-// edge; collector only decides when a newly-created Todo should be dispatched.
-type TaskDispatcher interface {
-	Dispatch(context.Context, string, string) error
 }
 
 type RunReport struct {
@@ -192,7 +184,6 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 	}
 	batches := groupMessagesWithContext(source, messages, handledMessageIDs)
 	batchFailed := false
-	dispatchFailed := false
 	for _, batch := range batches {
 		if ctx.Err() != nil {
 			run.FailedCount++
@@ -261,15 +252,6 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			batchFailed = true
 			continue
 		}
-		if item.DispatchStatus == "pending" {
-			if err := service.dispatchItem(ctx, db, &item, source.Project); err != nil {
-				run.FailedCount++
-				if run.Error == "" {
-					run.Error = compactError(err)
-				}
-				dispatchFailed = true
-			}
-		}
 	}
 	if batchFailed {
 		run.Status = "failed"
@@ -283,52 +265,8 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			run.Status, run.Error, run.FailedCount = "failed", err.Error(), run.FailedCount+1
 		}
 	}
-	if dispatchFailed && run.Status == "running" {
-		run.Status = "failed"
-	}
 	finish(&run)
 	return run
-}
-
-func (service Service) dispatchItem(
-	ctx context.Context,
-	db *sql.DB,
-	item *store.CollectionItem,
-	trustedProject string,
-) error {
-	if item.TodoID == "" {
-		return fmt.Errorf("collection item %s has no Todo to dispatch", item.ID)
-	}
-	// A task run is the durable claim. It also closes the crash window where the
-	// child successfully created the run but the collection item was not updated.
-	runs, err := store.ListTaskRuns(db, item.TodoID)
-	if err != nil {
-		return err
-	}
-	if len(runs) > 0 {
-		item.DispatchStatus, item.DispatchError = "dispatched", ""
-		return store.UpdateCollectionItem(db, *item)
-	}
-	if service.Dispatcher == nil {
-		err = fmt.Errorf("automatic dispatch is not configured")
-	} else {
-		err = service.Dispatcher.Dispatch(ctx, item.TodoID, trustedProject)
-	}
-	if err != nil {
-		// The command may have launched the controller and then lost its output.
-		// Prefer the durable run over the transport error in that case.
-		if current, readErr := store.ListTaskRuns(db, item.TodoID); readErr == nil && len(current) > 0 {
-			item.DispatchStatus, item.DispatchError = "dispatched", ""
-			return store.UpdateCollectionItem(db, *item)
-		}
-		item.DispatchStatus, item.DispatchError = "failed", compactError(err)
-		if updateErr := store.UpdateCollectionItem(db, *item); updateErr != nil {
-			return fmt.Errorf("%v; record dispatch failure: %w", err, updateErr)
-		}
-		return err
-	}
-	item.DispatchStatus, item.DispatchError = "dispatched", ""
-	return store.UpdateCollectionItem(db, *item)
 }
 
 func (service Service) fetcherFor(source store.CollectionSource) (Fetcher, error) {
@@ -476,12 +414,6 @@ func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Dec
 		return Decision{}, err
 	}
 	decision = clampToStrategy(normalizeDecision(decision, batch.Source), batch.Source)
-	// Project becomes an execution boundary when auto-dispatch is enabled. Only
-	// the source configuration is trusted to choose a local repository; connector
-	// messages and classifier output cannot redirect Codex elsewhere.
-	if batch.Source.AutoDispatch {
-		decision.Project = batch.Source.Project
-	}
 	return decision, nil
 }
 
@@ -550,9 +482,6 @@ func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decis
 		item.TodoID, item.Status = todoID, "processed"
 	default:
 		return item, fmt.Errorf("unsupported collection decision: %s", decision.Action)
-	}
-	if item.Action == "create" && batch.Source.AutoDispatch {
-		item.DispatchStatus, item.DispatchError = "pending", ""
 	}
 	return item, nil
 }
@@ -765,17 +694,14 @@ func (service Service) revertItem(itemID string) (store.CollectionItem, error) {
 			}
 			if todo.Source != connectorSource(batch) {
 				return itemConflict(
-					fmt.Sprintf("refusing to drop Todo %s because its source no longer matches this collection item", todo.ID),
+					fmt.Sprintf("refusing to archive Todo %s because its source no longer matches this collection item", todo.ID),
 					item.ID,
 				)
 			}
-			today, reason := store.Today(), "撤销自动收集误创建"
-			now := time.Now().In(config.Loc).Unix()
-			todo.Status, todo.Closed, todo.ClosedReason, todo.DoneTS = store.TodoStatusDropped, &today, &reason, &now
-			if _, err := transaction.UnbindTodoSessions(todo.ID, "collection-reverted"); err != nil {
+			reverted = *todo
+			if _, err := transaction.ArchiveTodos([]string{todo.ID}); err != nil {
 				return err
 			}
-			reverted = *todo
 			return nil
 		})
 		if err != nil {

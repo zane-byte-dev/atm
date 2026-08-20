@@ -163,3 +163,19 @@ func rawCollectIPC(verb, input string, output *bytes.Buffer) error {
 	}()
 	return runIPC(ipcCmd, []string{verb})
 }
+
+// TestIPCCollectArchiveAllCannotReopenEverything guards the one combination the
+// desktop bridge could reach but the CLI cannot express. Settling in bulk is
+// recoverable per record; un-settling in bulk would resurrect a ledger nobody
+// asked to see again, so `all` only ever closes.
+func TestIPCCollectArchiveAllCannotReopenEverything(t *testing.T) {
+	withTempAtmDir(t)
+	err := rawCollectIPC("collect.item.archive", `{"item_ids":[],"all":true,"archived":false}`, nil)
+	if err == nil || !strings.Contains(err.Error(), "can only be settled") {
+		t.Fatalf("bulk reopen error = %v", err)
+	}
+	err = rawCollectIPC("collect.item.archive", `{"item_ids":["ci_1"],"all":true,"archived":true}`, nil)
+	if err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("all-with-ids error = %v", err)
+	}
+}

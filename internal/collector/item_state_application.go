@@ -23,8 +23,15 @@ type SetItemsReadResult struct {
 }
 
 type SetItemsArchivedInput struct {
-	ItemIDs  []string `json:"item_ids"`
-	Archived bool     `json:"archived"`
+	ItemIDs []string `json:"item_ids"`
+	// All settles every record that has already had its attention and only needs
+	// clearing away — read, unsaved conclusions. It is deliberately narrower than
+	// the ID path rather than "archive everything visible": see
+	// store.ArchiveSettledCollectionItems for why nothing that still owes an
+	// action can be swept. Reopening stays per-ID, so All only pairs with
+	// Archived.
+	All      bool `json:"all,omitempty"`
+	Archived bool `json:"archived"`
 }
 
 type SetItemsArchivedResult struct {
@@ -107,7 +114,18 @@ func (service Service) SetItemsArchived(
 	if err != nil {
 		return SetItemsArchivedResult{}, err
 	}
-	if len(ids) == 0 {
+	if input.All {
+		if len(ids) > 0 {
+			return SetItemsArchivedResult{}, itemInvalidArgument(
+				"archive state accepts item IDs or all, not both", "item_ids", input.ItemIDs,
+			)
+		}
+		if !input.Archived {
+			return SetItemsArchivedResult{}, itemInvalidArgument(
+				"all collection items can only be settled, not reopened", "archived", false,
+			)
+		}
+	} else if len(ids) == 0 {
 		return SetItemsArchivedResult{}, itemInvalidArgument(
 			"at least one collection item ID is required", "item_ids", input.ItemIDs,
 		)
@@ -117,6 +135,15 @@ func (service Service) SetItemsArchived(
 		return SetItemsArchivedResult{}, itemStateError("change collection item archive state", err)
 	}
 	defer db.Close()
+	if input.All {
+		count, err := store.ArchiveSettledCollectionItems(db)
+		if err != nil {
+			return SetItemsArchivedResult{}, itemStateError("settle read collection conclusions", err)
+		}
+		return SetItemsArchivedResult{
+			Items: []store.CollectionItem{}, Count: int(count), Archived: true,
+		}, nil
+	}
 	items, err := store.SetCollectionItemsArchived(db, ids, input.Archived)
 	if err != nil {
 		return SetItemsArchivedResult{}, itemStateError("change collection item archive state", err)

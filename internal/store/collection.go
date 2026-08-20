@@ -51,7 +51,6 @@ type CollectionSource struct {
 	DecisionUnit    string `json:"decision_unit"`
 	IntervalMinutes int    `json:"interval_minutes"`
 	Priority        string `json:"priority"`
-	AutoDispatch    bool   `json:"auto_dispatch"`
 	Enabled         bool   `json:"enabled"`
 	// Muted keeps this source's new results out of the desktop notifications and
 	// nothing else: they are still collected, still count as unread and still
@@ -155,10 +154,6 @@ type CollectionItem struct {
 	// Automatic retries stop at MaxCollectionAttempts; see
 	// CollectionRetriesExhausted.
 	Attempts int `json:"attempts,omitempty"`
-	// DispatchStatus describes only the optional Todo -> Agent handoff. The
-	// collection decision remains processed even if Codex cannot be launched.
-	DispatchStatus string `json:"dispatch_status,omitempty"`
-	DispatchError  string `json:"dispatch_error,omitempty"`
 	// RetryStopped is Attempts read against the ceiling, derived on every query
 	// so that what "failed" means for a reader — comes back on its own, or waits
 	// for a person — is decided here instead of by every caller keeping its own
@@ -201,6 +196,11 @@ type CollectionSummary struct {
 	// Unread is the number of collected results still worth surfacing to a
 	// person: new Todo writes, supplements, unsaved conclusions and proposals.
 	Unread int `json:"unread_count"`
+	// Settleable is how many records a bulk settle would close — read, unsaved
+	// conclusions. It is a separate axis from Unread on purpose: Unread counts
+	// what still wants attention, this counts what has already had it and only
+	// needs clearing away. See collectionSettleableFilter.
+	Settleable int `json:"settleable_count"`
 }
 
 type CollectionOverview struct {
@@ -253,12 +253,6 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 	if source.Strategy != CollectionStrategyTasks && source.Strategy != CollectionStrategyObserve {
 		return CollectionSource{}, fmt.Errorf("invalid collection strategy: %s", source.Strategy)
 	}
-	if source.Strategy == CollectionStrategyObserve {
-		source.AutoDispatch = false
-	}
-	if source.AutoDispatch && source.Project == "" {
-		return CollectionSource{}, fmt.Errorf("automatic dispatch requires a source project")
-	}
 	if source.DecisionUnit == "" {
 		source.DecisionUnit = CollectionDecisionUnitWindow
 	}
@@ -289,19 +283,17 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 	// muted source back into the notifications. SetCollectionSourceMuted owns it.
 	_, err := db.Exec(`INSERT INTO collection_sources
 		(id,connector,kind,external_id,name,project,exclude_pattern,instruction,knowledge_collection,
-		 strategy,decision_unit,interval_minutes,priority,auto_dispatch,enabled,muted,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 strategy,decision_unit,interval_minutes,priority,enabled,muted,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(connector,kind,external_id) DO UPDATE SET
 			name=excluded.name,project=excluded.project,exclude_pattern=excluded.exclude_pattern,
 			instruction=excluded.instruction,knowledge_collection=excluded.knowledge_collection,
 			strategy=excluded.strategy,decision_unit=excluded.decision_unit,
 			interval_minutes=excluded.interval_minutes,priority=excluded.priority,
-			auto_dispatch=excluded.auto_dispatch,
 			enabled=excluded.enabled,updated_at=excluded.updated_at`,
 		source.ID, source.Connector, source.Kind, source.ExternalID, source.Name,
 		source.Project, source.ExcludePattern, source.Instruction, source.KnowledgeCollection,
 		source.Strategy, source.DecisionUnit, source.IntervalMinutes, source.Priority,
-		boolInt(source.AutoDispatch),
 		boolInt(source.Enabled), boolInt(source.Muted), source.CreatedAt, source.UpdatedAt)
 	if err != nil {
 		return CollectionSource{}, err
@@ -510,15 +502,15 @@ func PutCollectionItem(db *sql.DB, item CollectionItem) (CollectionItem, bool, e
 	result, err := db.Exec(`INSERT INTO collection_items
 		(id,source_id,connector,conversation_id,fingerprint,message_ids,sender,occurred_at,
 		raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,
-		 knowledge_document_id,knowledge_collection,todo_id,status,read_at,attempts,dispatch_status,dispatch_error,
+		 knowledge_document_id,knowledge_collection,todo_id,status,read_at,attempts,
 		 error,created_at,updated_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(connector,fingerprint) DO NOTHING`,
 		item.ID, item.SourceID, item.Connector, item.ConversationID, item.Fingerprint,
 		string(messageIDs), item.Sender, item.OccurredAt, item.RawContext, item.Action,
 		item.ProposedAction, item.Title, item.Summary, item.ItemType, item.Project, item.Priority, item.Reason,
 		item.Confidence, item.KnowledgeDocumentID, item.KnowledgeCollection,
 		nullableString(item.TodoID), item.Status, item.ReadAt, item.Attempts,
-		item.DispatchStatus, item.DispatchError, item.Error, item.CreatedAt, item.UpdatedAt)
+		item.Error, item.CreatedAt, item.UpdatedAt)
 	if err != nil {
 		return CollectionItem{}, false, err
 	}
@@ -538,12 +530,12 @@ func UpdateCollectionItem(db *sql.DB, item CollectionItem) error {
 	item.UpdatedAt = time.Now().In(config.Loc).Unix()
 	_, err = db.Exec(`UPDATE collection_items SET conversation_id=?,message_ids=?,sender=?,occurred_at=?,
 		raw_context=?,action=?,proposed_action=?,title=?,summary=?,item_type=?,project=?,priority=?,reason=?,confidence=?,
-		knowledge_document_id=?,knowledge_collection=?,todo_id=?,status=?,read_at=?,attempts=?,dispatch_status=?,dispatch_error=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
+		knowledge_document_id=?,knowledge_collection=?,todo_id=?,status=?,read_at=?,attempts=?,error=?,updated_at=? WHERE id=?`, item.ConversationID, string(messageIDs),
 		item.Sender, item.OccurredAt, item.RawContext, item.Action, item.ProposedAction, item.Title, item.Summary,
 		item.ItemType, item.Project, item.Priority, item.Reason, item.Confidence,
 		item.KnowledgeDocumentID, item.KnowledgeCollection,
-		nullableString(item.TodoID), item.Status, item.ReadAt, item.Attempts, item.DispatchStatus,
-		item.DispatchError, item.Error, item.UpdatedAt, item.ID)
+		nullableString(item.TodoID), item.Status, item.ReadAt, item.Attempts,
+		item.Error, item.UpdatedAt, item.ID)
 	return err
 }
 
@@ -696,10 +688,50 @@ func MarkAllCollectionItemsRead(db *sql.DB) (int64, error) {
 		WHERE i.read_at=0 AND i.archived_at=0 AND (
 			i.proposed_action<>'' OR
 			(i.action='insight' AND i.knowledge_document_id='') OR
-			(i.action IN ('create','append') AND (i.todo_id IS NULL OR COALESCE(t.status,'') NOT IN ('done','dropped')))
+			(i.action IN ('create','append') AND (i.todo_id IS NULL OR
+				(COALESCE(t.status,'')<>'done' AND t.archived_at IS NULL)))
 		)
 	)`,
 		time.Now().In(config.Loc).Unix())
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// collectionSettleableFilter is the one record class the bulk settle acts on: a
+// conclusion the person has read and did not save. It is also the only decision
+// class with no lifecycle of its own — a create or append is settled by its Todo
+// closing, an ignore was never work, an unsaved conclusion nobody has opened is
+// still owed a look, and a stopped retry wants a person rather than a sweep.
+// Everything outside this filter has to be named by item ID, because a bulk
+// action that could touch open work is one nobody can safely press.
+const collectionSettleableFilter = `archived_at=0 AND action='insight'
+	AND knowledge_document_id='' AND read_at<>0`
+
+// CountSettleableCollectionItems reports how many records a bulk settle would
+// close. It is counted over the whole ledger rather than a page, because the
+// point of the number is deciding whether to press the button at all.
+func CountSettleableCollectionItems(db *sql.DB) (int, error) {
+	count := 0
+	err := db.QueryRow(`SELECT COUNT(*) FROM collection_items
+		WHERE ` + collectionSettleableFilter).Scan(&count)
+	return count, err
+}
+
+// ArchiveSettledCollectionItems settles every read, unsaved conclusion at once.
+// Read state is what stands in for the decision here: opening a conclusion and
+// leaving it unsaved *is* the answer — it was worth knowing and not worth
+// keeping — but until now that answer had no way to leave the main list except
+// one archive call per record, so the list grew until someone deleted rows and
+// took the audit trail with them.
+//
+// Unlike the per-ID path this never marks anything read: read state is the
+// precondition, so writing it would let the sweep create its own eligibility.
+func ArchiveSettledCollectionItems(db *sql.DB) (int64, error) {
+	now := time.Now().In(config.Loc).Unix()
+	result, err := db.Exec(`UPDATE collection_items SET archived_at=?,updated_at=?
+		WHERE `+collectionSettleableFilter, now, now)
 	if err != nil {
 		return 0, err
 	}
@@ -938,7 +970,7 @@ func CollectionInsightWatermark(item CollectionItem) int64 {
 // after a close, so the status column is the whole answer — TodoArchived only
 // explains why the Todo is no longer in the working set.
 func CollectionItemTodoClosed(item CollectionItem) bool {
-	return item.TodoStatus == TodoStatusDone || item.TodoStatus == TodoStatusDropped
+	return item.TodoStatus == TodoStatusDone || item.TodoArchived
 }
 
 func GetCollectionDigest(db *sql.DB, sourceID, digestDate string) (CollectionDigest, error) {
@@ -1079,7 +1111,7 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 	// display budget, and "how many filed Todos are still open" must not shrink
 	// because the caller asked for fewer rows.
 	err = db.QueryRow(`SELECT COUNT(*),
-		COALESCE(SUM(CASE WHEN t.status IN ('done','dropped') THEN 1 ELSE 0 END),0)
+		COALESCE(SUM(CASE WHEN t.status='done' OR t.archived_at IS NOT NULL THEN 1 ELSE 0 END),0)
 		FROM collection_items i JOIN todos t ON t.id=i.todo_id
 		WHERE i.action IN ('create','append')`).
 		Scan(&summary.Followups, &summary.FollowupsClosed)
@@ -1096,8 +1128,13 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 		WHERE i.read_at=0 AND i.archived_at=0 AND (
 			i.proposed_action<>'' OR
 			(i.action='insight' AND i.knowledge_document_id='') OR
-			(i.action IN ('create','append') AND (i.todo_id IS NULL OR COALESCE(t.status,'') NOT IN ('done','dropped')))
+			(i.action IN ('create','append') AND (i.todo_id IS NULL OR
+				(COALESCE(t.status,'')<>'done' AND t.archived_at IS NULL)))
 		)`).Scan(&summary.Unread)
+	if err != nil {
+		return CollectionOverview{}, err
+	}
+	summary.Settleable, err = CountSettleableCollectionItems(db)
 	return CollectionOverview{Summary: summary, Sources: sources, Runs: runs,
 		Items: items, Digests: digests}, err
 }
@@ -1108,13 +1145,12 @@ func LoadCollectionOverview(db *sql.DB, itemLimit int) (CollectionOverview, erro
 const collectionItemSelect = `SELECT i.id,i.source_id,i.connector,i.conversation_id,i.fingerprint,
 	i.message_ids,i.sender,i.occurred_at,i.raw_context,i.action,i.proposed_action,i.title,i.summary,
 	i.item_type,i.project,i.priority,i.reason,i.confidence,i.knowledge_document_id,i.knowledge_collection,
-	COALESCE(i.todo_id,''),i.status,i.read_at,i.archived_at,i.attempts,
-	i.dispatch_status,i.dispatch_error,i.error,
+	COALESCE(i.todo_id,''),i.status,i.read_at,i.archived_at,i.attempts,i.error,
 	i.created_at,i.updated_at,COALESCE(t.status,''),t.archived_at IS NOT NULL
 	FROM collection_items i LEFT JOIN todos t ON t.id=i.todo_id`
 
 const collectionSourceSelect = `SELECT id,connector,kind,external_id,name,project,exclude_pattern,
-	instruction,knowledge_collection,strategy,decision_unit,interval_minutes,priority,auto_dispatch,enabled,muted,
+	instruction,knowledge_collection,strategy,decision_unit,interval_minutes,priority,enabled,muted,
 	created_at,updated_at
 	FROM collection_sources`
 
@@ -1124,13 +1160,12 @@ type collectionScanner interface {
 
 func scanCollectionSource(scanner collectionScanner) (CollectionSource, error) {
 	var source CollectionSource
-	var autoDispatch, enabled, muted int
+	var enabled, muted int
 	err := scanner.Scan(&source.ID, &source.Connector, &source.Kind, &source.ExternalID,
 		&source.Name, &source.Project, &source.ExcludePattern, &source.Instruction,
 		&source.KnowledgeCollection, &source.Strategy, &source.DecisionUnit,
-		&source.IntervalMinutes, &source.Priority, &autoDispatch, &enabled, &muted,
+		&source.IntervalMinutes, &source.Priority, &enabled, &muted,
 		&source.CreatedAt, &source.UpdatedAt)
-	source.AutoDispatch = autoDispatch != 0
 	source.Enabled = enabled != 0
 	source.Muted = muted != 0
 	return source, err
@@ -1145,7 +1180,7 @@ func scanCollectionItem(scanner collectionScanner) (CollectionItem, error) {
 		&item.Action, &item.ProposedAction, &item.Title, &item.Summary, &item.ItemType, &item.Project,
 		&item.Priority, &item.Reason, &item.Confidence, &item.KnowledgeDocumentID,
 		&item.KnowledgeCollection, &item.TodoID, &item.Status, &item.ReadAt, &item.ArchivedAt, &item.Attempts,
-		&item.DispatchStatus, &item.DispatchError, &item.Error, &item.CreatedAt, &item.UpdatedAt,
+		&item.Error, &item.CreatedAt, &item.UpdatedAt,
 		&item.TodoStatus, &todoArchived)
 	item.TodoArchived = todoArchived != 0
 	item.RetryStopped = CollectionRetriesExhausted(item)

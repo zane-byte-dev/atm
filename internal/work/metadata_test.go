@@ -26,26 +26,24 @@ func metadataTestCall(kind application.ActorKind, agent string) application.Call
 func TestAddOwnsNormalizationDocumentAndEffects(t *testing.T) {
 	withTempWorkStore(t)
 	result, err := Default.Add(context.Background(), metadataTestCall(application.ActorAgent, "openai-codex"), AddInput{
-		Title:         "  Create typed metadata  ",
-		Description:   "Keep the Work service authoritative.\n",
-		Priority:      "p0",
-		Status:        "REVIEW",
-		Project:       "  atm  ",
-		WakeCondition: "must be cleared",
-		ReviewAt:      "2026-09-01",
-		Source:        " test-suite ",
+		Title:       "  Create typed metadata  ",
+		Description: "Keep the Work service authoritative.\n",
+		Priority:    "p0",
+		Project:     "  atm  ",
+		Source:      " test-suite ",
 	})
 	if err != nil {
 		t.Fatalf("Add: %v", err)
 	}
+	// A new Todo is always open: reaching review is a transition, not something
+	// creation can jump straight to.
 	if result.Todo.ID != "t1" || result.Todo.Title != "Create typed metadata" ||
-		result.Todo.Priority != "P0" || result.Todo.Status != store.TodoStatusReview ||
+		result.Todo.Priority != "P0" || result.Todo.Status != store.TodoStatusOpen ||
 		result.Todo.Project != "atm" || result.Todo.Source != "test-suite" ||
 		result.Todo.Creator != "codex" || result.Todo.WakeCondition != "" || result.Todo.ReviewAt != "" {
 		t.Fatalf("todo = %+v", result.Todo)
 	}
-	if len(result.Effects) != 2 || result.Effects[0].Kind != MetadataEffectCreated ||
-		result.Effects[1].Kind != MetadataEffectEnteredReview {
+	if len(result.Effects) != 1 || result.Effects[0].Kind != MetadataEffectCreated {
 		t.Fatalf("effects = %+v", result.Effects)
 	}
 	if !store.TodoDocExists("t1") {
@@ -74,9 +72,6 @@ func TestAddRejectsInvalidMetadataBeforeMutation(t *testing.T) {
 	}{
 		{name: "empty title", input: AddInput{Title: "  "}},
 		{name: "priority", input: AddInput{Title: "Bad priority", Priority: "P9"}},
-		{name: "status", input: AddInput{Title: "Bad status", Status: "done"}},
-		{name: "waiting condition", input: AddInput{Title: "No wake", Status: store.TodoStatusWaiting}},
-		{name: "review date", input: AddInput{Title: "Bad review", Status: store.TodoStatusWaiting, ReviewAt: "tomorrow"}},
 		{name: "creator", input: AddInput{Title: "Bad creator", Creator: "unknown-worker"}},
 		{name: "description", input: AddInput{Title: "Bad description", Description: "## 分析\nreserved"}},
 	}
@@ -107,10 +102,10 @@ func TestBatchAddIsAtomicAndAllocatesIDsInOneTransaction(t *testing.T) {
 		Defaults: BatchAddDefaults{Project: "atm", Priority: "P1"},
 		Items: []BatchAddItem{
 			{Title: "Would otherwise persist"},
-			{Title: "Invalid waiting item", Status: store.TodoStatusWaiting},
+			{Title: "Invalid priority item", Priority: "P9"},
 		},
 	})
-	if !errors.Is(err, application.ErrInvalidArgument) || !strings.Contains(err.Error(), "Invalid waiting item") {
+	if !errors.Is(err, application.ErrInvalidArgument) || !strings.Contains(err.Error(), "Invalid priority item") {
 		t.Fatalf("BatchAdd error = %v", err)
 	}
 	todos, loadErr := store.LoadTodosReadOnly()
@@ -124,8 +119,8 @@ func TestBatchAddIsAtomicAndAllocatesIDsInOneTransaction(t *testing.T) {
 	result, err := Default.BatchAdd(context.Background(), call, BatchAddInput{
 		Defaults: BatchAddDefaults{Project: "atm", Priority: "p1", Creator: "me"},
 		Items: []BatchAddItem{
-			{Title: "Ready for review", Status: store.TodoStatusReview},
-			{Title: "Wait for release", Status: store.TodoStatusWaiting, ReviewAt: "2026-09-02", Creator: "claude"},
+			{Title: "Ready for review"},
+			{Title: "Wait for release", Creator: "claude"},
 		},
 	})
 	if err != nil {
@@ -135,8 +130,10 @@ func TestBatchAddIsAtomicAndAllocatesIDsInOneTransaction(t *testing.T) {
 		result.Todos[0].Creator != "me" || result.Todos[1].Creator != "claude" {
 		t.Fatalf("todos = %+v", result.Todos)
 	}
-	if len(result.Effects) != 3 || result.Effects[0].Kind != MetadataEffectCreated ||
-		result.Effects[1].Kind != MetadataEffectEnteredReview || result.Effects[2].Kind != MetadataEffectCreated {
+	// One creation effect per item and nothing else: batch creation cannot put a
+	// Todo straight into review any more than single creation can.
+	if len(result.Effects) != 2 || result.Effects[0].Kind != MetadataEffectCreated ||
+		result.Effects[1].Kind != MetadataEffectCreated {
 		t.Fatalf("effects = %+v", result.Effects)
 	}
 	for _, id := range []string{"t1", "t2"} {
@@ -163,13 +160,11 @@ func TestEditCommitsStatusAndBindingPolicyThenSyncsDocument(t *testing.T) {
 	result, err := Default.Edit(context.Background(), metadataTestCall(application.ActorAgent, "codex"), EditInput{
 		TodoID: "#T01",
 		Patch: EditPatch{
-			Title:         stringPointerForTest("New title"),
-			Description:   stringPointerForTest("New requirement"),
-			Priority:      stringPointerForTest("p0"),
-			Project:       stringPointerForTest(" atm "),
-			Status:        stringPointerForTest("review"),
-			WakeCondition: stringPointerForTest("clear this"),
-			ReviewAt:      stringPointerForTest("2026-09-03"),
+			Title:       stringPointerForTest("New title"),
+			Description: stringPointerForTest("New requirement"),
+			Priority:    stringPointerForTest("p0"),
+			Project:     stringPointerForTest(" atm "),
+			Status:      stringPointerForTest("review"),
 		},
 	})
 	if err != nil {
@@ -187,7 +182,7 @@ func TestEditCommitsStatusAndBindingPolicyThenSyncsDocument(t *testing.T) {
 		t.Fatalf("binding after Edit = %+v, err=%v", binding, err)
 	}
 	history, err := store.ListTodoSessionBindings("t1")
-	if err != nil || len(history) != 1 || history[0].Reason != "status:review" {
+	if err != nil || len(history) != 1 || history[0].Reason != "status-style:review" {
 		t.Fatalf("binding history = %+v, err=%v", history, err)
 	}
 	document, err := store.ReadTodoDoc("t1")
@@ -211,7 +206,7 @@ func TestEditRollsBackTodoWhenBindingUnbindFails(t *testing.T) {
 	}
 	_, err = db.Exec(`CREATE TRIGGER fail_metadata_edit_unbind
 		BEFORE UPDATE OF unbound_at ON todo_session_bindings
-		WHEN NEW.reason = 'status:review'
+		WHEN NEW.reason = 'status-style:review'
 		BEGIN SELECT RAISE(ABORT, 'injected metadata unbind failure'); END`)
 	db.Close()
 	if err != nil {

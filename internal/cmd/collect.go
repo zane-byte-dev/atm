@@ -4,9 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -18,70 +15,8 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
-// collectionCommandTodoDispatcher is the temporary CLI process adapter for
-// Collector's task-dispatch port. Process construction and project-directory
-// discovery stay here at the delivery edge; the Collector service has no
-// dependency on ATM's command namespace.
-type collectionCommandTodoDispatcher struct {
-	executable string
-}
-
-func (dispatcher collectionCommandTodoDispatcher) Dispatch(ctx context.Context, todoID, project string) error {
-	if strings.TrimSpace(dispatcher.executable) == "" {
-		return fmt.Errorf("ATM executable is unavailable for automatic dispatch")
-	}
-	workDir, err := collectionProjectWorkDir(project)
-	if err != nil {
-		return err
-	}
-	command := exec.CommandContext(ctx, dispatcher.executable,
-		"todo", "run", todoID, "--cwd", workDir, "--json")
-	command.Env = append(os.Environ(), "ATM_SKIP_LOCAL_NOTIFICATION=1")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			return fmt.Errorf("dispatch todo %s: %w", todoID, err)
-		}
-		return fmt.Errorf("dispatch todo %s: %w: %s", todoID, err, detail)
-	}
-	return nil
-}
-
 func defaultCollectorService() collector.Service {
-	service := collector.DefaultService()
-	executable, _ := os.Executable()
-	service.Dispatcher = collectionCommandTodoDispatcher{executable: executable}
-	return service
-}
-
-func collectionProjectWorkDir(project string) (string, error) {
-	project = strings.TrimSpace(project)
-	if project == "" {
-		return "", fmt.Errorf("automatic dispatch requires a Todo project")
-	}
-	candidates := []string{}
-	if filepath.IsAbs(project) {
-		candidates = append(candidates, project)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, "mox", project),
-			filepath.Join(home, "work", project),
-			filepath.Join(home, project),
-		)
-	}
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && info.IsDir() {
-			absolute, err := filepath.Abs(candidate)
-			if err != nil {
-				return "", err
-			}
-			return absolute, nil
-		}
-	}
-	return "", fmt.Errorf("cannot resolve project directory for %q", project)
+	return collector.DefaultService()
 }
 
 var (
@@ -111,6 +46,7 @@ var (
 	collectItemPriority     string
 	collectItemCollection   string
 	collectItemReadAll      bool
+	collectItemArchiveAll   bool
 )
 
 func init() {
@@ -157,6 +93,8 @@ func init() {
 		"knowledge collection to save into (default: source setting or "+config.CollectionDigestCollection+")")
 	collectItemReadCmd.Flags().BoolVar(&collectItemReadAll, "all", false,
 		"mark every unread collection result as read")
+	collectItemArchiveCmd.Flags().BoolVar(&collectItemArchiveAll, "all", false,
+		"settle every read conclusion that was not saved to knowledge")
 
 	collectSourceCmd.AddCommand(collectSourceListCmd, collectSourceSearchCmd, collectSourceAddCmd,
 		collectSourceEnableCmd, collectSourceDisableCmd,
@@ -214,6 +152,10 @@ var collectStatusCmd = &cobra.Command{
 		}
 		if value.Summary.Unread > 0 {
 			fmt.Printf("Unread collection results: %d · atm collect item read --all\n", value.Summary.Unread)
+		}
+		if value.Summary.Settleable > 0 {
+			fmt.Printf("Read conclusions to settle: %d · atm collect item archive --all\n",
+				value.Summary.Settleable)
 		}
 		if muted := collectionMutedSources(value.Sources); muted > 0 {
 			fmt.Printf("Muted sources: %d · still collected and counted as unread · atm collect source unmute <source-id>\n", muted)
@@ -816,16 +758,33 @@ var collectItemUnreadCmd = &cobra.Command{
 }
 
 var collectItemArchiveCmd = &cobra.Command{
-	Use:   "archive <item-id>...",
+	Use:   "archive <item-id>... | --all",
 	Short: "Settle collection results without deleting them",
 	Long: "Archive collection results as settled. The records stay in the audit ledger, " +
 		"their source messages stay handled, and linked Todos are unchanged. Archived " +
-		"results can be restored with `atm collect item unarchive`.",
-	Args: cobra.MinimumNArgs(1),
+		"results can be restored with `atm collect item unarchive`.\n\n" +
+		"--all settles the conclusions you have already read and did not save to " +
+		"knowledge — the one class that accumulates because nothing else ever closes " +
+		"it. Open follow-ups, unread results and stopped retries are never swept; " +
+		"name those by ID.",
+	Args: func(cmd *cobra.Command, args []string) error {
+		if collectItemArchiveAll {
+			if len(args) > 0 {
+				return fmt.Errorf("archive accepts item ids or --all, not both")
+			}
+			return nil
+		}
+		if len(args) == 0 {
+			return fmt.Errorf("archive requires at least one item id or --all")
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		result, err := defaultCollectorService().SetItemsArchived(
 			cmd.Context(), collectionCLICall("items-archive"),
-			collector.SetItemsArchivedInput{ItemIDs: uniqueStrings(args), Archived: true},
+			collector.SetItemsArchivedInput{
+				ItemIDs: uniqueStrings(args), All: collectItemArchiveAll, Archived: true,
+			},
 		)
 		if err != nil {
 			return err

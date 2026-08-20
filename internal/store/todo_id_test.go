@@ -59,7 +59,7 @@ func TestFindTodoResolvesEverySpelling(t *testing.T) {
 
 // The archived index is keyed by canonical id, so it has to be consulted with a
 // normalised key too — otherwise `atm todo show 1` reports a missing todo instead
-// of the archived one it actually found, and loses the unarchive instruction.
+// of the archived one it actually found, and loses the restore instruction.
 func TestArchivedStatusAndErrorSurviveAShortID(t *testing.T) {
 	file := &TodoFile{archived: map[string]string{"t1": "done"}}
 	if status, archived := ArchivedStatus(file, "1"); !archived || status != "done" {
@@ -70,7 +70,7 @@ func TestArchivedStatusAndErrorSurviveAShortID(t *testing.T) {
 		t.Fatal("expected an error")
 	}
 	// The suggested command must be paste-ready, so it names t1 rather than #1.
-	want := "atm todo unarchive t1"
+	want := "atm todo restore t1"
 	if !strings.Contains(err.Error(), want) {
 		t.Errorf("error %q does not suggest %q", err.Error(), want)
 	}

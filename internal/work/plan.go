@@ -121,7 +121,6 @@ func (service Service) SetPlan(ctx context.Context, call application.Call, input
 			Origin:       string(call.Actor.Origin),
 			SessionID:    strings.TrimSpace(call.Actor.SessionID),
 			BindingID:    storedBindingID,
-			RunID:        strings.TrimSpace(call.Actor.RunID),
 			Agent:        strings.TrimSpace(call.Actor.Agent),
 			CreatedAt:    time.Now().UTC().UnixNano(),
 		}
@@ -260,7 +259,7 @@ func planSnapshotFromParts(revision store.TodoPlanRevision, snapshot persistedPl
 		TodoID: revision.TodoID, Revision: revision.Revision, Explanation: snapshot.Explanation, Items: snapshot.Items,
 		CreatedAt: revision.CreatedAt, ActorKind: application.ActorKind(revision.ActorKind),
 		Origin: application.Origin(revision.Origin), SessionID: revision.SessionID,
-		BindingID: bindingID, RunID: revision.RunID, Agent: revision.Agent,
+		BindingID: bindingID, Agent: revision.Agent,
 	}
 }
 

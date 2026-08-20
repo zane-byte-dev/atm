@@ -1,11 +1,6 @@
 import AppKit
 import SwiftUI
 
-enum ATMTodoListPreferences {
-    static let showDroppedKey = "ATMShowDroppedTodos"
-    static let defaultShowsDropped = false
-}
-
 enum ATMSettingsTab: String, CaseIterable, Identifiable {
     case general
     case shortcuts
@@ -60,8 +55,6 @@ struct DesktopSettingsView: View {
     @ObservedObject private var appearance = ATMAppearance.shared
     @ObservedObject private var hotKeys = ATMGlobalHotKeyManager.shared
     @State private var selectedTab: ATMSettingsTab = .general
-    @AppStorage(ATMTodoListPreferences.showDroppedKey)
-    private var showsDropped = ATMTodoListPreferences.defaultShowsDropped
     @AppStorage(ATMGlobalHotKeyPreferences.enabledKey)
     private var globalHotKeyEnabled = ATMGlobalHotKeyPreferences.defaultEnabled
     @AppStorage(ATMGlobalHotKeyPreferences.hotKeyKey)
@@ -966,28 +959,6 @@ struct DesktopSettingsView: View {
 
     private var todoSettings: some View {
         VStack(alignment: .leading, spacing: 18) {
-                card {
-                    VStack(alignment: .leading, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("任务列表")
-                                .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                            Text("控制关闭态任务在桌面任务列表中的显示方式。")
-                                .font(ATMFont.footnote)
-                                .foregroundStyle(ATMTheme.secondary)
-                        }
-
-                        Toggle("显示已废弃", isOn: $showsDropped)
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                            .font(ATMFont.font(.body, weight: .medium))
-
-                        Text("关闭后仅从任务列表隐藏已放弃任务，不会删除任务或修改状态。")
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
                 card {
                     VStack(alignment: .leading, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {

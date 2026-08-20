@@ -51,14 +51,14 @@ atm session current                             # current session binding
 atm todo list --json
 atm todo list --status all --json
 atm todo list --project <repo> --json
-atm todo list --status waiting --json
+atm todo list --status in_progress --json
 atm todo list --creator collect --json        # who filed it: me, collect, or an agent name
 atm todo show <id> --json
 # `bindings` 历史中的 unbound_at/reason 是 Todo 状态迁移的结构化审计证据
 atm todo context [id] --json                  # live, read-only Todo/session/Git context; does not run tests
 atm todo context <id> --cwd <worktree>        # explicitly inspect another worktree
-atm todo prompt <id>              # the pointer line a human pastes into a fresh agent session
-atm todo handoff <id>             # open Codex Desktop in the Todo's directory with that pointer prefilled; ATM starts nothing
+atm todo handoff <id>             # open Codex Desktop in the Todo's directory with the pointer prefilled; ATM starts nothing
+atm todo handoff <id> --copy      # only copy/print that pointer line for a human to paste; opens nothing
 atm todo handoff <id> --print     # print the codex:// deep link instead of opening it
 atm todo doc <id>
 atm todo plan set [id] --file -    # replace the full JSON snapshot; base_revision provides optimistic conflict detection
@@ -84,7 +84,7 @@ atm config credential delete               # remove the locally saved Key
 atm todo refine [id]                       # polish title+需求; complex work gets 分析 + child todos
 atm todo refine [id] --dry-run             # print the proposal without writing
 atm todo refine [id] --no-split            # polish only; never create children
-atm todo start <id>                           # done/dropped 会重开并刷新生命周期时间
+atm todo start <id>                           # done 会重开；有未满足依赖时拒绝
 atm session bind <id>                           # bind this agent session; also starts todo
 atm session unbind --reason scope-changed
 atm todo log <id> "结果：...；证据：...；下一步：..."  # one paragraph, max 400 Unicode chars
@@ -92,43 +92,31 @@ atm todo log "结果：...；证据：...；下一步：..."       # bound sessi
 atm todo log <id> "<details>" --section 分析              # route investigation/design detail out of progress
 printf '%s' '{"base_revision":0,"explanation":"进入验证","items":[{"step":"实现","status":"completed"},{"step":"回归测试","status":"in_progress"}]}' | atm todo plan set [id] --file -
 atm todo done <id> --reason "<result>"
-atm todo wait <id> --wake "<condition>"
-atm todo wait <id> --review-at YYYY-MM-DD
-atm todo maintain <id> --limit 3
-atm todo edit <id> --priority P1 --status <state>
-atm todo move <id> --project <repo>
-atm todo drop <id>
-atm todo trash <id>                         # recoverable removal; no confirmation
-atm todo list --status trashed              # inspect the trash
-atm todo restore <id>                       # restore the original lifecycle state
-atm todo archive <id>...                    # move done/dropped todos out of the working set
-atm todo list --status archived --json      # inspect cold storage
-atm todo unarchive <id>...                  # restore archived todos to the working set
-atm todo depend add <id> <dependency-id>   # <id> waits for <dependency-id>
+atm todo edit <id> --status in_progress --wake "<condition>" # waiting 仅是显示样式
+atm todo edit <id> --status in_progress --review-at YYYY-MM-DD
+atm todo edit <id> --maintenance-limit 3    # 范围标签；0 清除
+atm todo edit <id> --priority P1 --status open
+atm todo edit <id> --project <repo>
+atm todo archive <id>...                    # archive any phase; reversible, no confirmation
+atm todo list --status archived --json      # inspect the archive
+atm todo restore <id>...                    # restore the original lifecycle state
+# compatibility aliases: drop/trash -> archive; unarchive -> restore
+atm todo depend add <id> <dependency-id>   # open stays backlog; started work gets waiting style
 atm todo depend remove <id> <dependency-id>
 atm todo depend list <id> --json
-atm todo wake <id> --reason "<observable event>"
+atm todo wake <id> --reason "<observable event>" # compatibility: clear waiting metadata
 atm todo reconcile --json
 atm todo bulk done <id>... --reason "<result>"
 atm todo bulk move <id>... --project <repo>
-```
-
-后台 Agent run 的状态与人工控制按需加载，不属于常驻 worker 热路径：
-
-```bash
-atm todo agents --json                      # whether Codex dispatch is available
-atm todo runs <id> --json                   # durable run history
-atm todo tail <id> [--bytes N] [--follow]   # controller-owned run log
-atm todo interrupt <id>                     # stop the active run
 ```
 
 会话绑定后，`log/show/doc/lint/submit/done/wait/drop` 都可省略 `<id>`；也可写 `current`。`submit`、`done`、`drop`、`wait` 会自动解绑并保留绑定历史。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
 
 `match` 的两种用途不可互换。`--prompt` 服务启动注入，总是返回 `--limit` 条候选（同项目本身加 100 分），所以它答不了「该不该新建」。查重用 `--dedup`：跨项目搜索、要求 `query_score` 达到下限（默认 30，可用 `--min-query-score` 调整）、无匹配时明确输出「可以新建」，且忽略当前会话绑定。`--json` 同时给出 `duplicate` 布尔和每条候选的 `query_score`（query 自身得分，不含项目/状态/优先级加成）。
 
-非 JSON 模式下，单条 `atm todo add` 会把新 ID 单独写到 stdout，并把可读的 `Created <id>: <title>` 提示写到 stderr，脚本可直接使用 `id=$(atm todo add ...)`。`--refine` 是显式的：命令行添加默认不调用模型，避免拖慢 Agent 建卡和 `id=$(...)`。桌面上优化是 Todo 详情页动作栏的按钮，弹窗里可以写一句本次要求（对应 `todo refine --hint`）；只有打开 `todo_refine_on_add`（默认 false）时桌面添加才会自动 `todo refine`。不带 `--hint` 重跑一张已经结构化的卡通常回 `already clear`，`--json` 里 `changed` 为 false。`todo refine` 是一次 ATM 内置 DeepSeek 文本服务的 schema 调用（App 在“设置 → 模型”把 Key 保存到权限为 `0600` 的 `~/.atm/credentials.json`；`DEEPSEEK_API_KEY` 可临时覆盖），不是 Agent 循环；`in_progress` 只润色不拆分。普通删除使用无确认、可恢复的 `atm todo trash`，再用 `atm todo restore` 恢复；`atm todo delete` 是永久删除并要求确认，非交互调用必须显式传 `-y/--yes`。默认不要永久删除。`atm todo prompt` 只输出文本，可以随时调用。
+非 JSON 模式下，单条 `atm todo add` 会把新 ID 单独写到 stdout，并把可读的 `Created <id>: <title>` 提示写到 stderr，脚本可直接使用 `id=$(atm todo add ...)`。`--refine` 是显式的：命令行添加默认不调用模型，避免拖慢 Agent 建卡和 `id=$(...)`。桌面上优化是 Todo 详情页动作栏的按钮，弹窗里可以写一句本次要求（对应 `todo refine --hint`）；只有打开 `todo_refine_on_add`（默认 false）时桌面添加才会自动 `todo refine`。不带 `--hint` 重跑一张已经结构化的卡通常回 `already clear`，`--json` 里 `changed` 为 false。`todo refine` 是一次 ATM 内置 DeepSeek 文本服务的 schema 调用（App 在“设置 → 模型”把 Key 保存到权限为 `0600` 的 `~/.atm/credentials.json`；`DEEPSEEK_API_KEY` 可临时覆盖），不是 Agent 循环；`in_progress` 只润色不拆分。普通移出工作集使用无确认、可恢复的 `atm todo archive`，再用 `atm todo restore` 恢复；`trash/drop` 与 `unarchive` 仅保留为隐藏的兼容别名，不再出现在 `--help` 里。`atm todo delete` 是永久删除并要求确认，非交互调用必须显式传 `-y/--yes`。默认不要永久删除。`atm todo handoff --copy` 只输出并复制那行指针，不打开任何窗口，可以随时调用。创建固定为 `open`：`add` 不接受 `--status`/`--wake`，开始和提交验收走 `todo start` / `todo submit`。
 
-`--image` 会先校验文件扩展名、实际内容、10 MB 单文件上限和 10 张总数，再复制到 `~/.atm/todos/assets/<todo-id>/`；数据库只保存关联元数据和受管文件名。`todo show/list --json` 的 Todo 对象通过 `images` 返回原文件名、绝对读取路径、媒体类型和字节数；桌面 App 从自己的 typed snapshot 读取同一字段。归档与回收站保留图片，永久删除 Todo 才删除资源目录。桌面新建任务同时支持文件选择、拖拽和粘贴截图，详情页点击缩略图打开 Quick Look。
+`--image` 会先校验文件扩展名、实际内容、10 MB 单文件上限和 10 张总数，再复制到 `~/.atm/todos/assets/<todo-id>/`；数据库只保存关联元数据和受管文件名。`todo show/list --json` 的 Todo 对象通过 `images` 返回原文件名、绝对读取路径、媒体类型和字节数；桌面 App 从自己的 typed snapshot 读取同一字段。归档保留图片，永久删除 Todo 才删除资源目录。桌面新建任务同时支持文件选择、拖拽和粘贴截图，详情页点击缩略图打开 Quick Look。
 
 `creator` 记录「谁建的」，与自由文本 `source`（为什么/从哪来）正交，取值只有 `me`、`collect` 和 agent 名。创建时自动判定：环境里有 agent session 就记该 agent，否则记 `me`；连接器收集记 `collect`。环境探测不到自己的 agent（例如 CLI 不导出 session ID）时用 `--creator <agent>` 显式声明，不要让它落成 `me`。展示时 `me` 会渲染成 `atm config set owner_name <昵称>` 配置的昵称（未配置为「我」），存储值始终是 `me`。creator 字段是 v33 新增的，之前创建的 todo 保持为空，不做回填。
 

@@ -45,34 +45,14 @@ final class ATMDesktopLayoutTests: XCTestCase {
     @MainActor
     func testNavigationHistoryRestoresTaskListMode() {
         let navigation = ATMDesktopNavigation()
-        navigation.taskListMode = .trash
+        navigation.taskListMode = .archive
         navigation.selectedTodoID = "t-deleted"
         navigation.section = .collection
 
         navigation.goBack()
         XCTAssertEqual(navigation.section, .tasks)
-        XCTAssertEqual(navigation.taskListMode, .trash)
+        XCTAssertEqual(navigation.taskListMode, .archive)
         XCTAssertEqual(navigation.selectedTodoID, "t-deleted")
-    }
-
-    func testDirectDroppedTodoRequestsRevealBeforeSelectionFallback() throws {
-        let todos = try JSONDecoder().decode(
-            [ATMTodo].self,
-            from: Data(
-                """
-                [{"id":"t1","title":"Dropped","priority":"P2","status":"dropped","created":"2026-08-17"}]
-                """.utf8
-            )
-        )
-        XCTAssertTrue(
-            ATMTaskQuery.shouldRevealDropped(selectedID: "t1", in: todos, showsDropped: false)
-        )
-        XCTAssertFalse(
-            ATMTaskQuery.shouldRevealDropped(selectedID: "t1", in: todos, showsDropped: true)
-        )
-        XCTAssertFalse(
-            ATMTaskQuery.shouldRevealDropped(selectedID: "missing", in: todos, showsDropped: false)
-        )
     }
 
     @MainActor
