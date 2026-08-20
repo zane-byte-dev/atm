@@ -12,55 +12,109 @@ import (
 // "Additional Commands" heading — which is where a reader looks last and an author
 // never looks at all. Failing here forces the question "what is this for?" while
 // the answer is still in someone's head.
-func TestEveryVisibleTopLevelCommandIsGrouped(t *testing.T) {
+func TestEveryVisibleCommandUnderAGroupedParentIsGrouped(t *testing.T) {
 	applyCommandGroups()
-
-	grouped := map[string]string{}
-	for _, group := range commandGroups {
-		for _, name := range group.names {
-			if existing, clash := grouped[name]; clash {
-				t.Errorf("%q is in both %q and %q", name, existing, group.id)
-			}
-			grouped[name] = group.id
-		}
-	}
 
 	// Cobra owns these two and groups them itself.
 	cobraOwned := map[string]bool{"help": true, "completion": true}
 
-	var ungrouped, stale []string
+	for _, parentPath := range groupedParentPaths() {
+		parent, ok := commandGroupParent(parentPath)
+		if !ok {
+			t.Errorf("commandGroups hangs groups under %q, which is not a command", parentPath)
+			continue
+		}
+		label := parentPath
+		if label == "" {
+			label = rootCmd.Name()
+		}
+
+		grouped := map[string]string{}
+		for _, group := range commandGroups {
+			if group.parent != parentPath {
+				continue
+			}
+			for _, name := range group.names {
+				if existing, clash := grouped[name]; clash {
+					t.Errorf("%s: %q is in both %q and %q", label, name, existing, group.id)
+				}
+				grouped[name] = group.id
+			}
+		}
+
+		var ungrouped, stale []string
+		seen := map[string]bool{}
+		for _, command := range parent.Commands() {
+			name := command.Name()
+			seen[name] = true
+			if cobraOwned[name] {
+				continue
+			}
+			// Hidden commands are not in the list a person reads, so they need no
+			// group. `dashboard` is a versioned payload for the app's refresh loop
+			// with no human reader; the todo compatibility aliases are kept working
+			// for text already written elsewhere without being advertised again.
+			if command.Hidden {
+				continue
+			}
+			if command.GroupID == "" {
+				ungrouped = append(ungrouped, name)
+			}
+		}
+		for name := range grouped {
+			if !seen[name] {
+				stale = append(stale, name)
+			}
+		}
+		sort.Strings(ungrouped)
+		sort.Strings(stale)
+		if len(ungrouped) > 0 {
+			t.Errorf("%s: these commands would print under \"Additional Commands\": %s\n"+
+				"add each to a group in commandGroups, or mark it Hidden if it has no human reader",
+				label, strings.Join(ungrouped, ", "))
+		}
+		if len(stale) > 0 {
+			t.Errorf("%s: commandGroups names commands that no longer exist: %s",
+				label, strings.Join(stale, ", "))
+		}
+	}
+}
+
+// Applying the groups twice must not double the headings, because Execute and the
+// tests both call it.
+func TestApplyCommandGroupsIsIdempotent(t *testing.T) {
+	applyCommandGroups()
+	applyCommandGroups()
+
+	for _, parentPath := range groupedParentPaths() {
+		parent, ok := commandGroupParent(parentPath)
+		if !ok {
+			continue
+		}
+		seen := map[string]int{}
+		for _, group := range parent.Groups() {
+			seen[group.ID]++
+		}
+		for id, count := range seen {
+			if count > 1 {
+				t.Errorf("%s declares group %q %d times", parent.CommandPath(), id, count)
+			}
+		}
+	}
+}
+
+// groupedParentPaths lists the distinct parents commandGroups describes, in the
+// order they first appear.
+func groupedParentPaths() []string {
+	var paths []string
 	seen := map[string]bool{}
-	for _, command := range rootCmd.Commands() {
-		name := command.Name()
-		seen[name] = true
-		if cobraOwned[name] {
-			continue
-		}
-		// Hidden commands are not in the list a person reads, so they need no group.
-		// `dashboard` is the only one: a versioned payload for the app's refresh
-		// loop, with no human reader.
-		if command.Hidden {
-			continue
-		}
-		if command.GroupID == "" {
-			ungrouped = append(ungrouped, name)
+	for _, group := range commandGroups {
+		if !seen[group.parent] {
+			seen[group.parent] = true
+			paths = append(paths, group.parent)
 		}
 	}
-	for name := range grouped {
-		if !seen[name] {
-			stale = append(stale, name)
-		}
-	}
-	sort.Strings(ungrouped)
-	sort.Strings(stale)
-	if len(ungrouped) > 0 {
-		t.Errorf("these commands would print under \"Additional Commands\": %s\n"+
-			"add each to a group in commandGroups, or mark it Hidden if it has no human reader",
-			strings.Join(ungrouped, ", "))
-	}
-	if len(stale) > 0 {
-		t.Errorf("commandGroups names commands that no longer exist: %s", strings.Join(stale, ", "))
-	}
+	return paths
 }
 
 // The group titles are the first words a new reader sees, so an empty or
@@ -77,10 +131,13 @@ func TestCommandGroupsAreWellFormed(t *testing.T) {
 		if ids[group.id] {
 			t.Errorf("duplicate group id %q", group.id)
 		}
-		if titles[group.title] {
-			t.Errorf("duplicate group title %q", group.title)
+		// Scoped per parent: two different commands may reasonably both have a
+		// "Diagnostics:" heading, but one command must not print it twice.
+		scopedTitle := group.parent + "\x00" + group.title
+		if titles[scopedTitle] {
+			t.Errorf("duplicate group title %q under %q", group.title, group.parent)
 		}
-		ids[group.id], titles[group.title] = true, true
+		ids[group.id], titles[scopedTitle] = true, true
 		if len(group.names) == 0 {
 			t.Errorf("group %q has no commands", group.id)
 		}

@@ -45,6 +45,16 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **`atm todo --help` 分了组，主流程写在最前面。** 21 条子命令以前是一张按字母排的平铺列表，
+  每天都用的那四步和一个月用一次的命令挤在一起。现在分成 Lifecycle / Reading and content /
+  Collaboration and relations / Batch and permanent removal / Diagnostics 五组，帮助正文顶部
+  直接画出主流程：`add → start → submit → done`，`archive ↔ restore` 挂在旁边而不是嵌在里面。
+  流程写成文字而不是靠排列顺序，因为 cobra 会在每组内按字母排序——Lifecycle 会读成
+  add, archive, done, restore, start, submit，六个名字对、顺序不对；关掉排序是包级开关，会让
+  其余各组按 init() 顺序（也就是文件名顺序）输出，对读者毫无意义。分组机制同时推广到了任意父命令，
+  测试会盯着每个声明了分组的父命令：新增子命令忘记归组就红，而不是安静地落进
+  「Additional Commands」。
+
 - **新建任务可以带图片。** macOS 新建任务支持选择、拖拽和直接粘贴截图，创建前显示可移除的缩略图；
   CLI 对应为可重复的 `atm todo add --image <path>`。支持 PNG、JPEG、WebP、GIF、HEIC，单张不超过
   10 MB、每个任务最多 10 张。ATM 校验真实文件内容后复制到 `~/.atm/todos/assets/<todo-id>/`，

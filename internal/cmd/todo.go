@@ -108,6 +108,23 @@ func init() {
 var todoCmd = &cobra.Command{
 	Use:   "todo",
 	Short: "Manage work items",
+	// The flow is spelled out because the groups below cannot show it: cobra sorts
+	// each group alphabetically, so Lifecycle reads add, archive, done, restore,
+	// start, submit — the right six names in the wrong order. Turning sorting off
+	// is a package-wide switch that would leave every other group printing in
+	// init() order, which is filename order and means nothing to a reader.
+	Long: `Manage work items.
+
+The everyday path is four steps, with archival beside it rather than inside it:
+
+  add → start → submit → done
+            ↘ archive ↔ restore
+
+An Agent binds its session with ` + "`atm session bind <id>`" + ` instead of ` + "`start`" + `, and
+submits for review rather than marking work done. Waiting is not a state: keep a
+wake condition or review date on in-progress work with ` + "`edit --wake`" + ` or
+` + "`edit --review-at`" + `. Archiving is reversible and needs no confirmation; only
+` + "`delete`" + ` is permanent.`,
 	// Rejecting args so an unknown subcommand (e.g. `atm todo add-progress ...`)
 	// errors loudly instead of silently falling through to the default list action.
 	// `atm todo` with no args still lists. noSubcommandArgs rather than
