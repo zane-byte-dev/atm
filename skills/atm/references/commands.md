@@ -112,7 +112,7 @@ atm todo bulk done <id>... --reason "<result>"
 atm todo bulk move <id>... --project <repo>
 ```
 
-会话绑定后，`log/show/doc/lint/submit/done/wait/drop` 都可省略 `<id>`；也可写 `current`。`submit`、`done`、`drop`、`wait` 会自动解绑并保留绑定历史。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
+会话绑定后，`log/show/doc/lint/submit/done` 都可省略 `<id>`；也可写 `current`。隐藏的兼容别名 `wait/drop` 同样支持省略。`submit`、`done`、`archive` 和设置等待元数据会自动解绑并保留绑定历史。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
 
 `match` 的两种用途不可互换。`--prompt` 服务启动注入，总是返回 `--limit` 条候选（同项目本身加 100 分），所以它答不了「该不该新建」。查重用 `--dedup`：跨项目搜索、要求 `query_score` 达到下限（默认 30，可用 `--min-query-score` 调整）、无匹配时明确输出「可以新建」，且忽略当前会话绑定。`--json` 同时给出 `duplicate` 布尔和每条候选的 `query_score`（query 自身得分，不含项目/状态/优先级加成）。
 

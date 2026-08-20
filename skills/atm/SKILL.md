@@ -161,14 +161,14 @@ Todo 离开 `in_progress` 时 ATM 会先关闭 binding 再保存新状态。需�
 atm todo log "结果：<交付变化>；证据：<验证边界>；下一步：<唯一动作>"
 ```
 
-会话已绑定时，`log/show/doc/lint/submit/done/wait/drop` 均可省略 ID；显式 ID 仍兼容。
+会话已绑定时，`log/show/doc/lint/submit/done` 均可省略 ID；显式 ID 仍兼容。隐藏的兼容别名 `wait/drop` 同样支持省略。
 
 进展日志必须遵守：
 
 - 每个阶段最多一条完成动态；中间准备状态不写，除非工作暂停在可观察的外部条件。
 - 单条不超过 400 个 Unicode 字符，只写一个段落。源码调查、架构映射、备选方案和列表写到
   `atm todo log <id> "<detail>" --section 分析`，不要塞进 `进展`。
-- 状态先结构化、后留痕：开始用 `start`，执行计划用 `plan set`，Agent 实现完成用 `submit`，人的最终验收用 `done`，生命周期用 `edit --status`，外部等待元数据用 `edit --wake/--review-at`，维护标签用 `maintain`，依赖用
+- 状态先结构化、后留痕：开始用 `start`，执行计划用 `plan set`，Agent 实现完成用 `submit`，人的最终验收用 `done`，生命周期用 `edit --status`，外部等待元数据用 `edit --wake/--review-at`，维护标签用 `edit --maintenance-limit`，依赖用
   `depend`。日志不能代替这些状态命令，也不能代替 description 或 plan 中的真实清单更新。
 - 日志里提到的 `tNN` 必须已经创建且可由 `atm todo show <id>` 查到；不得先在自由文本中声称拆出了不存在的子任务。
 - 写完或接手历史任务时可运行 `atm todo lint <id>`，检查超长/多段动态、未知 todo 引用、重复阶段日志和 Markdown 元数据漂移。
@@ -197,7 +197,7 @@ atm todo edit <id> --status in_progress --wake "<可观察的唤醒条件>"
 
 `submit`、`done`、`archive` 以及设置等待元数据会自动解除关联会话，避免下次启动沿用失效任务。
 
-主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status` 或 `maintain`。不要只在回复里描述状态变化而不更新 ATM。
+主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status` 或 `edit --maintenance-limit`。不要只在回复里描述状态变化而不更新 ATM。
 
 普通移出工作集使用无确认、可恢复的 `atm todo archive`，需要时以 `atm todo restore` 取回。
 `trash/drop` 是 archive 的兼容别名，`unarchive` 是 restore 的兼容别名。永久删除只针对已归档数据，
@@ -285,7 +285,7 @@ Agent 在真实任务中使用中央知识时，应把当前 ATM session ID 传�
 
 - 本轮是否真的开始了已有 TODO，需要 `start`；
 - 是否完成了有意义里程碑，需要 `log`；
-- 是否已提交确认、完成、进入等待或改变工作状态，需要 `submit`、`done`、`wait`、`start`、`edit --status` 或 `maintain`；
+- 是否已提交确认、完成、进入等待或改变工作状态，需要 `submit`、`done`、`start`、`edit --status`、`edit --wake/--review-at` 或 `edit --maintenance-limit`；
 - 是否误改了无关 TODO；
 - 代码 review 是否区分了 `review` 与 `review-fix`，并检查 tracked、staged、untracked 改动；
 - 是否把 `context` 当作即时上下文快照而非持久 handoff、完整 diff 或测试结果；

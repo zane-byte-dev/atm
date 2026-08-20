@@ -672,10 +672,11 @@ enum ATMCommandBuilder {
         ["todo", "handoff", id, "--json"]
     }
 
-    /// `todo prompt` was merged into `todo handoff --copy`: both prepare the
-    /// pointer without starting anything, so they are one command with two
-    /// payloads. --copy returns the text and opens no window.
-    static func todoPrompt(id: String) -> [String] {
+    /// Named for what it does rather than for a command that no longer exists:
+    /// `todo prompt` was merged into `todo handoff --copy`, since both prepare the
+    /// pointer without starting anything. --copy returns the text and opens no
+    /// window.
+    static func copyTodoPointer(id: String) -> [String] {
         ["todo", "handoff", id, "--copy", "--json"]
     }
 
@@ -2657,7 +2658,7 @@ final class ATMDataStore: ObservableObject {
         errorMessage = nil
         do {
             let runner = try ATMCommandRunner()
-            let data = try await runner.run(ATMCommandBuilder.todoPrompt(id: todo.id))
+            let data = try await runner.run(ATMCommandBuilder.copyTodoPointer(id: todo.id))
             return try JSONDecoder().decode(ATMTodoPrompt.self, from: data).prompt
         } catch {
             errorMessage = error.localizedDescription

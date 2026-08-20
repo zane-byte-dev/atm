@@ -3009,7 +3009,7 @@ final class ModelsTests: XCTestCase {
         // pointer and opening Codex are the same command, and --copy is the
         // branch that opens nothing.
         XCTAssertEqual(
-            ATMCommandBuilder.todoPrompt(id: "t8"),
+            ATMCommandBuilder.copyTodoPointer(id: "t8"),
             ["todo", "handoff", "t8", "--copy", "--json"]
         )
     }
