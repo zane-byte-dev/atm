@@ -1,4 +1,4 @@
-package cmd
+package quota
 
 import (
 	"context"
@@ -46,9 +46,9 @@ func quotaProviderHelperConfig(mode string) config.QuotaProviderConfig {
 
 func TestCallQuotaProviderNormalizesCardsAndComputesPercent(t *testing.T) {
 	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
-	cards, err := callQuotaProvider(context.Background(), "example", quotaProviderHelperConfig("success"))
+	cards, err := callProvider(context.Background(), "example", quotaProviderHelperConfig("success"))
 	if err != nil {
-		t.Fatalf("callQuotaProvider: %v", err)
+		t.Fatalf("callProvider: %v", err)
 	}
 	if len(cards) != 1 {
 		t.Fatalf("cards = %#v", cards)
@@ -69,7 +69,7 @@ func TestCallQuotaProviderNormalizesCardsAndComputesPercent(t *testing.T) {
 // to be refused before it reaches either the card or the on-disk cache.
 func TestCallQuotaProviderRejectsANonHTTPCardURL(t *testing.T) {
 	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
-	_, err := callQuotaProvider(context.Background(), "example", quotaProviderHelperConfig("badurl"))
+	_, err := callProvider(context.Background(), "example", quotaProviderHelperConfig("badurl"))
 	if err == nil || !strings.Contains(err.Error(), "must be an absolute http(s) URL") {
 		t.Fatalf("error = %v", err)
 	}
@@ -79,9 +79,9 @@ func TestCallQuotaProviderFiltersVisibleMetrics(t *testing.T) {
 	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
 	providerConfig := quotaProviderHelperConfig("success")
 	providerConfig.VisibleMetrics = []string{" Amount "}
-	cards, err := callQuotaProvider(context.Background(), "example", providerConfig)
+	cards, err := callProvider(context.Background(), "example", providerConfig)
 	if err != nil {
-		t.Fatalf("callQuotaProvider: %v", err)
+		t.Fatalf("callProvider: %v", err)
 	}
 	if len(cards) != 1 || len(cards[0].Metrics) != 1 || cards[0].Metrics[0].ID != "amount" {
 		t.Fatalf("filtered cards = %#v", cards)
@@ -94,7 +94,7 @@ func TestCallQuotaProviderAcceptsAnEmptyResponseWithVisibleMetrics(t *testing.T)
 	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
 	providerConfig := quotaProviderHelperConfig("empty")
 	providerConfig.VisibleMetrics = []string{"amount"}
-	cards, err := callQuotaProvider(context.Background(), "example", providerConfig)
+	cards, err := callProvider(context.Background(), "example", providerConfig)
 	if err != nil || len(cards) != 0 {
 		t.Fatalf("cards = %#v, err = %v", cards, err)
 	}
@@ -104,7 +104,7 @@ func TestCallQuotaProviderRejectsUnknownVisibleMetrics(t *testing.T) {
 	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
 	providerConfig := quotaProviderHelperConfig("success")
 	providerConfig.VisibleMetrics = []string{"missing"}
-	_, err := callQuotaProvider(context.Background(), "example", providerConfig)
+	_, err := callProvider(context.Background(), "example", providerConfig)
 	if err == nil || err.Error() != "quota provider example visible_metrics matched no returned metrics" {
 		t.Fatalf("error = %v", err)
 	}
@@ -112,7 +112,7 @@ func TestCallQuotaProviderRejectsUnknownVisibleMetrics(t *testing.T) {
 
 func TestCallQuotaProviderRejectsInvalidMetricBounds(t *testing.T) {
 	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
-	_, err := callQuotaProvider(context.Background(), "example", quotaProviderHelperConfig("invalid"))
+	_, err := callProvider(context.Background(), "example", quotaProviderHelperConfig("invalid"))
 	if err == nil {
 		t.Fatal("invalid metric limit should fail")
 	}
@@ -120,7 +120,7 @@ func TestCallQuotaProviderRejectsInvalidMetricBounds(t *testing.T) {
 
 func TestCallQuotaProviderReportsProviderStderr(t *testing.T) {
 	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")
-	_, err := callQuotaProvider(context.Background(), "example", quotaProviderHelperConfig("error"))
+	_, err := callProvider(context.Background(), "example", quotaProviderHelperConfig("error"))
 	if err == nil || err.Error() != "quota provider example failed: provider unavailable" {
 		t.Fatalf("error = %v", err)
 	}

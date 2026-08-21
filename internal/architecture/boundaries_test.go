@@ -157,6 +157,7 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 		"internal/cmd/knowledge_bulk.go":           true,
 		"internal/cmd/knowledge_collection.go":     true,
 		"internal/cmd/list.go":                     true,
+		"internal/cmd/quota.go":                    true,
 		"internal/cmd/search.go":                   true,
 		"internal/cmd/session_binding.go":          true,
 		"internal/cmd/show.go":                     true,
@@ -183,6 +184,32 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 			return fmt.Sprintf("%s reaches persistence directly through %q instead of its application service", item.file, item.path)
 		}
 		return ""
+	})
+}
+
+// The quota adapter renders a reading it is handed. Provider commands are child
+// processes and the placeholder cache is a file, so reaching os/exec or the
+// filesystem again would mean that orchestration had leaked back into Cobra.
+func TestQuotaAdapterDoesNotReachPersistenceOrProcesses(t *testing.T) {
+	root, module := repository(t)
+	imports := scanProductionImports(t, root)
+	storeImport := module + "/internal/store"
+	parserImport := module + "/internal/parser"
+
+	assertNoImports(t, imports, func(item sourceImport) string {
+		if item.file != "internal/cmd/quota.go" {
+			return ""
+		}
+		switch {
+		case item.path == "database/sql" || importWithin(item.path, storeImport):
+			return fmt.Sprintf("%s reaches persistence directly through %q", item.file, item.path)
+		case importWithin(item.path, parserImport):
+			return fmt.Sprintf("%s reads agent logs directly through %q", item.file, item.path)
+		case item.path == "os" || item.path == "os/exec" || item.path == "path/filepath":
+			return fmt.Sprintf("%s reaches provider process or cache infrastructure directly through %q", item.file, item.path)
+		default:
+			return ""
+		}
 	})
 }
 

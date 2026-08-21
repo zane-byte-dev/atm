@@ -1,4 +1,4 @@
-package cmd
+package quota
 
 import (
 	"bytes"
@@ -20,30 +20,30 @@ import (
 )
 
 const (
-	quotaProviderProtocolVersion = 1
-	quotaProviderOutputLimit     = 1 << 20
-	quotaProviderErrorLimit      = 64 << 10
-	quotaProviderDefaultTimeout  = 10 * time.Second
-	quotaProviderURLLimit        = 2048
+	providerProtocolVersion = 1
+	providerOutputLimit     = 1 << 20
+	providerErrorLimit      = 64 << 10
+	providerDefaultTimeout  = 10 * time.Second
+	providerURLLimit        = 2048
 )
 
-var quotaProviderToken = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+var providerToken = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
-type quotaProviderRequest struct {
+type providerRequest struct {
 	Version   int    `json:"version"`
 	Operation string `json:"operation"`
 }
 
-type quotaProviderResponse struct {
-	Version int                 `json:"version"`
-	Cards   []quotaProviderCard `json:"cards"`
-	Error   string              `json:"error,omitempty"`
+type providerResponse struct {
+	Version int            `json:"version"`
+	Cards   []ProviderCard `json:"cards"`
+	Error   string         `json:"error,omitempty"`
 }
 
-// quotaProviderCard is deliberately provider-neutral. A private integration
+// ProviderCard is deliberately provider-neutral. A private integration
 // can expose one or more bounded metrics without teaching ATM about its
 // service, endpoints, credentials, or product-specific vocabulary.
-type quotaProviderCard struct {
+type ProviderCard struct {
 	ID         string `json:"id"`
 	Agent      string `json:"agent"`
 	Provider   string `json:"provider"`
@@ -54,15 +54,15 @@ type quotaProviderCard struct {
 	// Where this reading came from, so a card can send the reader to the page
 	// that owns the number instead of only showing it. http(s) only: the App
 	// hands this to the system browser.
-	URL     string                `json:"url,omitempty"`
-	Metrics []quotaProviderMetric `json:"metrics"`
+	URL     string           `json:"url,omitempty"`
+	Metrics []ProviderMetric `json:"metrics"`
 	// Set by ATM, never by a provider: this is the last card the provider
-	// returned, held in place with no reading behind it. See quota_provider_cache.go.
+	// returned, held in place with no reading behind it. See provider_cache.go.
 	Unavailable       bool   `json:"unavailable,omitempty"`
 	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
-type quotaProviderMetric struct {
+type ProviderMetric struct {
 	ID          string  `json:"id"`
 	Label       string  `json:"label"`
 	Used        float64 `json:"used"`
@@ -73,19 +73,19 @@ type quotaProviderMetric struct {
 	Precision   int     `json:"precision,omitempty"`
 }
 
-type quotaProviderResult struct {
+type providerResult struct {
 	provider string
-	cards    []quotaProviderCard
+	cards    []ProviderCard
 	err      error
 }
 
-type quotaProviderBuffer struct {
+type providerBuffer struct {
 	bytes.Buffer
 	limit    int
 	exceeded bool
 }
 
-func (buffer *quotaProviderBuffer) Write(data []byte) (int, error) {
+func (buffer *providerBuffer) Write(data []byte) (int, error) {
 	written := len(data)
 	remaining := buffer.limit - buffer.Len()
 	if remaining <= 0 {
@@ -100,7 +100,7 @@ func (buffer *quotaProviderBuffer) Write(data []byte) (int, error) {
 	return written, nil
 }
 
-func loadQuotaProviderCards(ctx context.Context) (map[string][]quotaProviderCard, []error) {
+func loadProviderCards(ctx context.Context) (map[string][]ProviderCard, []error) {
 	if len(config.QuotaProviders) == 0 {
 		return nil, nil
 	}
@@ -110,58 +110,58 @@ func loadQuotaProviderCards(ctx context.Context) (map[string][]quotaProviderCard
 	}
 	sort.Strings(names)
 
-	results := make(chan quotaProviderResult, len(names))
+	results := make(chan providerResult, len(names))
 	var group sync.WaitGroup
 	for _, name := range names {
 		providerConfig := config.QuotaProviders[name]
 		group.Add(1)
 		go func() {
 			defer group.Done()
-			cards, err := callQuotaProvider(ctx, name, providerConfig)
-			results <- quotaProviderResult{provider: name, cards: cards, err: err}
+			cards, err := callProvider(ctx, name, providerConfig)
+			results <- providerResult{provider: name, cards: cards, err: err}
 		}()
 	}
 	group.Wait()
 	close(results)
 
-	ordered := make([]quotaProviderResult, 0, len(names))
+	ordered := make([]providerResult, 0, len(names))
 	for result := range results {
 		ordered = append(ordered, result)
 	}
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].provider < ordered[j].provider })
 
 	// A provider that reports nothing keeps its card: what went missing is the
-	// reading, not the quota. quota_provider_cache.go remembers the last cards
+	// reading, not the quota. provider_cache.go remembers the last cards
 	// each provider returned and turns them into placeholders.
 	now := time.Now()
-	cache := loadQuotaProviderCache()
-	cacheChanged := pruneQuotaProviderCache(&cache, names)
-	cardsByAgent := map[string][]quotaProviderCard{}
+	cache := loadProviderCache()
+	cacheChanged := pruneProviderCache(&cache, names)
+	cardsByAgent := map[string][]ProviderCard{}
 	var errs []error
 	for _, result := range ordered {
-		providerID := normalizeQuotaProviderID(result.provider)
+		providerID := normalizeProviderID(result.provider)
 		cards := result.cards
 		reason := ""
 		switch {
 		case result.err != nil:
 			errs = append(errs, result.err)
-			reason = quotaProviderReasonError
+			reason = ProviderReasonError
 		case len(cards) == 0:
-			reason = quotaProviderReasonEmpty
+			reason = ProviderReasonEmpty
 		}
 		if reason == "" {
-			if rememberQuotaProviderCards(&cache, providerID, cards, now) {
+			if rememberProviderCards(&cache, providerID, cards, now) {
 				cacheChanged = true
 			}
 		} else {
-			cards = quotaProviderPlaceholders(cache, providerID, reason, now)
+			cards = providerPlaceholders(cache, providerID, reason, now)
 		}
 		for _, card := range cards {
 			cardsByAgent[card.Agent] = append(cardsByAgent[card.Agent], card)
 		}
 	}
 	if cacheChanged {
-		saveQuotaProviderCache(cache)
+		saveProviderCache(cache)
 	}
 	for agent := range cardsByAgent {
 		sort.Slice(cardsByAgent[agent], func(i, j int) bool {
@@ -175,25 +175,25 @@ func loadQuotaProviderCards(ctx context.Context) (map[string][]quotaProviderCard
 	return cardsByAgent, errs
 }
 
-func callQuotaProvider(parent context.Context, providerID string,
-	providerConfig config.QuotaProviderConfig) ([]quotaProviderCard, error) {
+func callProvider(parent context.Context, providerID string,
+	providerConfig config.QuotaProviderConfig) ([]ProviderCard, error) {
 	providerID = strings.ToLower(strings.TrimSpace(providerID))
-	if !quotaProviderToken.MatchString(providerID) {
+	if !providerToken.MatchString(providerID) {
 		return nil, fmt.Errorf("quota provider id %q is invalid", providerID)
 	}
-	commandPath := expandQuotaProviderPath(strings.TrimSpace(providerConfig.Command))
+	commandPath := expandProviderPath(strings.TrimSpace(providerConfig.Command))
 	if commandPath == "" {
 		return nil, fmt.Errorf("quota provider %s has no command", providerID)
 	}
-	timeout := quotaProviderDefaultTimeout
+	timeout := providerDefaultTimeout
 	if providerConfig.TimeoutSeconds > 0 {
 		timeout = time.Duration(providerConfig.TimeoutSeconds) * time.Second
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	payload, err := json.Marshal(quotaProviderRequest{
-		Version: quotaProviderProtocolVersion, Operation: "quota",
+	payload, err := json.Marshal(providerRequest{
+		Version: providerProtocolVersion, Operation: "quota",
 	})
 	if err != nil {
 		return nil, err
@@ -201,8 +201,8 @@ func callQuotaProvider(parent context.Context, providerID string,
 	args := append(append([]string{}, providerConfig.Args...), "quota")
 	command := exec.CommandContext(ctx, commandPath, args...)
 	command.Stdin = bytes.NewReader(append(payload, '\n'))
-	stdout := quotaProviderBuffer{limit: quotaProviderOutputLimit}
-	stderr := quotaProviderBuffer{limit: quotaProviderErrorLimit}
+	stdout := providerBuffer{limit: providerOutputLimit}
+	stderr := providerBuffer{limit: providerErrorLimit}
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
@@ -219,31 +219,31 @@ func callQuotaProvider(parent context.Context, providerID string,
 		return nil, fmt.Errorf("quota provider %s failed: %s", providerID, message)
 	}
 	if stdout.exceeded {
-		return nil, fmt.Errorf("quota provider %s output exceeds %d bytes", providerID, quotaProviderOutputLimit)
+		return nil, fmt.Errorf("quota provider %s output exceeds %d bytes", providerID, providerOutputLimit)
 	}
 
-	var response quotaProviderResponse
+	var response providerResponse
 	if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
 		return nil, fmt.Errorf("decode quota provider %s response: %w", providerID, err)
 	}
-	if response.Version != quotaProviderProtocolVersion {
+	if response.Version != providerProtocolVersion {
 		return nil, fmt.Errorf("quota provider %s returned protocol version %d, want %d",
-			providerID, response.Version, quotaProviderProtocolVersion)
+			providerID, response.Version, providerProtocolVersion)
 	}
 	if message := strings.TrimSpace(response.Error); message != "" {
 		return nil, fmt.Errorf("quota provider %s: %s", providerID, message)
 	}
-	if err := normalizeQuotaProviderCards(providerID, response.Cards); err != nil {
+	if err := normalizeProviderCards(providerID, response.Cards); err != nil {
 		return nil, err
 	}
-	return filterQuotaProviderMetrics(providerID, providerConfig.VisibleMetrics, response.Cards)
+	return filterProviderMetrics(providerID, providerConfig.VisibleMetrics, response.Cards)
 }
 
-// filterQuotaProviderMetrics applies the user's display preference before the
+// filterProviderMetrics applies the user's display preference before the
 // cards reach either CLI output or the App. Metric IDs are provider-defined and
 // stable; cards with no selected metrics disappear instead of rendering empty.
-func filterQuotaProviderMetrics(providerID string, visible []string,
-	cards []quotaProviderCard) ([]quotaProviderCard, error) {
+func filterProviderMetrics(providerID string, visible []string,
+	cards []ProviderCard) ([]ProviderCard, error) {
 	// A provider that returned no cards at all is saying "nothing to report right
 	// now", which is not a configuration problem. Reporting it as one printed a
 	// warning about visible_metrics every time a daily quota had not been
@@ -255,14 +255,14 @@ func filterQuotaProviderMetrics(providerID string, visible []string,
 	wanted := make(map[string]bool, len(visible))
 	for _, raw := range visible {
 		metricID := strings.ToLower(strings.TrimSpace(raw))
-		if !quotaProviderToken.MatchString(metricID) {
+		if !providerToken.MatchString(metricID) {
 			return nil, fmt.Errorf("quota provider %s has invalid visible metric %q", providerID, raw)
 		}
 		wanted[metricID] = true
 	}
-	filtered := make([]quotaProviderCard, 0, len(cards))
+	filtered := make([]ProviderCard, 0, len(cards))
 	for _, card := range cards {
-		metrics := make([]quotaProviderMetric, 0, len(card.Metrics))
+		metrics := make([]ProviderMetric, 0, len(card.Metrics))
 		for _, metric := range card.Metrics {
 			if wanted[metric.ID] {
 				metrics = append(metrics, metric)
@@ -280,16 +280,16 @@ func filterQuotaProviderMetrics(providerID string, visible []string,
 	return filtered, nil
 }
 
-// validateQuotaProviderCardURL keeps a card's link to something a browser can
+// validateProviderCardURL keeps a card's link to something a browser can
 // open. The App passes it to NSWorkspace, so a provider bug — or a hand-edited
 // quota_provider_cards.json, which comes back through this same function — must
 // not be able to launch a file:// path or a custom scheme handler.
-func validateQuotaProviderCardURL(raw string) error {
+func validateProviderCardURL(raw string) error {
 	if raw == "" {
 		return nil
 	}
-	if len(raw) > quotaProviderURLLimit {
-		return fmt.Errorf("exceeds %d bytes", quotaProviderURLLimit)
+	if len(raw) > providerURLLimit {
+		return fmt.Errorf("exceeds %d bytes", providerURLLimit)
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -302,7 +302,7 @@ func validateQuotaProviderCardURL(raw string) error {
 	return nil
 }
 
-func expandQuotaProviderPath(path string) string {
+func expandProviderPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, path[2:])
@@ -311,7 +311,7 @@ func expandQuotaProviderPath(path string) string {
 	return path
 }
 
-func normalizeQuotaProviderCards(providerID string, cards []quotaProviderCard) error {
+func normalizeProviderCards(providerID string, cards []ProviderCard) error {
 	seenCards := map[string]bool{}
 	for cardIndex := range cards {
 		card := &cards[cardIndex]
@@ -321,9 +321,9 @@ func normalizeQuotaProviderCards(providerID string, cards []quotaProviderCard) e
 		if card.Provider == "" {
 			card.Provider = providerID
 		}
-		if !quotaProviderToken.MatchString(card.ID) ||
-			!quotaProviderToken.MatchString(card.Agent) ||
-			!quotaProviderToken.MatchString(card.Provider) {
+		if !providerToken.MatchString(card.ID) ||
+			!providerToken.MatchString(card.Agent) ||
+			!providerToken.MatchString(card.Provider) {
 			return fmt.Errorf("quota provider %s returned invalid card %d identifiers", providerID, cardIndex)
 		}
 		key := card.Agent + ":" + card.Provider + ":" + card.ID
@@ -335,7 +335,7 @@ func normalizeQuotaProviderCards(providerID string, cards []quotaProviderCard) e
 		card.Period = strings.TrimSpace(card.Period)
 		card.Source = strings.TrimSpace(card.Source)
 		card.URL = strings.TrimSpace(card.URL)
-		if err := validateQuotaProviderCardURL(card.URL); err != nil {
+		if err := validateProviderCardURL(card.URL); err != nil {
 			return fmt.Errorf("quota provider %s card %s url: %w", providerID, card.ID, err)
 		}
 		// ATM owns these two: a provider reports data or reports nothing, and
@@ -357,7 +357,7 @@ func normalizeQuotaProviderCards(providerID string, cards []quotaProviderCard) e
 			metric.Label = strings.TrimSpace(metric.Label)
 			metric.Unit = strings.TrimSpace(metric.Unit)
 			metric.Currency = strings.ToUpper(strings.TrimSpace(metric.Currency))
-			if !quotaProviderToken.MatchString(metric.ID) || metric.Label == "" || seenMetrics[metric.ID] {
+			if !providerToken.MatchString(metric.ID) || metric.Label == "" || seenMetrics[metric.ID] {
 				return fmt.Errorf("quota provider %s card %s has invalid or duplicate metric %d",
 					providerID, card.ID, metricIndex)
 			}

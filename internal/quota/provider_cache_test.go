@@ -1,4 +1,4 @@
-package cmd
+package quota
 
 import (
 	"context"
@@ -25,7 +25,7 @@ func TestLoadQuotaProviderCardsHoldsTheCardWhenAProviderReportsNothing(t *testin
 	withQuotaProviders(t, map[string]config.QuotaProviderConfig{
 		"example": quotaProviderHelperConfig("success"),
 	})
-	if cards, errs := loadQuotaProviderCards(context.Background()); len(errs) != 0 ||
+	if cards, errs := loadProviderCards(context.Background()); len(errs) != 0 ||
 		len(cards["claude"]) != 1 {
 		t.Fatalf("first run: cards = %#v, errs = %v", cards, errs)
 	}
@@ -33,7 +33,7 @@ func TestLoadQuotaProviderCardsHoldsTheCardWhenAProviderReportsNothing(t *testin
 	withQuotaProviders(t, map[string]config.QuotaProviderConfig{
 		"example": quotaProviderHelperConfig("empty"),
 	})
-	cards, errs := loadQuotaProviderCards(context.Background())
+	cards, errs := loadProviderCards(context.Background())
 	if len(errs) != 0 {
 		t.Fatalf("nothing to report is not a failure: %v", errs)
 	}
@@ -41,7 +41,7 @@ func TestLoadQuotaProviderCardsHoldsTheCardWhenAProviderReportsNothing(t *testin
 		t.Fatalf("the card left the grid: %#v", cards)
 	}
 	card := cards["claude"][0]
-	if !card.Unavailable || card.UnavailableReason != quotaProviderReasonEmpty {
+	if !card.Unavailable || card.UnavailableReason != ProviderReasonEmpty {
 		t.Fatalf("placeholder = %#v", card)
 	}
 	// Identity stays so the card is recognisable; the reading and the source
@@ -66,21 +66,21 @@ func TestLoadQuotaProviderCardsHoldsTheCardWhenAProviderFails(t *testing.T) {
 	withQuotaProviders(t, map[string]config.QuotaProviderConfig{
 		"example": quotaProviderHelperConfig("success"),
 	})
-	if _, errs := loadQuotaProviderCards(context.Background()); len(errs) != 0 {
+	if _, errs := loadProviderCards(context.Background()); len(errs) != 0 {
 		t.Fatalf("first run: %v", errs)
 	}
 
 	withQuotaProviders(t, map[string]config.QuotaProviderConfig{
 		"example": quotaProviderHelperConfig("error"),
 	})
-	cards, errs := loadQuotaProviderCards(context.Background())
+	cards, errs := loadProviderCards(context.Background())
 	// The warning still reaches stderr — the placeholder replaces the missing
 	// card, not the report of why it is missing.
 	if len(errs) != 1 {
 		t.Fatalf("errs = %v", errs)
 	}
 	if len(cards["claude"]) != 1 ||
-		cards["claude"][0].UnavailableReason != quotaProviderReasonError {
+		cards["claude"][0].UnavailableReason != ProviderReasonError {
 		t.Fatalf("placeholder = %#v", cards)
 	}
 }
@@ -91,22 +91,22 @@ func TestLoadQuotaProviderCardsWithoutAnythingRememberedShowsNoCard(t *testing.T
 	withQuotaProviders(t, map[string]config.QuotaProviderConfig{
 		"example": quotaProviderHelperConfig("empty"),
 	})
-	cards, errs := loadQuotaProviderCards(context.Background())
+	cards, errs := loadProviderCards(context.Background())
 	if len(cards) != 0 || len(errs) != 0 {
 		t.Fatalf("cards = %#v, errs = %v", cards, errs)
 	}
 }
 
-func quotaProviderCacheFixture(fetchedAt time.Time) quotaProviderCache {
-	return quotaProviderCache{
-		Version: quotaProviderCacheVersion,
-		Providers: map[string]quotaProviderCacheEntry{
+func quotaProviderCacheFixture(fetchedAt time.Time) providerCache {
+	return providerCache{
+		Version: providerCacheVersion,
+		Providers: map[string]providerCacheEntry{
 			"example": {
 				FetchedAt: fetchedAt.Format(time.RFC3339),
-				Cards: []quotaProviderCard{{
+				Cards: []ProviderCard{{
 					ID: "daily", Agent: "claude", Provider: "example", Title: "Plan",
 					ObservedAt: "2026-08-04T03:28:37Z", Source: "browser",
-					Metrics: []quotaProviderMetric{{
+					Metrics: []ProviderMetric{{
 						ID: "count", Label: "Count", Used: 25, Limit: 100, UsedPercent: 25,
 					}},
 				}},
@@ -117,12 +117,12 @@ func quotaProviderCacheFixture(fetchedAt time.Time) quotaProviderCache {
 
 func TestQuotaProviderPlaceholdersStopAfterTheProviderGoesQuietForTooLong(t *testing.T) {
 	now := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
-	cache := quotaProviderCacheFixture(now.Add(-quotaProviderCacheTTL + time.Hour))
-	if got := quotaProviderPlaceholders(cache, "example", quotaProviderReasonEmpty, now); len(got) != 1 {
+	cache := quotaProviderCacheFixture(now.Add(-providerCacheTTL + time.Hour))
+	if got := providerPlaceholders(cache, "example", ProviderReasonEmpty, now); len(got) != 1 {
 		t.Fatalf("within the window = %#v", got)
 	}
-	cache = quotaProviderCacheFixture(now.Add(-quotaProviderCacheTTL - time.Hour))
-	if got := quotaProviderPlaceholders(cache, "example", quotaProviderReasonEmpty, now); len(got) != 0 {
+	cache = quotaProviderCacheFixture(now.Add(-providerCacheTTL - time.Hour))
+	if got := providerPlaceholders(cache, "example", ProviderReasonEmpty, now); len(got) != 0 {
 		t.Fatalf("past the window = %#v", got)
 	}
 }
@@ -131,18 +131,18 @@ func TestRememberQuotaProviderCardsSkipsUnchangedRewrites(t *testing.T) {
 	now := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
 	cache := quotaProviderCacheFixture(now.Add(-time.Minute))
 	cards := cache.Providers["example"].Cards
-	if rememberQuotaProviderCards(&cache, "example", cards, now) {
+	if rememberProviderCards(&cache, "example", cards, now) {
 		t.Fatal("an unchanged reading must not rewrite the cache on every refresh")
 	}
 	// Past the stamp interval the freshness marker is what changed, and the TTL
 	// reads it, so the file has to be written.
-	stale := quotaProviderCacheFixture(now.Add(-quotaProviderCacheStampInterval - time.Minute))
-	if !rememberQuotaProviderCards(&stale, "example", cards, now) {
+	stale := quotaProviderCacheFixture(now.Add(-providerCacheStampInterval - time.Minute))
+	if !rememberProviderCards(&stale, "example", cards, now) {
 		t.Fatal("a stale stamp must be refreshed")
 	}
-	changed := append([]quotaProviderCard{}, cards...)
+	changed := append([]ProviderCard{}, cards...)
 	changed[0].Title = "Other plan"
-	if !rememberQuotaProviderCards(&cache, "example", changed, now) {
+	if !rememberProviderCards(&cache, "example", changed, now) {
 		t.Fatal("a changed card must be written")
 	}
 }
@@ -150,15 +150,15 @@ func TestRememberQuotaProviderCardsSkipsUnchangedRewrites(t *testing.T) {
 func TestQuotaProviderCacheRoundTripsAndPrunes(t *testing.T) {
 	withTempAtmDir(t)
 	now := time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)
-	saveQuotaProviderCache(quotaProviderCacheFixture(now))
+	saveProviderCache(quotaProviderCacheFixture(now))
 
-	cache := loadQuotaProviderCache()
+	cache := loadProviderCache()
 	if len(cache.Providers["example"].Cards) != 1 {
 		t.Fatalf("round trip = %#v", cache)
 	}
 	// A provider dropped from config.json must not leave a placeholder behind
 	// that nothing can ever refresh.
-	if !pruneQuotaProviderCache(&cache, []string{"other"}) || len(cache.Providers) != 0 {
+	if !pruneProviderCache(&cache, []string{"other"}) || len(cache.Providers) != 0 {
 		t.Fatalf("pruned cache = %#v", cache)
 	}
 }
@@ -170,11 +170,11 @@ func TestSaveQuotaProviderCacheLogsAWriteFailure(t *testing.T) {
 	withTempAtmDir(t)
 	// A rename cannot replace a directory, so the write fails at the last step,
 	// with the temporary file already written.
-	if err := os.Mkdir(quotaProviderCachePath(), 0o755); err != nil {
+	if err := os.Mkdir(providerCachePath(), 0o755); err != nil {
 		t.Fatalf("seed blocker: %v", err)
 	}
 
-	saveQuotaProviderCache(quotaProviderCacheFixture(time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)))
+	saveProviderCache(quotaProviderCacheFixture(time.Date(2026, 8, 5, 9, 0, 0, 0, time.UTC)))
 
 	lines, err := logging.Tail(logging.Path(), 0)
 	if err != nil {
@@ -197,10 +197,10 @@ func TestLoadQuotaProviderCacheDiscardsUnusableEntries(t *testing.T) {
 	// to a card the App cannot place.
 	data := []byte(`{"version":1,"providers":{"example":{"fetched_at":"2026-08-05T09:00:00Z",` +
 		`"cards":[{"id":"daily","agent":"","provider":"example","title":"Plan","metrics":[]}]}}}`)
-	if err := os.WriteFile(quotaProviderCachePath(), data, 0o600); err != nil {
+	if err := os.WriteFile(providerCachePath(), data, 0o600); err != nil {
 		t.Fatalf("write cache: %v", err)
 	}
-	if cache := loadQuotaProviderCache(); len(cache.Providers) != 0 {
+	if cache := loadProviderCache(); len(cache.Providers) != 0 {
 		t.Fatalf("cache = %#v", cache)
 	}
 }

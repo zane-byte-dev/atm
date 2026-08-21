@@ -9,6 +9,7 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/output"
+	quotaapp "github.com/zane-byte-dev/atm/internal/quota"
 	"github.com/zane-byte-dev/atm/internal/store"
 
 	"github.com/spf13/cobra"
@@ -82,7 +83,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		// already syncs every few minutes, which is resolution enough for an
 		// hourly rate. A failure here must not fail the sync — history is a
 		// convenience, the session index is the point.
-		if sampleErr := recordQuotaSamples(db, time.Now()); sampleErr != nil {
+		if sampleErr := quotaapp.Default.RecordSamples(db, time.Now()); sampleErr != nil {
 			// Degrades without failing the sync, which means the Progress line is
 			// the only trace — and nobody is reading stderr when the App runs this
 			// on a timer. Quota history silently never accumulating is exactly the
