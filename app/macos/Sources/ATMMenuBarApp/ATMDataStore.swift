@@ -853,6 +853,7 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var knowledgeCollections: [ATMKnowledgeCollection] = []
     @Published private(set) var isKnowledgeCatalogLoading = false
     @Published var knowledgeErrorMessage: String?
+    private let makeAgentHookIPCClient: @Sendable () throws -> ATMAgentHookIPCClient
     private let makeKnowledgeIPCClient: @Sendable () throws -> ATMKnowledgeIPCClient
     private let makeMemoryIPCClient: @Sendable () throws -> ATMMemoryIPCClient
     private let makeSessionIPCClient: @Sendable () throws -> ATMSessionIPCClient
@@ -942,6 +943,9 @@ final class ATMDataStore: ObservableObject {
     private var notifiedTodoStatus: [String: String]?
 
     init(
+        makeAgentHookIPCClient: @escaping @Sendable () throws -> ATMAgentHookIPCClient = {
+            try ATMAgentHookIPCClient()
+        },
         makeKnowledgeIPCClient: @escaping @Sendable () throws -> ATMKnowledgeIPCClient = {
             try ATMKnowledgeIPCClient()
         },
@@ -955,6 +959,7 @@ final class ATMDataStore: ObservableObject {
             try ATMTodoIPCClient()
         }
     ) {
+        self.makeAgentHookIPCClient = makeAgentHookIPCClient
         self.makeKnowledgeIPCClient = makeKnowledgeIPCClient
         self.makeMemoryIPCClient = makeMemoryIPCClient
         self.makeSessionIPCClient = makeSessionIPCClient
@@ -1184,32 +1189,32 @@ final class ATMDataStore: ObservableObject {
     /// app, so the settings pane shows what the agents' config files actually
     /// contain — including hooks the user added or removed by hand.
     func loadAgentHookStatus() {
-        runAgentHookCommand(["agent", "hook", "status", "--json"])
+        runAgentHookRegistration { try await $0.status() }
     }
 
     func installAgentHooks() {
-        runAgentHookCommand(["agent", "hook", "install", "--json"])
+        runAgentHookRegistration { try await $0.install() }
     }
 
     func uninstallAgentHooks() {
-        runAgentHookCommand(["agent", "hook", "uninstall", "--json"])
+        runAgentHookRegistration { try await $0.uninstall() }
     }
 
-    private func runAgentHookCommand(_ arguments: [String]) {
+    /// One call, one report, one place that decides what the pane says.
+    ///
+    /// The report is applied even though a source inside it may have failed: the
+    /// CLI keeps going after one agent's config cannot be read, and hiding the
+    /// rest would turn one unparseable settings.json into "nothing is installed".
+    private func runAgentHookRegistration(
+        _ perform: @escaping @Sendable (ATMAgentHookIPCClient) async throws -> ATMAgentHookReport
+    ) {
         guard !isUpdatingAgentHooks else { return }
         isUpdatingAgentHooks = true
         agentHookErrorMessage = nil
         Task {
             defer { isUpdatingAgentHooks = false }
-            guard let runner = try? ATMCommandRunner() else {
-                agentHookErrorMessage = "找不到 atm 命令"
-                return
-            }
-            let outcome: ATMCommandOutcome<ATMAgentHookReport> = await decodeCommand(
-                runner,
-                arguments: arguments
-            )
-            if let report = outcome.value {
+            do {
+                let report = try await perform(try makeAgentHookIPCClient())
                 agentHookReport = report
                 // Surface a per-agent failure (an unparseable settings.json, say)
                 // instead of reporting overall success.
@@ -1217,8 +1222,15 @@ final class ATMDataStore: ObservableObject {
                     source.error.map { "\(source.displayName): \($0)" }
                 }
                 agentHookErrorMessage = failures.isEmpty ? nil : failures.joined(separator: "\n")
-            } else {
-                agentHookErrorMessage = outcome.error
+            } catch is CancellationError {
+                return
+            } catch let mismatch as ATMIPCProtocolMismatch {
+                agentHookErrorMessage = mismatch.summary
+            } catch {
+                agentHookErrorMessage = ATMErrorText.compact(
+                    error.localizedDescription,
+                    limit: 180
+                )
             }
         }
     }

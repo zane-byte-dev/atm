@@ -16,6 +16,9 @@ import (
 // remains an explicit protocol change.
 func TestNamesAreTheDeclaredDesktopSet(t *testing.T) {
 	want := []string{
+		"agent.hook.install",
+		"agent.hook.status",
+		"agent.hook.uninstall",
 		"collect.history",
 		"collect.item.archive",
 		"collect.item.correct",

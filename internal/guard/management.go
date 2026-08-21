@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"runtime"
 	"sort"
@@ -52,18 +51,7 @@ type LocalShimInfrastructure struct{}
 func (LocalShimInfrastructure) Supported() bool { return runtime.GOOS != "windows" }
 
 func (LocalShimInfrastructure) ExecutablePath() (string, error) {
-	path, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	resolved, err := os.Readlink(path)
-	if err != nil {
-		return path, nil
-	}
-	if strings.HasPrefix(resolved, "/") {
-		return resolved, nil
-	}
-	return path, nil
+	return config.ExecutablePath()
 }
 
 func (LocalShimInfrastructure) Resolve(tool, override string) (string, error) {

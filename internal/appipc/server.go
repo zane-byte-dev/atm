@@ -11,6 +11,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/agentevent"
 	"github.com/zane-byte-dev/atm/internal/aiday"
 	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/collector"
@@ -34,6 +35,7 @@ type TextModelChecker func(context.Context, textmodel.ConnectionCheckInput) (tex
 // Collector ports; appipc never reaches back into cmd or Cobra.
 type Dependencies struct {
 	Config    config.Service
+	AgentHook agentevent.Service
 	AIDay     aiday.Service
 	Dashboard dashboard.Service
 	Doctor    doctor.Service
@@ -69,6 +71,7 @@ func New(dependencies Dependencies) *Server {
 	}
 	registry := ipc.NewRegistry()
 	registerConfig(registry, dependencies)
+	registerAgentHook(registry, dependencies)
 	registerAIDay(registry, dependencies)
 	registerDashboard(registry, dependencies)
 	registerDoctor(registry, dependencies)

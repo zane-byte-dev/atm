@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
+	"github.com/zane-byte-dev/atm/internal/agentevent"
 	"github.com/zane-byte-dev/atm/internal/aiday"
 	"github.com/zane-byte-dev/atm/internal/appipc"
 	"github.com/zane-byte-dev/atm/internal/config"
@@ -34,6 +35,7 @@ func refreshAppIPCServer() {
 func newAppIPCServer() *appipc.Server {
 	return appipc.New(appipc.Dependencies{
 		Config:    config.Default,
+		AgentHook: agentevent.Default,
 		AIDay:     aiday.Default,
 		Dashboard: dashboard.NewService(loadDashboardLiveStatus),
 		Doctor:    doctorapp.Default,

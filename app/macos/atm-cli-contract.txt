@@ -17,9 +17,6 @@
 # Swift 数组字面量里。
 
 [commands]
-agent hook install --json
-agent hook status --json
-agent hook uninstall --json
 guard approve --by --json
 guard deny --by --json
 guard forget --json
@@ -37,6 +34,9 @@ version
 # 版本号，App 认不出的版本直接拒绝，而不是猜着解。verb 是参数不是子命令，所以校验的是
 # 注册过的 handler，不是命令树。
 [ipc-verbs]
+agent.hook.install
+agent.hook.status
+agent.hook.uninstall
 config.credential.delete
 config.credential.save
 config.save
