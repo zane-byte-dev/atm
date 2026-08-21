@@ -14,6 +14,7 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/store"
+	syncapp "github.com/zane-byte-dev/atm/internal/sync"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
@@ -1329,7 +1330,7 @@ func TestSyncStatusReportsMissingIndexWithoutCreatingIt(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("sync status: %v", runErr)
 	}
-	var report syncStatusReport
+	var report syncapp.StatusReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal sync status: %v\n%s", err, out)
 	}
@@ -1356,7 +1357,7 @@ func TestSyncStatusReportsSuccessfulExplicitSync(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("sync status: %v", runErr)
 	}
-	var report syncStatusReport
+	var report syncapp.StatusReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal sync status: %v\n%s", err, out)
 	}
@@ -1803,9 +1804,9 @@ func TestSessionForgetOnlyDropsRetainedSessions(t *testing.T) {
 func TestSyncStatusLabelsRetainedSessions(t *testing.T) {
 	withCommandFlags(t)
 	jsonOutput = false
-	report := syncStatusReport{
-		Index: syncStatusIndex{Path: "/tmp/atm.db", Exists: true, IndexedSessions: 660, RetainedSessions: 3},
-		Sync:  syncStatusState{Status: "fresh"},
+	report := syncapp.StatusReport{
+		Index: syncapp.StatusIndex{Path: "/tmp/atm.db", Exists: true, IndexedSessions: 660, RetainedSessions: 3},
+		Sync:  syncapp.StatusState{Status: "fresh"},
 	}
 	out := captureStdout(t, func() {
 		if err := printSyncStatus(report); err != nil {

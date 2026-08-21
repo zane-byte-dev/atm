@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -43,11 +42,7 @@ func runStats(cmd *cobra.Command, args []string) error {
 		// window at the application boundary.
 		days = 0
 	}
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	result, err := statsapp.Default.Query(ctx, cliApplicationCall("stats", ""), statsapp.Input{
+	result, err := statsapp.Default.Query(commandContext(cmd), cliApplicationCall("stats", ""), statsapp.Input{
 		Days: days, Range: statsRangeFlag, Group: statsByFlag, Agent: agentFlag,
 		SessionID: statsSessionFlag, Sync: syncBeforeRead,
 	})

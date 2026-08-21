@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -19,11 +18,7 @@ var doctorCmd = &cobra.Command{
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	report, err := doctorapp.Default.Check(ctx, cliApplicationCall("doctor", ""), doctorapp.Input{})
+	report, err := doctorapp.Default.Check(commandContext(cmd), cliApplicationCall("doctor", ""), doctorapp.Input{})
 	if err != nil {
 		return err
 	}

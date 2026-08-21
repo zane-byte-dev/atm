@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -25,11 +24,7 @@ var quotaCmd = &cobra.Command{
 }
 
 func runQuota(cmd *cobra.Command, args []string) error {
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	snapshot, err := quotaapp.Default.Snapshot(ctx, cliApplicationCall("quota", ""), quotaapp.Input{
+	snapshot, err := quotaapp.Default.Snapshot(commandContext(cmd), cliApplicationCall("quota", ""), quotaapp.Input{
 		Agent: agentFlag, Live: config.GrokLiveQuota,
 	})
 	if err != nil {

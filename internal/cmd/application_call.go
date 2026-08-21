@@ -1,10 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/zane-byte-dev/atm/internal/application"
 )
@@ -34,6 +37,19 @@ var cliSessionEnvironment = []string{
 	"CODEX_THREAD_ID",
 	"CLAUDE_CODE_SESSION_ID",
 	"PI_SESSION_ID",
+}
+
+// commandContext is the context an application call runs under. Cobra leaves it
+// nil when a command is invoked directly rather than through Execute — which is
+// how the tests call these — and every service rejects a nil context, so the
+// fallback belongs here rather than repeated at each adapter.
+func commandContext(cmd *cobra.Command) context.Context {
+	if cmd != nil {
+		if ctx := cmd.Context(); ctx != nil {
+			return ctx
+		}
+	}
+	return context.Background()
 }
 
 // cliApplicationCall is the single provenance boundary for Cobra adapters.

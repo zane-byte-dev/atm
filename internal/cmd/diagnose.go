@@ -18,6 +18,7 @@ import (
 	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
+	syncapp "github.com/zane-byte-dev/atm/internal/sync"
 
 	"github.com/spf13/cobra"
 )
@@ -111,7 +112,7 @@ type diagnoseBundleReport struct {
 	ATM         diagnoseATM            `json:"atm"`
 	Platform    diagnosePlatform       `json:"platform"`
 	App         diagnoseApp            `json:"app"`
-	Sync        syncStatusReport       `json:"sync"`
+	Sync        syncapp.StatusReport   `json:"sync"`
 	DataDir     []diagnoseDataEntry    `json:"data_dir"`
 	Doctor      doctorapp.Report       `json:"doctor"`
 	Logs        map[string]diagnoseLog `json:"logs"`
@@ -248,11 +249,17 @@ func buildDiagnoseReport() (diagnoseBundleReport, error) {
 	report.DataDir = entries
 
 	scope := store.SyncScopeAll
-	syncReport, syncErr := buildSyncStatusReport(scope)
+	syncReport, syncErr := syncapp.Default.Status(
+		context.Background(),
+		cliApplicationCall("diagnose", ""),
+		syncapp.StatusInput{Scope: scope},
+	)
 	if syncErr != nil {
-		report.Sync = syncStatusReport{
+		// An index this build cannot describe is exactly what the bundle exists to
+		// report, so the failure becomes a field rather than an error.
+		report.Sync = syncapp.StatusReport{
 			GeneratedAt: report.GeneratedAt,
-			Sync:        syncStatusState{Scope: scope, Status: "unreadable", LastError: syncErr.Error()},
+			Sync:        syncapp.StatusState{Scope: scope, Status: "unreadable", LastError: syncErr.Error()},
 		}
 	} else {
 		report.Sync = syncReport
