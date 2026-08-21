@@ -465,6 +465,24 @@ enum ATMIPCCommand {
         timeout: 45,
         responseKeyDecoding: .useDefault
     )
+    /// `.useDefault` because ATMDoctorReport and ATMQuotaSnapshot already spell
+    /// their snake_case keys out in CodingKeys. Converting on top of that would
+    /// look for `indexedSessions` and find nothing.
+    static let doctor = ATMIPCMethod<ATMIPCNoRequest, ATMDoctorReport>(
+        "doctor.check",
+        responseKeyDecoding: .useDefault
+    )
+    static let quota = ATMIPCMethod<ATMQuotaRequest, ATMQuotaSnapshot>(
+        "quota.snapshot",
+        responseKeyDecoding: .useDefault
+    )
+}
+
+/// Narrows `_ipc quota.snapshot`. An empty agent asks for every source ATM can
+/// read, which is what the dashboard wants. Whether to make the opt-in billing
+/// call is the CLI's configuration to read, not a parameter this side sends.
+struct ATMQuotaRequest: Encodable {
+    let agent: String?
 }
 
 /// A write-only credential request. Responses contain only `configured`; the

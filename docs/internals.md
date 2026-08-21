@@ -522,8 +522,8 @@ envelope：`envelope_version`、`protocol_version`、`request_id`、`verb`，以
 迁移按领域进行。Config 的设置快照/原子保存、AI Day 的快照/反馈/权限/导出/删除、Dashboard 聚合快照、
 Knowledge 的 catalog/query/get/governance 读模型与文档/collection/feedback 写工作流、Collector 的
 快照/采集/历史、来源管理与记录动作、Session 的 list/search/show/timeline 读模型、Todo 的
-list/show/doc 读模型、create/update 元数据工作流与 refine 整理工作流，以及 Guard 的只读待批
-列表已走 typed IPC。Collector 的 App
+list/show/doc 读模型、create/update 元数据工作流与 refine 整理工作流、Guard 的只读待批
+列表，以及 Doctor 自检与 Quota 快照已走 typed IPC。Collector 的 App
 契约按 use case 聚合成 typed request；不会透传 argv，也没有 `action + map` 万能入口。来源/记录删除和
 记录撤销仍由 `collector.Service` 强制要求 `confirmed=true`，但这个字段只防误操作，不能把可重放的
 `human@ipc` 变成身份认证。Knowledge、Collector、Session 和 Todo 的相应公开 CLI 仍作为 Agent、人工恢复或诊断入口，
@@ -531,6 +531,15 @@ list/show/doc 读模型、create/update 元数据工作流与 refine 整理工�
 尚未迁移的普通 argv 仍列在
 `app/macos/atm-cli-contract.txt`，Go 契约测试会反扫 Swift 字面调用，避免改名后只在运行时坏掉。普通命令
 是否保留由 Agent、人工恢复和后台消费者决定，和 App 是否已迁 IPC 是两个问题。
+
+Quota、Doctor、Diagnose、Sync 和 Report 各有独立 Application Service。这五个域此前没有 service，
+约 1600 行编排住在 Cobra 里：`quota.Service` 拥有三个 agent 的日志读取顺序、趋势查询的降级、provider
+子进程与占位卡片缓存；`doctor.Service` 拥有来源/coverage/定价/collection/todo 依赖的全部判定，闸门
+findings 由 `guard.Service.Diagnose` 提供并在查不动时降级为无发现；`sync.Service` 拥有扫描范围选择、
+搭车的额度采样，以及「只读状态不许顺手建库」这条；`report.Service` 拥有日期解析与「哪些 session 不
+值得列」的取舍；`diagnose.Service` 拥有 bundle 的采集范围、`$HOME` 重写、拒绝覆盖与 0600。
+`doctor --json` 与 `_ipc doctor.check`、`quota --json` 与 `_ipc quota.snapshot` 各自是同一个结构的
+同一份序列化，CLI 与 App 不会在键名上分叉。
 
 AI Day 的日常快照、单日读取、反馈、来源/隐私设置和删除只通过 typed IPC 暴露给 App；不再为这些
 App 工作流保留同形 Cobra 叶子。公开 `day` 命令只剩 `rebuild`、`badge`、`sources list` 和 `export`，分别
@@ -542,7 +551,7 @@ macOS App 的主周期刷新调用 `_ipc dashboard.snapshot`，从 JSON stdin �
 侧实现并通过只读 port 注入，这是待独立成 live-status read service 的明确过渡边界，不属于 Dashboard
 领域逻辑。Dashboard payload 继续遵守版本化契约
 [`docs/contracts/dashboard-v1.schema.json`](contracts/dashboard-v1.schema.json)，刷新时并发调用一次
-`atm quota --json`。额度来自各 Agent 自己的日志而不是会话索引（Codex 会话 `rate_limits`、Grok
+`_ipc quota.snapshot`。额度来自各 Agent 自己的日志而不是会话索引（Codex 会话 `rate_limits`、Grok
 `~/.grok/logs/unified.jsonl` 里的 billing credits 与账期刷新时间）。私有或第三方额度源可通过
 [`quota_providers` 版本化命令协议](quota-provider-protocol.md)提供通用多指标卡片，无需链接进 ATM 或
 暴露服务凭据；任一额度源读取失败只影响自己的卡片。

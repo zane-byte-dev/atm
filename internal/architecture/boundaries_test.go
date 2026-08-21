@@ -149,6 +149,7 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 		"internal/cmd/dashboard_adapter.go":        true,
 		"internal/cmd/day.go":                      true,
 		"internal/cmd/day_extra.go":                true,
+		"internal/cmd/diagnose.go":                 true,
 		"internal/cmd/doctor.go":                   true,
 		"internal/cmd/guard_decide.go":             true,
 		"internal/cmd/guard_install.go":            true,
@@ -193,6 +194,30 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 // The quota adapter renders a reading it is handed. Provider commands are child
 // processes and the placeholder cache is a file, so reaching os/exec or the
 // filesystem again would mean that orchestration had leaked back into Cobra.
+// The diagnose adapter renders a bundle it is handed. Collecting it walks ~/.atm
+// and reads log files, and writing it is governed by the refuse-to-overwrite and
+// 0600 rules — all of which now live in the service, so reaching the filesystem
+// from here again would put those rules back where nothing tests them.
+func TestDiagnoseAdapterDoesNotReachPersistenceOrFilesystem(t *testing.T) {
+	root, module := repository(t)
+	imports := scanProductionImports(t, root)
+	storeImport := module + "/internal/store"
+
+	assertNoImports(t, imports, func(item sourceImport) string {
+		if item.file != "internal/cmd/diagnose.go" {
+			return ""
+		}
+		switch {
+		case item.path == "database/sql" || importWithin(item.path, storeImport):
+			return fmt.Sprintf("%s reaches persistence directly through %q", item.file, item.path)
+		case item.path == "os" || item.path == "encoding/json" || item.path == "path/filepath":
+			return fmt.Sprintf("%s collects or writes the bundle itself through %q", item.file, item.path)
+		default:
+			return ""
+		}
+	})
+}
+
 func TestQuotaAdapterDoesNotReachPersistenceOrProcesses(t *testing.T) {
 	root, module := repository(t)
 	imports := scanProductionImports(t, root)

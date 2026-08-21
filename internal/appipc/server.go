@@ -17,9 +17,11 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/contract"
 	"github.com/zane-byte-dev/atm/internal/dashboard"
+	"github.com/zane-byte-dev/atm/internal/doctor"
 	"github.com/zane-byte-dev/atm/internal/guard"
 	"github.com/zane-byte-dev/atm/internal/ipc"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
+	"github.com/zane-byte-dev/atm/internal/quota"
 	"github.com/zane-byte-dev/atm/internal/session"
 	"github.com/zane-byte-dev/atm/internal/textmodel"
 	"github.com/zane-byte-dev/atm/internal/work"
@@ -31,16 +33,22 @@ type TextModelChecker func(context.Context, textmodel.ConnectionCheckInput) (tex
 // command package constructs these once, including its OS-facing Dashboard and
 // Collector ports; appipc never reaches back into cmd or Cobra.
 type Dependencies struct {
-	Config         config.Service
-	AIDay          aiday.Service
-	Dashboard      dashboard.Service
-	Guard          guard.Service
-	Knowledge      knowledge.Service
-	Session        session.Service
-	Work           work.Service
-	WorkEffects    work.EffectExecutor
-	Collector      collector.Service
-	CheckTextModel TextModelChecker
+	Config    config.Service
+	AIDay     aiday.Service
+	Dashboard dashboard.Service
+	Doctor    doctor.Service
+	Guard     guard.Service
+	Quota     quota.Service
+	// QuotaLiveBilling mirrors the user's grok_live_quota setting. It is a
+	// dependency rather than a request field: opting into a network billing call
+	// is a configuration decision, not something a replayable transport carries.
+	QuotaLiveBilling bool
+	Knowledge        knowledge.Service
+	Session          session.Service
+	Work             work.Service
+	WorkEffects      work.EffectExecutor
+	Collector        collector.Service
+	CheckTextModel   TextModelChecker
 }
 
 // Server owns both the desktop method registry and the generic IPC transport.
@@ -63,9 +71,11 @@ func New(dependencies Dependencies) *Server {
 	registerConfig(registry, dependencies)
 	registerAIDay(registry, dependencies)
 	registerDashboard(registry, dependencies)
+	registerDoctor(registry, dependencies)
 	registerGuard(registry, dependencies)
 	registerKnowledge(registry, dependencies)
 	registerMemory(registry, dependencies)
+	registerQuota(registry, dependencies)
 	registerSession(registry, dependencies)
 	registerTodo(registry, dependencies)
 	registerCollector(registry, dependencies)

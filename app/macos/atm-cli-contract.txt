@@ -20,7 +20,6 @@
 agent hook install --json
 agent hook status --json
 agent hook uninstall --json
-doctor --json
 guard approve --by --json
 guard deny --by --json
 guard forget --json
@@ -28,7 +27,6 @@ guard install --bin
 guard rule remove --json
 guard rule set --json
 guard uninstall --json
-quota --json
 session status --json
 stats --agent-session --by --days --json
 sync
@@ -69,6 +67,7 @@ day.snapshot
 day.source.delete
 day.source.set
 dashboard.snapshot
+doctor.check
 guard.list
 guard.status
 guard.rule.list
@@ -84,6 +83,7 @@ knowledge.governance
 knowledge.query
 memory.recall
 memory.supersede
+quota.snapshot
 session.list
 session.search
 session.show

@@ -6,8 +6,10 @@ import (
 	"github.com/zane-byte-dev/atm/internal/appipc"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/dashboard"
+	doctorapp "github.com/zane-byte-dev/atm/internal/doctor"
 	"github.com/zane-byte-dev/atm/internal/guard"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
+	quotaapp "github.com/zane-byte-dev/atm/internal/quota"
 	sessionapp "github.com/zane-byte-dev/atm/internal/session"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
@@ -31,15 +33,20 @@ func refreshAppIPCServer() {
 
 func newAppIPCServer() *appipc.Server {
 	return appipc.New(appipc.Dependencies{
-		Config:      config.Default,
-		AIDay:       aiday.Default,
-		Dashboard:   dashboard.NewService(loadDashboardLiveStatus),
-		Guard:       guard.Default,
-		Knowledge:   knowledge.NewService(knowledge.ServiceOptions{DataDir: config.AtmDir}),
-		Session:     sessionapp.NewService(sessionapp.ServiceOptions{Location: config.Loc}),
-		Work:        workapp.Default,
-		WorkEffects: localWorkEffectExecutor{},
-		Collector:   defaultCollectorService(),
+		Config:    config.Default,
+		AIDay:     aiday.Default,
+		Dashboard: dashboard.NewService(loadDashboardLiveStatus),
+		Doctor:    doctorapp.Default,
+		Guard:     guard.Default,
+		Quota:     quotaapp.Default,
+		// Read at composition time, which refreshAppIPCServer redoes after main
+		// loads ~/.atm/config.json.
+		QuotaLiveBilling: config.GrokLiveQuota,
+		Knowledge:        knowledge.NewService(knowledge.ServiceOptions{DataDir: config.AtmDir}),
+		Session:          sessionapp.NewService(sessionapp.ServiceOptions{Location: config.Loc}),
+		Work:             workapp.Default,
+		WorkEffects:      localWorkEffectExecutor{},
+		Collector:        defaultCollectorService(),
 	})
 }
 

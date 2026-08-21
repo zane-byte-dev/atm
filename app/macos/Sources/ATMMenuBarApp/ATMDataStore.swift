@@ -2158,20 +2158,11 @@ final class ATMDataStore: ObservableObject {
     }
 
     private func shouldRunCollection(_ status: ATMCollectionOverview, now: Date = Date()) -> Bool {
-        guard status.enabled else { return false }
-        let sourceInterval = status.sources
-            .filter(\.enabled)
-            .map(\.effectiveIntervalMinutes)
-            .min() ?? status.intervalMinutes
-        // The global interval is the scheduler polling ceiling. A source may
-        // request a faster cadence; `collect run --due` still decides which
-        // individual sources actually perform network/model work.
-        let interval = TimeInterval(max(min(status.intervalMinutes, sourceInterval), 1) * 60)
-        if let attempt = lastCollectionAttemptAt, now.timeIntervalSince(attempt) < interval {
-            return false
-        }
-        guard let latest = status.latestRun else { return true }
-        return now.timeIntervalSince1970 - TimeInterval(latest.startedAt) >= interval
+        ATMCollectionSchedulePolicy.shouldRun(
+            status,
+            lastAttemptAt: lastCollectionAttemptAt,
+            now: now
+        )
     }
 
     func refresh(sync: Bool = false) {
@@ -2221,9 +2212,10 @@ final class ATMDataStore: ObservableObject {
                         sessionID: ATMAgentSessionContext.sessionID()
                     )
                 )
-                async let quotaTask: ATMCommandOutcome<ATMQuotaSnapshot> = decodeCommand(
+                async let quotaTask: ATMCommandOutcome<ATMQuotaSnapshot> = decodeIPCCommand(
                     runner,
-                    arguments: ["quota", "--json"]
+                    method: ATMIPCCommand.quota,
+                    request: ATMQuotaRequest(agent: nil)
                 )
                 async let archiveTask: ATMCommandOutcome<[ATMTodo]> = decodeIPCCommand(
                     runner,
@@ -2824,9 +2816,7 @@ final class ATMDataStore: ObservableObject {
     }
 
     func doctor() async throws -> ATMDoctorReport {
-        let runner = try ATMCommandRunner()
-        let data = try await runner.run(["doctor", "--json"])
-        return try JSONDecoder().decode(ATMDoctorReport.self, from: data)
+        try await ATMIPCClient().call(ATMIPCCommand.doctor)
     }
 
     func memories(query: String) async throws -> [ATMMemoryHit] {
