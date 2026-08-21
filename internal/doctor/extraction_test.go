@@ -1,4 +1,4 @@
-package cmd
+package doctor
 
 import (
 	"strings"
@@ -13,7 +13,7 @@ import (
 // that decision has to distinguish.
 func TestExtractionIssuesReportsAParserThatGotNothing(t *testing.T) {
 	issues := extractionIssues("claude",
-		doctorSource{Files: 12},
+		Source{Files: 12},
 		store.ExtractionCounts{Agent: "claude", Sessions: 12, Messages: 0, UsageRows: 0})
 
 	codes := issueCodes(issues)
@@ -38,10 +38,10 @@ func TestExtractionIssuesReportsAParserThatGotNothing(t *testing.T) {
 // An agent nobody has used has zero of everything. Reporting that as a parser
 // regression is how a diagnostic becomes noise.
 func TestExtractionIssuesStaysQuietForAnUnusedAgent(t *testing.T) {
-	if issues := extractionIssues("claude", doctorSource{Files: 0}, store.ExtractionCounts{}); len(issues) != 0 {
+	if issues := extractionIssues("claude", Source{Files: 0}, store.ExtractionCounts{}); len(issues) != 0 {
 		t.Errorf("issues for an agent with no files: %v", issues)
 	}
-	if issues := extractionIssues("claude", doctorSource{Files: 5}, store.ExtractionCounts{Sessions: 0}); len(issues) != 0 {
+	if issues := extractionIssues("claude", Source{Files: 5}, store.ExtractionCounts{Sessions: 0}); len(issues) != 0 {
 		t.Errorf("issues for an agent with no indexed sessions: %v", issues)
 	}
 }
@@ -50,7 +50,7 @@ func TestExtractionIssuesStaysQuietForAnUnusedAgent(t *testing.T) {
 // the upstream's design, and it would fire on every single run.
 func TestExtractionIssuesRespectsDeclaredCapabilities(t *testing.T) {
 	issues := extractionIssues("copilot",
-		doctorSource{Files: 76},
+		Source{Files: 76},
 		store.ExtractionCounts{Agent: "copilot", Sessions: 76, Messages: 853, UsageRows: 0})
 	if len(issues) != 0 {
 		t.Fatalf("copilot's documented lack of token detail was reported as a problem: %v", issues)
@@ -65,7 +65,7 @@ func TestExtractionIssuesRespectsDeclaredCapabilities(t *testing.T) {
 // token fields, at which point it stopped claiming it.
 func TestExtractionIssuesReportsOnlyTheMissingHalf(t *testing.T) {
 	issues := extractionIssues("claude",
-		doctorSource{Files: 34},
+		Source{Files: 34},
 		store.ExtractionCounts{Agent: "claude", Sessions: 34, Messages: 318, UsageRows: 0})
 
 	codes := issueCodes(issues)
@@ -77,7 +77,7 @@ func TestExtractionIssuesReportsOnlyTheMissingHalf(t *testing.T) {
 	}
 }
 
-func issueCodes(issues []doctorIssue) map[string]bool {
+func issueCodes(issues []Issue) map[string]bool {
 	codes := map[string]bool{}
 	for _, issue := range issues {
 		codes[issue.Code] = true

@@ -149,6 +149,7 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 		"internal/cmd/dashboard_adapter.go":        true,
 		"internal/cmd/day.go":                      true,
 		"internal/cmd/day_extra.go":                true,
+		"internal/cmd/doctor.go":                   true,
 		"internal/cmd/guard_decide.go":             true,
 		"internal/cmd/guard_install.go":            true,
 		"internal/cmd/guard_query.go":              true,

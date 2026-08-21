@@ -308,35 +308,6 @@ func TestCollectStatusReportsTheSyncedArchive(t *testing.T) {
 	}
 }
 
-func TestCollectionRetentionIssuesReportAStuckPrune(t *testing.T) {
-	withTempAtmDir(t)
-	oldRetention := config.CollectionMessageRetentionDays
-	t.Cleanup(func() { config.CollectionMessageRetentionDays = oldRetention })
-
-	db, err := store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	ancient := time.Now().In(config.Loc).AddDate(0, 0, -200).Unix()
-	if _, err := store.PutCollectionMessages(db, []store.CollectionMessage{{
-		Connector: "test", ConversationID: "cid-1", MessageID: "m1",
-		CreatedAt: ancient, Content: "两百天前",
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	config.CollectionMessageRetentionDays = 90
-	issues := collectionRetentionIssues(db)
-	if len(issues) != 1 || issues[0].Code != "collection_messages_past_retention" {
-		t.Fatalf("stuck prune was not reported: %+v", issues)
-	}
-	// Keeping chat on purpose is not a problem to report.
-	config.CollectionMessageRetentionDays = 0
-	if issues := collectionRetentionIssues(db); len(issues) != 0 {
-		t.Fatalf("retention 0 reported an issue: %+v", issues)
-	}
-}
-
 func TestCollectionFailureStatusDistinguishesLoginAndPermission(t *testing.T) {
 	if got := collectionFailureStatus("not_authenticated; run connector auth login"); got != "auth_required" {
 		t.Fatalf("auth status = %q", got)

@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"bytes"
-	"database/sql"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/contract"
+	doctorapp "github.com/zane-byte-dev/atm/internal/doctor"
 	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -112,7 +113,7 @@ type diagnoseBundleReport struct {
 	App         diagnoseApp            `json:"app"`
 	Sync        syncStatusReport       `json:"sync"`
 	DataDir     []diagnoseDataEntry    `json:"data_dir"`
-	Doctor      doctorReport           `json:"doctor"`
+	Doctor      doctorapp.Report       `json:"doctor"`
 	Logs        map[string]diagnoseLog `json:"logs"`
 	Redaction   []string               `json:"redaction"`
 }
@@ -261,7 +262,7 @@ func buildDiagnoseReport() (diagnoseBundleReport, error) {
 	// valid state for it, so the nil-db path is kept.
 	doctor, doctorErr := diagnoseDoctorReport()
 	if doctorErr != nil {
-		report.Doctor.Issues = append(report.Doctor.Issues, doctorIssue{
+		report.Doctor.Issues = append(report.Doctor.Issues, doctorapp.Issue{
 			Severity: "warning", Domain: "diagnose", Code: "doctor_failed",
 			Subject: config.AtmDB, Detail: doctorErr.Error(),
 			Suggestion: "include this bundle in the report; the doctor section is incomplete",
@@ -272,17 +273,12 @@ func buildDiagnoseReport() (diagnoseBundleReport, error) {
 	return report, nil
 }
 
-func diagnoseDoctorReport() (doctorReport, error) {
-	if _, err := os.Stat(config.AtmDB); os.IsNotExist(err) {
-		return buildDoctorReport(nil)
-	}
-	var report doctorReport
-	err := withDB(true, func(db *sql.DB) error {
-		var buildErr error
-		report, buildErr = buildDoctorReport(db)
-		return buildErr
-	})
-	return report, err
+func diagnoseDoctorReport() (doctorapp.Report, error) {
+	return doctorapp.Default.Check(
+		context.Background(),
+		cliApplicationCall("diagnose", ""),
+		doctorapp.Input{},
+	)
 }
 
 func diagnoseDataDir() ([]diagnoseDataEntry, error) {
