@@ -145,6 +145,7 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 	storeImport := module + "/internal/store"
 	migrated := map[string]bool{
 		"internal/cmd/config.go":                   true,
+		"internal/cmd/collect.go":                  true,
 		"internal/cmd/collect_source.go":           true,
 		"internal/cmd/dashboard_adapter.go":        true,
 		"internal/cmd/day.go":                      true,

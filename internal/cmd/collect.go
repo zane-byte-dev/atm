@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -12,7 +11,6 @@ import (
 	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/store"
 )
 
 func defaultCollectorService() collector.Service {
@@ -169,9 +167,9 @@ var collectStatusCmd = &cobra.Command{
 
 // collectionTodaysDigests narrows the digest ledger to today, so status stays a
 // picture of the current day rather than a growing list of past documents.
-func collectionTodaysDigests(digests []store.CollectionDigest) []store.CollectionDigest {
+func collectionTodaysDigests(digests []collector.Digest) []collector.Digest {
 	today := time.Now().In(config.Loc).Format("2006-01-02")
-	current := []store.CollectionDigest{}
+	current := []collector.Digest{}
 	for _, digest := range digests {
 		if digest.DigestDate == today {
 			current = append(current, digest)
@@ -181,7 +179,7 @@ func collectionTodaysDigests(digests []store.CollectionDigest) []store.Collectio
 }
 
 // collectionPendingProposals counts decisions an on-demand analysis is holding.
-func collectionPendingProposals(items []store.CollectionItem) int {
+func collectionPendingProposals(items []collector.Item) int {
 	pending := 0
 	for _, item := range items {
 		if item.ProposedAction != "" {
@@ -192,7 +190,7 @@ func collectionPendingProposals(items []store.CollectionItem) int {
 }
 
 // collectionMutedSources counts the sources whose results never raise a banner.
-func collectionMutedSources(sources []store.CollectionSource) int {
+func collectionMutedSources(sources []collector.Source) int {
 	muted := 0
 	for _, source := range sources {
 		if source.Muted {
@@ -202,7 +200,7 @@ func collectionMutedSources(sources []store.CollectionSource) int {
 	return muted
 }
 
-func collectionArchiveSpan(stats store.CollectionMessageStats) string {
+func collectionArchiveSpan(stats collector.MessageStats) string {
 	if stats.Oldest == 0 {
 		return ""
 	}
@@ -218,7 +216,7 @@ func collectionRetentionText(days int) string {
 
 type collectionConnectorHealth = collector.ConnectorHealth
 
-func collectionHealth(overview store.CollectionOverview) []collectionConnectorHealth {
+func collectionHealth(overview collector.Overview) []collectionConnectorHealth {
 	return defaultCollectorService().ConnectorHealthFor(overview)
 }
 
@@ -314,9 +312,12 @@ var collectDigestCmd = &cobra.Command{
 		"arrive, so running this repeatedly never files a second document for the same day.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		report, err := defaultCollectorService().Digest(context.Background(), collectSourceID,
-			collector.DigestOptions{Date: collectDigestDate, DueOnly: collectDigestDue,
-				DryRun: collectDigestDryRun})
+		report, err := defaultCollectorService().DigestCollection(
+			cmd.Context(), collectionCLICall("digest"), collector.DigestCollectionInput{
+				SourceID: collectSourceID, Date: collectDigestDate, DueOnly: collectDigestDue,
+				DryRun: collectDigestDryRun,
+			},
+		)
 		if jsonOutput {
 			output.JSON(report)
 		}
@@ -352,7 +353,7 @@ var collectEnableCmd = &cobra.Command{
 	Short: "Enable automatic collection",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return setCollectionEnabled(true)
+		return setCollectionEnabled(cmd.Context(), true)
 	},
 }
 
@@ -361,19 +362,21 @@ var collectDisableCmd = &cobra.Command{
 	Short: "Disable automatic collection",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return setCollectionEnabled(false)
+		return setCollectionEnabled(cmd.Context(), false)
 	},
 }
 
-func setCollectionEnabled(enabled bool) error {
-	settings, err := config.Default.Apply(config.SettingsPatch{CollectionEnabled: &enabled})
+func setCollectionEnabled(ctx context.Context, enabled bool) error {
+	result, err := defaultCollectorService().SetEnabled(
+		ctx, collectionCLICall("enabled"), collector.SetEnabledInput{Enabled: enabled},
+	)
 	if err != nil {
 		return err
 	}
 	if jsonOutput {
-		output.JSON(map[string]any{"enabled": settings.CollectionEnabled})
+		output.JSON(result)
 	} else {
-		fmt.Printf("Automatic collection enabled = %v\n", settings.CollectionEnabled)
+		fmt.Printf("Automatic collection enabled = %v\n", result.Enabled)
 	}
 	return nil
 }
@@ -413,17 +416,13 @@ var collectHistoryCmd = &cobra.Command{
 			output.JSON(read)
 			return nil
 		}
-		source := store.CollectionSource{
-			ID: read.Source.ID, Connector: read.Source.Connector, Kind: read.Source.Kind,
-			ExternalID: read.Source.ExternalID, Name: read.Source.Name,
-		}
 		if read.Error != "" {
 			// The messages below are real but possibly behind, and saying so is the
 			// difference between "nothing new" and "could not check".
 			fmt.Fprintf(cmd.ErrOrStderr(), "%s 读取失败（%s），以下是本地已同步的记录。\n",
-				source.Connector, read.Error)
+				read.Source.Connector, read.Error)
 		}
-		fmt.Print(collectionHistoryText(source, read.Messages))
+		fmt.Print(collectionHistoryText(read.Source, read.Messages))
 		return nil
 	},
 }
@@ -435,46 +434,42 @@ var collectSearchCmd = &cobra.Command{
 		"newest first. This never calls a connector: it reads what is already on disk.",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		query := store.CollectionMessageQuery{
-			Sender: strings.TrimSpace(collectSearchSender), Limit: collectSearchMessages,
+		input := collector.SearchMessagesInput{
+			Keyword: args[0], Source: collectSearchSource,
+			Sender: collectSearchSender, Limit: collectSearchMessages, Sync: syncBeforeRead,
 		}
 		if since := strings.TrimSpace(collectSearchSince); since != "" {
 			parsed, err := parseSessionSince(since)
 			if err != nil {
 				return err
 			}
-			query.SinceTS = parsed.Unix()
+			input.SinceUnix = parsed.Unix()
 		}
-		return withDB(true, func(db *sql.DB) error {
-			if source := strings.TrimSpace(collectSearchSource); source != "" {
-				resolved, err := collectionStoredSource(db, source)
-				if err != nil {
-					return err
-				}
-				query.Connector = resolved.Connector
-				query.ConversationID = resolved.ExternalID
-			}
-			matches, err := store.SearchCollectionMessages(db, args[0], query)
-			if err != nil {
-				return err
-			}
-			if jsonOutput {
-				output.JSON(map[string]any{"keyword": args[0], "returned": len(matches), "matches": matches})
-				return nil
-			}
-			if len(matches) == 0 {
-				fmt.Printf("本地已同步的聊天里没有「%s」。%s\n", args[0], collectionSearchScopeHint)
-				return nil
-			}
-			fmt.Printf("%d 条命中「%s」\n", len(matches), args[0])
-			for _, message := range matches {
-				at := time.Unix(message.CreatedAt, 0).In(config.Loc).Format("2006-01-02 15:04:05")
-				fmt.Printf("%s [%s] [%s] %s\n", at,
-					emptyAs(message.ConversationName, message.ConversationID),
-					emptyAs(message.Sender, "?"), truncLine(cleanMsg(message.Content), 200))
-			}
+		result, err := defaultCollectorService().SearchMessages(
+			cmd.Context(), collectionCLICall("search"), input,
+		)
+		if err != nil {
+			return err
+		}
+		if result.SyncedFiles > 0 && !jsonOutput {
+			output.Progress("Synced %d files.", result.SyncedFiles)
+		}
+		if jsonOutput {
+			output.JSON(result)
 			return nil
-		})
+		}
+		if len(result.Matches) == 0 {
+			fmt.Printf("本地已同步的聊天里没有「%s」。%s\n", args[0], collectionSearchScopeHint)
+			return nil
+		}
+		fmt.Printf("%d 条命中「%s」\n", len(result.Matches), args[0])
+		for _, message := range result.Matches {
+			at := time.Unix(message.CreatedAt, 0).In(config.Loc).Format("2006-01-02 15:04:05")
+			fmt.Printf("%s [%s] [%s] %s\n", at,
+				emptyAs(message.ConversationName, message.ConversationID),
+				emptyAs(message.Sender, "?"), truncLine(cleanMsg(message.Content), 200))
+		}
+		return nil
 	},
 }
 
@@ -488,31 +483,20 @@ var collectAnalyzeCmd = &cobra.Command{
 		"spend limit. The source must already be added (`atm collect source add`).",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		options := collector.AnalyzeOptions{Limit: collectAnalyzeLimit,
-			MaxBatches: collectAnalyzeBatches, Local: collectAnalyzeLocal, Apply: collectAnalyzeApply}
+		input := collector.AnalyzeCollectionInput{
+			Reference: args[0], Limit: collectAnalyzeLimit,
+			MaxBatches: collectAnalyzeBatches, Local: collectAnalyzeLocal, Apply: collectAnalyzeApply,
+		}
 		if since := strings.TrimSpace(collectAnalyzeSince); since != "" {
 			parsed, err := parseSessionSince(since)
 			if err != nil {
 				return err
 			}
-			options.Since = parsed
+			input.SinceUnix = parsed.Unix()
 		}
-		var source store.CollectionSource
-		if err := withDB(false, func(db *sql.DB) error {
-			resolved, err := collectionStoredSource(db, args[0])
-			if err != nil {
-				// Analysis and everything after it (promote, revert, the app's
-				// lists) reads the item's source row, so an unadded group has
-				// nowhere to hang its decisions.
-				return fmt.Errorf("%w\n先添加成来源再分析：atm collect source add --group %q --disabled"+
-					"（--disabled 只用于分析，不会开启后台收集）", err, args[0])
-			}
-			source = resolved
-			return nil
-		}); err != nil {
-			return err
-		}
-		report, err := defaultCollectorService().Analyze(context.Background(), source.ID, options)
+		report, err := defaultCollectorService().AnalyzeCollection(
+			cmd.Context(), collectionCLICall("analyze"), input,
+		)
 		if jsonOutput {
 			output.JSON(report)
 			if err != nil {
@@ -523,7 +507,7 @@ var collectAnalyzeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		fmt.Print(collectionAnalyzeText(report, options.Apply))
+		fmt.Print(collectionAnalyzeText(report, input.Apply))
 		return nil
 	},
 }
@@ -587,7 +571,7 @@ func collectionAnalyzeText(report collector.AnalyzeReport, applied bool) string 
 	return builder.String()
 }
 
-func collectionItemFallbackTitle(item store.CollectionItem) string {
+func collectionItemFallbackTitle(item collector.Item) string {
 	if line := strings.SplitN(strings.TrimSpace(item.RawContext), "\n", 2)[0]; line != "" {
 		return truncLine(cleanMsg(line), 60)
 	}
@@ -598,27 +582,7 @@ func collectionItemFallbackTitle(item store.CollectionItem) string {
 // synced" in front of whoever is searching.
 const collectionSearchScopeHint = "只搜本地已同步的部分——先用 collect history 拉一次要找的群或时间段。"
 
-// collectionStoredSource resolves a source id or the name of an added source
-// without touching the network: searching the local archive is a local
-// operation, and a name that needs a connector to resolve has nothing stored yet.
-func collectionStoredSource(db *sql.DB, value string) (store.CollectionSource, error) {
-	if source, err := store.GetCollectionSource(db, value); err == nil {
-		return source, nil
-	}
-	sources, err := store.ListCollectionSources(db, "", false)
-	if err != nil {
-		return store.CollectionSource{}, err
-	}
-	for _, source := range sources {
-		if strings.EqualFold(strings.TrimSpace(source.Name), value) || source.ExternalID == value {
-			return source, nil
-		}
-	}
-	return store.CollectionSource{}, fmt.Errorf(
-		"没有这个来源：%s。用 atm collect source list 看已添加的来源，或直接传 openConversationId", value)
-}
-
-func collectionHistoryText(source store.CollectionSource, messages []collector.Message) string {
+func collectionHistoryText(source collector.HistorySource, messages []collector.Message) string {
 	var builder strings.Builder
 	title := emptyAs(source.Name, source.ExternalID)
 	if len(messages) == 0 {
@@ -933,7 +897,7 @@ func collectionItemCorrection(cmd *cobra.Command) collector.ItemCorrection {
 	return correction
 }
 
-func printCollectionItem(item store.CollectionItem) error {
+func printCollectionItem(item collector.Item) error {
 	if jsonOutput {
 		output.JSON(item)
 	} else {
@@ -941,12 +905,12 @@ func printCollectionItem(item store.CollectionItem) error {
 		// Whether the next run will pick this up again is the one thing a person
 		// decides from here, and it is not readable from the status alone.
 		if item.Status == "failed" {
-			if store.CollectionRetriesExhausted(item) {
+			if collector.RetriesExhausted(item) {
 				fmt.Printf("  retries: %d/%d spent; automatic retry stopped, run `atm collect item reprocess %s` after fixing the cause\n",
-					item.Attempts, store.MaxCollectionAttempts, item.ID)
+					item.Attempts, collector.MaxAttempts, item.ID)
 			} else {
 				fmt.Printf("  retries: %d/%d spent; the next run retries this automatically\n",
-					item.Attempts, store.MaxCollectionAttempts)
+					item.Attempts, collector.MaxAttempts)
 			}
 		}
 	}

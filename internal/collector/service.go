@@ -28,6 +28,9 @@ type Service struct {
 	Extractor  Extractor
 	Summarizer Summarizer
 	Now        func() time.Time
+	// ApplyCollectionEnabled is the config persistence port behind the global
+	// collection switch. Nil uses config.Default in production.
+	ApplyCollectionEnabled func(bool) (bool, error)
 }
 
 type RunReport struct {
@@ -41,6 +44,10 @@ func DefaultService() Service {
 		Extractor:  AutomaticExtractor{},
 		Summarizer: AutomaticSummarizer{},
 		Now:        func() time.Time { return time.Now().In(config.Loc) },
+		ApplyCollectionEnabled: func(enabled bool) (bool, error) {
+			settings, err := config.Default.Apply(config.SettingsPatch{CollectionEnabled: &enabled})
+			return settings.CollectionEnabled, err
+		},
 	}
 }
 
