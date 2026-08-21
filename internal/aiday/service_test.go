@@ -266,6 +266,9 @@ func TestBadgeLevelsAndInstantCooldown(t *testing.T) {
 			t.Fatal(err)
 		}
 		if dayOffset == 0 && (result.Badge == nil || result.Badge.ID != "model_conductor") {
+			// The preceding baseline deliberately has no tool or token activity.
+			// Zero must not qualify for autopilot merely because it ranks alongside
+			// an all-zero baseline.
 			t.Fatalf("first instant=%+v", result.Badge)
 		}
 		if dayOffset == 1 && result.Badge != nil && result.Badge.ID == "model_conductor" {

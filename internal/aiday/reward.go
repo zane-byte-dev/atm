@@ -212,9 +212,19 @@ func qualifyBadges(ctx context.Context, db *sql.DB, f Features, p map[string]flo
 		}
 	}
 
+	toolRank, workTokenRank := 0.0, 0.0
+	// A zero can rank at the 100th percentile when every baseline day is also
+	// zero. Percentiles describe relative volume; they must not manufacture an
+	// execution signal that did not happen at all.
+	if f.ToolCalls > 0 {
+		toolRank = rankOf("tool_calls")
+	}
+	if f.WorkTokens() > 0 {
+		workTokenRank = rankOf("work_tokens")
+	}
 	autopilotStrength := math.Max(float64(f.ToolCalls)/40, float64(f.WorkTokens())/400_000)
-	autopilotStrength = math.Max(autopilotStrength, math.Max(rankOf("tool_calls"), rankOf("work_tokens")))
-	add(f.ToolCalls >= 20 || f.WorkTokens() >= 200_000 || rankOf("tool_calls") >= .8 || rankOf("work_tokens") >= .8,
+	autopilotStrength = math.Max(autopilotStrength, math.Max(toolRank, workTokenRank))
+	add(f.ToolCalls >= 20 || f.WorkTokens() >= 200_000 || toolRank >= .8 || workTokenRank >= .8,
 		"autopilot", autopilotStrength,
 		Evidence{Metric: "tool_calls", Value: float64(f.ToolCalls), Unit: "calls", Comparison: comparison("tool_calls")},
 		Evidence{Metric: "work_tokens", Value: float64(f.WorkTokens()), Unit: "tokens", Comparison: comparison("work_tokens")},
