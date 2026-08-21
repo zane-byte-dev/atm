@@ -584,6 +584,17 @@ extension ATMCollectionItem {
 
     var isArchived: Bool { (archivedAt ?? 0) > 0 }
 
+    /// A group-level “全部了结” must target the same narrow class as the CLI's
+    /// global settle operation: an acknowledged conclusion that has not already
+    /// been archived or saved to knowledge. Keeping this predicate on the model
+    /// prevents a source menu from accidentally archiving linked Todo records.
+    var isSettleableConclusion: Bool {
+        !isArchived
+            && action == "insight"
+            && knowledgeDocumentID?.isEmpty != false
+            && (readAt ?? 0) > 0
+    }
+
     /// The main list is what you glance at, and that means work: things ATM filed
     /// or wants filed. An unsaved insight still needs the user's decision, so it
     /// stays visible until its conclusion has explicitly been saved to knowledge.

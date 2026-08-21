@@ -458,6 +458,29 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMCollectionIPCCommand.deleteItems.verb, "collect.item.delete")
     }
 
+    func testOnlyAcknowledgedUnsavedInsightsAreSettleableFromAGroup() throws {
+        let data = Data(
+            """
+            [
+              {"id":"ready","source_id":"s","connector":"c","fingerprint":"f1",
+               "message_ids":["m1"],"action":"insight","status":"processed",
+               "read_at":10,"created_at":10,"updated_at":10},
+              {"id":"unread","source_id":"s","connector":"c","fingerprint":"f2",
+               "message_ids":["m2"],"action":"insight","status":"processed",
+               "read_at":0,"created_at":10,"updated_at":10},
+              {"id":"saved","source_id":"s","connector":"c","fingerprint":"f3",
+               "message_ids":["m3"],"action":"insight","knowledge_document_id":"k1",
+               "status":"processed","read_at":10,"created_at":10,"updated_at":10},
+              {"id":"task","source_id":"s","connector":"c","fingerprint":"f4",
+               "message_ids":["m4"],"action":"create","todo_id":"t1",
+               "status":"processed","read_at":10,"created_at":10,"updated_at":10}
+            ]
+            """.utf8
+        )
+        let items = try JSONDecoder().decode([ATMCollectionItem].self, from: data)
+        XCTAssertEqual(items.filter(\.isSettleableConclusion).map(\.id), ["ready"])
+    }
+
     func testCollectionGroupsTodoSupplementsUnderTheCreateRecord() throws {
         let data = Data(
             """
@@ -1096,9 +1119,13 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMAgentDisplay.systemImage("codex"), "chevron.left.forwardslash.chevron.right")
         XCTAssertEqual(ATMAgentDisplay.key("QoderCLI"), "qodercli")
         XCTAssertEqual(ATMAgentDisplay.key("Claude Code"), "claude")
-        // Flattened cards must keep unique ids so LazyVGrid can show every agent.
+        // Compact surfaces keep one row per window.
         XCTAssertEqual(quota.cards.map(\.agent), ["codex", "codex", "grokbuild"])
         XCTAssertEqual(Set(quota.cards.map(\.id)).count, 3)
+        // The desktop groups both Codex windows into one service card instead
+        // of repeating the service identity twice.
+        XCTAssertEqual(quota.serviceCards.map(\.agent), ["codex", "grokbuild"])
+        XCTAssertEqual(quota.serviceCards.first?.windows.map(\.windowLabel), ["1w", "5h"])
         XCTAssertEqual(quota.tightestWindow?.window.displayPercent, 44)
         XCTAssertTrue(quota.tooltipText?.contains("Grok 1w 12%") == true)
     }
@@ -1450,9 +1477,15 @@ final class ModelsTests: XCTestCase {
         XCTAssertGreaterThan(detail.bindings?.first?.boundAt ?? 0, 0)
 
         // Quota is read outside the dashboard snapshot, so its shape needs its
-        // own guarantee. With an empty HOME there are no agent logs, and the
-        // CLI reports the agent as null rather than omitting it.
-        let quotaResult = try runCLI(executable: executable, arguments: ["quota", "--json"], home: home)
+        // own guarantee. Scope the fixture to Codex: Antigravity quota comes
+        // from a machine-wide loopback process and can legitimately be present
+        // even with an empty HOME. With no Codex logs, the CLI reports that
+        // requested agent as null rather than omitting it.
+        let quotaResult = try runCLI(
+            executable: executable,
+            arguments: ["quota", "--agent", "codex", "--json"],
+            home: home
+        )
         XCTAssertEqual(quotaResult.status, 0, quotaResult.stderr)
         let quota = try JSONDecoder().decode(ATMQuotaSnapshot.self, from: quotaResult.stdout)
         XCTAssertTrue(quota.isEmpty)

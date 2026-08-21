@@ -83,16 +83,6 @@ struct DesktopCollectionView: View {
         ATMCollectionItemGrouping.visibleItems(filteredItems)
     }
 
-    private var unreadCount: Int {
-        store.collectionOverview.summary.unreadCount ?? 0
-    }
-
-    /// 「全部了结」能关掉多少条。取的是 summary 而不是 `filteredItems`，因为取数只带最新
-    /// 200 条，按屏幕上数出来的会比台账少——而这个数字正是用来决定要不要按的。
-    private var settleableCount: Int {
-        store.collectionOverview.summary.settleableCount ?? 0
-    }
-
     private var selectedItem: ATMCollectionItem? {
         guard let id = navigation.selectedCollectionItemID else { return displayedItems.first }
         return displayedItems.first { $0.id == id } ?? displayedItems.first
@@ -238,29 +228,6 @@ struct DesktopCollectionView: View {
             HStack(spacing: ATMSpacing.xSmall) {
                 if drawerTab == .records {
                     ATMNavigatorPresentationToggle(storedValue: $recordListPresentationRaw)
-                }
-                if drawerTab == .records, unreadCount > 0 {
-                    Button {
-                        store.markAllCollectionItemsRead()
-                    } label: {
-                        Label("全部已读", systemImage: "checkmark.circle")
-                            .font(ATMFont.caption)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("将 \(unreadCount) 条新收集全部标为已读")
-                }
-                // 和「全部已读」是两件事，所以是两个按钮：那个清注意力，这个清列表。只在
-                // 真有可了结的记录时出现，免得给一个按下去什么都不动的按钮。
-                if drawerTab == .records, settleableCount > 0 {
-                    Button {
-                        store.settleReadCollectionConclusions()
-                    } label: {
-                        Label("全部了结", systemImage: "archivebox")
-                            .font(ATMFont.caption)
-                    }
-                    .buttonStyle(.borderless)
-                    .disabled(store.isCollecting)
-                    .help("把 \(settleableCount) 条已读、没存进知识库的结论折叠进「已保存与已了结」，记录保留，可单条重新打开")
                 }
                 ATMIconButton(
                     systemImage: "gearshape",
@@ -456,7 +423,7 @@ struct DesktopCollectionView: View {
                                 genericSourceSectionHeader(
                                     "其他来源",
                                     systemImage: "questionmark.folder",
-                                    count: unknownItems.count,
+                                    items: unknownItems,
                                     expanded: expanded,
                                     clear: { requestClear("其他来源", items: unknownItems) }
                                 )
@@ -473,7 +440,7 @@ struct DesktopCollectionView: View {
                             ATMNavigatorGroup {
                                 genericSourceSectionHeader(
                                     "已保存与已了结",
-                                    count: ignoredItems.count,
+                                    items: ignoredItems,
                                     expanded: $showingIgnoredItems,
                                     clear: { requestClear("已保存与已了结", items: ignoredItems) }
                                 )
@@ -542,6 +509,10 @@ struct DesktopCollectionView: View {
                         .foregroundStyle(ATMTheme.secondary)
                 }
                 sectionActionMenu {
+                    collectionGroupActions(for: items)
+                    if hasCollectionGroupActions(for: items) {
+                        Divider()
+                    }
                     Button("查看聊天记录") {
                         historySource = source
                     }
@@ -565,19 +536,23 @@ struct DesktopCollectionView: View {
     private func genericSourceSectionHeader(
         _ title: String,
         systemImage: String? = nil,
-        count: Int,
+        items: [ATMCollectionItem],
         expanded: Binding<Bool>,
         clear: (() -> Void)? = nil
     ) -> some View {
         ATMNavigatorGroupHeader(
             title: title,
-            count: count,
+            count: items.count,
             tint: ATMTheme.secondary,
             systemImage: systemImage,
             isExpanded: expanded
         ) {
             if let clear {
                 sectionActionMenu {
+                    collectionGroupActions(for: items)
+                    if hasCollectionGroupActions(for: items) {
+                        Divider()
+                    }
                     Button("清空记录", role: .destructive, action: clear)
                 }
             }
@@ -599,6 +574,33 @@ struct DesktopCollectionView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+    }
+
+    /// Bulk actions belong to the group they affect. Keeping them in the section
+    /// menu avoids crowding the narrow navigator toolbar and makes the scope of
+    /// “全部” explicit.
+    @ViewBuilder
+    private func collectionGroupActions(for items: [ATMCollectionItem]) -> some View {
+        let records = recordsIncludingSupplements(items)
+        let unread = records.filter(\.isUnread)
+        let settleable = records.filter(\.isSettleableConclusion)
+        if !unread.isEmpty {
+            Button("全部标为已读") {
+                store.setCollectionItemsRead(unread, read: true)
+            }
+        }
+        if !settleable.isEmpty {
+            Button("全部了结") {
+                store.setCollectionItemsArchived(settleable, archived: true)
+            }
+            .disabled(store.isCollecting)
+        }
+    }
+
+    private func hasCollectionGroupActions(for items: [ATMCollectionItem]) -> Bool {
+        let records = recordsIncludingSupplements(items)
+        return records.contains(where: \.isUnread)
+            || records.contains(where: \.isSettleableConclusion)
     }
 
     private func itemRow(_ item: ATMCollectionItem, showsSource: Bool = false) -> some View {

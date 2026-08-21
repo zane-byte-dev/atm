@@ -2948,7 +2948,7 @@ private struct DesktopUsageContent: View, Equatable {
             }
 
             LazyVGrid(columns: Self.quotaCardColumns, spacing: 12) {
-                ForEach(quota.cards) { card in
+                ForEach(quota.serviceCards) { card in
                     quotaCard(card)
                 }
                 ForEach(quota.providerCards) { card in
@@ -3954,10 +3954,9 @@ private struct DesktopUsageContent: View, Equatable {
         return text
     }
 
-    private func quotaCard(_ card: ATMQuotaCard) -> some View {
-        let window = card.window
-        let percent = window.displayPercent
-        let level = ATMQuotaLevel.level(forPercent: percent)
+    private func quotaCard(_ card: ATMQuotaServiceCard) -> some View {
+        let peakPercent = card.windows.map(\.displayPercent).max() ?? 0
+        let level = ATMQuotaLevel.level(forPercent: peakPercent)
         let color = ATMTheme.quotaColor(level)
         let label = ATMAgentDisplay.name(card.agent)
         return VStack(alignment: .leading, spacing: 9) {
@@ -3966,12 +3965,6 @@ private struct DesktopUsageContent: View, Equatable {
                 Text(label)
                     .font(ATMFont.font(.footnote, weight: .semibold))
                     .lineLimit(1)
-                Text(window.windowLabel)
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(ATMTheme.controlFill, in: Capsule())
-                    .fixedSize()
                 Spacer(minLength: 4)
                 if let plan = card.plan, !plan.isEmpty {
                     Text(plan)
@@ -3993,39 +3986,15 @@ private struct DesktopUsageContent: View, Equatable {
             .frame(height: 20)
             .foregroundStyle(ATMTheme.secondary)
 
-            HStack(spacing: 14) {
-                quotaGauge(percent: percent, color: color)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("已用")
-                        .font(ATMFont.font(.body, weight: .semibold))
-                    HStack(spacing: 5) {
-                        Circle()
-                            .fill(color)
-                            .frame(width: 6, height: 6)
-                        Text(quotaStatusLabel(level))
+            HStack(alignment: .top, spacing: 12) {
+                ForEach(Array(card.windows.enumerated()), id: \.offset) { index, window in
+                    if index > 0 {
+                        Divider()
+                            .frame(height: 66)
                     }
-                    .font(ATMFont.caption)
-                    .foregroundStyle(ATMTheme.secondary)
-
-                    // The rate turns the number into something to act on. Absent
-                    // until history exists, so a fresh install stays quiet.
-                    if let trend = window.trend {
-                    HStack(spacing: 2) {
-                        if let arrow = trend.arrow {
-                            Text(arrow)
-                        }
-                        Text(trend.rateText)
-                    }
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .foregroundStyle(trend.fullBeforeReset
-                        ? ATMTheme.quotaColor(.critical)
-                        : ATMTheme.secondary)
-                    .fixedSize()
-                    .help(quotaTrendHelp(trend, window: window))
+                    quotaWindowSummary(window)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                }
-                Spacer(minLength: 0)
             }
 
             if !card.products.isEmpty {
@@ -4050,16 +4019,11 @@ private struct DesktopUsageContent: View, Equatable {
                 .minimumScaleFactor(0.8)
             }
 
-            // Pin the footer to the card's bottom edge so cards with and
-            // without a product legend still share one height and baseline.
             Spacer(minLength: 0)
 
-            HStack(spacing: 6) {
-                Label(window.resetText, systemImage: "clock.arrow.circlepath")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                Spacer(minLength: 4)
-                if let sourceLabel = card.sourceLabel {
+            if let sourceLabel = card.sourceLabel {
+                HStack(spacing: 3) {
+                    Spacer(minLength: 0)
                     HStack(spacing: 3) {
                         Circle()
                             .fill(card.source == "live"
@@ -4070,9 +4034,9 @@ private struct DesktopUsageContent: View, Equatable {
                     }
                     .help("额度数据来源：实时 = 账单接口，缓存 = 最近一次实时结果，日志 = 本地会话日志")
                 }
+                .font(ATMFont.mono(.caption))
+                .foregroundStyle(ATMTheme.secondary)
             }
-            .font(ATMFont.mono(.caption))
-            .foregroundStyle(ATMTheme.secondary)
         }
         .padding(16)
         // One fixed height for every card: tall enough for the product-split
@@ -4090,7 +4054,63 @@ private struct DesktopUsageContent: View, Equatable {
             RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
                 .stroke(color.opacity(0.16))
         )
-        .help("\(label) \(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)")
+        .help(
+            card.windows.map {
+                "\(label) \($0.windowLabel) 窗口：\(String(format: "%.1f", $0.displayPercent))% 已用，\($0.resetText)"
+            }
+            .joined(separator: "；")
+        )
+    }
+
+    private func quotaWindowSummary(_ window: ATMQuotaWindow) -> some View {
+        let percent = window.displayPercent
+        let level = ATMQuotaLevel.level(forPercent: percent)
+        let color = ATMTheme.quotaColor(level)
+        return HStack(spacing: 11) {
+            quotaGauge(percent: percent, color: color)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Text(window.windowLabel)
+                        .font(ATMFont.mono(.caption, .semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(ATMTheme.controlFill, in: Capsule())
+                    Text("已用")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                }
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 6, height: 6)
+                    Text(quotaStatusLabel(level))
+                }
+                .font(ATMFont.caption)
+                .foregroundStyle(ATMTheme.secondary)
+
+                if let trend = window.trend {
+                    HStack(spacing: 2) {
+                        if let arrow = trend.arrow {
+                            Text(arrow)
+                        }
+                        Text(trend.rateText)
+                    }
+                    .font(ATMFont.mono(.caption, .semibold))
+                    .foregroundStyle(trend.fullBeforeReset
+                        ? ATMTheme.quotaColor(.critical)
+                        : ATMTheme.secondary)
+                    .fixedSize()
+                    .help(quotaTrendHelp(trend, window: window))
+                }
+                Text(window.resetText)
+                    .font(ATMFont.mono(.caption))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            Spacer(minLength: 0)
+        }
+        .help("\(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)")
     }
 
     private func quotaStatusLabel(_ level: ATMQuotaLevel) -> String {

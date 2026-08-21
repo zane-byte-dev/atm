@@ -340,9 +340,8 @@ struct ATMQuotaSnapshot: Decodable, Equatable {
             .max { $0.window.displayPercent < $1.window.displayPercent }
     }
 
-    /// Flattened, uniquely identified cards for LazyVGrid. Nested ForEach with
-    /// `id: \.offset` collides across agents (every primary is offset 0), so
-    /// only one quota card would render.
+    /// Flattened windows for compact surfaces such as the quick panel, where
+    /// each rate-limit window is one row.
     var cards: [ATMQuotaCard] {
         entries.flatMap { entry in
             entry.quota.windows.enumerated().map { index, window in
@@ -357,6 +356,23 @@ struct ATMQuotaSnapshot: Decodable, Equatable {
                     products: index == 0 ? (entry.quota.products ?? []) : []
                 )
             }
+        }
+    }
+
+    /// One desktop card per service. A service can report more than one
+    /// rate-limit window (for example Antigravity's 5h and 1w limits); those
+    /// belong together under one identity rather than repeating the service
+    /// chrome as separate cards.
+    var serviceCards: [ATMQuotaServiceCard] {
+        entries.map { entry in
+            ATMQuotaServiceCard(
+                id: entry.agent,
+                agent: entry.agent,
+                plan: entry.quota.plan,
+                windows: entry.quota.windows,
+                source: entry.quota.source,
+                products: entry.quota.products ?? []
+            )
         }
     }
 
@@ -395,6 +411,30 @@ struct ATMQuotaCard: Identifiable, Equatable {
     }
 
     /// Config knobs this card offers behind its own gear icon.
+    var settings: [ATMQuotaCardSetting] {
+        ATMQuotaCardSetting.settings(for: agent)
+    }
+}
+
+/// One service tile on the desktop usage page, containing every limit window
+/// reported for that service.
+struct ATMQuotaServiceCard: Identifiable, Equatable {
+    let id: String
+    let agent: String
+    let plan: String?
+    let windows: [ATMQuotaWindow]
+    let source: String?
+    let products: [ATMQuotaProduct]
+
+    var sourceLabel: String? {
+        switch source {
+        case "live": return "实时"
+        case "cache": return "缓存"
+        case "log": return "日志"
+        default: return nil
+        }
+    }
+
     var settings: [ATMQuotaCardSetting] {
         ATMQuotaCardSetting.settings(for: agent)
     }
