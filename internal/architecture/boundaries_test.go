@@ -159,6 +159,7 @@ func TestMigratedCommandAdaptersDoNotOpenPersistence(t *testing.T) {
 		"internal/cmd/knowledge_collection.go":     true,
 		"internal/cmd/list.go":                     true,
 		"internal/cmd/quota.go":                    true,
+		"internal/cmd/report.go":                   true,
 		"internal/cmd/search.go":                   true,
 		"internal/cmd/session_binding.go":          true,
 		"internal/cmd/show.go":                     true,

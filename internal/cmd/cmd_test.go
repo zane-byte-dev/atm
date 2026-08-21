@@ -612,9 +612,6 @@ func TestFormattingHelpers(t *testing.T) {
 	if got := cleanMsg("# Files mentioned by the user:\nattachment.png\n## My request for Codex:\n修复启动选择"); got != "修复启动选择" {
 		t.Fatalf("cleanMsg attachment request = %q", got)
 	}
-	if got := meaningfulInputs([]string{"# AGENTS.md instructions\ninternal", "真实问题"}); len(got) != 1 || got[0] != "真实问题" {
-		t.Fatalf("meaningfulInputs = %#v", got)
-	}
 	if got := formatTools(map[string]int{"Write": 1, "Read": 2}); got != "Read:2, Write:1" {
 		t.Fatalf("formatTools = %q", got)
 	}
