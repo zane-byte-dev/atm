@@ -1,31 +1,34 @@
-package cmd
+package guard
 
 import (
+	"context"
+	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
-	"github.com/zane-byte-dev/atm/internal/guard"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
 // issuesByCode keeps the whole finding, because these assertions are about the
 // wording as much as the presence: a stuck request whose suggestion invites a
 // retry would be worse than no finding at all.
-func issuesByCode(issues []doctorIssue) map[string]doctorIssue {
-	byCode := map[string]doctorIssue{}
+func issuesByCode(issues []DiagnosticIssue) map[string]DiagnosticIssue {
+	byCode := map[string]DiagnosticIssue{}
 	for _, issue := range issues {
 		byCode[issue.Code] = issue
 	}
 	return byCode
 }
 
-// guardOnlyTool narrows the rule set to one tool so a test does not depend on
+// diagnoseOnlyTool narrows the rule set to one tool so a test does not depend on
 // which of the real tools happen to be installed on the machine running it.
-func guardOnlyTool(t *testing.T, tool, bin string) {
+func diagnoseOnlyTool(t *testing.T, tool, bin string) {
 	t.Helper()
 	original := config.Guard
 	t.Cleanup(func() { config.Guard = original })
@@ -39,18 +42,29 @@ func guardOnlyTool(t *testing.T, tool, bin string) {
 	t.Setenv("PATH", filepath.Dir(bin))
 }
 
+// diagnose runs the use case the way an adapter would, so the tests also cover
+// the call validation and the degradation that hides a missing store.
+func diagnose(t *testing.T, service Service) []DiagnosticIssue {
+	t.Helper()
+	issues, err := service.Diagnose(context.Background(), guardServiceCall(application.ActorHuman))
+	if err != nil {
+		t.Fatalf("diagnose: %v", err)
+	}
+	return issues
+}
+
 // Every finding here describes a gate that is present but not working. None of
-// them make any command fail, so without doctor the user goes on believing sends
+// them make any command fail, so without this the user goes on believing sends
 // are being reviewed.
-func TestDoctorReportsAGateThatWasOverwritten(t *testing.T) {
+func TestDiagnoseReportsAGateThatWasOverwritten(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "faketool")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	guardOnlyTool(t, "faketool", bin)
+	diagnoseOnlyTool(t, "faketool", bin)
 
-	if _, err := guard.Install("faketool", bin, "/usr/local/bin/atm"); err != nil {
+	if _, err := Install("faketool", bin, "/usr/local/bin/atm"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	// The tool upgrades itself over the shim.
@@ -58,7 +72,7 @@ func TestDoctorReportsAGateThatWasOverwritten(t *testing.T) {
 		t.Fatalf("overwrite: %v", err)
 	}
 
-	issues := issuesByCode(guardIssues(nil))
+	issues := issuesByCode(diagnose(t, Default))
 	found, ok := issues["guard_shim_clobbered"]
 	if !ok {
 		t.Fatalf("no clobber finding; issues = %v", issues)
@@ -68,7 +82,7 @@ func TestDoctorReportsAGateThatWasOverwritten(t *testing.T) {
 	}
 }
 
-func TestDoctorReportsAGateThatPathWalksAround(t *testing.T) {
+func TestDiagnoseReportsAGateThatPathWalksAround(t *testing.T) {
 	shadowDir := t.TempDir()
 	gatedDir := t.TempDir()
 	for _, dir := range []string{shadowDir, gatedDir} {
@@ -77,14 +91,14 @@ func TestDoctorReportsAGateThatPathWalksAround(t *testing.T) {
 		}
 	}
 	gated := filepath.Join(gatedDir, "faketool")
-	guardOnlyTool(t, "faketool", gated)
+	diagnoseOnlyTool(t, "faketool", gated)
 	// PATH finds the other copy first, so invocations by bare name miss the gate.
 	t.Setenv("PATH", shadowDir+string(os.PathListSeparator)+gatedDir)
 
-	if _, err := guard.Install("faketool", gated, "/usr/local/bin/atm"); err != nil {
+	if _, err := Install("faketool", gated, "/usr/local/bin/atm"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	issues := issuesByCode(guardIssues(nil))
+	issues := issuesByCode(diagnose(t, Default))
 	found, ok := issues["guard_bin_shadowed"]
 	if !ok {
 		t.Fatalf("no shadowing finding; issues = %v", issues)
@@ -95,9 +109,10 @@ func TestDoctorReportsAGateThatPathWalksAround(t *testing.T) {
 }
 
 // A request stuck in running is the one state nothing can resolve automatically,
-// so doctor's job is to say so and point at the target, never to offer a retry.
-func TestDoctorReportsAStuckRequestWithoutSuggestingARetry(t *testing.T) {
-	guardTestEnv(t)
+// so the finding's job is to say so and point at the target, never to offer a
+// retry.
+func TestDiagnoseReportsAStuckRequestWithoutSuggestingARetry(t *testing.T) {
+	withGuardServiceStore(t)
 	db, err := store.Open()
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -122,13 +137,16 @@ func TestDoctorReportsAStuckRequestWithoutSuggestingARetry(t *testing.T) {
 		t.Fatalf("claim: %v", err)
 	}
 
-	issues := issuesByCode(guardStuckIssues(db))
+	issues := issuesByCode(Default.stuckIssuesFrom(db))
 	found, ok := issues["guard_stuck_running"]
 	if !ok {
 		t.Fatalf("no stuck finding; issues = %v", issues)
 	}
 	if found.Subject != approval.ID {
 		t.Errorf("subject = %q, want %q", found.Subject, approval.ID)
+	}
+	if !strings.Contains(found.Detail, "发送钉钉消息 → cid1") {
+		t.Errorf("detail does not name the action and its target: %q", found.Detail)
 	}
 	if !strings.Contains(found.Suggestion, "不要重跑") {
 		t.Errorf("suggestion does not rule out a retry: %q", found.Suggestion)
@@ -142,9 +160,9 @@ func TestDoctorReportsAStuckRequestWithoutSuggestingARetry(t *testing.T) {
 }
 
 // A request that only just started running is not stuck; warning about it would
-// make doctor noisy on every normal send.
-func TestDoctorIgnoresARequestThatOnlyJustStarted(t *testing.T) {
-	guardTestEnv(t)
+// make the check noisy on every normal send.
+func TestDiagnoseIgnoresARequestThatOnlyJustStarted(t *testing.T) {
+	withGuardServiceStore(t)
 	db, err := store.Open()
 	if err != nil {
 		t.Fatalf("open: %v", err)
@@ -165,7 +183,7 @@ func TestDoctorIgnoresARequestThatOnlyJustStarted(t *testing.T) {
 	if err := store.ClaimApprovalRun(db, approval.ID, "gate", os.Getpid()); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if issues := guardStuckIssues(db); len(issues) != 0 {
+	if issues := Default.stuckIssuesFrom(db); len(issues) != 0 {
 		t.Fatalf("warned about a send that is still in progress: %v", issues)
 	}
 }
@@ -174,17 +192,41 @@ func TestDoctorIgnoresARequestThatOnlyJustStarted(t *testing.T) {
 // is a problem, it is that somebody who installed a gate has stopped watching
 // sends, and a channel the gate cannot see is worse for them than for someone who
 // never installed one.
-func TestDoctorSaysNothingAboutMCPWhenNoGateIsInstalled(t *testing.T) {
+func TestDiagnoseSaysNothingAboutMCPWhenNoGateIsInstalled(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "faketool")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	guardOnlyTool(t, "faketool", bin)
+	diagnoseOnlyTool(t, "faketool", bin)
 
-	for _, issue := range guardIssues(nil) {
+	for _, issue := range diagnose(t, Default) {
 		if issue.Code == "guard_mcp_uncovered" {
 			t.Fatalf("raised the MCP gap with no gate installed: %+v", issue)
+		}
+	}
+}
+
+// An uninspectable store must not fail the caller: the health command that runs
+// this would then hide every other problem it was about to report.
+func TestDiagnoseDegradesWhenTheStoreCannotBeOpened(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "faketool")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	diagnoseOnlyTool(t, "faketool", bin)
+
+	service := NewService(ServiceOptions{OpenRead: func() (*sql.DB, error) {
+		return nil, errors.New("no session index")
+	}})
+	issues, err := service.Diagnose(context.Background(), guardServiceCall(application.ActorHuman))
+	if err != nil {
+		t.Fatalf("diagnose returned an error instead of degrading: %v", err)
+	}
+	for _, issue := range issues {
+		if issue.Code == "guard_stuck_running" {
+			t.Fatalf("reported a stuck request with no readable store: %+v", issue)
 		}
 	}
 }

@@ -53,13 +53,13 @@ func runGuardDecision(cmd *cobra.Command, id string, approve bool) error {
 	}
 	switch result.Outcome {
 	case guard.OutcomeDenied:
-		fmt.Printf("已拒绝 %s：%s\n", id, guardActionLine(result.Approval))
+		fmt.Printf("已拒绝 %s：%s\n", id, guard.ActionLine(result.Approval))
 	case guard.OutcomeApproved:
-		fmt.Printf("已批准 %s（未执行）：%s\n", id, guardActionLine(result.Approval))
+		fmt.Printf("已批准 %s（未执行）：%s\n", id, guard.ActionLine(result.Approval))
 	case guard.OutcomeApprovedGateRun:
-		fmt.Printf("已批准 %s，由正在等待的调用方执行：%s\n", id, guardActionLine(result.Approval))
+		fmt.Printf("已批准 %s，由正在等待的调用方执行：%s\n", id, guard.ActionLine(result.Approval))
 	case guard.OutcomeApprovedAndRan:
-		fmt.Printf("已批准并执行 %s：%s\n", id, guardActionLine(result.Approval))
+		fmt.Printf("已批准并执行 %s：%s\n", id, guard.ActionLine(result.Approval))
 	}
 	return nil
 }

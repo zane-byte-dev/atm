@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/guard"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/parser"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -279,7 +281,7 @@ func buildDoctorReport(db *sql.DB) (doctorReport, error) {
 		issues = append(issues, collectionRetentionIssues(db)...)
 	}
 	issues = append(issues, collectionModelIssues()...)
-	issues = append(issues, guardIssues(db)...)
+	issues = append(issues, guardDoctorIssues()...)
 	var todoIssues []store.TodoDependencyIssue
 	if todos, loadErr := store.LoadTodosReadOnly(); loadErr == nil {
 		todoIssues = store.AuditTodoDependencies(todos)
@@ -296,6 +298,25 @@ func buildDoctorReport(db *sql.DB) (doctorReport, error) {
 		TodoIssues:   todoIssues,
 		Issues:       issues,
 	}, nil
+}
+
+// guardDoctorIssues asks the Guard service what is wrong with the outbound
+// action gate. Guard owns those findings and its own store access, so a failure
+// to inspect it degrades to no findings rather than failing the whole report:
+// an uninspectable gate must not hide every other problem doctor would report.
+func guardDoctorIssues() []doctorIssue {
+	found, err := guard.Default.Diagnose(context.Background(), cliApplicationCall("doctor", ""))
+	if err != nil {
+		return nil
+	}
+	issues := make([]doctorIssue, 0, len(found))
+	for _, issue := range found {
+		issues = append(issues, doctorIssue{
+			Severity: issue.Severity, Domain: issue.Domain, Code: issue.Code,
+			Subject: issue.Subject, Detail: issue.Detail, Suggestion: issue.Suggestion,
+		})
+	}
+	return issues
 }
 
 func printDoctorReport(report doctorReport) {

@@ -37,7 +37,7 @@ var guardStderr io.Writer = os.Stderr
 // guardDenied reports a refusal the user actually made.
 func guardDenied(approval store.Approval) error {
 	var text strings.Builder
-	fmt.Fprintf(&text, "ATM 已拒绝这次外发操作：%s\n", guardActionLine(approval))
+	fmt.Fprintf(&text, "ATM 已拒绝这次外发操作：%s\n", guard.ActionLine(approval))
 	text.WriteString("用户在 ATM 中明确拒绝了。不要重试，不要换用其他命令或工具绕过。\n")
 	if reason := strings.TrimSpace(approval.Reason); reason != "" {
 		fmt.Fprintf(&text, "拒绝理由：%s\n", reason)
@@ -57,10 +57,10 @@ func guardDenied(approval store.Approval) error {
 func guardPending(approval store.Approval, expired bool) error {
 	var text strings.Builder
 	if expired {
-		fmt.Fprintf(&text, "ATM 的授权请求已过期：%s\n", guardActionLine(approval))
+		fmt.Fprintf(&text, "ATM 的授权请求已过期：%s\n", guard.ActionLine(approval))
 		text.WriteString("用户没有在有效期内处理。不要重试，不要换用其他命令或工具绕过。\n")
 	} else {
-		fmt.Fprintf(&text, "ATM 正在等待用户批准这次外发操作：%s\n", guardActionLine(approval))
+		fmt.Fprintf(&text, "ATM 正在等待用户批准这次外发操作：%s\n", guard.ActionLine(approval))
 		fmt.Fprintf(&text, "请求已记录（id=%s），%s 之内有效。用户在 ATM 中批准后，"+
 			"ATM 会自己执行这条命令。\n", approval.ID, guard.Expire().String())
 		text.WriteString("不要重试，不要换用其他命令或工具绕过 —— " +
@@ -80,7 +80,7 @@ func guardPending(approval store.Approval, expired bool) error {
 // saying so is better than reporting either success or failure.
 func guardRunningElsewhere(approval store.Approval) error {
 	var text strings.Builder
-	fmt.Fprintf(&text, "这次外发操作正在被 ATM 执行：%s\n", guardActionLine(approval))
+	fmt.Fprintf(&text, "这次外发操作正在被 ATM 执行：%s\n", guard.ActionLine(approval))
 	fmt.Fprintf(&text, "请求 %s 已经批准并开始执行，但还没有回报结果。"+
 		"绝对不要再执行一次 —— 那会把同一条消息发两遍。\n", approval.ID)
 	fmt.Fprintf(&text, "告知用户「已批准并执行中，结果可用 atm guard show %s 查看」，"+
@@ -109,19 +109,6 @@ func guardBlocked(tool string, argv []string, cause error) error {
 	fmt.Fprint(guardStderr, text.String())
 	return exitError{code: guardExitBlocked,
 		err: fmt.Errorf("guard could not record the request: %w", cause)}
-}
-
-// guardActionLine names what was attempted, in one line: what kind of action, and
-// who it reaches.
-func guardActionLine(approval store.Approval) string {
-	label := strings.TrimSpace(approval.Label)
-	if label == "" {
-		label = approval.Tool
-	}
-	if target := strings.TrimSpace(approval.PreviewTarget); target != "" {
-		return label + " → " + target
-	}
-	return label
 }
 
 // guardContentBlock renders the message so the model can hand it straight to the

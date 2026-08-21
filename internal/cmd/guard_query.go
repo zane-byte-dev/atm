@@ -40,7 +40,7 @@ var guardListCmd = &cobra.Command{
 		}
 		for _, approval := range result.Approvals {
 			fmt.Printf("%s  %-8s %s\n", approval.ID, approval.Effective,
-				guardActionLine(approval))
+				guard.ActionLine(approval))
 			if body := guardOneLine(approval.PreviewBody); body != "" {
 				fmt.Printf("            %s\n", body)
 			}
@@ -78,7 +78,7 @@ var guardShowCmd = &cobra.Command{
 			return nil
 		}
 		fmt.Printf("%s  %s\n", approval.ID, approval.Effective)
-		fmt.Printf("动作:   %s\n", guardActionLine(approval))
+		fmt.Printf("动作:   %s\n", guard.ActionLine(approval))
 		if approval.PreviewTitle != "" {
 			fmt.Printf("标题:   %s\n", approval.PreviewTitle)
 		}
