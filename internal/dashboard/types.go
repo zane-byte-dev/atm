@@ -151,6 +151,7 @@ type Snapshot struct {
 	ModelHourStats   []store.ModelDayStatsResult   `json:"model_hour_stats"`
 	ProjectDayStats  []store.ProjectDayStatsResult `json:"project_day_stats"`
 	ProjectHourStats []store.ProjectDayStatsResult `json:"project_hour_stats"`
+	TodoCompletions  []store.TodoCompletion        `json:"todo_completions"`
 	Ranges           map[string]Range              `json:"ranges"`
 	LiveStatus       LiveStatus                    `json:"live_status"`
 	CurrentSession   *CurrentSession               `json:"current_session,omitempty"`

@@ -149,6 +149,7 @@ struct ATMDashboardEnvelope: Decodable {
     let modelHourStats: [ATMModelDayStats]
     let projectDayStats: [ATMProjectDayStats]
     let projectHourStats: [ATMProjectDayStats]
+    let todoCompletions: [ATMTodoCompletion]
     let ranges: [String: ATMDashboardRangeEnvelope]
     let liveStatus: ATMLiveStatus
     let currentSession: ATMCurrentSession?
@@ -164,6 +165,7 @@ struct ATMDashboardEnvelope: Decodable {
         case modelHourStats = "model_hour_stats"
         case projectDayStats = "project_day_stats"
         case projectHourStats = "project_hour_stats"
+        case todoCompletions = "todo_completions"
         case liveStatus = "live_status"
         case currentSession = "current_session"
         case indexHealth = "index_health"
@@ -191,6 +193,7 @@ struct ATMDashboardEnvelope: Decodable {
         modelHourStats = try values.decodeIfPresent([ATMModelDayStats].self, forKey: .modelHourStats) ?? []
         projectDayStats = try values.decodeIfPresent([ATMProjectDayStats].self, forKey: .projectDayStats) ?? []
         projectHourStats = try values.decodeIfPresent([ATMProjectDayStats].self, forKey: .projectHourStats) ?? []
+        todoCompletions = try values.decodeIfPresent([ATMTodoCompletion].self, forKey: .todoCompletions) ?? []
         ranges = try values.decodeIfPresent([String: ATMDashboardRangeEnvelope].self, forKey: .ranges) ?? [:]
         liveStatus = try values.decode(ATMLiveStatus.self, forKey: .liveStatus)
         currentSession = try values.decodeIfPresent(ATMCurrentSession.self, forKey: .currentSession)
@@ -218,6 +221,7 @@ struct ATMDashboardEnvelope: Decodable {
             modelHourStats: modelHourStats,
             projectDayStats: projectDayStats,
             projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions,
             rangeData: Dictionary(
                 uniqueKeysWithValues: ATMMetricsRange.allCases.map { ($0, range($0)) }
             ),
@@ -278,6 +282,7 @@ struct ATMDashboardSnapshot {
     let modelHourStats: [ATMModelDayStats]
     let projectDayStats: [ATMProjectDayStats]
     let projectHourStats: [ATMProjectDayStats]
+    let todoCompletions: [ATMTodoCompletion]
     let rangeData: [ATMMetricsRange: ATMRangeData]
     let liveStatus: ATMLiveStatus
     let currentSession: ATMCurrentSession?
@@ -292,6 +297,7 @@ struct ATMDashboardSnapshot {
         modelHourStats: [ATMModelDayStats],
         projectDayStats: [ATMProjectDayStats] = [],
         projectHourStats: [ATMProjectDayStats] = [],
+        todoCompletions: [ATMTodoCompletion] = [],
         rangeData: [ATMMetricsRange: ATMRangeData],
         liveStatus: ATMLiveStatus,
         currentSession: ATMCurrentSession?,
@@ -305,6 +311,7 @@ struct ATMDashboardSnapshot {
         self.modelHourStats = modelHourStats
         self.projectDayStats = projectDayStats
         self.projectHourStats = projectHourStats
+        self.todoCompletions = todoCompletions
         self.rangeData = rangeData
         self.liveStatus = liveStatus
         self.currentSession = currentSession
@@ -334,6 +341,7 @@ struct ATMDashboardSnapshot {
             modelHourStats: modelHourStats,
             projectDayStats: projectDayStats,
             projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions,
             rangeData: rangeData,
             liveStatus: liveStatus,
             currentSession: currentSession,
@@ -351,6 +359,7 @@ struct ATMDashboardSnapshot {
             modelHourStats: modelHourStats,
             projectDayStats: projectDayStats,
             projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions,
             rangeData: rangeData,
             liveStatus: liveStatus,
             currentSession: currentSession,
@@ -368,6 +377,7 @@ struct ATMDashboardSnapshot {
             modelHourStats: modelHourStats,
             projectDayStats: projectDayStats,
             projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions,
             rangeData: rangeData,
             liveStatus: liveStatus,
             currentSession: currentSession,
@@ -377,6 +387,108 @@ struct ATMDashboardSnapshot {
     }
 
     var todayStats: ATMDayStats? { dayStats.last }
+
+    private var requirementCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        calendar.firstWeekday = 2
+        calendar.minimumDaysInFirstWeek = 4
+        return calendar
+    }
+
+    private func requirementDate(_ completion: ATMTodoCompletion) -> Date? {
+        ATMUsageDateAxis.date(from: completion.completedDate)
+    }
+
+    func requirementSummary(project: String = "", now: Date = Date()) -> ATMRequirementSummary {
+        let calendar = requirementCalendar
+        let today = calendar.startOfDay(for: now)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? now
+        let week = calendar.dateInterval(of: .weekOfYear, for: now)
+        let month = calendar.dateInterval(of: .month, for: now)
+        return ATMRequirementSummary(
+            today: requirementCompletionCount(from: today, to: tomorrow, project: project),
+            thisWeek: week.map { requirementCompletionCount(from: $0.start, to: $0.end, project: project) } ?? 0,
+            thisMonth: month.map { requirementCompletionCount(from: $0.start, to: $0.end, project: project) } ?? 0
+        )
+    }
+
+    func requirementBuckets(
+        granularity: ATMRequirementGranularity,
+        project: String = "",
+        now: Date = Date()
+    ) -> [ATMRequirementBucket] {
+        let calendar = requirementCalendar
+        let component: Calendar.Component
+        let count: Int
+        let currentStart: Date
+        switch granularity {
+        case .day:
+            component = .day
+            count = 14
+            currentStart = calendar.startOfDay(for: now)
+        case .week:
+            component = .weekOfYear
+            count = 12
+            currentStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        case .month:
+            component = .month
+            count = 12
+            currentStart = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        }
+        return (0..<count).reversed().compactMap { offset in
+            guard let start = calendar.date(byAdding: component, value: -offset, to: currentStart),
+                  let end = calendar.date(byAdding: component, value: 1, to: start) else {
+                return nil
+            }
+            return ATMRequirementBucket(
+                start: start,
+                end: end,
+                completed: requirementCompletionCount(from: start, to: end, project: project)
+            )
+        }
+    }
+
+    func requirementProjects(
+        granularity: ATMRequirementGranularity,
+        project: String = "",
+        now: Date = Date()
+    ) -> [ATMRequirementProjectRow] {
+        guard let bucket = requirementBuckets(granularity: granularity, project: project, now: now).last else { return [] }
+        let grouped = Dictionary(grouping: todoCompletions.filter { completion in
+            if !project.isEmpty && completion.project != project { return false }
+            guard let date = requirementDate(completion) else { return false }
+            return date >= bucket.start && date < bucket.end
+        }) { completion in
+            completion.project.isEmpty ? "未归类" : completion.project
+        }
+        return grouped.map { project, values in
+            ATMRequirementProjectRow(project: project, completed: values.count)
+        }.sorted {
+            if $0.completed != $1.completed { return $0.completed > $1.completed }
+            return $0.project < $1.project
+        }
+    }
+
+    func requirementProjectOptions() -> [String] {
+        Set(todoCompletions.map(\.project).filter { !$0.isEmpty }).sorted()
+    }
+
+    func recentTodoCompletions(project: String = "", limit: Int = 10) -> [ATMTodoCompletion] {
+        Array(todoCompletions.filter { project.isEmpty || $0.project == project }.sorted {
+            if $0.completedDate != $1.completedDate { return $0.completedDate > $1.completedDate }
+            if $0.completedTS != $1.completedTS { return $0.completedTS > $1.completedTS }
+            return $0.todoID > $1.todoID
+        }.prefix(max(limit, 0)))
+    }
+
+    private func requirementCompletionCount(from start: Date, to end: Date, project: String) -> Int {
+        todoCompletions.reduce(0) { count, completion in
+            if !project.isEmpty && completion.project != project { return count }
+            guard let date = requirementDate(completion), date >= start, date < end else { return count }
+            return count + 1
+        }
+    }
 
     func sortedModelStats(for range: ATMMetricsRange) -> [ATMModelStats] {
         (rangeData[range]?.modelStats ?? [])

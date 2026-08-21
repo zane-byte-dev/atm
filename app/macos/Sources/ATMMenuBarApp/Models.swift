@@ -251,6 +251,29 @@ struct ATMTodoImage: Decodable, Hashable, Identifiable {
 	}
 }
 
+/// One durable Todo completion used by the statistics dashboard. It is separate
+/// from the active Todo list because archived work must remain in history.
+struct ATMTodoCompletion: Decodable, Identifiable, Equatable {
+    let todoID: String
+    let title: String
+    let project: String
+    let priority: String
+    let creator: String
+    let createdDate: String
+    let completedDate: String
+    let completedTS: Int64
+
+    var id: String { todoID }
+
+    enum CodingKeys: String, CodingKey {
+        case title, project, priority, creator
+        case todoID = "todo_id"
+        case createdDate = "created_date"
+        case completedDate = "completed_date"
+        case completedTS = "completed_ts"
+    }
+}
+
 /// Renders a todo's creator the way the CLI does, so the same record reads the
 /// same in both places. Only "me" is localised, and only the display side knows
 /// the nickname: the stored token stays "me" so renaming yourself never rewrites

@@ -1903,6 +1903,18 @@ private enum CollectionSourceEditorPresentation: Equatable {
     case detail
 }
 
+enum CollectionSourceEditorLayout {
+    static let sheetWidth: CGFloat = 560
+    static let addSheetHeight: CGFloat = 560
+    static let editSheetHeight: CGFloat = 520
+    static let advancedTriggerMinimumHeight: CGFloat = 56
+    static let choiceCardMinimumHeight: CGFloat = 70
+
+    static func sheetHeight(isNewSource: Bool) -> CGFloat {
+        isNewSource ? addSheetHeight : editSheetHeight
+    }
+}
+
 enum CollectionIntervalUnit: Int, CaseIterable, Identifiable {
     case minute = 1
     case hour = 60
@@ -1992,6 +2004,8 @@ private struct CollectionSourceEditor: View {
     @State private var decisionUnit = "window"
     @State private var intervalValue = "5"
     @State private var intervalUnit = CollectionIntervalUnit.minute
+    @State private var usesCustomInterval = false
+    @State private var showsAdvancedSettings = false
 
     @State private var searchKind = ATMCollectionSearchKind.all
     @State private var keyword = ""
@@ -2043,6 +2057,12 @@ private struct CollectionSourceEditor: View {
         )
         _intervalValue = State(initialValue: interval.text)
         _intervalUnit = State(initialValue: interval.unit)
+        _usesCustomInterval = State(
+            initialValue: !collectionIntervalPresets.contains {
+                $0.minutes == (source?.effectiveIntervalMinutes ?? 5)
+            }
+        )
+        _showsAdvancedSettings = State(initialValue: source != nil)
     }
 
     var body: some View {
@@ -2052,9 +2072,12 @@ private struct CollectionSourceEditor: View {
                     .frame(maxWidth: .infinity)
             } else {
                 editorContent
-                    // Editing has no connector picker, no search and no candidate list,
-                    // so it needs materially less room than adding does.
-                    .frame(width: 620, height: source == nil ? 700 : 640)
+                    .frame(
+                        width: CollectionSourceEditorLayout.sheetWidth,
+                        height: CollectionSourceEditorLayout.sheetHeight(
+                            isNewSource: source == nil
+                        )
+                    )
             }
         }
         .background(presentation == .detail ? Color.clear : ATMTheme.canvas)
@@ -2072,70 +2095,87 @@ private struct CollectionSourceEditor: View {
             if presentation == .detail {
                 ATMDetailBodySurface { editorBody }
             } else {
-                editorBody
+                sheetEditorBody
             }
         }
     }
 
-    private var editorBody: some View {
+    /// The sheet has a bounded viewport: only its form scrolls, while the title
+    /// and save controls stay reachable on smaller displays.
+    private var sheetEditorBody: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 18) {
-                sourceSection
-                scopeSection
-                processingSection
+            ScrollView {
+                editorForm
             }
-            .padding(22)
-            .frame(maxWidth: 760, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
             Divider()
             footer
         }
     }
 
+    private var editorBody: some View {
+        VStack(spacing: 0) {
+            editorForm
+            Divider()
+            footer
+        }
+    }
+
+    private var editorForm: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            sourceSection
+            formDivider
+            collectionContentSection
+            formDivider
+            decisionSection
+            formDivider
+            frequencySection
+            advancedSection
+                .padding(.top, 20)
+        }
+        .padding(20)
+        .frame(maxWidth: 760, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var sheetHeader: some View {
-        HStack(spacing: 13) {
-            Image(systemName: source == nil ? "person.badge.plus" : "slider.horizontal.3")
-                .font(ATMFont.font(.title3, weight: .semibold))
+        HStack(spacing: 11) {
+            Image(systemName: source == nil ? "tray" : "slider.horizontal.3")
+                .font(ATMFont.font(.bodyLarge, weight: .semibold))
                 .foregroundStyle(ATMTheme.accent)
-                .frame(width: 38, height: 38)
-                .background(ATMTheme.accentFill, in: RoundedRectangle(cornerRadius: 10))
+                .frame(width: 34, height: 34)
+                .background(ATMTheme.accentFill, in: RoundedRectangle(cornerRadius: 9))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text(source == nil ? "添加收集来源" : "编辑收集来源")
-                    .font(ATMFont.font(.title2, weight: .bold))
-                Text(subtitle)
-                    .font(ATMFont.footnote)
+                    .font(ATMFont.font(.title3, weight: .semibold))
+                Text(source == nil ? "配置来源和收集规则" : "调整来源和收集规则")
+                    .font(ATMFont.caption)
                     .foregroundStyle(ATMTheme.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
         .background(presentation == .detail ? ATMTheme.elevated : ATMTheme.surface)
     }
 
     private var footer: some View {
         HStack(spacing: 10) {
             if let reason = saveBlockReason {
-                Label(reason, systemImage: "arrow.up.circle")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-            } else {
-                Text("配置将在下一次收集时生效")
-                    .font(ATMFont.footnote)
+                Label(reason, systemImage: "exclamationmark.circle")
+                    .font(ATMFont.caption)
                     .foregroundStyle(ATMTheme.secondary)
             }
             Spacer()
             Button("取消", action: onClose)
                 .keyboardShortcut(.cancelAction)
-            Button(source == nil ? "添加" : "保存", action: save)
+            Button(source == nil ? "添加来源" : "保存", action: save)
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
                 .disabled(saveBlockReason != nil)
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
         .background(ATMTheme.surface)
     }
 
@@ -2165,26 +2205,32 @@ private struct CollectionSourceEditor: View {
 
     @ViewBuilder
     private var sourceSection: some View {
-        settingsSection(title: "来源", icon: "point.3.connected.trianglepath.dotted") {
-            VStack(alignment: .leading, spacing: 14) {
-                if identity.isEditing {
-                    lockedIdentityCard
-                } else {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeading(
+                "来源",
+                detail: identity.isEditing || identity.selection != nil ? "已选择" : nil
+            )
+
+            if identity.isEditing {
+                lockedIdentityCard
+            } else if let selected = identity.selection, !identity.manualEntry {
+                selectedCandidateCard(selected)
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
                     connectorField
-                    Divider()
-                    if let selected = identity.selection, !identity.manualEntry {
-                        selectedCandidateCard(selected)
-                    } else if identity.manualEntry {
+                    if identity.manualEntry {
                         manualIdentifierFields
                     } else {
                         searchField
                         candidateList
                     }
                 }
-
-                formField("显示名称", hint: "在来源列表和处理记录里显示，可留空则显示 ID") {
-                    TextField(namePlaceholder, text: $name)
-                        .textFieldStyle(.roundedBorder)
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 11))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 11)
+                        .stroke(ATMTheme.border, lineWidth: 1)
                 }
             }
         }
@@ -2220,26 +2266,25 @@ private struct CollectionSourceEditor: View {
     @ViewBuilder
     private var connectorField: some View {
         if connectorOptions.isEmpty {
-            // Nothing to pick from is a configuration problem, not an empty
-            // dropdown: say where connectors come from instead of showing one.
             HStack(alignment: .top, spacing: 9) {
                 Image(systemName: "link.badge.plus")
                     .foregroundStyle(ATMTheme.warning)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("还没有配置连接器")
                         .font(ATMFont.font(.body, weight: .semibold))
-                    Text("在 ~/.atm/config.json 的 collection_connectors 里登记一个可执行连接器后，这里就能选到它。")
+                    Text("请先在收集设置中配置连接器")
                         .font(ATMFont.footnote)
                         .foregroundStyle(ATMTheme.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(11)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(ATMTheme.warningFill, in: RoundedRectangle(cornerRadius: 8))
         } else {
-            formField("连接器", hint: "已登记的连接器，来自 config.json 的 collection_connectors") {
-                VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 10) {
+                    Text("连接器")
+                        .font(ATMFont.font(.body, weight: .medium))
                     Picker("连接器", selection: $identity.connector) {
                         if identity.trimmedConnector.isEmpty {
                             Text("请选择连接器").tag("")
@@ -2249,11 +2294,13 @@ private struct CollectionSourceEditor: View {
                         }
                     }
                     .labelsHidden()
+                    .frame(maxWidth: 220)
                     .onChange(of: identity.connector) { _ in resetSearch() }
+                    Spacer(minLength: 0)
+                }
 
-                    if let health = selectedConnectorHealth {
-                        connectorHealthLine(health)
-                    }
+                if let health = selectedConnectorHealth, health.needsAttention {
+                    connectorHealthLine(health)
                 }
             }
         }
@@ -2292,78 +2339,71 @@ private struct CollectionSourceEditor: View {
                 .frame(width: 28, height: 28)
                 .background(ATMTheme.controlFill, in: Circle())
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(source?.connector ?? "")
-                        .font(ATMFont.mono(.footnote))
-                    Text("·")
-                        .foregroundStyle(ATMTheme.secondary)
-                    Text(collectionKindLabel(source?.kind))
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Text(source?.externalID ?? "")
-                    .font(ATMFont.mono(.footnote))
+                Text(source?.displayName ?? "")
+                    .font(ATMFont.font(.body, weight: .medium))
+                Text("\(source?.connector ?? "") · \(collectionKindLabel(source?.kind))")
+                    .font(ATMFont.caption)
                     .foregroundStyle(ATMTheme.secondary)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
             }
             Spacer(minLength: 0)
-            Label("已锁定", systemImage: "lock.fill")
+            Image(systemName: "lock.fill")
                 .font(ATMFont.caption)
                 .foregroundStyle(ATMTheme.secondary)
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
+        .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 11))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11)
+                .stroke(ATMTheme.border, lineWidth: 1)
+        }
     }
 
     private var searchField: some View {
-        formField("搜索来源", hint: "连接器按名称查找并返回稳定 ID；找不到时可以手动填写") {
-            VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
                 Picker("范围", selection: $searchKind) {
                     ForEach(ATMCollectionSearchKind.allCases) { kind in
                         Text(kind.label).tag(kind)
                     }
                 }
                 .labelsHidden()
-                .pickerStyle(.segmented)
+                .frame(width: 92)
                 .disabled(identity.trimmedConnector.isEmpty)
                 .onChange(of: searchKind) { _ in
-                    // The previous results answered a different question.
                     candidates = []
                     searchedKeyword = nil
                     searchError = nil
                 }
 
-                HStack(spacing: 8) {
-                    TextField("名称或关键词", text: $keyword)
-                        .textFieldStyle(.roundedBorder)
-                        .focused($keywordFocused)
-                        .onSubmit(search)
-                    if isSearching {
-                        ProgressView().controlSize(.small)
-                    }
+                TextField("搜索群聊、联系人或机器人", text: $keyword)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($keywordFocused)
+                    .onSubmit(search)
+                    .disabled(identity.trimmedConnector.isEmpty)
+                if isSearching {
+                    ProgressView().controlSize(.small)
+                } else {
                     Button("搜索", action: search)
                         .disabled(!canSearch)
                 }
-                .disabled(identity.trimmedConnector.isEmpty)
-
-                if let searchError {
-                    Label(searchError, systemImage: "exclamationmark.triangle.fill")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.danger)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-
-                Button("找不到？手动填写来源 ID") {
-                    identity.manualEntry = true
-                    identity.manualKind = searchKind == .all ? "group" : searchKind.rawValue
-                }
-                .buttonStyle(.link)
-                .font(ATMFont.footnote)
-                .disabled(identity.trimmedConnector.isEmpty)
             }
+
+            if let searchError {
+                Label(searchError, systemImage: "exclamationmark.triangle.fill")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.danger)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+
+            Button("手动填写来源 ID") {
+                identity.manualEntry = true
+                identity.manualKind = searchKind == .all ? "group" : searchKind.rawValue
+            }
+            .buttonStyle(.link)
+            .font(ATMFont.caption)
+            .disabled(identity.trimmedConnector.isEmpty)
         }
     }
 
@@ -2440,64 +2480,60 @@ private struct CollectionSourceEditor: View {
     /// What the connector resolved, kept on screen after picking: the ID that
     /// gets saved is the part nobody can verify later from memory.
     private func selectedCandidateCard(_ candidate: ATMCollectionCandidate) -> some View {
-        formField("已选择来源", hint: "由连接器解析，ATM 保存的就是这个 ID") {
-            HStack(spacing: 10) {
-                Image(systemName: candidate.symbolName)
-                    .foregroundStyle(ATMTheme.success)
-                    .frame(width: 28, height: 28)
-                    .background(ATMTheme.successFill, in: Circle())
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        Text(candidate.name)
-                            .font(ATMFont.font(.body, weight: .semibold))
-                            .lineLimit(1)
-                        Text(collectionKindLabel(candidate.kind))
-                            .font(ATMFont.caption)
-                            .foregroundStyle(ATMTheme.secondary)
-                    }
-                    Text(candidate.externalID)
-                        .font(ATMFont.mono(.footnote))
-                        .foregroundStyle(ATMTheme.secondary)
-                        .lineLimit(1)
-                        .textSelection(.enabled)
-                }
-                Spacer(minLength: 0)
-                Button("更换") {
-                    identity.selection = nil
-                    keywordFocused = true
-                }
-                .controlSize(.small)
+        HStack(spacing: 10) {
+            Image(systemName: candidate.symbolName)
+                .foregroundStyle(ATMTheme.success)
+                .frame(width: 30, height: 30)
+                .background(ATMTheme.successFill, in: Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(candidate.name)
+                    .font(ATMFont.font(.body, weight: .semibold))
+                    .lineLimit(1)
+                Text("\(collectionKindLabel(candidate.kind)) · \(identity.trimmedConnector)")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
             }
-            .padding(11)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(ATMTheme.controlFill.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
+            Spacer(minLength: 0)
+            Button("更换") {
+                identity.selection = nil
+                keywordFocused = true
+            }
+            .controlSize(.small)
         }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 11))
+        .overlay {
+            RoundedRectangle(cornerRadius: 11)
+                .stroke(ATMTheme.border, lineWidth: 1)
+        }
+        .help(candidate.externalID)
     }
 
     private var manualIdentifierFields: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .top, spacing: 14) {
-                formField("来源类型", hint: "由连接器定义") {
+                compactField("类型") {
                     Picker("来源类型", selection: $identity.manualKind) {
                         ForEach(manualKindOptions, id: \.self) { kind in
-                            Text("\(collectionKindLabel(kind))（\(kind)）").tag(kind)
+                            Text(collectionKindLabel(kind)).tag(kind)
                         }
                     }
                     .labelsHidden()
                 }
-                formField("来源 ID", hint: "连接器使用的稳定唯一标识") {
+                compactField("来源 ID") {
                     TextField("粘贴来源 ID", text: $identity.externalID)
                         .textFieldStyle(.roundedBorder)
                         .font(ATMFont.mono(.body))
                 }
             }
-            Button("返回按名称搜索") {
+            Button("返回搜索") {
                 identity.manualEntry = false
                 identity.externalID = ""
                 keywordFocused = true
             }
             .buttonStyle(.link)
-            .font(ATMFont.footnote)
+            .font(ATMFont.caption)
         }
     }
 
@@ -2516,172 +2552,291 @@ private struct CollectionSourceEditor: View {
         return options
     }
 
-    // MARK: - 收集范围
+    // MARK: - 核心收集规则
 
-    private var scopeSection: some View {
-        settingsSection(title: "收集范围", icon: "line.3.horizontal.decrease.circle") {
-            VStack(alignment: .leading, spacing: 14) {
-                formField("排除关键词", hint: excludeHint) {
-                    // Vertical axis: a real exclusion list runs past one line, and
-                    // a single-line field hid everything but the last few words.
-                    TextField("例如：闲聊, 打卡", text: $excludePattern, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(1...3)
+    private var collectionContentSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeading("收集内容")
+            HStack(spacing: 10) {
+                choiceCard(
+                    title: "提取任务",
+                    detail: "识别需求、缺陷和待办",
+                    icon: "checklist",
+                    isSelected: strategy == "tasks"
+                ) {
+                    selectStrategy("tasks")
                 }
-                formField("重点关注", hint: "用自然语言描述希望提取的内容；群聊消息不会被当作指令") {
-                    TextField("例如：只关注 MR、需求和线上问题", text: $instruction, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(2...5)
-                        .help("这是可信指令，聊天内容不是。")
+                choiceCard(
+                    title: "收集结论",
+                    detail: "沉淀决策、方案和共识",
+                    icon: "books.vertical",
+                    isSelected: strategy == "observe"
+                ) {
+                    selectStrategy("observe")
                 }
             }
         }
     }
 
-    private var excludeHint: String {
-        let count = excludePattern
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .count
-        let base = "包含这些词的消息会被跳过，多个词用逗号分隔"
-        return count > 0 ? "\(base) · 已排除 \(count) 个词" : base
+    private var decisionSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionHeading("判断方式")
+            HStack(spacing: 10) {
+                choiceCard(
+                    title: "按对话时段",
+                    detail: "合并连续消息，适合群聊",
+                    icon: "text.bubble",
+                    isSelected: decisionUnit == "window"
+                ) {
+                    decisionUnit = "window"
+                }
+                choiceCard(
+                    title: "按单条消息",
+                    detail: "逐条判断，适合通知消息",
+                    icon: "bell",
+                    isSelected: decisionUnit == "message"
+                ) {
+                    decisionUnit = "message"
+                }
+            }
+        }
     }
 
-    // MARK: - 处理方式
-
-    private var processingSection: some View {
-        settingsSection(title: "处理方式", icon: "slider.horizontal.3") {
-            VStack(alignment: .leading, spacing: 16) {
-                formField("处理策略", hint: strategyHint) {
-                    Picker("处理策略", selection: $strategy) {
-                        Label("提取任务", systemImage: "checklist").tag("tasks")
-                        Label("收集结论", systemImage: "books.vertical").tag("observe")
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
-                    .onChange(of: strategy) { value in
-                        // Only nudge the interval when it is still the other
-                        // strategy's default; a frequency someone chose survives.
-                        let previousDefault = value == "observe" ? 5 : 60
-                        if intervalInput.minutes == previousDefault {
-                            setIntervalMinutes(value == "observe" ? 60 : 5)
-                        }
-                    }
+    private var frequencySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 18) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("检查频率")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("仅影响当前来源")
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
                 }
-
-                formField("判定单位", hint: decisionUnitHint) {
-                    Picker("判定单位", selection: $decisionUnit) {
-                        Label("按时段", systemImage: "clock").tag("window")
-                        Label("按消息", systemImage: "text.line.first.and.arrowtriangle.forward").tag("message")
+                Spacer(minLength: 12)
+                Picker("检查频率", selection: intervalPresetSelection) {
+                    ForEach(collectionIntervalPresets) { preset in
+                        Text(preset.label).tag(preset.minutes)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.segmented)
+                    Text("自定义…").tag(-1)
                 }
+                .labelsHidden()
+                .frame(width: 160)
+            }
 
-                HStack(alignment: .top, spacing: 14) {
-                    formField("采集频率", hint: "每次检查新消息的间隔") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            HStack(spacing: 8) {
-                                Picker("常用频率", selection: intervalPresetSelection) {
-                                    Text("自定义").tag(-1)
-                                    ForEach(collectionIntervalPresets) { preset in
-                                        Text(preset.label).tag(preset.minutes)
-                                    }
-                                }
-                                .labelsHidden()
-                                .frame(minWidth: 118)
-
-                                TextField("数值", text: $intervalValue)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 72)
-
-                                Picker("单位", selection: $intervalUnit) {
-                                    ForEach(CollectionIntervalUnit.allCases) { unit in
-                                        Text(unit.label).tag(unit)
-                                    }
-                                }
-                                .labelsHidden()
-                                .frame(width: 82)
-                            }
-
-                            if let message = intervalInput.validationMessage {
-                                Label(message, systemImage: "exclamationmark.circle.fill")
-                                    .font(ATMFont.caption)
-                                    .foregroundStyle(ATMTheme.danger)
-                            } else if intervalUnit != .minute, let minutes = intervalInput.minutes {
-                                Text("实际间隔：\(minutes) 分钟")
-                                    .font(ATMFont.caption)
-                                    .foregroundStyle(ATMTheme.secondary)
-                                    .monospacedDigit()
+            if usesCustomInterval {
+                VStack(alignment: .trailing, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Spacer()
+                        TextField("数值", text: $intervalValue)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 72)
+                        Picker("单位", selection: $intervalUnit) {
+                            ForEach(CollectionIntervalUnit.allCases) { unit in
+                                Text(unit.label).tag(unit)
                             }
                         }
+                        .labelsHidden()
+                        .frame(width: 90)
                     }
+                    if let message = intervalInput.validationMessage {
+                        Text(message)
+                            .font(ATMFont.caption)
+                            .foregroundStyle(ATMTheme.danger)
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - 高级设置
+
+    private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) {
+                    showsAdvancedSettings.toggle()
+                }
+            } label: {
+                HStack(spacing: 11) {
+                    Image(systemName: "slider.horizontal.3")
+                        .foregroundStyle(ATMTheme.secondary)
+                        .frame(width: 18)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("高级设置")
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            .foregroundStyle(ATMTheme.primary)
+                        Text("名称、筛选和结果归属")
+                            .font(ATMFont.caption)
+                            .foregroundStyle(ATMTheme.secondary)
+                    }
+                    Spacer(minLength: 12)
+                    Image(systemName: "chevron.down")
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .rotationEffect(.degrees(showsAdvancedSettings ? 180 : 0))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: CollectionSourceEditorLayout.advancedTriggerMinimumHeight,
+                    alignment: .leading
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(showsAdvancedSettings ? "收起高级设置" : "展开高级设置")
+
+            if showsAdvancedSettings {
+                Divider()
+                VStack(alignment: .leading, spacing: 16) {
+                    advancedGroupTitle("名称与筛选")
+                    inlineField("显示名称") {
+                        TextField(namePlaceholder, text: $name)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    inlineField("重点关注", alignment: .top) {
+                        TextField("例如：MR、需求和线上问题", text: $instruction, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(1...3)
+                    }
+                    inlineField("排除关键词", alignment: .top) {
+                        TextField("例如：闲聊, 打卡", text: $excludePattern, axis: .vertical)
+                            .textFieldStyle(.roundedBorder)
+                            .lineLimit(1...2)
+                    }
+
+                    Divider()
+
+                    advancedGroupTitle("结果归属")
                     if strategy == "observe" {
-                        formField("默认知识库", hint: "结论由你确认保存；留空时保存到 inbox") {
+                        inlineField("知识空间") {
                             TextField("inbox", text: $knowledgeCollection)
                                 .textFieldStyle(.roundedBorder)
                         }
                     } else {
-                        formField("默认优先级", hint: "用于新提取的任务") {
-                            Picker("默认优先级", selection: $priority) {
-                                ForEach(["P0", "P1", "P2", "P3"], id: \.self) { value in
-                                    Text(priorityLabel(value)).tag(value)
-                                }
+                        HStack(alignment: .top, spacing: 12) {
+                            compactField("默认项目") {
+                                TextField("可留空", text: $project)
+                                    .textFieldStyle(.roundedBorder)
                             }
-                            .labelsHidden()
+                            compactField("优先级") {
+                                Picker("默认优先级", selection: $priority) {
+                                    ForEach(["P0", "P1", "P2", "P3"], id: \.self) { value in
+                                        Text(priorityLabel(value)).tag(value)
+                                    }
+                                }
+                                .labelsHidden()
+                            }
+                            .frame(width: 170)
                         }
-                        .frame(width: 150)
                     }
                 }
-
-                if strategy != "observe" {
-                    formField("默认项目", hint: "新任务默认归属，可留空") {
-                        TextField("例如：atm", text: $project)
-                            .textFieldStyle(.roundedBorder)
-                    }
-                }
+                .padding(16)
             }
+        }
+        .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(ATMTheme.border, lineWidth: 1)
         }
     }
 
     // MARK: - 通用外壳
 
-    private func settingsSection<Content: View>(
-        title: String,
-        icon: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
-            Label(title, systemImage: icon)
+    private var formDivider: some View {
+        Divider()
+            .padding(.vertical, 20)
+    }
+
+    private func sectionHeading(_ title: String, detail: String? = nil) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(title)
                 .font(ATMFont.font(.body, weight: .semibold))
                 .foregroundStyle(ATMTheme.primary)
-
-            content()
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(ATMTheme.surface, in: RoundedRectangle(cornerRadius: 12))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(ATMTheme.border, lineWidth: 1)
-                }
+            Spacer(minLength: 0)
+            if let detail {
+                Text(detail)
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
         }
     }
 
-    private func formField<Content: View>(
+    private func choiceCard(
+        title: String,
+        detail: String,
+        icon: String,
+        isSelected: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : icon)
+                    .font(ATMFont.font(.body, weight: .medium))
+                    .foregroundStyle(isSelected ? ATMTheme.accent : ATMTheme.secondary)
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(ATMFont.font(.body, weight: .semibold))
+                        .foregroundStyle(ATMTheme.primary)
+                    Text(detail)
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: CollectionSourceEditorLayout.choiceCardMinimumHeight,
+                alignment: .leading
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 11))
+            .background(
+                isSelected ? ATMTheme.accentFill : ATMTheme.surface,
+                in: RoundedRectangle(cornerRadius: 11)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 11)
+                    .stroke(isSelected ? ATMTheme.accent : ATMTheme.border, lineWidth: isSelected ? 1.5 : 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isSelected ? "已选择" : "")
+    }
+
+    private func advancedGroupTitle(_ title: String) -> some View {
+        Text(title)
+            .font(ATMFont.font(.body, weight: .semibold))
+            .foregroundStyle(ATMTheme.primary)
+    }
+
+    private func inlineField<Content: View>(
         _ title: String,
-        hint: String,
+        alignment: VerticalAlignment = .center,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        HStack(alignment: alignment, spacing: 12) {
+            Text(title)
+                .font(ATMFont.font(.body, weight: .medium))
+                .frame(width: 88, alignment: .leading)
+                .padding(.top, alignment == .top ? 5 : 0)
+            content()
+                .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func compactField<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
             Text(title)
                 .font(ATMFont.font(.body, weight: .medium))
             content()
                 .frame(maxWidth: .infinity)
-            Text(hint)
-                .font(ATMFont.caption)
-                .foregroundStyle(ATMTheme.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2693,13 +2848,18 @@ private struct CollectionSourceEditor: View {
     private var intervalPresetSelection: Binding<Int> {
         Binding(
             get: {
+                if usesCustomInterval { return -1 }
                 guard let minutes = intervalInput.minutes,
                       collectionIntervalPresets.contains(where: { $0.minutes == minutes })
                 else { return -1 }
                 return minutes
             },
             set: { minutes in
-                guard minutes > 0 else { return }
+                if minutes < 0 {
+                    usesCustomInterval = true
+                    return
+                }
+                usesCustomInterval = false
                 setIntervalMinutes(minutes)
             }
         )
@@ -2709,31 +2869,20 @@ private struct CollectionSourceEditor: View {
         let display = CollectionIntervalInput.displayValue(for: minutes)
         intervalValue = display.text
         intervalUnit = display.unit
+        usesCustomInterval = !collectionIntervalPresets.contains { $0.minutes == minutes }
     }
 
-    private var strategyHint: String {
-        strategy == "observe"
-            ? "识别可复用信息，先放入结论；由你确认后再保存到知识库"
-            : "从消息中识别需求、缺陷和待办，创建或补充任务"
-    }
-
-    /// One batch yields one decision, so this is what decides how many separate
-    /// events can survive the same window — not merely how work is split up.
-    private var decisionUnitHint: String {
-        decisionUnit == "message"
-            ? "每条消息单独判定，同一时段的其他消息只作上下文。通知机器人这类「一条消息就是一件事」的来源用这个"
-            : "同一会话、间隔 15 分钟内的消息合并判定，得到一个结果。聊天用这个：一句请求和随后的补充说明是同一件事"
+    private func selectStrategy(_ value: String) {
+        guard strategy != value else { return }
+        let previousDefault = value == "observe" ? 5 : 60
+        strategy = value
+        if intervalInput.minutes == previousDefault {
+            setIntervalMinutes(value == "observe" ? 60 : 5)
+        }
     }
 
     private func priorityLabel(_ value: String) -> String {
         ATMTodoPriorityStyle.label(value)
-    }
-
-    private var subtitle: String {
-        if source != nil {
-            return "连接器与来源 ID 已锁定；名称、筛选范围与处理方式都可以改。"
-        }
-        return "选一个连接器，按名称找到会话，其余保持默认也能用。"
     }
 
     private var namePlaceholder: String {

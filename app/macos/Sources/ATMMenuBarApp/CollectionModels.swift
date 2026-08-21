@@ -842,3 +842,41 @@ struct ATMCollectionOverview: Decodable, Equatable {
             }
     }
 }
+
+/// Decides when the resident App should ask the collector to run due sources.
+///
+/// The collector remains authoritative about due-ness. This lightweight mirror
+/// avoids launching an IPC process on every minute tick, without letting one
+/// source's recent run postpone another source whose own interval has elapsed.
+enum ATMCollectionSchedulePolicy {
+    static func shouldRun(
+        _ overview: ATMCollectionOverview,
+        lastAttemptAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        guard overview.enabled else { return false }
+        let sources = overview.sources.filter(\.enabled)
+        guard !sources.isEmpty else { return false }
+
+        let sourceInterval = sources.map(\.effectiveIntervalMinutes).min()
+            ?? overview.intervalMinutes
+        // The global interval is the scheduler polling ceiling. A source may
+        // request a faster cadence; the collector still performs the final
+        // source-by-source due check before doing network or model work.
+        let pollingInterval = TimeInterval(
+            max(min(overview.intervalMinutes, sourceInterval), 1) * 60
+        )
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < pollingInterval {
+            return false
+        }
+
+        let nowTimestamp = Int64(now.timeIntervalSince1970)
+        return sources.contains { source in
+            guard let latest = overview.latestSuccessfulRun(for: source.id) else {
+                return true
+            }
+            return nowTimestamp - latest.startedAt
+                >= Int64(max(source.effectiveIntervalMinutes, 1) * 60)
+        }
+    }
+}

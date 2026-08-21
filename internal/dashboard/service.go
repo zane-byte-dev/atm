@@ -143,6 +143,7 @@ func (service Service) BuildSnapshot(
 		ModelHourStats:   nonNil(queried.modelHourStats),
 		ProjectDayStats:  nonNil(queried.projectDayStats),
 		ProjectHourStats: nonNil(queried.projectHourStats),
+		TodoCompletions:  nonNil(queried.todoCompletions),
 		Ranges:           queried.ranges,
 		LiveStatus:       live.value,
 		CurrentSession:   current,
@@ -218,6 +219,7 @@ type queryResult struct {
 	modelHourStats   []store.ModelDayStatsResult
 	projectDayStats  []store.ProjectDayStatsResult
 	projectHourStats []store.ProjectDayStatsResult
+	todoCompletions  []store.TodoCompletion
 	ranges           map[string]Range
 	indexHealth      IndexHealth
 }
@@ -275,6 +277,10 @@ func queryStore(
 		})
 		group.Go(func() (queryErr error) {
 			result.projectHourStats, queryErr = projectStatsByTime(db, now, hourlyDays, agent, true)
+			return
+		})
+		group.Go(func() (queryErr error) {
+			result.todoCompletions, queryErr = store.GetTodoCompletions(db)
 			return
 		})
 		for index, name := range config.MetricsRanges {

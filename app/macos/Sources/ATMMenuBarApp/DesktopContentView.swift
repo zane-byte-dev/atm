@@ -21,7 +21,7 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
         case .collection: return "收集"
         case .agents: return "Agent"
         case .knowledge: return "知识"
-        case .usage: return "用量"
+        case .usage: return "统计"
         case .aiDay: return "AI Day"
         case .settings: return "设置"
         }
@@ -1766,12 +1766,11 @@ struct DesktopTodoDetail: View {
                     Button {
                         store.handoffTodo(todo)
                     } label: {
-                        Label("在 Codex 里打开", systemImage: "paperplane.fill")
+                        Label("Codex", systemImage: "paperplane.fill")
                             .font(ATMFont.font(.footnote, weight: .semibold))
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .help("打开 Codex 并填好这条任务的指针，等你按回车")
                     .disabled(store.isActing)
                     actionButton(
                         copiedPrompt ? "checkmark" : "doc.on.doc",
@@ -2700,13 +2699,15 @@ projectOverride != nil || priorityOverride != nil
 
 enum ATMUsagePageTab: String, CaseIterable, Identifiable {
     case overview
+    case requirements
     case todaySessions
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .overview: return "概览"
+        case .overview: return "用量概览"
+        case .requirements: return "需求统计"
         case .todaySessions: return "今日会话"
         }
     }
@@ -2809,6 +2810,8 @@ private struct DesktopUsageContent: View, Equatable {
     let showDataHealth: () -> Void
 
     @State private var pageTab = ATMUsagePageTab.overview
+    @State private var requirementGranularity = ATMRequirementGranularity.day
+    @AppStorage("atmRequirementProject") private var requirementProject = ""
     @State private var range = ATMMetricsRange.today
     /// Three independent cascaded selects — not a dimension tab.
     @AppStorage("atmUsageFilterModel") private var filterModel = ""
@@ -2861,17 +2864,23 @@ private struct DesktopUsageContent: View, Equatable {
                 HStack(spacing: 16) {
                     usagePagePicker
                     Spacer(minLength: 0)
-                    dataHealthButton
+                    if pageTab != .requirements {
+                        dataHealthButton
+                    }
                 }
                 .frame(maxWidth: .infinity)
             }
             ATMDetailBodySurface {
                 LazyVStack(alignment: .leading, spacing: 20) {
-                    usageFilterToolbar
+                    if pageTab == .requirements {
+                        requirementToolbar
+                    } else {
+                        usageFilterToolbar
+                    }
 
-                    // Quota is a pinned top-level summary, independent of the
-                    // overview / today-sessions tab and usage filters below.
-                    if !quota.isEmpty {
+                    // Quota belongs to the usage overview. Today sessions and
+                    // requirement statistics each keep their own focused flow.
+                    if pageTab == .overview && !quota.isEmpty {
                         quotaModule
                     }
 
@@ -2893,12 +2902,15 @@ private struct DesktopUsageContent: View, Equatable {
         .background(ATMTheme.canvas)
         .onAppear {
             normalizeFilters()
+            normalizeRequirementProject()
         }
         .onChange(of: pageTab) { tab in
             normalizeFilters()
             todaySessionsPage = 0
             if tab == .todaySessions {
                 loadTodaySessions()
+            } else if tab == .requirements {
+                normalizeRequirementProject()
             }
         }
         .onChange(of: range) { _ in
@@ -2912,6 +2924,8 @@ private struct DesktopUsageContent: View, Equatable {
         .onChange(of: snapshot.refreshedAt) { _ in
             if pageTab == .overview {
                 normalizeFilters()
+            } else if pageTab == .requirements {
+                normalizeRequirementProject()
             }
         }
         .onChange(of: todaySessionsState.loadedAt) { _ in
@@ -2985,6 +2999,8 @@ private struct DesktopUsageContent: View, Equatable {
 
                 usageTrendCard
                 dualPanelSection
+            } else if pageTab == .requirements {
+                requirementStatisticsModule
             } else {
                 todaySessionsCard
             }
@@ -2998,7 +3014,43 @@ private struct DesktopUsageContent: View, Equatable {
             selection: $pageTab,
             items: ATMUsagePageTab.allCases.map { (value: $0, title: $0.title) }
         )
-        .accessibilityLabel("用量页面")
+        .accessibilityLabel("统计页面")
+    }
+
+    private var requirementToolbar: some View {
+        HStack(spacing: 12) {
+            Text("完成粒度")
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+            ATMCapsuleTabs(
+                selection: $requirementGranularity,
+                items: ATMRequirementGranularity.allCases.map { (value: $0, title: $0.title) }
+            )
+            .frame(width: 190)
+            Divider()
+                .frame(height: 20)
+            Picker("项目", selection: $requirementProject) {
+                Text("全部项目").tag("")
+                if !snapshot.requirementProjectOptions().isEmpty {
+                    Divider()
+                    ForEach(snapshot.requirementProjectOptions(), id: \.self) { project in
+                        Text(project).tag(project)
+                    }
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize(horizontal: true, vertical: false)
+            .help("按项目筛选需求完成统计")
+            Spacer(minLength: 0)
+            Text("按 Todo 完成时间统计，归档后仍保留")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.controlFill.opacity(0.55), in: RoundedRectangle(cornerRadius: ATMRadius.control))
     }
 
     private var dataHealthButton: some View {
@@ -3038,6 +3090,201 @@ private struct DesktopUsageContent: View, Equatable {
         .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(ATMTheme.controlFill.opacity(0.55), in: RoundedRectangle(cornerRadius: ATMRadius.control))
+    }
+
+    private var requirementStatisticsModule: some View {
+        let summary = snapshot.requirementSummary(project: requirementProject)
+        let buckets = snapshot.requirementBuckets(
+            granularity: requirementGranularity,
+            project: requirementProject
+        )
+        let projects = snapshot.requirementProjects(
+            granularity: requirementGranularity,
+            project: requirementProject
+        )
+        let recent = snapshot.recentTodoCompletions(project: requirementProject)
+        return LazyVStack(alignment: .leading, spacing: 18) {
+            LazyVGrid(columns: Self.featuredMetricColumns, spacing: 10) {
+                requirementMetricCard("今日完成", count: summary.today, icon: "checkmark.circle.fill", color: ATMTheme.accent)
+                requirementMetricCard("本周完成", count: summary.thisWeek, icon: "calendar.badge.checkmark", color: ATMTheme.palette[1])
+                requirementMetricCard("本月完成", count: summary.thisMonth, icon: "chart.bar.fill", color: ATMTheme.palette[4])
+            }
+
+            usageCard(requirementGranularity.trendTitle) {
+                if buckets.allSatisfy({ $0.completed == 0 }) {
+                    usageEmptyState("当前范围还没有完成的 Todo", icon: "checkmark.circle")
+                } else {
+                    Chart(buckets) { bucket in
+                        AreaMark(
+                            x: .value("周期", bucket.start),
+                            y: .value("完成 Todo", bucket.completed)
+                        )
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [ATMTheme.accent.opacity(0.24), ATMTheme.accent.opacity(0.02)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .interpolationMethod(.monotone)
+                        LineMark(
+                            x: .value("周期", bucket.start),
+                            y: .value("完成 Todo", bucket.completed)
+                        )
+                        .foregroundStyle(ATMTheme.accent)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                        .interpolationMethod(.monotone)
+                        PointMark(
+                            x: .value("周期", bucket.start),
+                            y: .value("完成 Todo", bucket.completed)
+                        )
+                        .foregroundStyle(ATMTheme.accent)
+                        .symbolSize(bucket.completed > 0 ? 34 : 12)
+                        .annotation(position: .top) {
+                            if bucket.completed > 0 {
+                                Text("\(bucket.completed)")
+                                    .font(ATMFont.mono(.caption, .semibold))
+                                    .foregroundStyle(ATMTheme.secondary)
+                            }
+                        }
+                    }
+                    .chartYAxis {
+                        AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
+                            AxisGridLine().foregroundStyle(ATMTheme.chartGrid)
+                            AxisValueLabel {
+                                if let count = value.as(Int.self) { Text("\(count)") }
+                            }
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: requirementAxisValues(buckets)) { value in
+                            AxisTick().foregroundStyle(ATMTheme.chartGrid)
+                            AxisValueLabel {
+                                if let date = value.as(Date.self) {
+                                    Text(requirementAxisLabel(date))
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 270)
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 14) {
+                    requirementProjectsCard(projects)
+                    recentCompletionsCard(recent)
+                }
+                VStack(spacing: 14) {
+                    requirementProjectsCard(projects)
+                    recentCompletionsCard(recent)
+                }
+            }
+        }
+    }
+
+    private func requirementMetricCard(
+        _ title: String,
+        count: Int,
+        icon: String,
+        color: Color
+    ) -> some View {
+        ATMDataPanel {
+            Label(title, systemImage: icon)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+        } content: {
+            Text("\(count)")
+                .font(ATMFont.rounded(.display, .bold))
+                .foregroundStyle(color)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func requirementProjectsCard(_ rows: [ATMRequirementProjectRow]) -> some View {
+        usageCard("\(requirementGranularity.currentTitle)项目分布") {
+            if rows.isEmpty {
+                usageEmptyState("暂无项目完成记录", icon: "folder")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.prefix(8).enumerated()), id: \.element.id) { index, row in
+                        HStack {
+                            Text(row.project)
+                                .font(ATMFont.font(.body, weight: .medium))
+                                .lineLimit(1)
+                            Spacer()
+                            Text("\(row.completed)")
+                                .font(ATMFont.mono(.body, .semibold))
+                                .foregroundStyle(ATMTheme.accent)
+                            Text("个")
+                                .font(ATMFont.footnote)
+                                .foregroundStyle(ATMTheme.secondary)
+                        }
+                        .padding(.vertical, 9)
+                        if index < min(rows.count, 8) - 1 { Divider() }
+                    }
+                }
+                .frame(minHeight: 220, alignment: .top)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func recentCompletionsCard(_ rows: [ATMTodoCompletion]) -> some View {
+        usageCard("最近完成") {
+            if rows.isEmpty {
+                usageEmptyState("还没有完成记录", icon: "clock")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.prefix(8).enumerated()), id: \.element.id) { index, row in
+                        HStack(spacing: 10) {
+                            Text(row.todoID)
+                                .font(ATMFont.mono(.footnote, .semibold))
+                                .foregroundStyle(ATMTheme.accent)
+                                .frame(width: 48, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.title)
+                                    .font(ATMFont.font(.body, weight: .medium))
+                                    .lineLimit(1)
+                                Text([row.completedDate, row.project].filter { !$0.isEmpty }.joined(separator: " · "))
+                                    .font(ATMFont.footnote)
+                                    .foregroundStyle(ATMTheme.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 8)
+                        if index < min(rows.count, 8) - 1 { Divider() }
+                    }
+                }
+                .frame(minHeight: 220, alignment: .top)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func requirementAxisValues(_ buckets: [ATMRequirementBucket]) -> [Date] {
+        let maximum = requirementGranularity == .day ? 7 : 6
+        guard buckets.count > maximum else { return buckets.map(\.start) }
+        let stride = max(Int(ceil(Double(buckets.count) / Double(maximum))), 1)
+        return buckets.enumerated().compactMap { index, bucket in
+            index.isMultiple(of: stride) || index == buckets.count - 1 ? bucket.start : nil
+        }
+    }
+
+    private func requirementAxisLabel(_ date: Date) -> String {
+        switch requirementGranularity {
+        case .day, .week:
+            return date.formatted(.dateTime.month(.defaultDigits).day())
+        case .month:
+            return date.formatted(.dateTime.year(.twoDigits).month(.defaultDigits))
+        }
+    }
+
+    private func normalizeRequirementProject() {
+        guard !requirementProject.isEmpty else { return }
+        if !snapshot.requirementProjectOptions().contains(requirementProject) {
+            requirementProject = ""
+        }
     }
 
     private func isFeaturedMetric(_ metric: ATMUsageMetric) -> Bool {

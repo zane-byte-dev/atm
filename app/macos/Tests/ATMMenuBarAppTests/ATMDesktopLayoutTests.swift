@@ -14,6 +14,14 @@ final class ATMDesktopLayoutTests: XCTestCase {
         XCTAssertEqual(ATMDetailLayout.contentMaxWidth, 880)
     }
 
+    func testCollectionSourceSheetKeepsACompactViewport() {
+        XCTAssertEqual(CollectionSourceEditorLayout.sheetWidth, 560)
+        XCTAssertEqual(CollectionSourceEditorLayout.sheetHeight(isNewSource: true), 560)
+        XCTAssertEqual(CollectionSourceEditorLayout.sheetHeight(isNewSource: false), 520)
+        XCTAssertGreaterThanOrEqual(CollectionSourceEditorLayout.advancedTriggerMinimumHeight, 44)
+        XCTAssertGreaterThanOrEqual(CollectionSourceEditorLayout.choiceCardMinimumHeight, 44)
+    }
+
     @MainActor
     func testNavigationHistoryRestoresSectionAndDetailSelection() {
         let navigation = ATMDesktopNavigation()
