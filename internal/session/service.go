@@ -76,6 +76,20 @@ func (service Service) openRead(ctx context.Context, syncBeforeRead bool) (*sql.
 	return db, meta, nil
 }
 
+// openWrite is for the use cases that change the index. store.Open creates the
+// database when it is missing, so unlike openRead there is no "not indexed yet"
+// case to translate.
+func (service Service) openWrite(ctx context.Context) (*sql.DB, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+	db, err := store.Open()
+	if err != nil {
+		return nil, unavailable("session database is unavailable", err)
+	}
+	return db, nil
+}
+
 func contextError(ctx context.Context) error {
 	if ctx == nil {
 		return nil

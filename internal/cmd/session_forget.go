@@ -1,12 +1,10 @@
 package cmd
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 
 	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/store"
+	sessionapp "github.com/zane-byte-dev/atm/internal/session"
 
 	"github.com/spf13/cobra"
 )
@@ -39,47 +37,40 @@ sessions each agent has.`,
 }
 
 func runSessionForget(cmd *cobra.Command, args []string) error {
-	target := args[0]
-	return withDB(false, func(db *sql.DB) error {
-		s, err := store.FindForgettableSession(db, target)
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("session not found: %s", target)
-		}
-		if err != nil {
-			return err
-		}
-		if s.SourceTracked {
-			return fmt.Errorf("session %s is still backed by %s: delete the transcript and run `atm sync` first, or the next sync will index it again",
-				s.ShortID, s.FilePath)
-		}
+	service := currentSessionService()
+	plan, err := service.PlanForget(cmd.Context(), sessionapp.PlanForgetInput{SessionID: args[0]})
+	if err != nil {
+		return err
+	}
 
-		prompt := fmt.Sprintf("Permanently forget session %s (%s | %s | %s)? %d messages, %d requests, $%.2f leave every total.",
-			s.ShortID, s.Agent, s.Project, s.CreatedAt, s.Messages, s.Requests, s.CostUSD)
-		confirmed, err := confirmDestructive(cmd, sessionForgetYesFlag, prompt)
-		if err != nil {
-			return err
-		}
-		if !confirmed {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Cancelled.")
-			return nil
-		}
-
-		if err := store.ForgetSession(db, s.ID); err != nil {
-			return err
-		}
-		if jsonOutput {
-			output.JSON(map[string]any{
-				"forgotten": s.ID,
-				"short_id":  s.ShortID,
-				"agent":     s.Agent,
-				"messages":  s.Messages,
-				"requests":  s.Requests,
-				"cost_usd":  s.CostUSD,
-			})
-			return nil
-		}
-		fmt.Printf("Forgot session %s (%s): %d messages, %d requests, $%.2f removed.\n",
-			s.ShortID, s.Agent, s.Messages, s.Requests, s.CostUSD)
+	prompt := fmt.Sprintf("Permanently forget session %s (%s | %s | %s)? %d messages, %d requests, $%.2f leave every total.",
+		plan.ShortID, plan.Agent, plan.Project, plan.CreatedAt, plan.Messages, plan.Requests, plan.CostUSD)
+	confirmed, err := confirmDestructive(cmd, sessionForgetYesFlag, prompt)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Cancelled.")
 		return nil
-	})
+	}
+
+	result, err := service.Forget(cmd.Context(), sessionapp.ForgetInput{Plan: plan, Confirmed: true})
+	if err != nil {
+		return err
+	}
+	forgotten := result.Session
+	if jsonOutput {
+		output.JSON(map[string]any{
+			"forgotten": forgotten.SessionID,
+			"short_id":  forgotten.ShortID,
+			"agent":     forgotten.Agent,
+			"messages":  forgotten.Messages,
+			"requests":  forgotten.Requests,
+			"cost_usd":  forgotten.CostUSD,
+		})
+		return nil
+	}
+	fmt.Printf("Forgot session %s (%s): %d messages, %d requests, $%.2f removed.\n",
+		forgotten.ShortID, forgotten.Agent, forgotten.Messages, forgotten.Requests, forgotten.CostUSD)
+	return nil
 }

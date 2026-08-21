@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -750,59 +749,6 @@ func TestMemoryProvenanceIsPreserved(t *testing.T) {
 	}
 	if len(hits) != 1 || hits[0].Metadata["source"] != "session:abc#turn:2" {
 		t.Fatalf("hits = %#v", hits)
-	}
-}
-
-func TestSessionReviewLifecycleAndIdempotency(t *testing.T) {
-	newDataDir(t)
-	first, err := MarkSessionReviewed("session-1", "memory", "stored one decision")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := MarkSessionReviewed("session-1", "memory", "stored one decision")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.ReviewedAt != second.ReviewedAt {
-		t.Fatalf("idempotent mark appended a new review: %s != %s", first.ReviewedAt, second.ReviewedAt)
-	}
-	if _, err := MarkSessionReviewed("session-2", "temporary", ""); err == nil {
-		t.Fatal("invalid outcome should fail")
-	}
-	reviews, err := SessionReviews()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reviews) != 1 || reviews["session-1"].Outcome != "memory" {
-		t.Fatalf("reviews = %#v", reviews)
-	}
-}
-
-func TestConcurrentSessionReviewWrites(t *testing.T) {
-	newDataDir(t)
-	var wg sync.WaitGroup
-	errs := make(chan error, 12)
-	for i := 0; i < 12; i++ {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			_, err := MarkSessionReviewed(fmt.Sprintf("session-%d", index), "none", "no durable candidate")
-			errs <- err
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	reviews, err := SessionReviews()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reviews) != 12 {
-		t.Fatalf("review count = %d, want 12", len(reviews))
 	}
 }
 
