@@ -94,6 +94,7 @@ todo.list
 todo.refine
 todo.show
 todo.start
+todo.title
 todo.archive
 todo.delete
 todo.done

@@ -22,6 +22,11 @@ final class ATMDesktopLayoutTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(CollectionSourceEditorLayout.choiceCardMinimumHeight, 44)
     }
 
+    func testQuotaCardsKeepAStableWidthAcrossWindowResizes() {
+        XCTAssertEqual(ATMUsageQuotaLayout.cardWidth, 360)
+        XCTAssertEqual(ATMUsageQuotaLayout.cardMinimumHeight, 210)
+    }
+
     @MainActor
     func testNavigationHistoryRestoresSectionAndDetailSelection() {
         let navigation = ATMDesktopNavigation()

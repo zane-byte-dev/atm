@@ -34,6 +34,14 @@ type TodoDocumentResponse struct {
 	Content string `json:"content,omitempty"`
 }
 
+type TodoTitleRequest struct {
+	Description string `json:"description"`
+}
+
+type TodoTitleResponse struct {
+	Title string `json:"title"`
+}
+
 // TodoCreateRequest deliberately fixes new App Todos to the normal open/human
 // workflow. Status, creator, source and on-done commands are not accepted over
 // this method merely because the broader CLI AddInput supports them.
@@ -147,6 +155,27 @@ type TodoRefineResponse struct {
 }
 
 func registerTodo(registry *ipc.Registry, dependencies Dependencies) {
+	bind(registry, "todo.title", func(
+		ctx context.Context,
+		_ application.Call,
+		input TodoTitleRequest,
+	) (TodoTitleResponse, error) {
+		if input.Description == "" {
+			return TodoTitleResponse{}, application.NewError(
+				application.CodeInvalidArgument,
+				"todo description is required",
+			)
+		}
+		title, err := dependencies.GenerateTodoTitle(ctx, input.Description)
+		if err != nil {
+			return TodoTitleResponse{}, application.WrapError(
+				application.CodeUnavailable,
+				"generate todo title",
+				err,
+			)
+		}
+		return TodoTitleResponse{Title: title}, nil
+	})
 	bind(registry, "todo.list", func(
 		ctx context.Context,
 		call application.Call,

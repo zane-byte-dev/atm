@@ -2410,6 +2410,31 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
+	/// Retention is the only task-group mutation the desktop performs in bulk.
+	/// The typed IPC already accepts a list, so one group action is one atomic
+	/// command instead of a loop that could leave half a group moved.
+	func performRetention(_ action: ATMTodoAction, on todos: [ATMTodo]) {
+		guard !todos.isEmpty, !isActing, action == .archive || action == .restore else { return }
+		isActing = true
+		errorMessage = nil
+		Task {
+			defer { isActing = false }
+			do {
+				let client = try makeTodoIPCClient()
+				let ids = todos.map(\.id)
+				if action == .archive {
+					_ = try await client.archive(ids)
+				} else {
+					_ = try await client.restore(ids)
+				}
+				for todo in todos { applySuccessfulTodoAction(action, on: todo) }
+				refresh()
+			} catch {
+				errorMessage = error.localizedDescription
+			}
+		}
+	}
+
     /// The CLI mutation is authoritative, so removal should update the working
     /// set and archive immediately while a queued refresh reconciles other fields.
     func applySuccessfulTodoAction(_ action: ATMTodoAction, on todo: ATMTodo) {
@@ -2489,9 +2514,13 @@ final class ATMDataStore: ObservableObject {
 				draft.cleanupTemporaryImages()
             }
             do {
-                let created = try await makeTodoIPCClient().create(
-                    ATMTodoCreateRequest(draft: draft)
-                )
+				let client = try makeTodoIPCClient()
+				let generatedTitle = try? await client.suggestTitle(for: draft.description).title
+				let title = generatedTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+				let created = try await client.create(ATMTodoCreateRequest(
+					draft: draft,
+					title: title?.isEmpty == false ? title : draft.title
+				))
                 let createdID = created.id
                 // Prefer the decoded todo so selection can resolve before the next
                 // full dashboard refresh lands.

@@ -23,12 +23,14 @@ import (
 	"github.com/zane-byte-dev/atm/internal/ipc"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/quota"
+	"github.com/zane-byte-dev/atm/internal/refine"
 	"github.com/zane-byte-dev/atm/internal/session"
 	"github.com/zane-byte-dev/atm/internal/textmodel"
 	"github.com/zane-byte-dev/atm/internal/work"
 )
 
 type TextModelChecker func(context.Context, textmodel.ConnectionCheckInput) (textmodel.CheckResult, error)
+type TodoTitleGenerator func(context.Context, string) (string, error)
 
 // Dependencies are the application services behind the desktop bridge. The
 // command package constructs these once, including its OS-facing Dashboard and
@@ -44,13 +46,14 @@ type Dependencies struct {
 	// QuotaLiveBilling mirrors the user's grok_live_quota setting. It is a
 	// dependency rather than a request field: opting into a network billing call
 	// is a configuration decision, not something a replayable transport carries.
-	QuotaLiveBilling bool
-	Knowledge        knowledge.Service
-	Session          session.Service
-	Work             work.Service
-	WorkEffects      work.EffectExecutor
-	Collector        collector.Service
-	CheckTextModel   TextModelChecker
+	QuotaLiveBilling  bool
+	Knowledge         knowledge.Service
+	Session           session.Service
+	Work              work.Service
+	WorkEffects       work.EffectExecutor
+	Collector         collector.Service
+	CheckTextModel    TextModelChecker
+	GenerateTodoTitle TodoTitleGenerator
 }
 
 // Server owns both the desktop method registry and the generic IPC transport.
@@ -68,6 +71,9 @@ func New(dependencies Dependencies) *Server {
 		) (textmodel.CheckResult, error) {
 			return textmodel.CheckConnection(ctx, 45*time.Second, input)
 		}
+	}
+	if dependencies.GenerateTodoTitle == nil {
+		dependencies.GenerateTodoTitle = refine.GenerateTitle
 	}
 	registry := ipc.NewRegistry()
 	registerConfig(registry, dependencies)

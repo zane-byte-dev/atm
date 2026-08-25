@@ -57,6 +57,11 @@ enum ATMTaskListMode: Equatable {
     case archive
 }
 
+private enum ATMTaskDrawerTab: String {
+	case tasks
+	case groups
+}
+
 /// Status color / icon / label used by the task list and detail header.
 enum ATMTodoStatusStyle {
     /// Waiting is presentation only: an in-progress Todo with either a wake
@@ -162,6 +167,23 @@ enum ATMTodoPriorityStyle {
     }
 }
 
+/// Project names are the only stable category carried by every task row. Give
+/// each one a deterministic categorical colour so repeated projects become a
+/// visual landmark instead of another piece of grey metadata.
+enum ATMTodoProjectStyle {
+    static func colorIndex(for project: String) -> Int {
+        let categoricalCount = max(ATMTheme.palette.count - 1, 1)
+        let hash = project.unicodeScalars.reduce(UInt64(5381)) { value, scalar in
+            (value &* 33) &+ UInt64(scalar.value)
+        }
+        return Int(hash % UInt64(categoricalCount))
+    }
+
+    static func color(for project: String) -> Color {
+        ATMTheme.palette[colorIndex(for: project)]
+    }
+}
+
 /// Status glyph for todo lists and badges. Working tasks use a ProgressView so
 /// the icon itself reads as “loading”, not a play button.
 struct ATMTodoStatusGlyph: View {
@@ -200,6 +222,7 @@ enum ATMTaskQuery {
         ("done", "最近完成"),
         ("history", "完成历史"),
     ]
+	static let archiveGroupSpec = (id: "archive", title: "已归档")
 
     private static let completionDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -296,6 +319,25 @@ enum ATMTaskQuery {
         }
     }
 
+	/// Archived work is retention, not a fifth lifecycle state. The desktop still
+	/// presents it as the final navigable group so it no longer needs a separate
+	/// list mode or back button.
+	static func groups(
+		from todos: [ATMTodo],
+		includingArchived archived: [ATMTodo],
+		now: Date = Date()
+	) -> [(id: String, title: String, todos: [ATMTodo])] {
+		var result = groups(from: todos, now: now)
+		if !archived.isEmpty {
+			result.append((
+				archiveGroupSpec.id,
+				archiveGroupSpec.title,
+				sortedByCreatedDescending(archived)
+			))
+		}
+		return result
+	}
+
     /// Flat mode removes only the section chrome. It keeps the grouped view's
     /// status rank and each section's ordering so changing presentation never
     /// changes which task is considered first.
@@ -335,6 +377,21 @@ private struct ATMTaskGroup: Identifiable {
     let id: String
     let title: String
     let todos: [ATMTodo]
+
+	var isArchive: Bool { id == ATMTaskQuery.archiveGroupSpec.id }
+}
+
+private struct ATMTaskGroupRetention {
+	let group: ATMTaskGroup
+	let action: ATMTodoAction
+
+	var actionTitle: String { action == .archive ? "归档全部" : "恢复全部" }
+	var dialogTitle: String { "\(actionTitle)「\(group.title)」中的 \(group.todos.count) 个任务？" }
+	var message: String {
+		action == .archive
+			? "任务会移至已归档分组，之后仍可恢复。"
+			: "任务会回到各自的生命周期分组。"
+	}
 }
 
 @MainActor
@@ -1077,6 +1134,9 @@ private struct DesktopTasksView: View {
     @ObservedObject var navigation: ATMDesktopNavigation
 
     @State private var deleteCandidate: ATMTodo?
+	@State private var retentionCandidate: ATMTaskGroupRetention?
+	@State private var selectedGroupID = "review"
+	@State private var drawerTab = ATMTaskDrawerTab.tasks
     @AppStorage("ATMCollapsedTaskGroups")
     private var collapsedGroupsRaw = "done,history"
     @AppStorage("ATMDidApplyDefaultCollapsedTaskGroups") private var didApplyDefaultCollapsedGroups = false
@@ -1086,10 +1146,6 @@ private struct DesktopTasksView: View {
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
-    }
-
-    private var showingArchive: Bool {
-        navigation.taskListMode == .archive
     }
 
     private var taskListPresentation: ATMNavigatorPresentation {
@@ -1114,7 +1170,9 @@ private struct DesktopTasksView: View {
             count: group.todos.count,
             tint: groupAccent(group.id),
             isExpanded: expanded
-        )
+        ) {
+			groupActionMenu(group)
+		}
     }
 
     private func groupAccent(_ id: String) -> Color {
@@ -1127,12 +1185,8 @@ private struct DesktopTasksView: View {
         }
     }
 
-    private var todos: [ATMTodo] {
-        showingArchive ? store.archivedTodos : store.allTodos
-    }
-
     private var visibleTodos: [ATMTodo] {
-        todos
+		store.allTodos + store.archivedTodos
     }
 
     private var selectedTodo: ATMTodo? {
@@ -1141,17 +1195,26 @@ private struct DesktopTasksView: View {
     }
 
     private var groups: [ATMTaskGroup] {
-        if showingArchive {
-            return [ATMTaskGroup(id: "archive", title: "已归档", todos: visibleTodos)]
-        }
-        return ATMTaskQuery.groups(from: visibleTodos).map {
+		ATMTaskQuery.groups(from: store.allTodos, includingArchived: store.archivedTodos).map {
             ATMTaskGroup(id: $0.id, title: $0.title, todos: $0.todos)
         }
     }
 
+	private var managedGroups: [ATMTaskGroup] {
+		let byID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+		return (ATMTaskQuery.groupSpecs + [ATMTaskQuery.archiveGroupSpec]).map { spec in
+			byID[spec.id] ?? ATMTaskGroup(id: spec.id, title: spec.title, todos: [])
+		}
+	}
+
     private var flattenedTodos: [ATMTodo] {
-        showingArchive ? visibleTodos : ATMTaskQuery.flattened(from: visibleTodos)
+		groups.flatMap(\.todos)
     }
+
+	private var selectedTodoIsArchived: Bool {
+		guard let id = selectedTodo?.id else { return false }
+		return store.archivedTodos.contains(where: { $0.id == id })
+	}
 
     var body: some View {
         ATMSplitColumn(
@@ -1164,12 +1227,14 @@ private struct DesktopTasksView: View {
             taskList
         } detail: {
             Group {
-                if let todo = selectedTodo {
+				if drawerTab == .groups {
+					groupManagementDetail
+				} else if let todo = selectedTodo {
                     DesktopTodoDetail(
                         todo: todo,
                         store: store,
                         navigation: navigation,
-                        isArchived: showingArchive
+						isArchived: selectedTodoIsArchived
                     )
                             // Identity is the Todo id alone. Folding title / description /
                             // status into it recreated the view on every background sync
@@ -1181,8 +1246,8 @@ private struct DesktopTasksView: View {
                 } else {
                     ATMDetailBodySurface {
                         ATMEmptyState(
-                            icon: showingArchive ? "archivebox" : "checklist",
-                            title: showingArchive ? "选择一个已归档任务" : "选择一个任务",
+							icon: "checklist",
+							title: "选择一个任务",
                             detail: "从中栏查看详情、编辑 Markdown 或执行快捷操作。",
                             size: .inline,
                             minHeight: 180
@@ -1192,7 +1257,9 @@ private struct DesktopTasksView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .atmAnimatedSwap(
-                "todo:\(selectedTodo?.id ?? "empty"):\(showingArchive)",
+				drawerTab == .groups
+					? "task-group:\(selectedGroupID)"
+					: "todo:\(selectedTodo?.id ?? "empty"):\(selectedTodoIsArchived)",
                 style: .detail
             )
         }
@@ -1207,54 +1274,21 @@ private struct DesktopTasksView: View {
         // Adding/refreshing todos must not re-expand groups the user collapsed
         // (e.g. 已完成). Only pick a default when the current selection is gone;
         // reveal stays on selection change / first appear.
-        .onChange(of: todos.map(\.id)) { _ in selectFirstIfNeeded() }
-        .onChange(of: navigation.taskListMode) { _ in selectFirstIfNeeded() }
+		.onChange(of: visibleTodos.map(\.id)) { _ in selectFirstIfNeeded() }
         .onChange(of: navigation.selectedTodoID) { _ in
             revealSelectedTodoIfFiltered()
             selectFirstIfNeeded()
             revealSelectedGroup()
         }
+		.onChange(of: drawerTab) { tab in
+			if tab == .groups { selectManagedGroupIfNeeded() }
+		}
         .onChange(of: taskListPresentationRaw) { _ in revealSelectedGroup() }
     }
 
     private var taskList: some View {
         ATMGroupedNavigator {
-            ATMDrawerHeader(title: showingArchive ? "归档" : "任务", count: visibleTodos.count) {
-                if showingArchive {
-                    Button {
-                        navigation.taskListMode = .active
-                    } label: {
-                        Label("返回任务", systemImage: "chevron.left")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    ATMNavigatorPresentationToggle(storedValue: $taskListPresentationRaw)
-
-                    // 纯图标一律走 ATMIconButton——原生 `.bordered` 的方框让它比收集 / 知识
-                    // 同一位置的图标多一圈边，而带文字的「新建」「返回任务」才留给原生按钮。
-                    ATMIconButton(
-                        systemImage: "archivebox",
-                        help: "归档",
-                        chrome: .bare,
-                        side: 30,
-                        iconTier: .bodyLarge
-                    ) {
-                        navigation.taskListMode = .archive
-                    }
-
-                    Button {
-                        navigation.showAddTodo = true
-                    } label: {
-                        Label("新建", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    // ⌘N 归主菜单「文件 → 新建任务」，不挂在这个按钮上：挂在这儿的话
-                    // 快捷键跟着「任务」页一起消失，切到收集或知识就按不动了。
-                    .help("添加任务 (⌘N)")
-                }
-            }
+			taskDrawerTabs
         } content: {
             if let error = store.errorMessage {
                 let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "任务加载失败")
@@ -1271,64 +1305,130 @@ private struct DesktopTasksView: View {
                 .padding(.bottom, 8)
             }
 
-            ATMGroupedNavigatorScroll {
-                if taskListPresentation == .grouped {
-                    ForEach(groups) { group in
-                        let expanded = expandedBinding(for: group)
-                        ATMNavigatorGroup {
-                            groupHeader(group, expanded: expanded)
-                        } content: {
-                            if expanded.wrappedValue {
-                                ForEach(group.todos) { todo in
-                                    todoRow(todo, showsStatus: false)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    ForEach(flattenedTodos) { todo in
-                        todoRow(todo, showsStatus: true)
-                    }
-                }
-            }
-            .overlay {
-                if visibleTodos.isEmpty {
-                    ATMEmptyState(
-                        icon: "magnifyingglass",
-                        title: showingArchive ? "归档为空" : "没有匹配的任务"
-                    )
-                    .allowsHitTesting(false)
-                }
-            }
+			Group {
+				if drawerTab == .tasks {
+					taskColumn
+				} else {
+					groupManagementColumn
+				}
+			}
+			.atmAnimatedSwap(drawerTab.rawValue, style: .tab)
         }
-        .confirmationDialog(
-            "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
-            isPresented: Binding(
-                get: { deleteCandidate != nil },
-                set: { if !$0 { deleteCandidate = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let todo = deleteCandidate {
-                Button("永久删除", role: .destructive) {
-                    store.perform(.delete, on: todo)
-                    deleteCandidate = nil
-                }
-            }
-            Button("取消", role: .cancel) { deleteCandidate = nil }
-        } message: {
-            Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
-        }
+		.confirmationDialog(
+			retentionCandidate?.dialogTitle ?? "",
+			isPresented: Binding(
+				get: { retentionCandidate != nil },
+				set: { if !$0 { retentionCandidate = nil } }
+			),
+			titleVisibility: .visible
+		) {
+			if let candidate = retentionCandidate {
+				Button(candidate.actionTitle, role: candidate.action == .archive ? .destructive : nil) {
+					store.performRetention(candidate.action, on: candidate.group.todos)
+					retentionCandidate = nil
+				}
+			}
+			Button("取消", role: .cancel) { retentionCandidate = nil }
+		} message: {
+			Text(retentionCandidate?.message ?? "")
+		}
     }
 
+	private var taskDrawerTabs: some View {
+		ATMNavigatorHeader {
+			ATMCompactSegmentedTabs(
+				selection: $drawerTab,
+				items: [(.tasks, "任务"), (.groups, "分组")]
+			)
+		} trailing: {
+			HStack(spacing: ATMSpacing.xSmall) {
+				if drawerTab == .tasks {
+					ATMNavigatorPresentationToggle(storedValue: $taskListPresentationRaw)
+					ATMIconButton(
+						systemImage: "plus",
+						help: "添加任务 (⌘N)",
+						chrome: .chip,
+						side: 30,
+						iconTier: .bodyLarge
+					) {
+						navigation.showAddTodo = true
+					}
+				}
+			}
+		}
+	}
+
+	private var taskColumn: some View {
+		ATMGroupedNavigatorScroll {
+			if taskListPresentation == .grouped {
+				ForEach(groups) { group in
+					let expanded = expandedBinding(for: group)
+					ATMNavigatorGroup {
+						groupHeader(group, expanded: expanded)
+					} content: {
+						if expanded.wrappedValue {
+							ForEach(group.todos) { todo in
+								todoRow(todo, showsStatus: false)
+							}
+						}
+					}
+				}
+			} else {
+				ForEach(flattenedTodos) { todo in
+					todoRow(todo, showsStatus: true)
+				}
+			}
+		}
+		.overlay {
+			if visibleTodos.isEmpty {
+				ATMEmptyState(icon: "checklist", title: "没有任务")
+					.allowsHitTesting(false)
+			}
+		}
+		.confirmationDialog(
+			"永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
+			isPresented: Binding(
+				get: { deleteCandidate != nil },
+				set: { if !$0 { deleteCandidate = nil } }
+			),
+			titleVisibility: .visible
+		) {
+			if let todo = deleteCandidate {
+				Button("永久删除", role: .destructive) {
+					store.perform(.delete, on: todo)
+					deleteCandidate = nil
+				}
+			}
+			Button("取消", role: .cancel) { deleteCandidate = nil }
+		} message: {
+			Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。")
+				.font(ATMFont.body)
+		}
+	}
+
+	private var groupManagementColumn: some View {
+		ScrollView {
+			LazyVStack(spacing: 0) {
+				ForEach(managedGroups) { group in
+					groupManagementRow(group)
+						.atmContentStackRow()
+				}
+			}
+			.padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
+			.padding(.vertical, ATMGroupedNavigatorMetrics.contentVerticalInset)
+		}
+	}
+
     private func todoRow(_ todo: ATMTodo, showsStatus: Bool) -> some View {
-        Button {
+		let isArchived = store.archivedTodos.contains(where: { $0.id == todo.id })
+		return Button {
             navigation.selectedTodoID = todo.id
         } label: {
             DesktopTodoRow(
                 todo: todo,
                 isSelected: navigation.selectedTodoID == todo.id,
-                showsStatus: showsStatus
+				showsStatus: showsStatus,
+				isArchived: isArchived
             )
         }
         .buttonStyle(.atmRow)
@@ -1341,7 +1441,7 @@ private struct DesktopTasksView: View {
         ATMTodoMenu.entries(
             for: todo,
             store: store,
-            isArchived: showingArchive,
+			isArchived: store.archivedTodos.contains(where: { $0.id == todo.id }),
             // Editing lives in the detail pane's form, so the row menu selects the
             // todo and asks the detail to open straight into it.
             onEdit: {
@@ -1363,8 +1463,9 @@ private struct DesktopTasksView: View {
     }
 
     private func revealSelectedTodoIfFiltered() {
-        // Archived Todos live in the archive view and lifecycle filtering no
-        // longer hides a fifth state from the active list.
+		// Every retained Todo is visible in the same list; direct links only need
+		// to switch back from the group-management tab.
+		if navigation.selectedTodoID != nil { drawerTab = .tasks }
     }
 
     private func applyDefaultCollapsedGroupsIfNeeded() {
@@ -1375,6 +1476,7 @@ private struct DesktopTasksView: View {
         }
         if !didApplyClosedTaskGroupsV2 {
             set.insert("history")
+			set.insert("archive")
             didApplyClosedTaskGroupsV2 = true
         }
         collapsedGroupsRaw = set.sorted().joined(separator: ",")
@@ -1389,12 +1491,168 @@ private struct DesktopTasksView: View {
         set.remove(group.id)
         collapsedGroupsRaw = set.sorted().joined(separator: ",")
     }
+
+	private func selectManagedGroupIfNeeded() {
+		guard managedGroups.contains(where: { $0.id == selectedGroupID }) else {
+			selectedGroupID = managedGroups.first?.id ?? "review"
+			return
+		}
+	}
+
+	private func groupManagementRow(_ group: ATMTaskGroup) -> some View {
+		return Button {
+			selectedGroupID = group.id
+		} label: {
+			ATMNavigatorRow(isSelected: selectedGroupID == group.id) {
+				HStack(spacing: 10) {
+					Image(systemName: groupIcon(group.id))
+						.foregroundStyle(groupAccent(group.id))
+						.frame(width: 18)
+					VStack(alignment: .leading, spacing: 3) {
+						Text(group.title).font(ATMFont.font(.body, weight: .semibold))
+						Text(groupDescription(group.id))
+							.font(ATMFont.caption)
+							.foregroundStyle(ATMTheme.secondary)
+							.lineLimit(1)
+					}
+					Spacer()
+					Text("\(group.todos.count)")
+						.font(ATMFont.mono(.caption, .semibold))
+						.foregroundStyle(ATMTheme.secondary)
+				}
+			}
+		}
+		.buttonStyle(.atmRow)
+		.focusable(false)
+		.atmRightClickMenu { groupMenuEntries(group) }
+	}
+
+	@ViewBuilder
+	private var groupManagementDetail: some View {
+		if let group = managedGroups.first(where: { $0.id == selectedGroupID }) {
+			VStack(spacing: 0) {
+				ATMDetailHeader(title: group.title) {
+					Label("任务分组", systemImage: groupIcon(group.id))
+						.font(ATMFont.footnote)
+						.foregroundStyle(groupAccent(group.id))
+				} actions: {
+					HStack(spacing: 6) {
+						Button {
+							drawerTab = .tasks
+							navigation.selectedTodoID = group.todos.first?.id
+						} label: {
+							Label("查看任务", systemImage: "list.bullet")
+						}
+						.buttonStyle(.bordered)
+						.controlSize(.small)
+						.disabled(group.todos.isEmpty)
+						if group.isArchive, !group.todos.isEmpty {
+							Button("恢复全部") { requestRetention(.restore, for: group) }
+								.buttonStyle(.borderedProminent)
+								.controlSize(.small)
+						} else if ["done", "history"].contains(group.id), !group.todos.isEmpty {
+							Button("归档全部") { requestRetention(.archive, for: group) }
+								.buttonStyle(.borderedProminent)
+								.controlSize(.small)
+						}
+					}
+				} meta: {
+					Text("\(group.todos.count) 个任务")
+						.font(ATMFont.caption)
+						.foregroundStyle(ATMTheme.secondary)
+				}
+				Divider()
+				ATMDetailBodySurface {
+					Text(groupDescription(group.id))
+						.font(ATMFont.body)
+						.foregroundStyle(ATMTheme.secondary)
+						.padding(.horizontal, ATMDetailLayout.horizontalPadding)
+						.padding(.vertical, 24)
+						.frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+						.frame(maxWidth: .infinity, alignment: .leading)
+				}
+			}
+		} else {
+			ATMDetailBodySurface {
+				ATMEmptyState(icon: "rectangle.3.group", title: "选择一个分组")
+			}
+		}
+	}
+
+	private func groupActionMenu(_ group: ATMTaskGroup) -> some View {
+		Menu {
+			Button("管理分组…") {
+				selectedGroupID = group.id
+				drawerTab = .groups
+			}
+			if group.isArchive, !group.todos.isEmpty {
+				Divider()
+				Button("恢复全部") { requestRetention(.restore, for: group) }
+			} else if ["done", "history"].contains(group.id), !group.todos.isEmpty {
+				Divider()
+				Button("归档全部…", role: .destructive) { requestRetention(.archive, for: group) }
+			}
+		} label: {
+			Image(systemName: "ellipsis")
+				.font(ATMFont.font(.caption, weight: .semibold))
+				.foregroundStyle(ATMTheme.secondary)
+				.frame(width: 20, height: 20)
+		}
+		.menuStyle(.borderlessButton)
+		.menuIndicator(.hidden)
+		.fixedSize()
+	}
+
+	private func groupMenuEntries(_ group: ATMTaskGroup) -> [ATMMenuEntry] {
+		var entries: [ATMMenuEntry] = []
+		if group.isArchive, !group.todos.isEmpty {
+			entries.append(
+				ATMMenuItem("恢复全部") { requestRetention(.restore, for: group) }.menuEntry
+			)
+		} else if ["done", "history"].contains(group.id), !group.todos.isEmpty {
+			entries.append(
+				ATMMenuItem("归档全部…", destructive: true) {
+					requestRetention(.archive, for: group)
+				}.menuEntry
+			)
+		}
+		return entries
+	}
+
+	private func requestRetention(_ action: ATMTodoAction, for group: ATMTaskGroup) {
+		retentionCandidate = ATMTaskGroupRetention(group: group, action: action)
+	}
+
+	private func groupIcon(_ id: String) -> String {
+		switch id {
+		case "review": return "person.crop.circle.badge.checkmark"
+		case "working": return "circle.dotted"
+		case "open": return "circle"
+		case "done": return "checkmark.circle"
+		case "history": return "clock.arrow.circlepath"
+		case "archive": return "archivebox"
+		default: return "rectangle.3.group"
+		}
+	}
+
+	private func groupDescription(_ id: String) -> String {
+		switch id {
+		case "review": return "Agent 已提交、等待人工验收的任务。"
+		case "working": return "正在推进的任务；带唤醒条件的等待项也留在这里。"
+		case "open": return "尚未开始、可以被会话接手的任务。"
+		case "done": return "最近七天完成的任务。"
+		case "history": return "七天以前完成、仍保留在工作集中的任务。"
+		case "archive": return "已移出工作集但可随时恢复的任务。"
+		default: return "任务分组。"
+		}
+	}
 }
 
 private struct DesktopTodoRow: View {
     let todo: ATMTodo
     let isSelected: Bool
     var showsStatus = false
+	var isArchived = false
 
     var body: some View {
         // Grouped rows omit the status glyph because their section already says it.
@@ -1406,8 +1664,15 @@ private struct DesktopTodoRow: View {
                 // is what you scan the list for and what you type back at the CLI.
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     if showsStatus {
-                        ATMTodoStatusGlyph(todo: todo, tier: .caption)
-                            .help(ATMTodoStatusStyle.label(for: todo))
+						if isArchived {
+							Image(systemName: "archivebox")
+								.font(ATMFont.font(.caption, weight: .semibold))
+								.foregroundStyle(ATMTheme.secondary)
+								.help("已归档")
+						} else {
+							ATMTodoStatusGlyph(todo: todo, tier: .caption)
+								.help(ATMTodoStatusStyle.label(for: todo))
+						}
                     }
                     Text(todo.id.uppercased())
                         .font(ATMFont.mono(.caption, .medium))
@@ -1431,20 +1696,10 @@ private struct DesktopTodoRow: View {
                 }
 
                 if projectLabel != nil || creatorLabel != nil {
-                    HStack(spacing: 6) {
-                        if let project = projectLabel { Text(project) }
-                        if let creator = creatorLabel {
-                            Label {
-                                Text(creator)
-                            } icon: {
-                                if let icon = ATMTodoCreator.icon(todo.creator) {
-                                    Image(systemName: icon)
-                                }
-                            }
-                        }
+                    HStack(spacing: 5) {
+                        if let project = projectLabel { projectBadge(project) }
+                        if let creator = creatorLabel { creatorBadge(creator) }
                     }
-                    .font(ATMFont.mono(.caption, .medium))
-                    .foregroundStyle(ATMTheme.secondary)
                 }
             }
         }
@@ -1461,6 +1716,48 @@ private struct DesktopTodoRow: View {
     }
 
     private var creatorLabel: String? { ATMTodoCreator.shortLabel(todo.creator) }
+
+    private func projectBadge(_ project: String) -> some View {
+        let color = ATMTodoProjectStyle.color(for: project)
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(project)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(ATMFont.mono(.caption, .semibold))
+        .foregroundStyle(isClosed ? ATMTheme.secondary : ATMTheme.primary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(color.opacity(isSelected ? 0.16 : 0.10), in: Capsule())
+        .overlay {
+            Capsule().stroke(color.opacity(0.24), lineWidth: 0.5)
+        }
+        .help("项目：\(project)")
+    }
+
+    private func creatorBadge(_ creator: String) -> some View {
+        HStack(spacing: 3) {
+            if let icon = ATMTodoCreator.icon(todo.creator) {
+                Image(systemName: icon)
+                    .symbolRenderingMode(.monochrome)
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .frame(width: 12, height: 12)
+            }
+            Text(creator).lineLimit(1)
+        }
+        .font(ATMFont.font(.caption, weight: .medium))
+        .foregroundStyle(ATMTheme.secondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(ATMTheme.secondary.opacity(0.07), in: Capsule())
+        .overlay {
+            Capsule().stroke(ATMTheme.border.opacity(0.7), lineWidth: 0.5)
+        }
+        .help("创建者：\(creator)")
+    }
 }
 
 struct DesktopTodoDetail: View {
@@ -2396,14 +2693,14 @@ private struct DesktopAddTodoSheet: View {
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("添加任务").font(ATMFont.font(.title2, weight: .bold))
-                Text("第一行是标题，换行后写细节；⏎ 添加，⇧⏎ 换行")
+				Text("直接写需求，ATM 会生成简短标题；⏎ 添加，⇧⏎ 换行")
                     .font(ATMFont.mono(.footnote))
                     .foregroundStyle(ATMTheme.secondary)
             }
 
             ATMComposerTextView(
                 text: $text,
-                placeholder: "要完成什么？",
+				placeholder: "描述要完成的事情、背景和验收结果…",
                 autoFocus: true,
 				onSubmit: { submit(draft) },
 				onPasteImages: handleImagePaste
@@ -2799,6 +3096,11 @@ private struct DesktopUsageView: View {
 
 /// Charts and session rows depend only on usage data. Todo actions, knowledge
 /// loading and other ATMDataStore publications stop at this equality boundary.
+enum ATMUsageQuotaLayout {
+    static let cardWidth: CGFloat = 360
+    static let cardMinimumHeight: CGFloat = 210
+}
+
 private struct DesktopUsageContent: View, Equatable {
     let snapshot: ATMDashboardSnapshot
     let quota: ATMQuotaSnapshot
@@ -2848,10 +3150,18 @@ private struct DesktopUsageContent: View, Equatable {
     private static let supportingMetricColumns = [
         GridItem(.adaptive(minimum: 145, maximum: .infinity), spacing: 8),
     ]
-    // Wide enough for the per-product legend (● Build 13% ● Imagine 4% …)
-    // on one line without scaling down.
+    // Quota cards are a stable visual unit. An unbounded adaptive maximum made
+    // every resize stretch the cards to a different width; a fixed column width
+    // changes only the number of columns and leaves each card unchanged.
     private static let quotaCardColumns = [
-        GridItem(.adaptive(minimum: 224, maximum: .infinity), spacing: 12),
+        GridItem(
+            .adaptive(
+                minimum: ATMUsageQuotaLayout.cardWidth,
+                maximum: ATMUsageQuotaLayout.cardWidth
+            ),
+            spacing: 12,
+            alignment: .top
+        ),
     ]
     /// Side-by-side breakdown + skill panels need enough room for both lists;
     /// below this, stack them so neither column is pinched.
@@ -2947,7 +3257,7 @@ private struct DesktopUsageContent: View, Equatable {
                     .foregroundStyle(ATMTheme.secondary)
             }
 
-            LazyVGrid(columns: Self.quotaCardColumns, spacing: 12) {
+            LazyVGrid(columns: Self.quotaCardColumns, alignment: .leading, spacing: 12) {
                 ForEach(quota.serviceCards) { card in
                     quotaCard(card)
                 }
@@ -3986,15 +4296,12 @@ private struct DesktopUsageContent: View, Equatable {
             .frame(height: 20)
             .foregroundStyle(ATMTheme.secondary)
 
-            HStack(alignment: .top, spacing: 12) {
-                ForEach(Array(card.windows.enumerated()), id: \.offset) { index, window in
-                    if index > 0 {
-                        Divider()
-                            .frame(height: 66)
-                    }
-                    quotaWindowSummary(window)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+            let orderedWindows = card.windows.sorted { $0.windowMinutes < $1.windowMinutes }
+            if let inner = orderedWindows.first, let outer = orderedWindows.last,
+               orderedWindows.count > 1 {
+                dualWindowQuotaContent(inner: inner, outer: outer)
+            } else if let window = orderedWindows.first {
+                quotaWindowSummary(window)
             }
 
             if !card.products.isEmpty {
@@ -4041,7 +4348,11 @@ private struct DesktopUsageContent: View, Equatable {
         .padding(16)
         // One fixed height for every card: tall enough for the product-split
         // variant, and the Spacer above absorbs the slack in plain cards.
-        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: ATMUsageQuotaLayout.cardMinimumHeight,
+            alignment: .topLeading
+        )
         .background(
             LinearGradient(
                 colors: [color.opacity(0.055), ATMTheme.elevated, ATMTheme.elevated],
@@ -4060,6 +4371,131 @@ private struct DesktopUsageContent: View, Equatable {
             }
             .joined(separator: "；")
         )
+    }
+
+    private func dualWindowQuotaContent(
+        inner: ATMQuotaWindow,
+        outer: ATMQuotaWindow
+    ) -> some View {
+        let innerColor = quotaRingColor(inner, isInner: true)
+        let outerColor = quotaRingColor(outer, isInner: false)
+        return HStack(alignment: .center, spacing: 18) {
+            concentricQuotaGauge(
+                inner: inner,
+                outer: outer,
+                innerColor: innerColor,
+                outerColor: outerColor
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                quotaWindowLegend(
+                    inner,
+                    ringColor: innerColor,
+                    ringLabel: "内圈"
+                )
+                Divider()
+                quotaWindowLegend(
+                    outer,
+                    ringColor: outerColor,
+                    ringLabel: "外圈"
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func concentricQuotaGauge(
+        inner: ATMQuotaWindow,
+        outer: ATMQuotaWindow,
+        innerColor: Color,
+        outerColor: Color
+    ) -> some View {
+        ZStack {
+            Circle()
+                .stroke(ATMTheme.controlFill, lineWidth: 7)
+                .frame(width: 116, height: 116)
+            Circle()
+                .trim(from: 0, to: quotaProgress(outer.displayPercent))
+                .stroke(outerColor, style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .frame(width: 116, height: 116)
+
+            Circle()
+                .stroke(ATMTheme.controlFill, lineWidth: 6)
+                .frame(width: 82, height: 82)
+            Circle()
+                .trim(from: 0, to: quotaProgress(inner.displayPercent))
+                .stroke(innerColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .frame(width: 82, height: 82)
+
+            VStack(spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(String(format: "%.0f", inner.displayPercent))
+                        .font(ATMFont.mono(.title2, .bold))
+                    Text("%")
+                        .font(ATMFont.mono(.micro, .semibold))
+                }
+                Text("\(inner.windowLabel) 已用")
+                    .font(ATMFont.mono(.micro))
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+        }
+        .frame(width: 126, height: 126)
+        .help(
+            "内圈 \(inner.windowLabel) \(String(format: "%.1f", inner.displayPercent))%，"
+                + "外圈 \(outer.windowLabel) \(String(format: "%.1f", outer.displayPercent))%"
+        )
+    }
+
+    private func quotaWindowLegend(
+        _ window: ATMQuotaWindow,
+        ringColor: Color,
+        ringLabel: String
+    ) -> some View {
+        let level = ATMQuotaLevel.level(forPercent: window.displayPercent)
+        return HStack(alignment: .center, spacing: 8) {
+            Circle()
+                .fill(ringColor)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(window.windowLabel)
+                        .font(ATMFont.mono(.body, .semibold))
+                    Text("\(ringLabel) · \(String(format: "%.0f", window.displayPercent))% 已用")
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                HStack(spacing: 5) {
+                    Text(quotaStatusLabel(level))
+                    Text("·")
+                    Text(window.resetText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .font(ATMFont.mono(.caption))
+                .foregroundStyle(ATMTheme.secondary)
+                if let trend = window.trend {
+                    Text(trend.rateText)
+                        .font(ATMFont.mono(.caption, .semibold))
+                        .foregroundStyle(trend.fullBeforeReset
+                            ? ATMTheme.quotaColor(.critical)
+                            : ATMTheme.secondary)
+                        .help(quotaTrendHelp(trend, window: window))
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func quotaRingColor(_ window: ATMQuotaWindow, isInner: Bool) -> Color {
+        let level = ATMQuotaLevel.level(forPercent: window.displayPercent)
+        if level != .healthy { return ATMTheme.quotaColor(level) }
+        return isInner ? ATMTheme.accent : ATMTheme.quotaColor(.healthy)
+    }
+
+    private func quotaProgress(_ percent: Double) -> CGFloat {
+        CGFloat(max(0, min(1, percent / 100)))
     }
 
     private func quotaWindowSummary(_ window: ATMQuotaWindow) -> some View {
@@ -4234,7 +4670,11 @@ private struct DesktopUsageContent: View, Equatable {
             .foregroundStyle(ATMTheme.secondary)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: ATMUsageQuotaLayout.cardMinimumHeight,
+            alignment: .topLeading
+        )
         .background(
             LinearGradient(
                 colors: [color.opacity(0.055), ATMTheme.elevated, ATMTheme.elevated],

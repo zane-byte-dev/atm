@@ -19,6 +19,11 @@ enum ATMTodoIPCCommand {
         "todo.create",
         responseKeyDecoding: .useDefault
     )
+	static let suggestTitle = ATMIPCMethod<ATMTodoTitleRequest, ATMTodoTitleResponse>(
+		"todo.title",
+		timeout: 45,
+		responseKeyDecoding: .useDefault
+	)
     static let update = ATMIPCMethod<ATMTodoUpdateRequest, ATMTodo>(
         "todo.update",
         responseKeyDecoding: .useDefault
@@ -66,6 +71,7 @@ struct ATMTodoRetentionRequest: Encodable, Equatable {
     enum CodingKeys: String, CodingKey { case todoIDs = "todo_ids" }
 
     init(_ todoID: String) { todoIDs = [todoID] }
+	init(todoIDs: [String]) { self.todoIDs = todoIDs }
 }
 
 struct ATMTodoRetentionResponse: Decodable, Equatable {
@@ -132,13 +138,21 @@ struct ATMTodoCreateRequest: Encodable, Equatable {
         case imagePaths = "image_paths"
     }
 
-    init(draft: ATMTodoDraft) {
-        title = draft.title
+    init(draft: ATMTodoDraft, title: String? = nil) {
+        self.title = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? draft.title
         description = draft.description
         priority = draft.priority
         project = draft.project
         imagePaths = draft.imagePaths
     }
+}
+
+struct ATMTodoTitleRequest: Encodable, Equatable {
+	let description: String
+}
+
+struct ATMTodoTitleResponse: Decodable, Equatable {
+	let title: String
 }
 
 /// Sparse update: nil omits a field, while an empty non-nil value clears it.
@@ -304,6 +318,13 @@ struct ATMTodoIPCClient: Sendable {
         try await ipc.call(ATMTodoIPCCommand.create, request: request)
     }
 
+	func suggestTitle(for description: String) async throws -> ATMTodoTitleResponse {
+		try await ipc.call(
+			ATMTodoIPCCommand.suggestTitle,
+			request: ATMTodoTitleRequest(description: description)
+		)
+	}
+
     func update(_ request: ATMTodoUpdateRequest) async throws -> ATMTodo {
         try await ipc.call(ATMTodoIPCCommand.update, request: request)
     }
@@ -324,12 +345,26 @@ struct ATMTodoIPCClient: Sendable {
     }
 
     func archive(_ todoID: String) async throws -> ATMTodoRetentionResponse {
-        try await ipc.call(ATMTodoIPCCommand.archive, request: ATMTodoRetentionRequest(todoID))
+		try await archive([todoID])
     }
 
+	func archive(_ todoIDs: [String]) async throws -> ATMTodoRetentionResponse {
+		try await ipc.call(
+			ATMTodoIPCCommand.archive,
+			request: ATMTodoRetentionRequest(todoIDs: todoIDs)
+		)
+	}
+
     func restore(_ todoID: String) async throws -> ATMTodoRetentionResponse {
-        try await ipc.call(ATMTodoIPCCommand.restore, request: ATMTodoRetentionRequest(todoID))
+		try await restore([todoID])
     }
+
+	func restore(_ todoIDs: [String]) async throws -> ATMTodoRetentionResponse {
+		try await ipc.call(
+			ATMTodoIPCCommand.restore,
+			request: ATMTodoRetentionRequest(todoIDs: todoIDs)
+		)
+	}
 
     func delete(_ todoID: String) async throws -> ATMTodoDeleteResponse {
         try await ipc.call(ATMTodoIPCCommand.delete, request: ATMTodoDeleteRequest(todoID))

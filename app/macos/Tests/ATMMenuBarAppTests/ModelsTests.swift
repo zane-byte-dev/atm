@@ -2891,6 +2891,14 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMTodoPriorityStyle.label("P3"), "P3 · 低")
     }
 
+    func testTodoProjectStyleIsStableAndUsesCategoricalColors() throws {
+        let atm = ATMTodoProjectStyle.colorIndex(for: "atm")
+        XCTAssertEqual(atm, ATMTodoProjectStyle.colorIndex(for: "atm"))
+        XCTAssertNotEqual(atm, ATMTodoProjectStyle.colorIndex(for: "wanda"))
+        XCTAssertGreaterThanOrEqual(atm, 0)
+        XCTAssertLessThan(atm, ATMTheme.palette.count - 1)
+    }
+
     func testTodoCommandArgumentsPreserveBusinessCLI() throws {
         let data = Data(
             """
@@ -3346,6 +3354,15 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMTaskQuery.groups(from: todos).map(\.title).first, "待验收")
 		XCTAssertEqual(ATMTaskQuery.flattened(from: todos).map(\.id), ["t2", "t3", "t1"])
         XCTAssertEqual(ATMTaskQuery.preferredDefault(in: todos)?.id, "t2")
+
+		let archived = try JSONDecoder().decode(
+			[ATMTodo].self,
+			from: Data(#"[{"id":"t9","title":"Archived","priority":"P1","status":"done","created":"2026-07-13"}]"#.utf8)
+		)
+		let groupsWithArchive = ATMTaskQuery.groups(from: todos, includingArchived: archived)
+		XCTAssertEqual(groupsWithArchive.map(\.id), ["review", "working", "archive"])
+		XCTAssertEqual(groupsWithArchive.last?.title, "已归档")
+		XCTAssertEqual(groupsWithArchive.last?.todos.map(\.id), ["t9"])
 
         let completedFirst = try JSONDecoder().decode(
             [ATMTodo].self,
@@ -4049,18 +4066,22 @@ final class ModelsTests: XCTestCase {
         return try JSONDecoder().decode(ATMTodo.self, from: Data("{\(fields.joined(separator: ","))}".utf8))
     }
 
-    func testTodoDraftSplitsTitleFromDescription() {
+    func testTodoDraftKeepsRequirementAsDescriptionAndBuildsFallbackTitle() {
         let draft = ATMTodoDraft(
             text: "\n  收敛用量面板  \n\n按 client / project 拆视角\n还要带费用\n",
             project: " atm ",
             priority: "P1"
         )
 
-        XCTAssertEqual(draft.title, "收敛用量面板")
-        XCTAssertEqual(draft.description, "按 client / project 拆视角\n还要带费用")
+		XCTAssertEqual(draft.title, "收敛用量面板 按 client / project 拆视角 还要带费用")
+		XCTAssertEqual(draft.description, "收敛用量面板  \n\n按 client / project 拆视角\n还要带费用")
         XCTAssertEqual(draft.project, "atm")
         XCTAssertTrue(draft.isSubmittable)
         XCTAssertFalse(ATMTodoDraft(text: "   \n  ", project: "", priority: "P1").isSubmittable)
+		XCTAssertEqual(
+			ATMTodoDraft.fallbackTitle(from: String(repeating: "任", count: 90)).count,
+			80
+		)
     }
 
 	func testTodoImageRulesAndTemporaryDraftCleanup() throws {

@@ -80,6 +80,7 @@ func TestNamesAreTheDeclaredDesktopSet(t *testing.T) {
 		"todo.restore",
 		"todo.show",
 		"todo.start",
+		"todo.title",
 		"todo.update",
 	}
 	got := New(Dependencies{}).Names()
@@ -119,6 +120,38 @@ func TestTextModelMethodUsesInjectedChecker(t *testing.T) {
 		t.Fatalf("decode envelope: %v\n%s", err, output.String())
 	}
 	if !envelope.Data.OK || envelope.Data.LatencyMS != 7 {
+		t.Fatalf("response = %+v", envelope.Data)
+	}
+}
+
+func TestTodoTitleMethodUsesInjectedGenerator(t *testing.T) {
+	var received string
+	server := New(Dependencies{
+		GenerateTodoTitle: func(_ context.Context, description string) (string, error) {
+			received = description
+			return "归档并入任务分组", nil
+		},
+	})
+	var output bytes.Buffer
+	err := server.Serve(
+		context.Background(),
+		"todo.title",
+		strings.NewReader(`{"description":"把归档入口移动到任务分组下"}`),
+		&output,
+	)
+	if err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	if received != "把归档入口移动到任务分组下" {
+		t.Fatalf("generator description = %q", received)
+	}
+	var envelope struct {
+		Data TodoTitleResponse `json:"data"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode envelope: %v\n%s", err, output.String())
+	}
+	if envelope.Data.Title != "归档并入任务分组" {
 		t.Fatalf("response = %+v", envelope.Data)
 	}
 }

@@ -30,6 +30,8 @@ final class TodoIPCTests: XCTestCase {
         XCTAssertEqual(ATMTodoIPCCommand.show.arguments, ["_ipc", "todo.show"])
         XCTAssertEqual(ATMTodoIPCCommand.document.arguments, ["_ipc", "todo.doc"])
         XCTAssertEqual(ATMTodoIPCCommand.create.arguments, ["_ipc", "todo.create"])
+		XCTAssertEqual(ATMTodoIPCCommand.suggestTitle.arguments, ["_ipc", "todo.title"])
+		XCTAssertEqual(ATMTodoIPCCommand.suggestTitle.timeout, 45)
         XCTAssertEqual(ATMTodoIPCCommand.update.arguments, ["_ipc", "todo.update"])
         XCTAssertEqual(ATMTodoIPCCommand.refine.arguments, ["_ipc", "todo.refine"])
         XCTAssertEqual(ATMTodoIPCCommand.refine.timeout, 180)
@@ -48,8 +50,8 @@ final class TodoIPCTests: XCTestCase {
             text: "Typed create\n\nBody", project: "atm", priority: "P0",
             imagePaths: ["/tmp/screenshot.png"]
         ))))
-        XCTAssertEqual(create["title"] as? String, "Typed create")
-        XCTAssertEqual(create["description"] as? String, "Body")
+		XCTAssertEqual(create["title"] as? String, "Typed create Body")
+		XCTAssertEqual(create["description"] as? String, "Typed create\n\nBody")
         XCTAssertEqual(create["image_paths"] as? [String], ["/tmp/screenshot.png"])
         for forbidden in ["status", "creator", "source", "on_done", "arguments", "action"] {
             XCTAssertNil(create[forbidden], "create unexpectedly exposed \(forbidden)")
@@ -128,10 +130,10 @@ final class TodoIPCTests: XCTestCase {
         await waitUntil { selectedID != nil }
         XCTAssertEqual(selectedID, "t8")
         XCTAssertEqual(createStore.allTodos.first?.id, "t8")
-        let createRequest = try object(Data(contentsOf: createRequestURL))
-        XCTAssertEqual(createRequest["title"] as? String, "Typed create")
-        XCTAssertNil(createRequest["status"])
-        XCTAssertNil(createRequest["creator"])
+		let titleRequest = try object(Data(contentsOf: createRequestURL))
+		XCTAssertEqual(titleRequest["description"] as? String, "Typed create\n\nBody")
+		XCTAssertNil(titleRequest["status"])
+		XCTAssertNil(titleRequest["creator"])
 
         let original = try JSONDecoder().decode(
             ATMTodo.self,
