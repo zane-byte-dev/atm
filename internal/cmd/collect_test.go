@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
@@ -322,6 +325,125 @@ func TestCollectionFailureStatusDistinguishesLoginAndPermission(t *testing.T) {
 
 // run builds one audit row. Runs are consumed newest-first, which is how the
 // overview supplies them.
+// The whole loop through the real command: a connector whose login expired
+// attempts once, says what it skipped, and on the next background round attempts
+// nothing at all. Before this, one outage wrote five identical failure rows every
+// five minutes for as long as it lasted.
+func TestBackgroundRunStopsAttemptingAConnectorWhoseLoginExpired(t *testing.T) {
+	withTempAtmDir(t)
+	withHumanCollectionCLI(t)
+	connector := filepath.Join(t.TempDir(), "fake-connector")
+	script := "#!/bin/sh\ncat >/dev/null\n" +
+		`echo '{"error":"dws returned an error: 未登录，请先执行 dws auth login"}'` + "\n"
+	if err := os.WriteFile(connector, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldConnectors, oldDue, oldJSON := config.CollectionConnectors, collectRunDue, jsonOutput
+	config.CollectionConnectors = map[string]config.CollectionConnectorConfig{
+		"fake": {Command: connector, LoginCommand: "/opt/fake/bin auth login"},
+	}
+	collectRunDue, jsonOutput = true, false
+	t.Cleanup(func() {
+		config.CollectionConnectors, collectRunDue, jsonOutput = oldConnectors, oldDue, oldJSON
+	})
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, external := range []string{"c1", "c2"} {
+		if _, err := store.UpsertCollectionSource(db, store.CollectionSource{
+			Connector: "fake", Kind: "group", ExternalID: external,
+			Name: external, Priority: "P2", Enabled: true,
+		}); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	first := captureStdout(t, func() {
+		if err := collectRunCmd.RunE(collectRunCmd, nil); err == nil {
+			t.Fatalf("the source that was attempted failed and must be reported")
+		}
+	})
+	if !strings.Contains(first, "跳过 1 个来源") || !strings.Contains(first, "重新登录：/opt/fake/bin auth login") {
+		t.Fatalf("first round output = %q", first)
+	}
+
+	second := captureStdout(t, func() {
+		if err := collectRunCmd.RunE(collectRunCmd, nil); err != nil {
+			t.Fatalf("a skipped round is not a failure: %v", err)
+		}
+	})
+	if !strings.Contains(second, "跳过 2 个来源") || !strings.Contains(second, "后再探测") {
+		t.Fatalf("second round output = %q", second)
+	}
+	if strings.Contains(second, "No enabled collection sources") {
+		t.Fatalf("skipping must not read as nothing to do: %q", second)
+	}
+
+	db, err = store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var rows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM collection_runs").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("run rows = %d, want the single attempt", rows)
+	}
+}
+
+// The two statuses ATM stops retrying are the two whose line has to carry the
+// thing that ends them.
+func TestTheLineForAStuckLoginNamesHowToFixIt(t *testing.T) {
+	health := collectionConnectorHealth{
+		Connector: "dingtalk", Status: "auth_required", Error: "未登录",
+		ConsecutiveFailures: 1, LoginCommand: "/Users/x/bin/dws auth login",
+	}
+	line := collectionHealthLine(health)
+	if !strings.Contains(line, "重新登录：/Users/x/bin/dws auth login") {
+		t.Fatalf("line = %q", line)
+	}
+	// A flaky connector is retrying on its own; offering a login there would be
+	// advice for a problem it does not have.
+	health.Status = "flaky"
+	health.RecentRuns, health.RecentFailures = 20, 1
+	if line := collectionHealthLine(health); strings.Contains(line, "重新登录") {
+		t.Fatalf("flaky line = %q", line)
+	}
+}
+
+// Sources that were deliberately left alone write no run row, so silence here
+// used to read as "nothing was due" — the opposite of what happened.
+func TestTheBlockedLineSaysWhatWasSkippedAndWhenItResumes(t *testing.T) {
+	retryAt := time.Date(2026, 8, 25, 15, 39, 0, 0, config.Loc)
+	line := collectionBlockedLine(collector.BlockedConnector{
+		Connector: "dingtalk", Status: "auth_required", Error: "未登录",
+		SkippedSources: 5, RetryAt: retryAt.Unix(), LoginCommand: "~/bin/dws auth login",
+	})
+	for _, want := range []string{"登录失效", "跳过 5 个来源", "15:39 后再探测", "重新登录：~/bin/dws auth login"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line = %q, want %q in it", line, want)
+		}
+	}
+}
+
+// A missing permission has been per-source in practice — one group this account
+// cannot read — so it must not hold the connector's healthy siblings back, and it
+// must not be answered with advice to log in again.
+func TestAPermissionFailureNeitherBlocksTheConnectorNorAsksForALogin(t *testing.T) {
+	health := collectionConnectorHealth{
+		Connector: "dingtalk", Status: "permission_required", Error: "Permission denied",
+		ConsecutiveFailures: 1, LoginCommand: "/Users/x/bin/dws auth login",
+	}
+	if line := collectionHealthLine(health); strings.Contains(line, "重新登录") {
+		t.Fatalf("line = %q", line)
+	}
+}
+
 func healthRun(connector, status, errorText string, finishedAt int64) store.CollectionRun {
 	return store.CollectionRun{
 		Connector: connector, Status: status, Error: errorText, FinishedAt: finishedAt,

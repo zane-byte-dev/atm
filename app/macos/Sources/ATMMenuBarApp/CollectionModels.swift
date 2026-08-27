@@ -351,12 +351,32 @@ enum ATMCollectionWorkspaceNotice {
             .joined(separator: "\n")
     }
 
+    /// The connector whose login the person can end this outage with, if any. The
+    /// banner and the notification both read this rather than each deciding for
+    /// itself what counts as "needs logging in".
+    static func loginPrompt(for overview: ATMCollectionOverview) -> ATMCollectionLoginPrompt? {
+        for health in overview.connectorHealth where health.needsCredentialAction {
+            guard let command = health.loginCommand?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !command.isEmpty else { continue }
+            return ATMCollectionLoginPrompt(connector: health.connector, command: command)
+        }
+        return nil
+    }
+
     static func message(shared: String?, sourceErrors: [String: String]) -> String? {
         guard let shared = shared?.trimmingCharacters(in: .whitespacesAndNewlines),
               !shared.isEmpty,
               !sourceErrors.values.contains(shared) else { return nil }
         return shared
     }
+}
+
+/// A connector waiting on a person to log in again, and the command that does it.
+/// ATM never runs it by itself: the login opens a browser and wants a scan, so it
+/// is offered as an action and run where the person can watch it.
+struct ATMCollectionLoginPrompt: Equatable {
+    let connector: String
+    let command: String
 }
 
 /// One day's knowledge document for one source, produced by `atm collect digest`
@@ -395,6 +415,10 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
     var consecutiveFailures: Int? = nil
     var recentRuns: Int? = nil
     var recentFailures: Int? = nil
+    /// The command this connector declared as its way back in after its login
+    /// expired. Absent for every connector that declared none, which is the answer
+    /// for all of ATM's own.
+    var loginCommand: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case connector, status, error
@@ -402,7 +426,16 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
         case consecutiveFailures = "consecutive_failures"
         case recentRuns = "recent_runs"
         case recentFailures = "recent_failures"
+        case loginCommand = "login_command"
     }
+
+    /// True for the failure ATM stops retrying and waits on a person for.
+    ///
+    /// Only the expired login. `permission_required` never recovers on its own
+    /// either, but it has been per-source in practice — one group this account
+    /// cannot read — and logging in again does not fix it, so it keeps the ordinary
+    /// banner and the ordinary retries.
+    var needsCredentialAction: Bool { status == "auth_required" }
 
     /// Whether this needs a person to do something. A `flaky` connector does not:
     /// it is already retrying, and interrupting for it is what taught people to

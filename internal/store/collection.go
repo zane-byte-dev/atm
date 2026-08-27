@@ -522,6 +522,106 @@ func PutCollectionItem(db *sql.DB, item CollectionItem) (CollectionItem, bool, e
 	return stored, count > 0, err
 }
 
+// MergeCollectionInsights replaces a run's per-topic insight records with the one
+// record that stands for them all, in a single transaction: either the merged row
+// is there and the members are gone, or nothing moved.
+//
+// The merged row is given the union of the members' message IDs, which is what
+// HandledCollectionMessageIDs reads. That is what keeps the messages marked
+// handled after their own rows are deleted, so the twenty-minute overlap the next
+// run reads back does not collect them a second time.
+//
+// A member that already reached the knowledge base or a Todo is refused instead
+// of deleted. Nothing a fresh run just produced can be in that state, which is
+// exactly why it is worth failing loudly if one ever is.
+func MergeCollectionInsights(db *sql.DB, merged CollectionItem, memberIDs []string) (CollectionItem, error) {
+	if len(memberIDs) < 2 {
+		return CollectionItem{}, fmt.Errorf("merging collection insights needs at least two records")
+	}
+	now := time.Now().In(config.Loc).Unix()
+	if merged.ID == "" {
+		merged.ID = CollectionItemID(merged.Connector, merged.Fingerprint)
+	}
+	if merged.CreatedAt == 0 {
+		merged.CreatedAt = now
+	}
+	merged.UpdatedAt = now
+	tx, err := db.Begin()
+	if err != nil {
+		return CollectionItem{}, err
+	}
+	defer tx.Rollback()
+	covered := map[string]struct{}{}
+	for _, messageID := range merged.MessageIDs {
+		covered[messageID] = struct{}{}
+	}
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(memberIDs))
+	for _, id := range memberIDs {
+		if id == merged.ID || seen[id] {
+			continue
+		}
+		seen[id] = true
+		unique = append(unique, id)
+		member, err := scanCollectionItem(tx.QueryRow(collectionItemSelect+` WHERE i.id=?`, id))
+		if err == sql.ErrNoRows {
+			return CollectionItem{}, fmt.Errorf("collection item not found: %s", id)
+		}
+		if err != nil {
+			return CollectionItem{}, err
+		}
+		if member.Action != "insight" {
+			return CollectionItem{}, fmt.Errorf("collection item %s is %s, only insights merge", id, member.Action)
+		}
+		if member.KnowledgeDocumentID != "" || member.TodoID != "" {
+			return CollectionItem{}, fmt.Errorf("collection item %s already wrote something out, refusing to merge it away", id)
+		}
+		for _, messageID := range member.MessageIDs {
+			if _, ok := covered[messageID]; ok {
+				continue
+			}
+			covered[messageID] = struct{}{}
+			merged.MessageIDs = append(merged.MessageIDs, messageID)
+		}
+	}
+	if len(unique) < 2 {
+		return CollectionItem{}, fmt.Errorf("merging collection insights needs at least two records")
+	}
+	messageIDs, err := json.Marshal(merged.MessageIDs)
+	if err != nil {
+		return CollectionItem{}, err
+	}
+	// A plain insert, unlike PutCollectionItem: the fingerprint covers a message
+	// set no other row owns, so a conflict here is a bug worth hearing about
+	// rather than a duplicate to swallow.
+	if _, err := tx.Exec(`INSERT INTO collection_items
+		(id,source_id,connector,conversation_id,fingerprint,message_ids,sender,occurred_at,
+		raw_context,action,proposed_action,title,summary,item_type,project,priority,reason,confidence,
+		 knowledge_document_id,knowledge_collection,todo_id,status,read_at,attempts,
+		 error,created_at,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		merged.ID, merged.SourceID, merged.Connector, merged.ConversationID, merged.Fingerprint,
+		string(messageIDs), merged.Sender, merged.OccurredAt, merged.RawContext, merged.Action,
+		merged.ProposedAction, merged.Title, merged.Summary, merged.ItemType, merged.Project,
+		merged.Priority, merged.Reason, merged.Confidence, merged.KnowledgeDocumentID,
+		merged.KnowledgeCollection, nullableString(merged.TodoID), merged.Status, merged.ReadAt,
+		merged.Attempts, merged.Error, merged.CreatedAt, merged.UpdatedAt); err != nil {
+		return CollectionItem{}, err
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(unique)), ",")
+	args := make([]any, len(unique))
+	for index, id := range unique {
+		args[index] = id
+	}
+	if _, err := tx.Exec(`DELETE FROM collection_items WHERE id IN (`+placeholders+`)`, args...); err != nil {
+		return CollectionItem{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return CollectionItem{}, err
+	}
+	return GetCollectionItem(db, merged.ID)
+}
+
 func UpdateCollectionItem(db *sql.DB, item CollectionItem) error {
 	messageIDs, err := json.Marshal(item.MessageIDs)
 	if err != nil {

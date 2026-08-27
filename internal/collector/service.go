@@ -35,7 +35,38 @@ type Service struct {
 
 type RunReport struct {
 	Runs []store.CollectionRun `json:"runs"`
+	// Blocked names the connectors this run deliberately left alone because their
+	// login had already expired. Skipped sources write no run row, so without this
+	// the report would read as "nothing was due".
+	Blocked []BlockedConnector `json:"blocked,omitempty"`
 }
+
+// BlockedConnector is one connector whose login has expired, together with the
+// sources that were not attempted because of it.
+//
+// Deliberately only the login. A missing permission classifies just as firmly and
+// never recovers on its own either, but in practice it has been per-source — one
+// group this account cannot read while every sibling works — so holding the
+// connector back for it would silence four healthy sources over one broken.
+type BlockedConnector struct {
+	Connector      string `json:"connector"`
+	Status         string `json:"status"`
+	Error          string `json:"error,omitempty"`
+	SkippedSources int    `json:"skipped_sources"`
+	// RetryAt is when the background path probes again. Zero when the evidence is
+	// this run's own failure, which the next run dates from the ledger.
+	RetryAt int64 `json:"retry_at,omitempty"`
+	// LoginCommand is the connector's declared way back in, carried so the CLI and
+	// the desktop can offer it without either of them reading config themselves.
+	LoginCommand string `json:"login_command,omitempty"`
+}
+
+// authBlockedRetryInterval is how long the background path leaves a connector
+// alone after a failure only a person can clear. A login that needs a scan
+// cannot come back faster than the human does, so retrying it every interval
+// buys nothing: one morning of it left 90 identical failure rows behind and
+// still waited for the same person.
+const authBlockedRetryInterval = 30 * time.Minute
 
 func DefaultService() Service {
 	registry, registryErr := DefaultRegistry()
@@ -113,14 +144,38 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 		sources = due
 	}
 	report := RunReport{Runs: []store.CollectionRun{}}
+	// Only the background path honours the ledger. A manual run is the way back
+	// after logging in, so it always attempts.
+	blocked := map[string]BlockedConnector{}
+	if dueOnly {
+		blocked, err = blockedConnectors(db, service.Now())
+		if err != nil {
+			return RunReport{}, err
+		}
+	}
 	errors := []string{}
 	for _, source := range sources {
+		if block, ok := blocked[source.Connector]; ok {
+			block.SkippedSources++
+			blocked[source.Connector] = block
+			continue
+		}
 		run := service.runSource(ctx, db, source)
 		report.Runs = append(report.Runs, run)
 		if run.Status == "failed" {
 			errors = append(errors, sourceDisplayName(source)+": "+run.Error)
+			// An expired login belongs to the connector, not to this source: its
+			// siblings are about to fail identically against the same credential,
+			// and five copies of one message is how a real outage became noise.
+			if status := CollectionFailureStatus(run.Error); status == "auth_required" {
+				blocked[source.Connector] = BlockedConnector{
+					Connector: source.Connector, Status: status, Error: run.Error,
+					LoginCommand: ConnectorLoginCommand(source.Connector),
+				}
+			}
 		}
 	}
+	report.Blocked = blockedReport(blocked)
 	// Once per run rather than once per source. A failure here loses nothing and
 	// the next run retries it, so it does not fail the run; `atm doctor` reports
 	// chat that outlived its retention window, which is what a stuck prune looks
@@ -132,6 +187,62 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 		return report, fmt.Errorf("collection failed for %d source(s): %s", len(errors), strings.Join(errors, "; "))
 	}
 	return report, nil
+}
+
+// blockedConnectors reads the run ledger for connectors whose latest attempt
+// failed on an expired login, recently enough that attempting them again now
+// would only repeat it.
+func blockedConnectors(db *sql.DB, now time.Time) (map[string]BlockedConnector, error) {
+	latest, err := store.ListLatestCollectionRunsBySource(db)
+	if err != nil {
+		return nil, err
+	}
+	blocked := map[string]BlockedConnector{}
+	// Newest first, so the first finished row a connector contributes is its
+	// current state. A run still in flight says nothing either way.
+	decided := map[string]bool{}
+	for _, run := range latest {
+		if run.Status == "running" || decided[run.Connector] {
+			continue
+		}
+		decided[run.Connector] = true
+		if run.Status == "succeeded" {
+			continue
+		}
+		status := CollectionFailureStatus(run.Error)
+		if status != "auth_required" {
+			continue
+		}
+		finished := run.FinishedAt
+		if finished == 0 {
+			finished = run.StartedAt
+		}
+		retryAt := finished + int64(authBlockedRetryInterval.Seconds())
+		if now.Unix() >= retryAt {
+			continue
+		}
+		blocked[run.Connector] = BlockedConnector{
+			Connector: run.Connector, Status: status, Error: run.Error, RetryAt: retryAt,
+			LoginCommand: ConnectorLoginCommand(run.Connector),
+		}
+	}
+	return blocked, nil
+}
+
+// blockedReport keeps only the connectors that actually held work back. One that
+// blocked nothing has its own failed run row to speak for it.
+func blockedReport(blocked map[string]BlockedConnector) []BlockedConnector {
+	report := []BlockedConnector{}
+	for _, block := range blocked {
+		if block.SkippedSources > 0 {
+			report = append(report, block)
+		}
+	}
+	sort.Slice(report, func(i, j int) bool { return report[i].Connector < report[j].Connector })
+	if len(report) == 0 {
+		return nil
+	}
+	return report
 }
 
 func (service Service) runSource(ctx context.Context, db *sql.DB, source store.CollectionSource) store.CollectionRun {
@@ -191,6 +302,7 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 	}
 	batches := groupMessagesWithContext(source, messages, handledMessageIDs)
 	batchFailed := false
+	insights := []runInsight{}
 	for _, batch := range batches {
 		if ctx.Err() != nil {
 			run.FailedCount++
@@ -259,6 +371,18 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			batchFailed = true
 			continue
 		}
+		if item.Action == "insight" {
+			insights = append(insights, runInsight{item: item, messages: batch.Messages})
+		}
+	}
+	// Topics are how this run has to think — one batch, one decision, so an hour
+	// holding one thing worth remembering and fifty jokes can answer differently
+	// about each. They are not how a person reads the result: six cards land at
+	// once and bury each other. So the round's insights are collapsed into the one
+	// record it leaves behind, and the count follows the cards rather than the
+	// topics. Todos are untouched — a piece of work is still one item.
+	if service.mergeRunInsights(ctx, db, source, insights, now) {
+		run.InsightCount = 1
 	}
 	if batchFailed {
 		run.Status = "failed"
@@ -274,6 +398,138 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 	}
 	finish(&run)
 	return run
+}
+
+// runInsight is one topic a run filed as an insight, held with its messages until
+// the run can collapse them all into the single record it leaves behind.
+type runInsight struct {
+	item     store.CollectionItem
+	messages []Message
+}
+
+// mergeRunInsights replaces this round's per-topic insight records with one
+// record covering all of them, and reports whether it did. A single insight is
+// left alone: it is already the one record, and merging it would cost a model
+// call to rewrite text that is fine.
+//
+// Failing to merge is not a failed run. Nothing was lost — the per-topic records
+// are still there, having been written and marked handled before this ran — and
+// failing the run would hold the checkpoint back over messages that are already
+// processed, so the next run would rebuild a window with nothing left to decide.
+func (service Service) mergeRunInsights(ctx context.Context, db *sql.DB,
+	source store.CollectionSource, insights []runInsight, now time.Time) bool {
+	if len(insights) < 2 {
+		return false
+	}
+	sort.SliceStable(insights, func(i, j int) bool {
+		return insights[i].item.OccurredAt < insights[j].item.OccurredAt
+	})
+	batch := mergedInsightBatch(source, insights)
+	item, err := applyDecision(batch, itemFromBatch(batch, now.Unix()),
+		service.mergedInsightDecision(ctx, source, insights, now))
+	memberIDs := make([]string, 0, len(insights))
+	for _, insight := range insights {
+		memberIDs = append(memberIDs, insight.item.ID)
+	}
+	if err == nil {
+		_, err = store.MergeCollectionInsights(db, item, memberIDs)
+	}
+	if err != nil {
+		logging.Failure("collection_insights_not_merged", source.ID, err, map[string]any{
+			"source": source.ID,
+			"items":  memberIDs,
+		})
+		return false
+	}
+	return true
+}
+
+// mergedInsightDecision writes the merged record's title and body. The model is
+// asked first; a local join of what the per-topic records already say stands in
+// when it cannot answer. That fallback is not the guessing this package refuses
+// elsewhere — every line of it was already judged and written by an earlier model
+// call, and nothing new is being claimed. It exists because the invariant this
+// path is for, one round leaves one record, must not depend on the endpoint being
+// up, and because the per-topic records are deleted either way. Which one
+// happened is recorded in reason, where the App shows it.
+func (service Service) mergedInsightDecision(ctx context.Context, source store.CollectionSource,
+	insights []runInsight, now time.Time) Decision {
+	items := make([]store.CollectionItem, 0, len(insights))
+	confidence := float64(0)
+	for _, insight := range insights {
+		items = append(items, insight.item)
+		confidence += insight.item.Confidence
+	}
+	// The merge itself judges nothing, so the record inherits what the per-topic
+	// decisions claimed rather than announcing certainty of its own.
+	confidence /= float64(len(items))
+	reason := fmt.Sprintf("合并本轮 %d 条结论。", len(items))
+	if service.Summarizer != nil {
+		content, err := service.Summarizer.Summarize(ctx, DigestInput{Source: source,
+			Date: now.Format("2006-01-02"), Items: items, Scope: DigestScopeRun})
+		if err == nil {
+			title := strings.TrimSpace(content.Title)
+			if title == "" {
+				title = mergedInsightTitle(source, len(items))
+			}
+			return normalizeDecision(Decision{Action: "insight", Title: title,
+				Summary: strings.TrimSpace(content.Body), ItemType: "insight",
+				Reason: reason, Confidence: confidence}, source)
+		}
+		reason += "内置模型不可用（" + compactError(err) + "），正文按各条原文拼接。"
+	} else {
+		reason += "没有配置摘要模型，正文按各条原文拼接。"
+	}
+	return normalizeDecision(Decision{Action: "insight", Title: mergedInsightTitle(source, len(items)),
+		Summary: joinedInsightSummaries(items), ItemType: "insight",
+		Reason: reason, Confidence: confidence}, source)
+}
+
+// mergedInsightBatch is the merged record's own batch: every message the merged
+// topics owned, in time order. It carries the messages so the record answers for
+// them — the union is what marks them handled — and the raw context so the chat
+// behind the summary is still readable on the card.
+func mergedInsightBatch(source store.CollectionSource, insights []runInsight) MessageBatch {
+	messages := make([]Message, 0)
+	seen := map[string]struct{}{}
+	for _, insight := range insights {
+		for _, message := range insight.messages {
+			if _, ok := seen[message.ID]; ok {
+				continue
+			}
+			seen[message.ID] = struct{}{}
+			messages = append(messages, message)
+		}
+	}
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].CreatedAt != messages[j].CreatedAt {
+			return messages[i].CreatedAt < messages[j].CreatedAt
+		}
+		return messages[i].ID < messages[j].ID
+	})
+	return MessageBatch{Source: source, Messages: messages,
+		Fingerprint: messageBatchFingerprint(source.ID, messages),
+		RawContext:  formatMessageContext(messages, nil)}
+}
+
+func mergedInsightTitle(source store.CollectionSource, count int) string {
+	return fmt.Sprintf("%s 本轮 %d 条结论", sourceDisplayName(source), count)
+}
+
+func joinedInsightSummaries(items []store.CollectionItem) string {
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		title, summary := strings.TrimSpace(item.Title), strings.TrimSpace(item.Summary)
+		switch {
+		case title == "":
+			lines = append(lines, "- "+summary)
+		case summary == "":
+			lines = append(lines, "- "+title)
+		default:
+			lines = append(lines, "- "+title+"："+summary)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (service Service) fetcherFor(source store.CollectionSource) (Fetcher, error) {

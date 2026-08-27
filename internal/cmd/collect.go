@@ -244,8 +244,26 @@ func collectionHealthLine(health collectionConnectorHealth) string {
 		if health.Error != "" {
 			line += " · " + health.Error
 		}
+		// The failure ATM stops retrying, so its line has to carry the one thing
+		// that ends it. A permission problem is not fixed by logging in again.
+		if health.LoginCommand != "" && health.Status == "auth_required" {
+			line += " · 重新登录：" + health.LoginCommand
+		}
 		return line
 	}
+}
+
+// collectionBlockedLine explains a connector nobody attempted. Silence here used
+// to read as "nothing was due", which is the opposite of what happened.
+func collectionBlockedLine(block collector.BlockedConnector) string {
+	line := fmt.Sprintf("%s: 登录失效，跳过 %d 个来源", block.Connector, block.SkippedSources)
+	if block.RetryAt > 0 {
+		line += " · " + time.Unix(block.RetryAt, 0).In(config.Loc).Format("15:04") + " 后再探测"
+	}
+	if block.LoginCommand != "" {
+		line += " · 重新登录：" + block.LoginCommand
+	}
+	return line
 }
 
 func collectionHealthWhen(ts int64) string {
@@ -285,20 +303,25 @@ var collectRunCmd = &cobra.Command{
 		)
 		if jsonOutput {
 			output.JSON(report)
+			return err
+		}
+		// Printed before the error is returned: a failed source and a skipped
+		// connector arrive together — the first source's login failure is exactly
+		// what stopped its siblings — so returning early here hid the one line that
+		// explained the run.
+		for _, run := range report.Runs {
+			fmt.Printf("%s: fetched=%d analyzed=%d created=%d appended=%d insight=%d ignored=%d failed=%d\n",
+				run.SourceID, run.FetchedCount, run.AnalyzedCount, run.CreatedCount,
+				run.AppendedCount, run.InsightCount, run.IgnoredCount, run.FailedCount)
+		}
+		for _, block := range report.Blocked {
+			fmt.Println(collectionBlockedLine(block))
 		}
 		if err != nil {
 			return err
 		}
-		if !jsonOutput {
-			if len(report.Runs) == 0 {
-				fmt.Println("No enabled collection sources.")
-				return nil
-			}
-			for _, run := range report.Runs {
-				fmt.Printf("%s: fetched=%d analyzed=%d created=%d appended=%d insight=%d ignored=%d failed=%d\n",
-					run.SourceID, run.FetchedCount, run.AnalyzedCount, run.CreatedCount,
-					run.AppendedCount, run.InsightCount, run.IgnoredCount, run.FailedCount)
-			}
+		if len(report.Runs) == 0 && len(report.Blocked) == 0 {
+			fmt.Println("No enabled collection sources.")
 		}
 		return nil
 	},

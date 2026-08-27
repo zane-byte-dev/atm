@@ -27,6 +27,10 @@ type ConnectorHealth struct {
 	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
 	RecentRuns          int    `json:"recent_runs,omitempty"`
 	RecentFailures      int    `json:"recent_failures,omitempty"`
+	// LoginCommand is what this connector declared as its way back in. It travels
+	// with health so the CLI line and the desktop banner can offer the action from
+	// the same read, instead of each reaching into config for it.
+	LoginCommand string `json:"login_command,omitempty"`
 }
 
 // Snapshot is the collection workspace's read model. CLI and desktop IPC both
@@ -139,8 +143,10 @@ func (service Service) connectorHealth(overview store.CollectionOverview) []Conn
 	}
 	for id, health := range healthByID {
 		if health.RecentRuns > 0 {
-			healthByID[id] = ResolveConnectorHealth(health)
+			health = ResolveConnectorHealth(health)
 		}
+		health.LoginCommand = ConnectorLoginCommand(id)
+		healthByID[id] = health
 	}
 	ids := make([]string, 0, len(healthByID))
 	for id := range healthByID {

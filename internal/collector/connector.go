@@ -133,6 +133,19 @@ func (registry *Registry) IDs() []string {
 	return ids
 }
 
+// ConnectorLoginCommand is the connector's declared way back in after its login
+// expired, with a leading `~/` expanded. Empty when the connector declares none,
+// which is also the answer for every connector ATM ships with.
+func ConnectorLoginCommand(id string) string {
+	command := strings.TrimSpace(config.CollectionConnectors[id].LoginCommand)
+	// Plain concatenation rather than filepath.Join: this is a command line, not a
+	// path, and Join would clean the arguments that follow the executable.
+	if strings.HasPrefix(command, "~/") {
+		return config.Home + command[1:]
+	}
+	return command
+}
+
 // DefaultRegistry contains executable connectors declared in
 // ~/.atm/config.json. Integrations can therefore live and ship independently
 // from ATM's public core.

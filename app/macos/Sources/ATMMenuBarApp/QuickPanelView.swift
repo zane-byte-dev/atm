@@ -165,56 +165,45 @@ struct QuickPanelView: View {
     @ViewBuilder
     private func quotaSummary(_ summary: ATMQuickQuotaSummary) -> some View {
         if !summary.entries.isEmpty {
-            VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 8) {
+                Group {
+                    if isQuotaExpanded {
+                        VStack(spacing: 8) {
+                            ForEach(summary.entries) { entry in
+                                if let percent = entry.usedPercent {
+                                    quotaPercentRow(
+                                        agent: entry.agent,
+                                        title: entry.title,
+                                        percent: percent,
+                                        help: entry.help
+                                    )
+                                } else {
+                                    unavailableQuotaRow(entry)
+                                }
+                            }
+                        }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    } else {
+                        compactQuotaSummary(summary)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
                 Button {
                     withAnimation(.easeInOut(duration: 0.16)) {
                         isQuotaExpanded.toggle()
                     }
                 } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "gauge.medium")
-                            .font(ATMFont.font(.caption, weight: .semibold))
-                            .foregroundStyle(ATMTheme.accent)
-                            .frame(width: 16)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("模型额度")
-                                .font(ATMFont.font(.caption, weight: .semibold))
-                                .foregroundStyle(ATMTheme.primary)
-                            Text(summary.statusText)
-                                .font(ATMFont.mono(.micro, .medium))
-                                .foregroundStyle(ATMTheme.secondary)
-                        }
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.down")
-                            .font(ATMFont.font(.micro, weight: .semibold))
-                            .foregroundStyle(ATMTheme.secondary)
-                            .rotationEffect(.degrees(isQuotaExpanded ? 180 : 0))
-                    }
-                    .contentShape(Rectangle())
+                    Image(systemName: "chevron.down")
+                        .font(ATMFont.font(.micro, weight: .semibold))
+                        .foregroundStyle(ATMTheme.secondary)
+                        .rotationEffect(.degrees(isQuotaExpanded ? 180 : 0))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(isQuotaExpanded ? "收起模型额度" : "展开全部模型额度")
-
-                if isQuotaExpanded {
-                    VStack(spacing: 8) {
-                        ForEach(summary.entries) { entry in
-                            if let percent = entry.usedPercent {
-                                quotaPercentRow(
-                                    agent: entry.agent,
-                                    title: entry.title,
-                                    percent: percent,
-                                    help: entry.help
-                                )
-                            } else {
-                                unavailableQuotaRow(entry)
-                            }
-                        }
-                    }
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-                } else {
-                    compactQuotaSummary(summary)
-                        .transition(.opacity)
-                }
             }
         }
     }

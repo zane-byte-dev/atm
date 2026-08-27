@@ -194,10 +194,22 @@ struct ATMCollectionNotificationPayload: Equatable {
     /// Turns new collection runs into notifications that say what actually
     /// arrived. A run is still the reliable "new since last refresh" cursor; its
     /// source and time window identify the processing records it produced.
+    /// Body for the login banner. Names the connector's own complaint when there is
+    /// one — "未登录，请先执行 dws auth login" says more than any wording of ours — and
+    /// otherwise says what is waiting.
+    static func loginBody(detail: String?) -> String {
+        guard let detail = detail?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !detail.isEmpty else {
+            return "收集已暂停，重新登录后继续。"
+        }
+        return ATMErrorText.compact(detail, limit: 160)
+    }
+
     static func makeResults(
         runs: [ATMCollectionRun],
         items: [ATMCollectionItem],
-        sources: [ATMCollectionSource] = []
+        sources: [ATMCollectionSource] = [],
+        credentialBlockedConnectors: Set<String> = []
     ) -> [ATMCollectionNotificationPayload] {
         let sourcesByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         let audibleRuns = runs.filter { run in
@@ -239,7 +251,13 @@ struct ATMCollectionNotificationPayload: Equatable {
         let failedItemSourceIDs = Set(matchingItems.filter {
             $0.status == "failed" || nonempty($0.error) != nil
         }.map(\.sourceID))
-        for run in audibleRuns where run.failedCount > 0 && !failedItemSourceIDs.contains(run.sourceID ?? "") {
+        for run in audibleRuns where run.failedCount > 0
+            && !failedItemSourceIDs.contains(run.sourceID ?? "")
+            // A connector waiting on a login has its own banner, sent once, with a
+            // button. Letting the generic failure through as well is what turned one
+            // outage into a "收集失败" every five minutes until someone stopped reading
+            // them.
+            && !credentialBlockedConnectors.contains(run.connector) {
             let sourceName = run.sourceID.flatMap { sourcesByID[$0]?.displayName } ?? run.connector
             payloads.append(
                 ATMCollectionNotificationPayload(
@@ -253,7 +271,10 @@ struct ATMCollectionNotificationPayload: Equatable {
 
         // Compatibility fallback for older CLI snapshots that have run counts
         // but no item timestamps capable of tying the result back to a record.
-        if payloads.isEmpty, let summary = make(runs: audibleRuns, sources: sources) {
+        // A credential-blocked connector is excluded here too, or its outage would
+        // simply arrive as the counters instead of as the failure line.
+        let countable = audibleRuns.filter { !credentialBlockedConnectors.contains($0.connector) }
+        if payloads.isEmpty, let summary = make(runs: countable, sources: sources) {
             payloads.append(summary)
         }
         return payloads
@@ -354,6 +375,7 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
         : nil
     private var onOpen: ((ATMNotificationRoute) -> Void)?
     private var onGuardDecision: ((String, Bool) -> Void)?
+    private var onConnectorLogin: (() -> Void)?
 
     private override init() {
         super.init()
@@ -361,10 +383,12 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
 
     func start(
         onOpen: @escaping (ATMNotificationRoute) -> Void,
-        onGuardDecision: @escaping (String, Bool) -> Void = { _, _ in }
+        onGuardDecision: @escaping (String, Bool) -> Void = { _, _ in },
+        onConnectorLogin: @escaping () -> Void = {}
     ) {
         self.onOpen = onOpen
         self.onGuardDecision = onGuardDecision
+        self.onConnectorLogin = onConnectorLogin
         guard let center else {
             NSLog("ATMNotificationManager: 无 app bundle，通知功能已禁用（swift run 开发模式）")
             return
@@ -394,7 +418,22 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 ],
                 intentIdentifiers: [],
                 options: []
-            )
+            ),
+            // An expired login is the one collection failure a person has to act on,
+            // so its banner carries the action instead of describing it. Foreground
+            // because pressing it opens a terminal.
+            UNNotificationCategory(
+                identifier: ATMConnectorLoginLauncher.actionCategory,
+                actions: [
+                    UNNotificationAction(
+                        identifier: ATMConnectorLoginLauncher.actionIdentifier,
+                        title: "重新登录",
+                        options: [.foreground]
+                    )
+                ],
+                intentIdentifiers: [],
+                options: []
+            ),
         ])
         center.getNotificationSettings { [weak self] settings in
             guard settings.authorizationStatus == .notDetermined else { return }
@@ -510,13 +549,15 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
     func sendCollectionResults(
         _ runs: [ATMCollectionRun],
         items: [ATMCollectionItem],
-        sources: [ATMCollectionSource] = []
+        sources: [ATMCollectionSource] = [],
+        credentialBlockedConnectors: Set<String> = []
     ) {
         guard let center else { return }
         for payload in ATMCollectionNotificationPayload.makeResults(
             runs: runs,
             items: items,
-            sources: sources
+            sources: sources,
+            credentialBlockedConnectors: credentialBlockedConnectors
         ) {
             let content = UNMutableNotificationContent()
             content.title = "ATM · 收集"
@@ -535,6 +576,26 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
                 )
             )
         }
+    }
+
+    /// One banner per outage, carrying the action that ends it. Identified by
+    /// connector so a resend replaces it instead of stacking another copy.
+    func sendCollectionLoginRequired(_ prompt: ATMCollectionLoginPrompt, detail: String?) {
+        guard let center else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "ATM · 收集"
+        content.subtitle = "\(prompt.connector) 需要重新登录"
+        content.body = ATMCollectionNotificationPayload.loginBody(detail: detail)
+        content.sound = .default
+        content.categoryIdentifier = ATMConnectorLoginLauncher.actionCategory
+        content.userInfo = ["event": "collection_login", "connector": prompt.connector]
+        center.add(
+            UNNotificationRequest(
+                identifier: "atm-collection-auth-\(prompt.connector)",
+                content: content,
+                trigger: nil
+            )
+        )
     }
 
     func userNotificationCenter(
@@ -560,6 +621,13 @@ final class ATMNotificationManager: NSObject, UNUserNotificationCenterDelegate {
             let approve = response.actionIdentifier == ATMGuardApprovalActions.approve
             DispatchQueue.main.async { [weak self] in
                 self?.onGuardDecision?(approvalID, approve)
+                completionHandler()
+            }
+            return
+        }
+        if response.actionIdentifier == ATMConnectorLoginLauncher.actionIdentifier {
+            DispatchQueue.main.async { [weak self] in
+                self?.onConnectorLogin?()
                 completionHandler()
             }
             return

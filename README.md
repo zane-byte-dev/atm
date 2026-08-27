@@ -111,7 +111,7 @@ atm memory remember <内容>               # 记一条
 atm collect status                       # 健康状态、来源、处理记录
 atm collect source add --connector slack --kind channel --id C123 --project atm
 atm collect enable                       # 开启 App 常驻期间的后台自动收集
-atm collect run                          # 立即增量收集一次
+atm collect run                          # 立即增量收集一次（也是登录失效后恢复的方式）
 atm collect item save <item-id>          # 确认后把收集结论保存为知识
 atm collect item read <item-id>          # 标记一条收集结果已读
 atm collect item read --all              # 全部标为已读
@@ -122,6 +122,11 @@ atm collect item unarchive <item-id>     # 重新打开已了结记录
 atm collect source mute <source-id>      # 这个来源不再弹通知（照常收集、照常算未读）
 atm collect source unmute <source-id>    # 恢复通知
 ```
+
+连接器的登录过期后，ATM 会停手而不是每个周期重试一遍：后台对这个连接器静默 30 分钟，
+同一轮里第一个来源失败就跳过它的兄弟来源（它们共用刚失败的那份凭证）。连接器可以在
+`~/.atm/config.json` 里声明 `login_command`，CLI 会把它打印在状态行上，App 的横幅和通知
+上会多一个「重新登录」按钮——ATM 自己不会去跑它，登录要人扫码。
 
 **外发动作闸门**（默认不安装）
 

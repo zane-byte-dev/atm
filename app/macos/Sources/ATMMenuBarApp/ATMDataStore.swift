@@ -867,6 +867,10 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var collectingSourceIDs: Set<String> = []
     @Published private(set) var collectionSourceErrors: [String: String] = [:]
     @Published var collectionErrorMessage: String?
+    /// The connector whose login we opened a terminal for and have not seen recover
+    /// yet. It turns the banner's button into the retry, so the person says "done"
+    /// rather than ATM guessing when a browser flow finished.
+    @Published private(set) var awaitingLoginConnector: String?
     @Published private(set) var agentHookReport: ATMAgentHookReport?
     @Published private(set) var isUpdatingAgentHooks = false
     @Published var agentHookErrorMessage: String?
@@ -930,6 +934,9 @@ final class ATMDataStore: ObservableObject {
     private var isLiveStatusLoading = false
     private var lastCollectionAttemptAt: Date?
     private var notifiedCollectionRunIDs: Set<String>?
+    /// Connectors whose expired login has already been announced. One outage is one
+    /// banner: the failure repeats by design, the news does not.
+    private var notifiedLoginConnectors: Set<String> = []
     /// Keep successfully deleted todos hidden until a dashboard read observes
     /// their absence. This prevents an older in-flight refresh from restoring a
     /// row after the CLI has already removed it.
@@ -2155,6 +2162,16 @@ final class ATMDataStore: ObservableObject {
     }
 
     private func notifyCollectionRuns(_ runs: [ATMCollectionRun]) {
+        let blocked = Set(
+            collectionOverview.connectorHealth
+                .filter(\.needsCredentialAction)
+                .map(\.connector)
+        )
+        // A connector that came back needs to be able to raise the news again.
+        notifiedLoginConnectors.formIntersection(blocked)
+        if let connector = awaitingLoginConnector, !blocked.contains(connector) {
+            awaitingLoginConnector = nil
+        }
         let currentIDs = Set(runs.map(\.id))
         guard let previous = notifiedCollectionRunIDs else {
             notifiedCollectionRunIDs = currentIDs
@@ -2165,8 +2182,76 @@ final class ATMDataStore: ObservableObject {
         ATMNotificationManager.shared.sendCollectionResults(
             newRuns,
             items: collectionOverview.items,
-            sources: collectionOverview.sources
+            sources: collectionOverview.sources,
+            credentialBlockedConnectors: blocked
         )
+        notifyCollectionLogin()
+    }
+
+    /// The one banner an outage earns, sent when there is something a person can do
+    /// about it. A connector without a declared login command has nothing to offer
+    /// here, so it keeps the workspace banner and nothing else.
+    private func notifyCollectionLogin() {
+        guard let prompt = ATMCollectionWorkspaceNotice.loginPrompt(for: collectionOverview),
+              !notifiedLoginConnectors.contains(prompt.connector) else { return }
+        notifiedLoginConnectors.insert(prompt.connector)
+        let detail = collectionOverview.connectorHealth
+            .first { $0.connector == prompt.connector }?
+            .error
+        ATMNotificationManager.shared.sendCollectionLoginRequired(prompt, detail: detail)
+    }
+
+    /// Opens the connector's own login where the person can watch it. Never called
+    /// on ATM's own initiative: the flow wants a browser and a scan, so it starts
+    /// from a button.
+    func startConnectorLogin(_ prompt: ATMCollectionLoginPrompt) {
+        do {
+            try ATMConnectorLoginLauncher.start(prompt)
+            awaitingLoginConnector = prompt.connector
+            collectionErrorMessage = nil
+        } catch {
+            collectionErrorMessage = ATMErrorText.compact(error.localizedDescription, limit: 240)
+        }
+    }
+
+    /// The notification's button, which knows only that a login is wanted — the
+    /// snapshot is what says whose. Nothing happens when no connector is waiting any
+    /// more, which is the state a stale banner is in.
+    func startConnectorLoginFromNotification() {
+        guard let prompt = ATMCollectionWorkspaceNotice.loginPrompt(for: collectionOverview) else {
+            return
+        }
+        startConnectorLogin(prompt)
+    }
+
+    /// The way back after logging in. A forced run rather than a due one: the
+    /// background path is deliberately leaving this connector alone for half an
+    /// hour, and the person saying "done" is exactly the evidence that beats it.
+    func retryCollectionAfterLogin() {
+        guard !isCollecting else { return }
+        awaitingLoginConnector = nil
+        isCollecting = true
+        collectionErrorMessage = nil
+        lastCollectionAttemptAt = Date()
+        Task {
+            defer { isCollecting = false }
+            do {
+                let client = ATMIPCClient(runner: try ATMCommandRunner())
+                _ = try await client.call(
+                    ATMCollectionIPCCommand.run,
+                    request: ATMCollectionRunRequest(sourceID: nil, dueOnly: false)
+                )
+                collectionOverview = try await client.call(
+                    ATMCollectionIPCCommand.snapshot,
+                    request: ATMCollectionSnapshotRequest(itemLimit: 200)
+                )
+                notifyCollectionRuns(collectionOverview.runs)
+                collectionErrorMessage = ATMCollectionWorkspaceNotice.banner(for: collectionOverview)
+                refresh()
+            } catch {
+                refreshCollection()
+            }
+        }
     }
 
     private func shouldRunCollection(_ status: ATMCollectionOverview, now: Date = Date()) -> Bool {

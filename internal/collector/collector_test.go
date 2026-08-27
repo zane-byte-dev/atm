@@ -76,6 +76,179 @@ func addCollectorSource(t *testing.T) store.CollectionSource {
 	return source
 }
 
+func addSecondCollectorSource(t *testing.T) store.CollectionSource {
+	t.Helper()
+	db, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-release",
+		Name: "发布协同", Project: "atm", Priority: "P1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("add second source: %v", err)
+	}
+	return source
+}
+
+func seedFailedRun(t *testing.T, source store.CollectionSource, at time.Time, message string) {
+	t.Helper()
+	db, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if err := store.SaveCollectionRun(db, store.CollectionRun{
+		ID: "seeded-" + source.ID, Connector: source.Connector, SourceID: source.ID,
+		Status: "failed", StartedAt: at.Unix(), FinishedAt: at.Unix(),
+		FailedCount: 1, Error: message,
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+}
+
+func withConnectorLoginCommand(t *testing.T, connector, command string) {
+	t.Helper()
+	previous := config.CollectionConnectors
+	config.CollectionConnectors = map[string]config.CollectionConnectorConfig{
+		connector: {Command: "/bin/true", LoginCommand: command},
+	}
+	t.Cleanup(func() { config.CollectionConnectors = previous })
+}
+
+const expiredLogin = "connector test fetch: dws returned an error: 未登录，请先执行 dws auth login"
+
+// An expired login belongs to the connector, not to the source that happened to
+// run first: every sibling is about to fail identically against the same
+// credential, and five copies of one message is how a real outage became noise.
+func TestAnExpiredLoginStopsTheRestOfItsConnector(t *testing.T) {
+	withCollectorStore(t)
+	addCollectorSource(t)
+	addSecondCollectorSource(t)
+	withConnectorLoginCommand(t, "test", "~/bin/fake auth login")
+	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+	report, err := service.Run(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "未登录") {
+		t.Fatalf("the attempt that did happen must still be reported: %v", err)
+	}
+	if len(report.Runs) != 1 || len(fetcher.since) != 1 {
+		t.Fatalf("sibling source was attempted anyway: runs=%d fetches=%v", len(report.Runs), fetcher.since)
+	}
+	if len(report.Blocked) != 1 {
+		t.Fatalf("blocked = %+v, want the connector named once", report.Blocked)
+	}
+	block := report.Blocked[0]
+	if block.Connector != "test" || block.Status != "auth_required" || block.SkippedSources != 1 {
+		t.Fatalf("blocked = %+v", block)
+	}
+	if want := config.Home + "/bin/fake auth login"; block.LoginCommand != want {
+		t.Fatalf("login command = %q, want %q with ~ expanded", block.LoginCommand, want)
+	}
+}
+
+// The background path is the one that repeats. Left to itself it re-proved the
+// same expired login every five minutes for hours.
+func TestTheBackgroundRunLeavesAnExpiredLoginAloneUntilItsWindowPasses(t *testing.T) {
+	withCollectorStore(t)
+	first := addCollectorSource(t)
+	addSecondCollectorSource(t)
+	now := time.Unix(200_000, 0)
+	seedFailedRun(t, first, now.Add(-10*time.Minute), expiredLogin)
+	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{},
+		Now: func() time.Time { return now }}
+
+	report, err := service.RunDue(context.Background(), "")
+	if err != nil {
+		t.Fatalf("skipping is not a failure: %v", err)
+	}
+	if len(report.Runs) != 0 || len(fetcher.since) != 0 {
+		t.Fatalf("connector was probed inside its window: runs=%d fetches=%v", len(report.Runs), fetcher.since)
+	}
+	if len(report.Blocked) != 1 || report.Blocked[0].SkippedSources != 2 {
+		t.Fatalf("blocked = %+v, want both sources accounted for", report.Blocked)
+	}
+	if want := now.Add(20 * time.Minute).Unix(); report.Blocked[0].RetryAt != want {
+		t.Fatalf("retry at %d, want %d (30 minutes after the failure)", report.Blocked[0].RetryAt, want)
+	}
+
+	later := now.Add(21 * time.Minute)
+	service.Now = func() time.Time { return later }
+	report, err = service.RunDue(context.Background(), "")
+	if err == nil {
+		t.Fatalf("the probe after the window failed and must be reported")
+	}
+	if len(fetcher.since) != 1 || len(report.Runs) != 1 {
+		t.Fatalf("window passed but probe was not exactly one: fetches=%v runs=%d", fetcher.since, len(report.Runs))
+	}
+	if len(report.Blocked) != 1 || report.Blocked[0].SkippedSources != 1 {
+		t.Fatalf("blocked = %+v, want the sibling skipped again", report.Blocked)
+	}
+}
+
+// Logging in again is what ends the outage, and a manual run is how a person says
+// they have done it. It must never be the thing that is waiting.
+func TestAManualRunAlwaysAttemptsAConnectorTheLedgerCallsBlocked(t *testing.T) {
+	withCollectorStore(t)
+	first := addCollectorSource(t)
+	now := time.Unix(200_000, 0)
+	seedFailedRun(t, first, now.Add(-time.Minute), expiredLogin)
+	fetcher := &fakeFetcher{newest: now.Unix()}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{},
+		Now: func() time.Time { return now }}
+	report, err := service.Run(context.Background(), "")
+	if err != nil || len(report.Runs) != 1 || len(fetcher.since) != 1 {
+		t.Fatalf("manual run was held back: runs=%d fetches=%v err=%v", len(report.Runs), fetcher.since, err)
+	}
+	if len(report.Blocked) != 0 {
+		t.Fatalf("blocked = %+v, want nothing held back", report.Blocked)
+	}
+}
+
+// A business error is not evidence about the credential. These APIs return the
+// occasional one and it fixes itself at the next interval, so every source still
+// gets its turn.
+//
+// A missing permission is not evidence about the credential either: it has been
+// per-source in practice — one group this account cannot read while its siblings
+// work — so it must not hold the connector back the way an expired login does.
+func TestOnlyAnExpiredLoginBlocksTheConnector(t *testing.T) {
+	for _, message := range []string{
+		"business error",
+		"dws returned an error: [AUTH_PERMISSION_DENIED] Permission denied",
+	} {
+		withCollectorStore(t)
+		addCollectorSource(t)
+		addSecondCollectorSource(t)
+		fetcher := &fakeFetcher{err: errors.New(message)}
+		service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+		report, err := service.Run(context.Background(), "")
+		if err == nil || len(report.Runs) != 2 || len(fetcher.since) != 2 {
+			t.Errorf("%q stopped the connector: runs=%d fetches=%v err=%v",
+				message, len(report.Runs), fetcher.since, err)
+		}
+		if len(report.Blocked) != 0 {
+			t.Errorf("%q blocked = %+v", message, report.Blocked)
+		}
+	}
+}
+
+// Nothing was held back, so there is nothing to explain: the failed run row is
+// already the whole story.
+func TestABlockedConnectorWithNoSiblingsIsNotReportedTwice(t *testing.T) {
+	withCollectorStore(t)
+	addCollectorSource(t)
+	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+	report, _ := service.Run(context.Background(), "")
+	if len(report.Runs) != 1 || len(report.Blocked) != 0 {
+		t.Fatalf("runs=%d blocked=%+v", len(report.Runs), report.Blocked)
+	}
+}
+
 func tickingClock() func() time.Time {
 	now := time.Unix(20_000, 0)
 	return func() time.Time {
@@ -607,12 +780,18 @@ func TestObservationSourceKeepsInsightAndNeverWritesTodo(t *testing.T) {
 
 // A window holding one thing worth keeping and one joke has to be able to answer
 // differently about each, which is why observation sources are grouped by topic
-// rather than collapsed into a single batch per run.
+// rather than collapsed into a single batch per run. What the person then reads is
+// a different question — see TestRunCollapsesItsInsightsIntoOneRecord.
 func TestObservationSourceDecidesPerTopic(t *testing.T) {
 	withCollectorStore(t)
 	source := observationSource(t)
-	extractor := &fakeExtractor{decision: Decision{Action: "insight", Title: "记一笔",
-		Summary: "值得留下的内容", ItemType: "insight", Confidence: 0.8}}
+	extractor := &fakeExtractor{decide: func(batch MessageBatch) Decision {
+		if strings.Contains(batch.RawContext, "午饭") {
+			return Decision{Action: "ignore", Reason: "闲聊", Confidence: 0.9}
+		}
+		return Decision{Action: "insight", Title: "记一笔", Summary: "值得留下的内容",
+			ItemType: "insight", Confidence: 0.8}
+	}}
 	// 33 minutes apart: past the 15-minute gap that separates one topic from the next.
 	service := Service{Fetcher: &fakeFetcher{messages: []Message{
 		{ID: "m-topic-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
@@ -625,11 +804,217 @@ func TestObservationSourceDecidesPerTopic(t *testing.T) {
 	if err != nil || report.Runs[0].AnalyzedCount != 2 || extractor.calls != 2 {
 		t.Fatalf("observation run=%+v calls=%d err=%v", report, extractor.calls, err)
 	}
+	if report.Runs[0].InsightCount != 1 || report.Runs[0].IgnoredCount != 1 {
+		t.Fatalf("the two topics did not answer differently: %+v", report.Runs[0])
+	}
 	db, _ := store.Open()
 	items, _ := store.ListCollectionItems(db, source.ID, 10)
 	db.Close()
 	if len(items) != 2 {
 		t.Fatalf("expected one item per topic, got %+v", items)
+	}
+}
+
+// Topics are how a run has to think; they are not how a person reads the result.
+// Six cards from one collection bury each other, so the round's insights become
+// the one record it leaves behind — and the count follows the cards.
+func TestRunCollapsesItsInsightsIntoOneRecord(t *testing.T) {
+	withCollectorStore(t)
+	source := observationSource(t)
+	extractor := &fakeExtractor{decide: func(batch MessageBatch) Decision {
+		if strings.Contains(batch.RawContext, "午饭") {
+			return Decision{Action: "ignore", Reason: "闲聊", Confidence: 1}
+		}
+		if strings.Contains(batch.RawContext, "--since") {
+			return Decision{Action: "insight", Title: "增量拉取用 --since",
+				Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}
+		}
+		return Decision{Action: "insight", Title: "白名单只采集显式来源",
+			Summary: "来源要显式添加才会被采集", ItemType: "insight", Confidence: 0.6}
+	}}
+	summarizer := &fakeSummarizer{content: DigestContent{Title: "采集机制两则",
+		Body: "- 增量拉取用 --since\n- 白名单只采集显式来源"}}
+	// Three topics, each past the 15-minute gap from the last.
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "m-merge-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
+			Content: "connector 的增量拉取用 --since"},
+		{ID: "m-merge-2", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 12_000,
+			Content: "午饭去哪里吃？"},
+		{ID: "m-merge-3", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 14_000,
+			Content: "来源走白名单，只采集显式添加的"},
+	},
+		newest: 14_000}, Extractor: extractor, Summarizer: summarizer, Now: tickingClock()}
+
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	run := report.Runs[0]
+	// Analyzed still counts the topics — it is what the run spent — while the
+	// insight count is what the person will see.
+	if run.AnalyzedCount != 3 || run.InsightCount != 1 || run.IgnoredCount != 1 {
+		t.Fatalf("run counts should follow cards, not topics: %+v", run)
+	}
+	if summarizer.calls != 1 || summarizer.inputs[0].Scope != DigestScopeRun ||
+		len(summarizer.inputs[0].Items) != 2 {
+		t.Fatalf("merge asked for the wrong summary: calls=%d inputs=%+v", summarizer.calls, summarizer.inputs)
+	}
+	db, _ := store.Open()
+	defer db.Close()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	insights := []store.CollectionItem{}
+	for _, item := range items {
+		if item.Action == "insight" {
+			insights = append(insights, item)
+		}
+	}
+	if len(items) != 2 || len(insights) != 1 {
+		t.Fatalf("the two insight topics did not collapse into one record: %+v", items)
+	}
+	merged := insights[0]
+	if merged.Title != "采集机制两则" || merged.Summary != "- 增量拉取用 --since\n- 白名单只采集显式来源" {
+		t.Fatalf("merged record did not take the summary it asked for: %+v", merged)
+	}
+	if merged.Status != "processed" || merged.ReadAt != 0 || merged.TodoID != "" {
+		t.Fatalf("merged record is not an unread, processed insight: %+v", merged)
+	}
+	// The union is what marks those messages handled now that their own rows are
+	// gone, and the raw context is what keeps the chat readable on the card.
+	if !slices.Contains(merged.MessageIDs, "m-merge-1") || !slices.Contains(merged.MessageIDs, "m-merge-3") ||
+		slices.Contains(merged.MessageIDs, "m-merge-2") {
+		t.Fatalf("merged record owns the wrong messages: %+v", merged.MessageIDs)
+	}
+	if !strings.Contains(merged.RawContext, "--since") || !strings.Contains(merged.RawContext, "白名单") {
+		t.Fatalf("merged record lost the chat behind it: %q", merged.RawContext)
+	}
+	// Deleting the per-topic rows must not release their messages: the next run
+	// reads a twenty-minute overlap and would collect them all over again.
+	second, err := service.Run(context.Background(), source.ID)
+	if err != nil || second.Runs[0].AnalyzedCount != 0 || extractor.calls != 3 {
+		t.Fatalf("merged messages came back: run=%+v calls=%d err=%v", second.Runs[0], extractor.calls, err)
+	}
+	items, _ = store.ListCollectionItems(db, source.ID, 10)
+	if len(items) != 2 {
+		t.Fatalf("second run filed something new: %+v", items)
+	}
+}
+
+// One insight is already the one record. Rewriting it would spend a model call to
+// replace text that is fine.
+func TestASingleInsightIsNotMerged(t *testing.T) {
+	withCollectorStore(t)
+	source := observationSource(t)
+	summarizer := &fakeSummarizer{content: DigestContent{Title: "不该被调用", Body: "不该被调用"}}
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "m-single-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
+			Content: "connector 的增量拉取用 --since"},
+	}, newest: 10_000},
+		Extractor: &fakeExtractor{decision: Decision{Action: "insight", Title: "增量拉取用 --since",
+			Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}},
+		Summarizer: summarizer, Now: tickingClock()}
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].InsightCount != 1 || summarizer.calls != 0 {
+		t.Fatalf("single insight run=%+v calls=%d err=%v", report.Runs[0], summarizer.calls, err)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 || items[0].Title != "增量拉取用 --since" {
+		t.Fatalf("single insight was rewritten: %+v", items)
+	}
+}
+
+// One round leaving one record must not depend on the endpoint being up. Joining
+// text an earlier model call already wrote claims nothing new, and the per-topic
+// rows are deleted either way — so the fallback keeps their content verbatim and
+// says in reason that this is what happened.
+func TestInsightMergeFallsBackToTheirOwnTextWhenTheModelIsUnavailable(t *testing.T) {
+	withCollectorStore(t)
+	source := observationSource(t)
+	extractor := &fakeExtractor{decide: func(batch MessageBatch) Decision {
+		if strings.Contains(batch.RawContext, "--since") {
+			return Decision{Action: "insight", Title: "增量拉取用 --since",
+				Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}
+		}
+		return Decision{Action: "insight", Title: "白名单只采集显式来源",
+			Summary: "来源要显式添加才会被采集", ItemType: "insight", Confidence: 0.6}
+	}}
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "m-fallback-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
+			Content: "connector 的增量拉取用 --since"},
+		{ID: "m-fallback-2", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 12_000,
+			Content: "来源走白名单，只采集显式添加的"},
+	}, newest: 12_000}, Extractor: extractor,
+		Summarizer: &fakeSummarizer{err: errors.New("model unavailable")}, Now: tickingClock()}
+
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].Status != "succeeded" || report.Runs[0].InsightCount != 1 {
+		t.Fatalf("fallback run=%+v err=%v", report.Runs[0], err)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 {
+		t.Fatalf("fallback did not collapse the round: %+v", items)
+	}
+	merged := items[0]
+	for _, kept := range []string{"增量拉取用 --since", "connector 靠 --since 增量拉取",
+		"白名单只采集显式来源", "来源要显式添加才会被采集"} {
+		if !strings.Contains(merged.Summary, kept) {
+			t.Fatalf("fallback lost %q: %q", kept, merged.Summary)
+		}
+	}
+	if !strings.Contains(merged.Reason, "内置模型不可用") || !strings.Contains(merged.Title, "本轮 2 条结论") {
+		t.Fatalf("fallback did not say what happened: title=%q reason=%q", merged.Title, merged.Reason)
+	}
+}
+
+// Merging is about what a person reads, not about what got written out. A piece of
+// work is still one item, with its own Todo behind it.
+func TestMergingInsightsLeavesTodoRecordsAlone(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	extractor := &fakeExtractor{decide: func(batch MessageBatch) Decision {
+		if strings.Contains(batch.RawContext, "报错") {
+			return Decision{Action: "create", Title: "排查采集报错", Summary: "收集时报错",
+				ItemType: "bug", Project: "atm", Priority: "P1", Confidence: 0.9}
+		}
+		if strings.Contains(batch.RawContext, "--since") {
+			return Decision{Action: "insight", Title: "增量拉取用 --since",
+				Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}
+		}
+		return Decision{Action: "insight", Title: "白名单只采集显式来源",
+			Summary: "来源要显式添加才会被采集", ItemType: "insight", Confidence: 0.6}
+	}}
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "m-mixed-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
+			Content: "收集的时候报错了"},
+		{ID: "m-mixed-2", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 12_000,
+			Content: "connector 的增量拉取用 --since"},
+		{ID: "m-mixed-3", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 14_000,
+			Content: "来源走白名单，只采集显式添加的"},
+	}, newest: 14_000}, Extractor: extractor,
+		Summarizer: &fakeSummarizer{content: DigestContent{Title: "采集机制两则",
+			Body: "- 增量拉取用 --since\n- 白名单只采集显式来源"}}, Now: tickingClock()}
+
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].CreatedCount != 1 || report.Runs[0].InsightCount != 1 {
+		t.Fatalf("mixed run=%+v err=%v", report.Runs[0], err)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 2 {
+		t.Fatalf("expected the create plus one merged insight: %+v", items)
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 || todos.Items[0].Title != "排查采集报错" {
+		t.Fatalf("merging touched the Todo list: %+v", todos.Items)
+	}
+	for _, item := range items {
+		if item.Action == "create" && item.TodoID != todos.Items[0].ID {
+			t.Fatalf("create record lost its Todo: %+v", item)
+		}
 	}
 }
 

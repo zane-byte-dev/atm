@@ -31,6 +31,11 @@ final class StatusBarController {
                 // than opening anything, so approving from the banner never requires
                 // the window.
                 Task { @MainActor in self?.store.decideApproval(id: approvalID, approve: approve) }
+            },
+            onConnectorLogin: { [weak self] in
+                // The banner's button is the login itself. Routed through the store so
+                // pressing it does the same thing as pressing it in the workspace.
+                Task { @MainActor in self?.store.startConnectorLoginFromNotification() }
             }
         )
         store.start()

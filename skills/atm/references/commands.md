@@ -197,6 +197,7 @@ atm collect source add --connector <id> --kind <kind> --id <external-id> --instr
 atm collect source list --json
 atm collect run [--source <source-id>] --json
 atm collect run --due --json                       # 后台按来源独立频率运行
+# 登录过期的连接器：--due 会静默它 30 分钟并在 blocked 里说明，不带 --due 的手工 run 永远照跑
 
 # insight 先留在处理记录的“结论”；确认后再显式保存，重复执行不会产生副本
 atm collect item save <item-id> [--collection <collection-id>] --json
@@ -247,8 +248,14 @@ atm collect item delete <item-id> <item-id> ... -y --json
 这时 `related_todo_id` 只作上下文关联。`append` 只能落在**这个会话自己建过的** Todo 上：
 手写的 Todo 或别的群的 Todo 不会被聊天改写，目标已关闭或不属于本会话时退回新建。
 
+判定按话题一批一条决策，但**一轮收集的 `insight` 会在收尾时合成一条记录**：标题正文由内置模型
+合成（模型不可用时按各条原文拼接，判定原因里会写明），分条删除、消息 ID 并进合成条。所以库里
+一次 run 只有一条结论记录，不要按「一批次一条」去解释数据；`create`/`append`（一件活儿一条）和
+`ignore` 都不参与合并。运行计数里 `analyzed` 是话题数，`insight` 是记录条数。按需的
+`collect analyze` 仍逐话题出提议，不合并。
+
 结论只有在用户运行 `collect item save`（或 App 点击保存）后才进入知识库；`collect digest` 保留为人工
-批量汇总入口，App 常驻收集不会自动调用它。
+批量汇总入口（按来源/日期把结论汇成知识文档，跟上面的单轮合并是两层），App 常驻收集不会自动调用它。
 需要完整聊天时仍用 `collect history`；已添加的来源可以直接用它的名字或 source-id，不必再搜一次。
 
 取用顺序：**先 `collect search` 查本地**（不打网络、可离线、能命中历史里没成 Todo 的闲聊），

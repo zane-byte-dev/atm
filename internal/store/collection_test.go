@@ -696,3 +696,110 @@ func TestCollectionSourceDueUsesOwnSuccessfulCadence(t *testing.T) {
 		t.Fatalf("elapsed observation source due=%v err=%v", due, err)
 	}
 }
+
+// The merged record has to arrive as the members leave, in one transaction: the
+// members' message IDs are what marks that chat handled, so a half-applied merge
+// would hand those messages back to the next run.
+func TestMergeCollectionInsightsSwapsMembersForOneRecord(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-merge",
+		Strategy: CollectionStrategyObserve, IntervalMinutes: 60, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	member := func(fingerprint string, messageIDs ...string) CollectionItem {
+		item, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+			ConversationID: source.ExternalID, Fingerprint: fingerprint, MessageIDs: messageIDs,
+			OccurredAt: 1234, Action: "insight", Status: "processed",
+			Title: "结论 " + fingerprint, Summary: "细节 " + fingerprint, ItemType: "insight"})
+		if err != nil {
+			t.Fatalf("store member %s: %v", fingerprint, err)
+		}
+		return item
+	}
+	first, second := member("fp-1", "m1"), member("fp-2", "m2", "m3")
+
+	// The caller names the union it built; a member ID it left out is still taken
+	// on, because the handled bookkeeping is what this invariant protects.
+	merged, err := MergeCollectionInsights(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: source.ExternalID, Fingerprint: "fp-merged", MessageIDs: []string{"m1"},
+		OccurredAt: 1234, Action: "insight", Status: "processed", Title: "本轮 2 条结论",
+		Summary: "- 结论 fp-1\n- 结论 fp-2", ItemType: "insight"},
+		[]string{first.ID, second.ID})
+	if err != nil {
+		t.Fatalf("merge insights: %v", err)
+	}
+	if len(merged.MessageIDs) != 3 {
+		t.Fatalf("merged record does not own every message: %+v", merged.MessageIDs)
+	}
+	items, err := ListCollectionItems(db, source.ID, 10)
+	if err != nil || len(items) != 1 || items[0].ID != merged.ID {
+		t.Fatalf("members outlived the merge: %+v, %v", items, err)
+	}
+	handled, err := HandledCollectionMessageIDs(db, source.ID)
+	if err != nil || len(handled) != 3 {
+		t.Fatalf("merge released handled messages: %v, %v", handled, err)
+	}
+}
+
+// Nothing a fresh run just produced can already have written itself out, which is
+// exactly why a member that did must stop the merge instead of being deleted.
+func TestMergeCollectionInsightsRefusesMembersThatWroteSomethingOut(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-refuse", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	saved, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		Fingerprint: "fp-saved", MessageIDs: []string{"m1"}, Action: "insight", Status: "processed",
+		Title: "已保存的结论", Summary: "已经进了知识库", ItemType: "insight",
+		KnowledgeDocumentID: "kd-1"})
+	if err != nil {
+		t.Fatalf("store saved insight: %v", err)
+	}
+	plain, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		Fingerprint: "fp-plain", MessageIDs: []string{"m2"}, Action: "insight", Status: "processed",
+		Title: "普通结论", Summary: "还没保存", ItemType: "insight"})
+	if err != nil {
+		t.Fatalf("store plain insight: %v", err)
+	}
+	if _, err := MergeCollectionInsights(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		Fingerprint: "fp-merged", MessageIDs: []string{"m1", "m2"}, Action: "insight",
+		Status: "processed", Title: "本轮 2 条结论", Summary: "拼起来", ItemType: "insight"},
+		[]string{saved.ID, plain.ID}); err == nil {
+		t.Fatal("a member that already wrote something out was merged away")
+	}
+	items, err := ListCollectionItems(db, source.ID, 10)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("refused merge still changed the records: %+v, %v", items, err)
+	}
+}
+
+// One insight is already the one record, and two callers must not disagree about
+// that: the store refuses a degenerate merge rather than filing a copy.
+func TestMergeCollectionInsightsNeedsTwoRecords(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if _, err := MergeCollectionInsights(db, CollectionItem{SourceID: "cs-1", Connector: "test",
+		Fingerprint: "fp-merged", Action: "insight", Status: "processed"}, []string{"ci-1"}); err == nil {
+		t.Fatal("merging a single record was accepted")
+	}
+}

@@ -263,11 +263,29 @@ struct DesktopCollectionView: View {
     private var workspaceErrorBanner: some View {
         if let error = workspaceError {
             let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "操作失败")
+            let prompt = ATMCollectionWorkspaceNotice.loginPrompt(for: store.collectionOverview)
+            let waiting = prompt.map { store.awaitingLoginConnector == $0.connector } ?? false
             ATMInlineNotice(
                 severity: .warning,
                 title: presentation.title,
                 message: presentation.message,
                 details: error,
+                // The one failure a person can end: offer the login itself rather than
+                // a banner that only says it expired. After the terminal is open the
+                // same button becomes the retry — nobody has to guess when a browser
+                // flow finished, and the forced run beats the background backoff.
+                actionTitle: prompt == nil ? nil : (waiting ? "登录好了，立即重试" : "重新登录"),
+                actionSystemImage: waiting ? "arrow.clockwise" : "person.crop.circle.badge.checkmark",
+                isActionEnabled: !store.isCollecting,
+                onAction: prompt.map { prompt in
+                    {
+                        if waiting {
+                            store.retryCollectionAfterLogin()
+                        } else {
+                            store.startConnectorLogin(prompt)
+                        }
+                    }
+                },
                 onDismiss: { store.collectionErrorMessage = nil }
             )
             .padding(8)

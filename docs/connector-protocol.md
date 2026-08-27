@@ -14,7 +14,8 @@ Register an executable in `~/.atm/config.json`:
     "slack": {
       "command": "~/bin/atm-connector-slack",
       "args": ["--workspace", "example"],
-      "timeout_seconds": 45
+      "timeout_seconds": 45,
+      "login_command": "~/bin/slack-cli auth login"
     }
   }
 }
@@ -153,6 +154,35 @@ responses larger than 16 MiB.
 Credentials remain the connector's responsibility. A connector should use its
 platform's normal credential store and must not place secrets in the source
 record, response, or ATM configuration arguments.
+
+## An expired login
+
+ATM classifies a connector's own error text. A message containing
+`not_authenticated`, `auth login` or 未登录 is read as an expired login, and one
+naming a missing permission as a permission problem. Both are reported on their
+first occurrence rather than after a streak, because neither fixes itself.
+
+The expired login also stops the retrying. The background path leaves that
+connector alone for 30 minutes, and within one run the first source's failure
+skips its siblings: they share the credential that just failed, so attempting
+them writes the same error four more times. A manual `atm collect run` always
+attempts — it is how a person says they have logged in again.
+
+A missing permission is reported but not backed off, because it has been
+per-source in practice: one conversation this account cannot read while every
+sibling works. Holding the connector back for it would silence the healthy
+sources over one broken one.
+
+`login_command` is the way back. It is optional, ATM never runs it by itself, and
+it is not part of the protocol above: the login is interactive, so the CLI prints
+it and the desktop offers it as a button that opens a terminal the person can
+watch. Because a button press executes it, it is trusted exactly as much as the
+rest of `~/.atm/config.json` — the connector's own login, not a place for
+credentials.
+
+A connector that can tell a lost token refresh from a dead one should retry the
+first itself and fail loudly on the second, keeping the words above in its
+message so ATM still classifies it.
 
 ## CLI example
 

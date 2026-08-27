@@ -171,6 +171,11 @@ type CollectionConnectorConfig struct {
 	Command        string   `json:"command"`
 	Args           []string `json:"args,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+	// LoginCommand is the shell command that re-authenticates this connector, for
+	// the one failure ATM cannot retry its way out of. ATM never runs it on its
+	// own: an interactive login belongs to the person, so it is offered as an
+	// action and executed in a terminal they can see.
+	LoginCommand string `json:"login_command,omitempty"`
 }
 
 type QuotaProviderConfig struct {
