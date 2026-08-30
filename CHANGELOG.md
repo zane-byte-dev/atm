@@ -60,8 +60,9 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
   Guard 其余 7 条**故意不迁**：`Decide` 和五个管理动作在服务层硬拒绝 `OriginIPC`，因为 `_ipc`
   可以从终端重放、也不能证明是 ATM.app 而不是 Agent 启动的。把 `human@ipc` 当成 Guard 授权，
-  等于让 Agent 批准自己要发的消息。生命周期能迁是因为传输本身升不了权：`atm todo done` 本来就是
-  Agent 在普通终端里能跑的命令。
+  等于让 Agent 批准自己要发的消息。生命周期迁到 IPC 后仍与 CLI 复用同一个 Work 规则：普通 Agent
+  环境里的 `todo done` 会被拒绝并指向 `todo submit`。不过可重放 IPC 仍不是抗恶意调用的身份认证；
+  这条规则是日常工作流护栏，不是 user-presence 安全边界。
 
 - **`atm todo --help` 分了组，主流程写在最前面。** 21 条子命令以前是一张按字母排的平铺列表，
   每天都用的那四步和一个月用一次的命令挤在一起。现在分成 Lifecycle / Reading and content /

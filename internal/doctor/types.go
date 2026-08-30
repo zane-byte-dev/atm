@@ -6,10 +6,18 @@ package doctor
 
 import "github.com/zane-byte-dev/atm/internal/store"
 
-// Input is the complete application request. The check has no parameters today —
-// it always reports on everything, because a self-check that needed to be aimed
-// would need the user to already know where the problem is.
-type Input struct{}
+// Input selects an optional recent event-time coverage window. Zero preserves
+// the historical all-time doctor behavior.
+type Input struct {
+	Days int `json:"days,omitempty"`
+}
+
+type CoverageWindow struct {
+	Mode  string `json:"mode"`
+	Days  int    `json:"days,omitempty"`
+	Start string `json:"start,omitempty"`
+	End   string `json:"end,omitempty"`
+}
 
 // Source is one agent's data source as ATM currently finds it.
 type Source struct {
@@ -48,10 +56,11 @@ type Summary struct {
 // `atm doctor --json` and the desktop's typed call both serialize this value, so
 // a field added here changes both on purpose rather than by accident.
 type Report struct {
-	Sources      []Source                    `json:"sources"`
-	Coverage     []store.Coverage            `json:"coverage"`
-	ModelPricing []store.ModelPricing        `json:"model_pricing"`
-	TodoIssues   []store.TodoDependencyIssue `json:"todo_dependency_issues"`
-	Issues       []Issue                     `json:"issues"`
-	Summary      Summary                     `json:"summary"`
+	CoverageWindow CoverageWindow              `json:"coverage_window"`
+	Sources        []Source                    `json:"sources"`
+	Coverage       []store.Coverage            `json:"coverage"`
+	ModelPricing   []store.ModelPricing        `json:"model_pricing"`
+	TodoIssues     []store.TodoDependencyIssue `json:"todo_dependency_issues"`
+	Issues         []Issue                     `json:"issues"`
+	Summary        Summary                     `json:"summary"`
 }

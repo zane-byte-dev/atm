@@ -45,6 +45,12 @@ Quick start:
   atm report [date]              Generate daily report`,
 	SilenceErrors: true,
 	SilenceUsage:  true,
+	// Cobra validates command names, flags and positional arguments before this
+	// hook. Telemetry uses the marker to distinguish invocation-contract errors
+	// from failures returned by the command body; it changes no command state.
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		cliCommandEnteredRun.Store(true)
+	},
 }
 
 func SetVersion(v string) {
@@ -52,9 +58,11 @@ func SetVersion(v string) {
 }
 
 func Execute() {
+	started := time.Now()
 	refreshAppIPCServer()
 	applyCommandGroups()
 	bufferBuiltinModelCalls()
+	cliCommandEnteredRun.Store(false)
 	if err := rootCmd.Execute(); err != nil {
 		// 失败路径也要落账：一次超时的收集判定同样占了一次调用。os.Exit 不跑 defer，
 		// 所以这里和成功路径各显式落一次。
@@ -64,6 +72,11 @@ func Execute() {
 		// guard's refusal text is read by a model, and appending to it changes what
 		// that model is told to do.
 		var coded exitError
+		exitCode := 1
+		if errors.As(err, &coded) {
+			exitCode = coded.ExitCode()
+		}
+		recordCLIInvocation(started, err, exitCode)
 		if errors.As(err, &coded) {
 			os.Exit(coded.ExitCode())
 		}
@@ -75,17 +88,14 @@ func Execute() {
 		os.Exit(1)
 	}
 	flushBuiltinModelCalls()
+	recordCLIInvocation(started, nil, 0)
 }
 
 // failedCommandPath names the subcommand that failed, without its arguments.
 // Arguments are excluded on purpose: `atm todo add "<title>"` and
 // `atm knowledge import <path>` carry exactly the content this log must not hold.
 func failedCommandPath() string {
-	command, _, err := rootCmd.Find(os.Args[1:])
-	if err != nil || command == nil {
-		return ""
-	}
-	return command.CommandPath()
+	return invocationCommandPath(os.Args[1:])
 }
 
 // showHelp is the RunE for group commands (no own action). Combined with
@@ -132,7 +142,16 @@ func noSubcommandArgs(cmd *cobra.Command, args []string) error {
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Show version",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
+		if jsonOutput {
+			output.JSON(map[string]any{
+				"schema_version": 1,
+				"name":           "atm",
+				"version":        rootCmd.Version,
+			})
+			return
+		}
 		fmt.Printf("atm %s\n", rootCmd.Version)
 	},
 }

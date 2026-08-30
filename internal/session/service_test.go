@@ -138,6 +138,34 @@ func TestServiceListOwnsWindowReviewOrderAndPagination(t *testing.T) {
 	}
 }
 
+func TestServiceListCanOrderByLatestActivityBeforePaging(t *testing.T) {
+	fixture := newServiceFixture(t)
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := fixture.now.AddDate(0, -1, 0)
+	if _, err := db.Exec(`INSERT INTO sessions (id,short_id,agent,project,file_path,created_at,created_ts,summary,last_ts)
+		VALUES (?,?,?,?,?,?,?,?,?)`, "session-resumed-full", "resumed", "codex", "atm", "",
+		created.Format("01-02 15:04"), created.Unix(), "Resumed session", fixture.now.Add(-time.Minute).Unix()); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := fixture.service.List(context.Background(), ListInput{
+		All: true, Review: "all", Order: "activity-desc", Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 3 || len(result.Sessions) != 1 || result.Sessions[0].ID != "session-resumed-full" {
+		t.Fatalf("latest-activity page = %#v", result)
+	}
+}
+
 func TestServiceSearchOwnsFiltersRankingAndUnicodeSnippet(t *testing.T) {
 	fixture := newServiceFixture(t)
 	db, err := store.Open()

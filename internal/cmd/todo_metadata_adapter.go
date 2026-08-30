@@ -159,9 +159,9 @@ func runTodoBatchAdd(cmd *cobra.Command) error {
 	// and validates both defaults and item overrides.
 	defaultPriority := batch.Priority
 	if defaultPriority == "" {
-		defaultPriority = "P1"
+		defaultPriority = "P2"
 	}
-	if todoAddPriorityFlag != "P1" {
+	if cmd.Flags().Changed("priority") {
 		defaultPriority = todoAddPriorityFlag
 	}
 	defaultProject := batch.Project
@@ -239,11 +239,28 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("source") {
 		patch.Source = stringValue(todoEditSourceFlag)
 	}
+	if cmd.Flags().Changed("creator") {
+		patch.Creator = stringValue(todoEditCreatorFlag)
+	}
 	if cmd.Flags().Changed("status") {
-		if todoEditStatusFlag != "open" {
-			return fmt.Errorf("--status only accepts open; use todo start or todo submit for lifecycle transitions")
+		status := strings.ToLower(strings.TrimSpace(todoEditStatusFlag))
+		id := canonicalTodoIDForHint(args[0])
+		switch status {
+		case "open":
+			patch.Status = stringValue(status)
+		case "in_progress":
+			return fmt.Errorf("--status cannot start work; run `atm todo start %s` (add --reopen-reason when reopening review/done)", id)
+		case "review":
+			return fmt.Errorf("--status cannot submit work; run `atm todo submit %s --reason \"<result and evidence>\"`", id)
+		case "done":
+			return fmt.Errorf("--status cannot accept work; a human must run `atm todo done %s --reason \"<acceptance evidence>\"`; Agents use `atm todo submit %s --reason \"<result and evidence>\"`", id, id)
+		case "archived":
+			return fmt.Errorf("--status cannot archive work; run `atm todo archive %s`", id)
+		case "waiting", "blocked":
+			return fmt.Errorf("%s is not a lifecycle status; keep the Todo in_progress and run `atm todo edit %s --wake \"<observable condition>\"`", status, id)
+		default:
+			return fmt.Errorf("invalid --status %q; use open, or the explicit start/submit/done/archive command", todoEditStatusFlag)
 		}
-		patch.Status = stringValue(todoEditStatusFlag)
 	}
 	if cmd.Flags().Changed("wake") {
 		patch.WakeCondition = stringValue(todoEditWakeFlag)

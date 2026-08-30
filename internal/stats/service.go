@@ -139,6 +139,7 @@ func (service Service) Query(
 	result.Group = group
 	result.Window = window
 	result.SyncedFiles = syncedFiles
+	finalizeQuality(&result)
 	if usesSubscriptionComparison(group) {
 		result.Subscription = buildSubscriptionComparison(
 			result.Totals.CostUSD,
@@ -203,11 +204,12 @@ func buildWindow(now time.Time, days int, rawRange string, location *time.Locati
 	if days < 1 {
 		days = 1
 	}
-	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location).
-		AddDate(0, 0, -(days - 1))
+	// --days is a strict rolling window, matching its public help. Calendar
+	// boundaries remain available through --range today/last_7_days/etc.
+	start := now.Add(-time.Duration(days) * 24 * time.Hour)
 	end := now
-	label := "today"
-	if days > 1 {
+	label := "last 1 day"
+	if days != 1 {
 		label = fmt.Sprintf("last %d days", days)
 	}
 	if strings.TrimSpace(rawRange) != "" {
@@ -313,20 +315,52 @@ func queryStore(ctx context.Context, db *sql.DB, spec querySpec) (Result, error)
 
 func projectResult(rows []store.StatsResult) Result {
 	result := Result{Projects: make([]ProjectRow, 0, len(rows))}
+	agents := map[string]struct{}{}
+	tokenAgents := map[string]struct{}{}
 	for _, row := range rows {
 		result.Projects = append(result.Projects, ProjectRow{
 			Project: row.Project, Agent: row.Agent, Sessions: row.Sessions,
-			Queries: row.Queries, ToolCalls: row.ToolCalls, InputTokens: row.InputTokens,
-			OutputTokens: row.OutputTokens, CacheReadTokens: row.CacheReadTokens, CostUSD: row.CostUSD,
+			TokenSessions: row.TokenSessions, Queries: row.Queries, ToolCalls: row.ToolCalls,
+			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
+			OutputTokens: row.OutputTokens, CacheCreateTokens: row.CacheCreateTokens,
+			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
+			TotalTokens: row.TotalTokens, Requests: row.Requests,
+			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
+			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
+			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
+			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
+			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
 		})
 		result.Totals.Sessions += row.Sessions
+		result.Totals.TokenSessions += row.TokenSessions
 		result.Totals.Queries += row.Queries
 		result.Totals.ToolCalls += row.ToolCalls
 		result.Totals.InputTokens += row.InputTokens
+		result.Totals.FreshInputTokens += row.FreshInputTokens
 		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheTokens += row.CacheReadTokens
+		result.Totals.CacheCreateTokens += row.CacheCreateTokens
+		result.Totals.CacheReadTokens += row.CacheReadTokens
+		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
+		result.Totals.TotalInputTokens += row.TotalInputTokens
+		result.Totals.TotalTokens += row.TotalTokens
+		result.Totals.Requests += row.Requests
+		result.Totals.DetailedRequests += row.DetailedRequests
+		result.Totals.AggregateRequests += row.AggregateRequests
+		result.Totals.SampledRequests += row.SampledRequests
+		result.Totals.UntimedRequests += row.UntimedRequests
+		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
 		result.Totals.CostUSD += row.CostUSD
+		if row.CostEstimated {
+			result.Totals.AnyEstimated = true
+			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
+		}
+		agents[row.Agent] = struct{}{}
+		if row.TokenSessions > 0 {
+			tokenAgents[row.Agent] = struct{}{}
+		}
 	}
+	result.Totals.ActiveAgents = len(agents)
+	result.Totals.TokenAgents = len(tokenAgents)
 	return result
 }
 
@@ -335,14 +369,32 @@ func modelResult(rows []store.ModelStatsResult) Result {
 	for _, row := range rows {
 		result.Models = append(result.Models, ModelRow{
 			Client: row.Client, Model: row.Model, Sessions: row.Sessions,
-			InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
-			CacheReadTokens: row.CacheReadTokens, CostUSD: row.CostUSD,
+			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
+			OutputTokens: row.OutputTokens, CacheCreateTokens: row.CacheCreateTokens,
+			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
+			TotalTokens: row.TotalTokens, Requests: row.Requests,
+			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
+			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
+			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
+			CostUSD:       row.CostUSD,
 			CostEstimated: row.CostEstimated, PricingSource: string(row.PricingSource),
+			EstimatedCostUSD: row.EstimatedCostUSD,
 		})
 		result.Totals.Sessions += row.Sessions
 		result.Totals.InputTokens += row.InputTokens
+		result.Totals.FreshInputTokens += row.FreshInputTokens
 		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheTokens += row.CacheReadTokens
+		result.Totals.CacheCreateTokens += row.CacheCreateTokens
+		result.Totals.CacheReadTokens += row.CacheReadTokens
+		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
+		result.Totals.TotalInputTokens += row.TotalInputTokens
+		result.Totals.TotalTokens += row.TotalTokens
+		result.Totals.Requests += row.Requests
+		result.Totals.DetailedRequests += row.DetailedRequests
+		result.Totals.AggregateRequests += row.AggregateRequests
+		result.Totals.SampledRequests += row.SampledRequests
+		result.Totals.UntimedRequests += row.UntimedRequests
+		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
 		result.Totals.CostUSD += row.CostUSD
 		if row.CostEstimated {
 			result.Totals.AnyEstimated = true
@@ -357,15 +409,33 @@ func modelPeriodResult(rows []store.ModelDayStatsResult) Result {
 	for _, row := range rows {
 		result.ModelPeriods = append(result.ModelPeriods, ModelPeriodRow{
 			Date: row.Date, Client: row.Client, Model: row.Model, Sessions: row.Sessions,
-			InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
-			CacheReadTokens: row.CacheReadTokens, CostUSD: row.CostUSD,
+			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
+			OutputTokens: row.OutputTokens, CacheCreateTokens: row.CacheCreateTokens,
+			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
+			TotalTokens: row.TotalTokens, Requests: row.Requests,
+			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
+			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
+			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
+			CostUSD:       row.CostUSD,
 			CostEstimated: row.CostEstimated, PricingSource: string(row.PricingSource),
+			EstimatedCostUSD:     row.EstimatedCostUSD,
 			MeasuredOutputTokens: row.MeasuredOutputTokens, MeasuredDurationMS: row.MeasuredDurationMS,
 		})
 		result.Totals.Sessions += row.Sessions
 		result.Totals.InputTokens += row.InputTokens
+		result.Totals.FreshInputTokens += row.FreshInputTokens
 		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheTokens += row.CacheReadTokens
+		result.Totals.CacheCreateTokens += row.CacheCreateTokens
+		result.Totals.CacheReadTokens += row.CacheReadTokens
+		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
+		result.Totals.TotalInputTokens += row.TotalInputTokens
+		result.Totals.TotalTokens += row.TotalTokens
+		result.Totals.Requests += row.Requests
+		result.Totals.DetailedRequests += row.DetailedRequests
+		result.Totals.AggregateRequests += row.AggregateRequests
+		result.Totals.SampledRequests += row.SampledRequests
+		result.Totals.UntimedRequests += row.UntimedRequests
+		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
 		result.Totals.CostUSD += row.CostUSD
 		if row.CostEstimated {
 			result.Totals.AnyEstimated = true
@@ -389,22 +459,48 @@ func sessionResult(rows []store.SessionStatsResult) Result {
 	result := Result{Sessions: make([]SessionRow, 0, len(rows))}
 	var tokenTotal int64
 	for _, row := range rows {
-		tokenTotal += row.InputTokens + row.OutputTokens + row.CacheTokens
+		rowTotal := row.TotalTokens
+		if rowTotal == 0 {
+			rowTotal = row.InputTokens + row.OutputTokens + row.CacheTokens
+		}
+		tokenTotal += rowTotal
 		result.Totals.Queries += row.Queries
 		result.Totals.InputTokens += row.InputTokens
+		result.Totals.FreshInputTokens += row.FreshInputTokens
 		result.Totals.OutputTokens += row.OutputTokens
 		result.Totals.CacheTokens += row.CacheTokens
+		result.Totals.CacheCreateTokens += row.CacheCreateTokens
+		result.Totals.CacheReadTokens += row.CacheReadTokens
+		result.Totals.TotalInputTokens += row.TotalInputTokens
+		result.Totals.TotalTokens += row.TotalTokens
+		result.Totals.Requests += row.Queries
+		result.Totals.DetailedRequests += row.DetailedRequests
+		result.Totals.AggregateRequests += row.AggregateRequests
+		result.Totals.SampledRequests += row.SampledRequests
+		result.Totals.UntimedRequests += row.UntimedRequests
+		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
 		result.Totals.CostUSD += row.CostUSD
+		if row.CostEstimated {
+			result.Totals.AnyEstimated = true
+			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
+		}
 		result.Sessions = append(result.Sessions, SessionRow{
 			ShortID: row.ShortID, Project: row.Project, Model: row.Model, Queries: row.Queries,
-			InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
-			CacheTokens: row.CacheTokens, CostUSD: row.CostUSD,
+			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
+			OutputTokens: row.OutputTokens, CacheTokens: row.CacheTokens,
+			CacheCreateTokens: row.CacheCreateTokens, CacheReadTokens: row.CacheReadTokens,
+			TotalInputTokens: row.TotalInputTokens, TotalTokens: rowTotal,
+			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
+			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
+			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
+			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
+			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
 		})
 	}
 	if tokenTotal > 0 {
 		for index := range result.Sessions {
 			row := &result.Sessions[index]
-			row.Share = float64(row.InputTokens+row.OutputTokens+row.CacheTokens) / float64(tokenTotal)
+			row.Share = float64(row.TotalTokens) / float64(tokenTotal)
 		}
 	}
 	return result
@@ -416,15 +512,36 @@ func sessionUsageResult(rows []store.SessionUsageStatsResult) Result {
 		result.SessionUsage = append(result.SessionUsage, SessionUsageRow{
 			SessionID: row.SessionID, ShortID: row.ShortID, Agent: row.Agent,
 			Project: row.Project, Model: row.Model, StartedTS: row.StartedTS, LastTS: row.LastTS,
-			Requests: row.Requests, InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
+			Requests: row.Requests, InputTokens: row.InputTokens,
+			FreshInputTokens: row.FreshInputTokens, OutputTokens: row.OutputTokens,
 			CacheCreateTokens: row.CacheCreateTokens, CacheReadTokens: row.CacheReadTokens,
-			TotalTokens: row.TotalTokens, CostUSD: row.CostUSD, Share: row.Share,
+			TotalInputTokens: row.TotalInputTokens, TotalTokens: row.TotalTokens,
+			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
+			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
+			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
+			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
+			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
+			Share: row.Share,
 		})
 		result.Totals.Requests += row.Requests
 		result.Totals.InputTokens += row.InputTokens
+		result.Totals.FreshInputTokens += row.FreshInputTokens
 		result.Totals.OutputTokens += row.OutputTokens
+		result.Totals.CacheCreateTokens += row.CacheCreateTokens
+		result.Totals.CacheReadTokens += row.CacheReadTokens
 		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
+		result.Totals.TotalInputTokens += row.TotalInputTokens
+		result.Totals.TotalTokens += row.TotalTokens
+		result.Totals.DetailedRequests += row.DetailedRequests
+		result.Totals.AggregateRequests += row.AggregateRequests
+		result.Totals.SampledRequests += row.SampledRequests
+		result.Totals.UntimedRequests += row.UntimedRequests
+		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
 		result.Totals.CostUSD += row.CostUSD
+		if row.CostEstimated {
+			result.Totals.AnyEstimated = true
+			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
+		}
 	}
 	return result
 }
@@ -439,13 +556,32 @@ func requestResult(rows []store.RequestStatsResult) Result {
 		result.Requests = append(result.Requests, RequestRow{
 			SessionID: row.SessionID, Agent: row.Agent, Project: row.Project, Model: row.Model,
 			TS: row.TS, RequestCount: count, InputTokens: row.InputTokens,
-			OutputTokens: row.OutputTokens, CacheTokens: row.CacheTokens, CostUSD: row.CostUSD,
+			FreshInputTokens: row.FreshInputTokens, OutputTokens: row.OutputTokens,
+			CacheTokens: row.CacheTokens, CacheCreateTokens: row.CacheCreateTokens,
+			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
+			TotalTokens: row.TotalTokens, SampledRequests: row.SampledRequests,
+			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
+			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
+			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
 		})
 		result.Totals.Requests += count
 		result.Totals.InputTokens += row.InputTokens
+		result.Totals.FreshInputTokens += row.FreshInputTokens
 		result.Totals.OutputTokens += row.OutputTokens
 		result.Totals.CacheTokens += row.CacheTokens
+		result.Totals.CacheCreateTokens += row.CacheCreateTokens
+		result.Totals.CacheReadTokens += row.CacheReadTokens
+		result.Totals.TotalInputTokens += row.TotalInputTokens
+		result.Totals.TotalTokens += row.TotalTokens
+		result.Totals.DetailedRequests += count
+		result.Totals.SampledRequests += row.SampledRequests
+		result.Totals.UntimedRequests += row.UntimedRequests
+		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
 		result.Totals.CostUSD += row.CostUSD
+		if row.CostEstimated {
+			result.Totals.AnyEstimated = true
+			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
+		}
 	}
 	return result
 }
@@ -463,7 +599,11 @@ func speedResult(report store.SpeedReport) Result {
 			DurationP50Seconds:      row.DurationP50Seconds, DurationP90Seconds: row.DurationP90Seconds,
 			OutputTokens: row.OutputTokens, SampledSeconds: row.SampledSeconds,
 		})
+		result.Totals.Requests += row.Requests
+		result.Totals.SampledRequests += row.Sampled
 	}
+	result.Totals.UntimedRequests = report.Untimed
+	result.Totals.OutOfWindowRequests = report.OutOfWindow
 	if report.Turns != nil {
 		result.Speed.Turns = make([]TurnWaitRow, 0, len(report.Turns))
 	}
@@ -477,20 +617,108 @@ func speedResult(report store.SpeedReport) Result {
 	return result
 }
 
+func finalizeQuality(result *Result) {
+	if result == nil {
+		return
+	}
+	quality := Quality{
+		ActiveSessions:      result.Totals.Sessions,
+		TokenSessions:       result.Totals.TokenSessions,
+		ActiveAgents:        result.Totals.ActiveAgents,
+		TokenAgents:         result.Totals.TokenAgents,
+		Requests:            result.Totals.Requests,
+		DetailedRequests:    result.Totals.DetailedRequests,
+		AggregateRequests:   result.Totals.AggregateRequests,
+		SampledRequests:     result.Totals.SampledRequests,
+		UntimedRequests:     result.Totals.UntimedRequests,
+		OutOfWindowRequests: result.Totals.OutOfWindowRequests,
+		CostUSD:             result.Totals.CostUSD,
+		EstimatedCostUSD:    result.Totals.EstimatedCostUSD,
+	}
+	if quality.ActiveSessions > 0 {
+		quality.SessionCoveragePct = float64(quality.TokenSessions) / float64(quality.ActiveSessions) * 100
+	}
+	if quality.ActiveAgents > 0 {
+		quality.AgentCoveragePct = float64(quality.TokenAgents) / float64(quality.ActiveAgents) * 100
+	}
+	if quality.Requests > 0 {
+		quality.RequestCoveragePct = float64(quality.DetailedRequests) / float64(quality.Requests) * 100
+		quality.SpeedSamplePct = float64(quality.SampledRequests) / float64(quality.Requests) * 100
+	}
+	if quality.CostUSD > 0 {
+		quality.EstimatedCostShare = quality.EstimatedCostUSD / quality.CostUSD
+	}
+	sources := map[string]struct{}{}
+	addSource := func(source string) {
+		if source != "" {
+			sources[source] = struct{}{}
+		}
+	}
+	for _, row := range result.Models {
+		addSource(row.PricingSource)
+	}
+	for _, row := range result.Projects {
+		addSource(row.PricingSource)
+	}
+	for _, row := range result.ModelPeriods {
+		addSource(row.PricingSource)
+	}
+	for _, row := range result.Sessions {
+		addSource(row.PricingSource)
+	}
+	for _, row := range result.SessionUsage {
+		addSource(row.PricingSource)
+	}
+	for _, row := range result.Requests {
+		addSource(row.PricingSource)
+	}
+	for _, row := range result.Periods {
+		addSource(row.PricingSource)
+	}
+	quality.PricingSources = make([]string, 0, len(sources))
+	for source := range sources {
+		quality.PricingSources = append(quality.PricingSources, source)
+	}
+	sort.Strings(quality.PricingSources)
+	result.Quality = quality
+}
+
 func periodResult(rows []store.DayStatsResult) Result {
 	result := Result{Periods: make([]PeriodRow, 0, len(rows))}
 	for _, row := range rows {
 		result.Periods = append(result.Periods, PeriodRow{
 			Date: row.Date, Sessions: row.Sessions, Queries: row.Queries,
-			InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
-			CacheReadTokens: row.CacheReadTokens, CostUSD: row.CostUSD,
+			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
+			OutputTokens: row.OutputTokens, CacheCreateTokens: row.CacheCreateTokens,
+			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
+			TotalTokens: row.TotalTokens, Requests: row.Requests,
+			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
+			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
+			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
+			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
+			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
 		})
 		result.Totals.Sessions += row.Sessions
 		result.Totals.Queries += row.Queries
 		result.Totals.InputTokens += row.InputTokens
+		result.Totals.FreshInputTokens += row.FreshInputTokens
 		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheTokens += row.CacheReadTokens
+		result.Totals.CacheCreateTokens += row.CacheCreateTokens
+		result.Totals.CacheReadTokens += row.CacheReadTokens
+		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
+		result.Totals.TotalInputTokens += row.TotalInputTokens
+		result.Totals.TotalTokens += row.TotalTokens
+		result.Totals.Requests += row.Requests
+		result.Totals.DetailedRequests += row.DetailedRequests
+		result.Totals.AggregateRequests += row.AggregateRequests
+		result.Totals.SampledRequests += row.SampledRequests
+		result.Totals.UntimedRequests += row.UntimedRequests
+		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
 		result.Totals.CostUSD += row.CostUSD
+		if row.CostEstimated {
+			result.Totals.AnyEstimated = true
+			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
+		}
 		if row.CostUSD > result.Totals.MaxCostUSD {
 			result.Totals.MaxCostUSD = row.CostUSD
 		}

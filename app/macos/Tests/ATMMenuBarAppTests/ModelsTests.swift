@@ -896,6 +896,14 @@ final class ModelsTests: XCTestCase {
               "ranges":{
                 "today":{"start_date":"2026-07-24","end_date":"2026-07-24",
                      "model_stats":[],"sessions":[],"skill_stats":[],
+                     "quality":{"active_sessions":4,"token_sessions":3,"session_coverage_percent":75,
+                                "active_agents":2,"token_agents":2,"agent_coverage_percent":100,
+                                "requests":20,"detailed_requests":17,"aggregate_requests":3,
+                                "request_coverage_percent":85,"speed_requests":10,
+                                "speed_sampled_requests":6,"speed_sample_percent":60,
+                                "untimed_requests":2,"out_of_window_requests":1,
+                                "cost_usd":10,"estimated_cost_usd":8,
+                                "estimated_cost_share":0.8,"pricing_sources":["exact","family"]},
                      "project_stats":[{"project":"atm","agent":"codex","sessions":1,"queries":3,
                                        "input_tokens":100,"output_tokens":10,"cost_usd":1.5}]},
                 "yesterday":{"start_date":"2026-07-23","end_date":"2026-07-23",
@@ -929,6 +937,14 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.indexHealth?.index.schemaVersion, 12)
         XCTAssertEqual(snapshot.projectDayStats.first?.project, "atm")
         XCTAssertEqual(snapshot.rangeData[.today]?.projectStats.first?.totalTokens, 110)
+        XCTAssertEqual(snapshot.rangeData[.today]?.quality?.tokenSessions, 3)
+        XCTAssertEqual(snapshot.rangeData[.today]?.quality?.limitations, [
+            "Token 覆盖 75%（3/4 个会话）",
+            "请求明细覆盖 85%（17/20）",
+            "速度采样覆盖 60%（6/10）",
+            "费用中 80% 为估算",
+        ])
+        XCTAssertTrue(snapshot.rangeData[.today]?.quality?.details.contains("定价来源：exact、family") == true)
         // Every named window decodes, and each carries the boundaries the CLI
         // computed rather than leaving the app to derive them.
         XCTAssertEqual(Set(snapshot.rangeData.keys), Set(ATMMetricsRange.allCases))
@@ -2276,6 +2292,88 @@ final class ModelsTests: XCTestCase {
         // `ATMAgentSoundTransitionTracker` diffs this to tell one turn from the
         // next, so suppressing the card must not blank it out.
         XCTAssertEqual(session.latestUserInputText, "Rework the notch state badges")
+        XCTAssertFalse(session.isSubagent)
+        XCTAssertEqual(session.subagentDisplayDepth, 0)
+        XCTAssertNil(session.rootSessionID)
+    }
+
+    func testLiveSessionDecodesSubagentMetadataAndUsesBranchSpecificPresenceText() throws {
+        let data = Data(
+            """
+            {
+              "tool":"Codex","session_id":"child123","resume_id":"child-thread-id",
+              "parent_session_id":"parent-thread-id",
+              "root_session_id":"root-thread-id",
+              "agent_path":"/root/ui/recent_sessions","agent_nickname":"session-auditor",
+              "subagent_depth":2,"project":"atm","client":"Codex Desktop",
+              "summary":"分析 ATM 使用记录优化项","age_seconds":8,
+              "first_q":"看下 ATM 最近的使用记录","last_q":"看下 ATM 最近的使用记录",
+              "last_a":"正在定位活跃列表。","updates":["定位 SwiftUI 行组件和排序逻辑。"]
+            }
+            """.utf8
+        )
+
+        let session = try JSONDecoder().decode(ATMLiveSession.self, from: data)
+        XCTAssertEqual(session.parentSessionID, "parent-thread-id")
+        XCTAssertEqual(session.rootSessionID, "root-thread-id")
+        XCTAssertEqual(session.agentPath, "/root/ui/recent_sessions")
+        XCTAssertEqual(session.agentNickname, "session-auditor")
+        XCTAssertEqual(session.subagentDepth, 2)
+        XCTAssertTrue(session.isSubagent)
+        XCTAssertEqual(session.subagentDisplayDepth, 2)
+        XCTAssertEqual(session.presenceTitle, "Recent sessions")
+        XCTAssertEqual(session.presenceSubtitle, "定位 SwiftUI 行组件和排序逻辑。")
+        // The inherited parent prompt stays available to turn tracking, but is
+        // never rendered as the child row's second line.
+        XCTAssertEqual(session.latestUserInputText, "看下 ATM 最近的使用记录")
+        XCTAssertNil(session.latestUserInputBelowTitle)
+    }
+
+    func testSubagentPresenceFallsBackToNicknameAndCapsVisualDepth() {
+        let session = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "abcdef12",
+            resumeID: "child-thread-id",
+            parentSessionID: "parent-thread-id",
+            agentPath: "/root/ui/fix_title",
+            agentNickname: "title-worker",
+            subagentDepth: 7,
+            project: "atm",
+            summary: "父会话标题",
+            ageSeconds: 8,
+            lastQuestion: "父会话请求"
+        )
+
+        XCTAssertEqual(session.presenceTitle, "Fix title")
+        XCTAssertEqual(session.presenceSubtitle, "子 Agent · title-worker")
+        XCTAssertEqual(session.subagentDisplayDepth, 3)
+        XCTAssertNil(session.latestUserInputBelowTitle)
+    }
+
+    func testSubagentPresenceUsesItsReplyWithoutParentTitleMetadata() {
+        let session = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "abcdef12",
+            parentSessionID: "parent-thread-id",
+            agentPath: "/root/check_tests",
+            agentNickname: "test-auditor",
+            subagentDepth: 1,
+            project: "atm",
+            ageSeconds: 8,
+            lastAnswer: "正在运行 Swift 单测。"
+        )
+
+        XCTAssertEqual(session.presenceTitle, "Check tests")
+        XCTAssertEqual(session.presenceSubtitle, "正在运行 Swift 单测。")
+    }
+
+    func testAgentPresenceAgeKeepsSubMinuteRowsDistinct() {
+        XCTAssertEqual(ATMAgentPresenceAge.label(seconds: -1), "0 秒")
+        XCTAssertEqual(ATMAgentPresenceAge.label(seconds: 0), "0 秒")
+        XCTAssertEqual(ATMAgentPresenceAge.label(seconds: 8), "8 秒")
+        XCTAssertEqual(ATMAgentPresenceAge.label(seconds: 59), "59 秒")
+        XCTAssertEqual(ATMAgentPresenceAge.label(seconds: 60), "1 分钟")
+        XCTAssertEqual(ATMAgentPresenceAge.label(seconds: 3_600), "1 小时")
     }
 
     func testActiveAgentPresenceOrderDoesNotChangeWhenActivityAgesRefresh() {
@@ -2283,6 +2381,9 @@ final class ModelsTests: XCTestCase {
             ATMLiveSession(
                 tool: "Codex",
                 sessionID: id,
+                // Ordinary rows keep their existing session-id order even when
+                // a separate resumable thread id sorts the other way around.
+                resumeID: id == "session-a" ? "z-thread" : "a-thread",
                 project: "atm",
                 ageSeconds: age,
                 activityState: "active"
@@ -2300,6 +2401,203 @@ final class ModelsTests: XCTestCase {
 
         XCTAssertEqual(firstPoll.map(\.sessionID), ["session-a", "session-b"])
         XCTAssertEqual(nextPoll.map(\.sessionID), firstPoll.map(\.sessionID))
+    }
+
+    func testActiveAgentPresenceOrderKeepsLineageAndDescendantsTogether() {
+        func session(
+            _ id: String,
+            resumeID: String,
+            parentID: String? = nil,
+            path: String,
+            depth: Int,
+            age: Int
+        ) -> ATMLiveSession {
+            ATMLiveSession(
+                tool: "Codex",
+                sessionID: id,
+                resumeID: resumeID,
+                parentSessionID: parentID,
+                agentPath: path,
+                subagentDepth: depth,
+                project: "atm",
+                ageSeconds: age,
+                activityState: "active"
+            )
+        }
+
+        let root = session("root0001", resumeID: "root-thread", path: "/root", depth: 0, age: 40)
+        let alpha = session(
+            "alpha001",
+            resumeID: "alpha-thread",
+            parentID: "root-thread",
+            path: "/root/alpha",
+            depth: 1,
+            age: 2
+        )
+        let alphaChild = session(
+            "deep0001",
+            resumeID: "deep-thread",
+            parentID: "alpha-thread",
+            path: "/root/alpha/deep_task",
+            depth: 2,
+            age: 1
+        )
+        let beta = session(
+            "beta0001",
+            resumeID: "beta-thread",
+            parentID: "root-thread",
+            path: "/root/beta",
+            depth: 1,
+            age: 3
+        )
+
+        let first = ATMAgentPresenceOrdering.sorted([beta, alphaChild, root, alpha])
+        XCTAssertEqual(first.map(\.sessionID), ["root0001", "alpha001", "deep0001", "beta0001"])
+
+        let refreshed = [
+            session("beta0001", resumeID: "beta-thread", parentID: "root-thread", path: "/root/beta", depth: 1, age: 1),
+            session("root0001", resumeID: "root-thread", path: "/root", depth: 0, age: 2),
+            session("deep0001", resumeID: "deep-thread", parentID: "alpha-thread", path: "/root/alpha/deep_task", depth: 2, age: 45),
+            session("alpha001", resumeID: "alpha-thread", parentID: "root-thread", path: "/root/alpha", depth: 1, age: 41),
+        ]
+        XCTAssertEqual(
+            ATMAgentPresenceOrdering.sorted(refreshed).map(\.sessionID),
+            first.map(\.sessionID)
+        )
+    }
+
+    func testAgentPresenceCollapsesChildrenBehindVisibleRootByDefault() {
+        let root = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "root0001",
+            resumeID: "root-thread",
+            project: "atm",
+            ageSeconds: 3,
+            activityState: "active"
+        )
+        let first = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "child001",
+            resumeID: "child-thread-1",
+            parentSessionID: "root-thread",
+            rootSessionID: "root-thread",
+            agentPath: "/root/first",
+            subagentDepth: 1,
+            project: "atm",
+            ageSeconds: 2,
+            activityState: "active"
+        )
+        let second = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "child002",
+            resumeID: "child-thread-2",
+            parentSessionID: "root-thread",
+            rootSessionID: "root-thread",
+            agentPath: "/root/second",
+            subagentDepth: 1,
+            project: "atm",
+            ageSeconds: 1,
+            activityState: "active"
+        )
+        let sessions = ATMAgentPresenceOrdering.sorted([second, root, first])
+        let lineage = ATMAgentPresenceOrdering.lineageID(root)
+
+        XCTAssertEqual(
+            ATMAgentPresenceOrdering.visibleSessions(
+                sessions,
+                expandedLineages: []
+            ).map(\.sessionID),
+            ["root0001"]
+        )
+        XCTAssertEqual(ATMAgentPresenceOrdering.childCounts(sessions)[root.id], 2)
+        XCTAssertEqual(
+            ATMAgentPresenceOrdering.visibleSessions(
+                sessions,
+                expandedLineages: [lineage]
+            ).map(\.sessionID),
+            ["root0001", "child001", "child002"]
+        )
+    }
+
+    func testAgentPresenceDoesNotHideChildWhoseRootIsOutsideSection() {
+        let child = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "child001",
+            resumeID: "child-thread",
+            parentSessionID: "root-thread",
+            rootSessionID: "root-thread",
+            agentPath: "/root/child",
+            subagentDepth: 1,
+            project: "atm",
+            ageSeconds: 2,
+            activityState: "active"
+        )
+
+        XCTAssertEqual(
+            ATMAgentPresenceOrdering.visibleSessions(
+                [child],
+                expandedLineages: []
+            ).map(\.sessionID),
+            ["child001"]
+        )
+    }
+
+    func testSubagentIndentationStopsAtAncestorMissingFromPresenceSection() {
+        func session(
+            _ id: String,
+            resumeID: String,
+            parentID: String? = nil,
+            path: String,
+            depth: Int,
+            activityState: String
+        ) -> ATMLiveSession {
+            ATMLiveSession(
+                tool: "Codex",
+                sessionID: id,
+                resumeID: resumeID,
+                parentSessionID: parentID,
+                agentPath: path,
+                subagentDepth: depth,
+                project: "atm",
+                ageSeconds: activityState == "active" ? 5 : 180,
+                activityState: activityState
+            )
+        }
+
+        let root = session(
+            "root0001", resumeID: "root-thread", path: "/root", depth: 0,
+            activityState: "active"
+        )
+        let recentParent = session(
+            "parent01", resumeID: "parent-thread", parentID: "root-thread",
+            path: "/root/parent", depth: 1, activityState: "idle"
+        )
+        let activeGrandchild = session(
+            "child001", resumeID: "child-thread", parentID: "parent-thread",
+            path: "/root/parent/child", depth: 2, activityState: "active"
+        )
+
+        let activeSection = [root, activeGrandchild]
+        XCTAssertEqual(
+            ATMAgentPresenceOrdering.visibleDepth(for: activeGrandchild, among: activeSection),
+            1
+        )
+        XCTAssertEqual(
+            ATMAgentPresenceOrdering.visibleDepth(
+                for: activeGrandchild,
+                among: [root, recentParent, activeGrandchild]
+            ),
+            2
+        )
+
+        let batchedDepths = ATMAgentPresenceOrdering.visibleDepths(
+            for: [root, recentParent, activeGrandchild]
+        )
+        XCTAssertEqual(batchedDepths[root.id], 0)
+        XCTAssertEqual(batchedDepths[recentParent.id], 1)
+        // The batched presentation respects presence sections, so a recent
+        // parent does not make its active child look like an orphaned deep row.
+        XCTAssertEqual(batchedDepths[activeGrandchild.id], 1)
     }
 
     /// A bound session is titled by its Todo, not by whatever the conversation
@@ -2514,6 +2812,68 @@ final class ModelsTests: XCTestCase {
         XCTAssertTrue(route.isAvailable)
         XCTAssertTrue(route.isExact)
         XCTAssertEqual(route.actionTitle, "回到会话")
+    }
+
+    func testAgentSessionLaunchRouteReturnsCodexSubagentToParentTask() {
+        let session = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "child123",
+            resumeID: "child-thread-id",
+            parentSessionID: "parent-thread-id",
+            agentPath: "/root/recent_sessions",
+            agentNickname: "session-auditor",
+            subagentDepth: 1,
+            project: "atm",
+            client: "Codex Desktop",
+            ageSeconds: 3
+        )
+
+        let route = ATMAgentSessionLaunchRoute.resolve(for: session)
+        XCTAssertEqual(route, .codexThread(threadID: "parent-thread-id"))
+        XCTAssertTrue(route.isExact)
+    }
+
+    func testAgentSessionLaunchRouteKeepsOrdinaryCodexSessionOnItsResumeID() {
+        let session = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "ordinary",
+            resumeID: "ordinary-visible-thread-id",
+            // Defensive contract: stray lineage metadata must not redirect a
+            // normal user-owned session away from its own resumable thread.
+            rootSessionID: "unexpected-root-thread-id",
+            agentPath: "/root",
+            subagentDepth: 0,
+            project: "atm",
+            client: "Codex Desktop",
+            ageSeconds: 3
+        )
+
+        XCTAssertFalse(session.isSubagent)
+        XCTAssertEqual(
+            ATMAgentSessionLaunchRoute.resolve(for: session),
+            .codexThread(threadID: "ordinary-visible-thread-id")
+        )
+    }
+
+    func testAgentSessionLaunchRouteReturnsDeepCodexSubagentToRootTask() {
+        let session = ATMLiveSession(
+            tool: "Codex",
+            sessionID: "depththree",
+            resumeID: "depth-three-thread-id",
+            parentSessionID: "depth-two-thread-id",
+            rootSessionID: "visible-root-thread-id",
+            agentPath: "/root/parser/tests",
+            agentNickname: "deep-test-auditor",
+            subagentDepth: 3,
+            project: "atm",
+            client: "Codex Desktop",
+            ageSeconds: 3
+        )
+
+        XCTAssertEqual(
+            ATMAgentSessionLaunchRoute.resolve(for: session),
+            .codexThread(threadID: "visible-root-thread-id")
+        )
     }
 
     /// A bound session is history: its process is normally gone, so the only
@@ -2923,12 +3283,18 @@ final class ModelsTests: XCTestCase {
             try XCTUnwrap(JSONSerialization.jsonObject(with: encoder.encode(value)) as? [String: Any])
         }
 
-        XCTAssertEqual(try payload(ATMTodoIDRequest(todoID: "t8"))["todo_id"] as? String, "t8")
+        let started = try payload(ATMTodoStartRequest(todoID: "t8", reopenReason: nil))
+        XCTAssertEqual(started["todo_id"] as? String, "t8")
+        XCTAssertNil(started["reopen_reason"])
+        let reopened = try payload(
+            ATMTodoStartRequest(todoID: "t8", reopenReason: "评审要求补充迁移测试")
+        )
+        XCTAssertEqual(reopened["reopen_reason"] as? String, "评审要求补充迁移测试")
         let completed = try payload(
-            ATMTodoDoneRequest(todoID: "t8", reason: "通过 ATM 菜单栏\(todo.completionVerb)")
+            ATMTodoDoneRequest(todoID: "t8", reason: "关键路径与回归测试已验证通过")
         )
         XCTAssertEqual(completed["todo_id"] as? String, "t8")
-        XCTAssertEqual(completed["reason"] as? String, "通过 ATM 菜单栏完成")
+        XCTAssertEqual(completed["reason"] as? String, "关键路径与回归测试已验证通过")
         // Closing a todo that is waiting in review is an acceptance, and the
         // closing reason is the only place that distinction survives.
         let submitted = try JSONDecoder().decode(
@@ -2939,9 +3305,9 @@ final class ModelsTests: XCTestCase {
         )
         XCTAssertEqual(
             try payload(
-                ATMTodoDoneRequest(todoID: "t9", reason: "通过 ATM 菜单栏\(submitted.completionVerb)")
+                ATMTodoDoneRequest(todoID: "t9", reason: "评审确认导出与迁移回归通过")
             )["reason"] as? String,
-            "通过 ATM 菜单栏验收"
+            "评审确认导出与迁移回归通过"
         )
         // Archiving is a batch use case, so a single row is a batch of one.
         XCTAssertEqual(
@@ -4122,7 +4488,7 @@ final class ModelsTests: XCTestCase {
 
         XCTAssertEqual(suggestion.project, "atm")
         XCTAssertEqual(suggestion.projectReason, "文本提到 atm")
-        XCTAssertEqual(suggestion.priority, "P1")
+        XCTAssertEqual(suggestion.priority, "P2")
     }
 
     func testTodoSuggestionFallsBackToTheLiveSessionThenRecentProject() throws {
@@ -4155,7 +4521,7 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(ATMTodoSuggestion.infer(text: "顺手把日志清一下", todos: []).priority, "P2")
         XCTAssertEqual(ATMTodoSuggestion.infer(text: "P0 修登录", todos: []).priority, "P0")
         // "top10" contains "p1" but is not a priority.
-        XCTAssertEqual(ATMTodoSuggestion.infer(text: "统计 top10 技能", todos: []).priority, "P1")
+        XCTAssertEqual(ATMTodoSuggestion.infer(text: "统计 top10 技能", todos: []).priority, "P2")
     }
 
     func testPaginationLimitsRenderedItemsAndClampsPage() {
@@ -4389,6 +4755,26 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(store.allTodos.first?.status, "done")
         XCTAssertTrue(store.snapshot.work.review.isEmpty)
         XCTAssertEqual(store.snapshot.work.summary.review, 0)
+    }
+
+    func testTodoCompletionReasonRequiresSpecificEvidence() {
+        XCTAssertNil(ATMTodoCompletionReason.normalized(""))
+        XCTAssertNil(ATMTodoCompletionReason.normalized("完成"))
+        XCTAssertNil(ATMTodoCompletionReason.normalized("通过 ATM 菜单栏验收"))
+        XCTAssertEqual(
+            ATMTodoCompletionReason.normalized("  关键路径与回归测试已验证通过  "),
+            "关键路径与回归测试已验证通过"
+        )
+    }
+
+    func testTodoReopenReasonRequiresNewScopeOrEvidence() {
+        XCTAssertNil(ATMTodoReopenReason.normalized(""))
+        XCTAssertNil(ATMTodoReopenReason.normalized("继续"))
+        XCTAssertNil(ATMTodoReopenReason.normalized("重新开始"))
+        XCTAssertEqual(
+            ATMTodoReopenReason.normalized("  评审要求补充迁移失败回归  "),
+            "评审要求补充迁移失败回归"
+        )
     }
 
     /// Cost ATM guessed the rate for has to stay marked all the way to the row the

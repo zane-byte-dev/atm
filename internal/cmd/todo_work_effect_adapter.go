@@ -29,6 +29,9 @@ func (localWorkEffectExecutor) ApplyWorkEffect(event workapp.Effect) error {
 	case workapp.EffectTodoWaiting:
 		return syncWorkEffectDocument(todo, "")
 	case workapp.EffectTodoStarted:
+		if err := appendWorkEffectLogOnce(todo, event.Message); err != nil {
+			return fmt.Errorf("append todo reopen log after start: %w", err)
+		}
 		return syncWorkEffectDocument(todo, "after start")
 	case workapp.EffectTodoUpdated:
 		return syncWorkEffectDocument(todo, "after update")

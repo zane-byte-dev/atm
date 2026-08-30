@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,17 +33,30 @@ type ListInput struct {
 }
 
 type Summary struct {
-	ID             string  `json:"id"`
-	ShortID        string  `json:"short_id"`
-	Agent          string  `json:"agent"`
-	Project        string  `json:"project"`
-	CreatedAt      string  `json:"created_at"`
-	IndexedCreated string  `json:"-"`
-	LastAt         string  `json:"last_at,omitempty"`
-	QuestionCount  int     `json:"q_count"`
-	Summary        string  `json:"summary,omitempty"`
-	FirstQuestion  string  `json:"first_q,omitempty"`
-	Review         *Review `json:"memory_review,omitempty"`
+	ID                 string  `json:"id"`
+	ShortID            string  `json:"short_id"`
+	Agent              string  `json:"agent"`
+	Project            string  `json:"project"`
+	CreatedAt          string  `json:"created_at"`
+	IndexedCreated     string  `json:"-"`
+	LastAt             string  `json:"last_at,omitempty"`
+	QuestionCount      int     `json:"q_count"`
+	LocalUserTurnCount int     `json:"local_user_turn_count"`
+	Summary            string  `json:"summary,omitempty"`
+	FirstQuestion      string  `json:"first_q,omitempty"`
+	ResumeID           string  `json:"resume_id,omitempty"`
+	RootSessionID      string  `json:"root_session_id,omitempty"`
+	ParentSessionID    string  `json:"parent_session_id,omitempty"`
+	AgentPath          string  `json:"agent_path,omitempty"`
+	AgentNickname      string  `json:"agent_nickname,omitempty"`
+	SubagentDepth      int     `json:"subagent_depth,omitempty"`
+	IsSubagent         bool    `json:"is_subagent,omitempty"`
+	ParserVersion      int     `json:"parser_version"`
+	ContentState       string  `json:"content_state"`
+	ResultStatus       string  `json:"result_status"`
+	LatestProgress     string  `json:"latest_progress,omitempty"`
+	FinalResult        string  `json:"final_result,omitempty"`
+	Review             *Review `json:"memory_review,omitempty"`
 }
 
 type ListResult struct {
@@ -78,9 +92,9 @@ func (service Service) List(ctx context.Context, input ListInput) (ListResult, e
 	if input.Order == "" {
 		input.Order = "asc"
 	}
-	if input.Order != "asc" && input.Order != "desc" {
+	if input.Order != "asc" && input.Order != "desc" && input.Order != "activity-desc" {
 		return ListResult{}, invalidArgument(
-			"invalid order: use asc or desc", "order", input.Order,
+			"invalid order: use activity-desc, asc, or desc", "order", input.Order,
 		)
 	}
 	if input.Offset < 0 {
@@ -128,7 +142,22 @@ func (service Service) List(ctx context.Context, input ListInput) (ListResult, e
 		}
 		filtered = append(filtered, row)
 	}
-	if input.Order == "desc" {
+	if input.Order == "activity-desc" {
+		sort.SliceStable(filtered, func(left, right int) bool {
+			leftAt := filtered[left].LastTS
+			if leftAt <= 0 {
+				leftAt = filtered[left].CreatedTS
+			}
+			rightAt := filtered[right].LastTS
+			if rightAt <= 0 {
+				rightAt = filtered[right].CreatedTS
+			}
+			if leftAt == rightAt {
+				return filtered[left].CreatedTS > filtered[right].CreatedTS
+			}
+			return leftAt > rightAt
+		})
+	} else if input.Order == "desc" {
 		for left, right := 0, len(filtered)-1; left < right; left, right = left+1, right-1 {
 			filtered[left], filtered[right] = filtered[right], filtered[left]
 		}
@@ -157,8 +186,14 @@ func (service Service) List(ctx context.Context, input ListInput) (ListResult, e
 		sessions = append(sessions, Summary{
 			ID: row.FullID, ShortID: row.ShortID, Agent: row.Agent, Project: row.Project,
 			CreatedAt: createdAt, IndexedCreated: row.CreatedAt, LastAt: lastAt,
-			QuestionCount: row.QCount, Summary: row.Summary,
-			FirstQuestion: cleanMessage(row.FirstQ), Review: review,
+			QuestionCount: row.QCount, LocalUserTurnCount: row.QCount, Summary: row.Summary,
+			FirstQuestion: cleanMessage(row.FirstQ), ResumeID: row.ResumeID,
+			RootSessionID: row.RootSessionID, ParentSessionID: row.ParentSessionID,
+			AgentPath: row.AgentPath, AgentNickname: row.AgentNickname,
+			SubagentDepth: row.SubagentDepth, IsSubagent: row.IsSubagent,
+			ParserVersion: row.ParserVersion, ContentState: row.ContentState,
+			ResultStatus: row.ResultStatus, LatestProgress: row.LatestProgress,
+			FinalResult: row.FinalResult, Review: review,
 		})
 	}
 	if err := contextError(ctx); err != nil {

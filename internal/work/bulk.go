@@ -91,6 +91,12 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 				"bulk edit requires a project or status", "input", input,
 			)
 		}
+		if status != "" && status != store.TodoStatusOpen {
+			return BulkResult{}, lifecycleInvalidArgument(
+				"bulk edit may only return work to open; use start, submit, or done for lifecycle transitions",
+				"status", input.Status,
+			)
+		}
 	}
 
 	reason := strings.TrimSpace(input.Reason)
@@ -129,6 +135,20 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 			}
 		}
 		if action == BulkDone {
+			needsAcceptance := false
+			for _, todo := range selected {
+				if todo.Status != closeStatus {
+					needsAcceptance = true
+					break
+				}
+			}
+			if needsAcceptance {
+				if reasonErr := store.ValidateTodoCompletionReason(reason); reasonErr != nil {
+					appErr := lifecycleInvalidArgument(reasonErr.Error(), "reason", input.Reason)
+					appErr.Details["evidence_required"] = true
+					return appErr
+				}
+			}
 			for _, todo := range selected {
 				if todo.Status != closeStatus && !store.TodoIsActive(*todo) {
 					return lifecycleConflict(

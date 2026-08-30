@@ -54,11 +54,14 @@ type BindInput struct {
 	CWD              string `json:"cwd,omitempty"`
 	WorkspaceProject string `json:"workspace_project,omitempty"`
 	Force            bool   `json:"force,omitempty"`
+	ReopenReason     string `json:"reopen_reason,omitempty"`
 }
 
 type BindResult struct {
-	Binding store.TodoSessionBinding `json:"binding"`
-	Todo    store.Todo               `json:"todo"`
+	Binding  store.TodoSessionBinding `json:"binding"`
+	Todo     store.Todo               `json:"todo"`
+	Reopened bool                     `json:"reopened,omitempty"`
+	Effects  []Effect                 `json:"-"`
 }
 
 type CurrentInput struct{}
@@ -108,13 +111,44 @@ func (service Service) Bind(
 		if !store.TodoIsActive(*todo) {
 			appErr := application.NewError(
 				application.CodeConflict,
-				fmt.Sprintf("cannot bind completed todo %s with status %s", todo.ID, todo.Status),
+				fmt.Sprintf("cannot bind completed todo %s with status %s; run `atm todo start %s --reopen-reason \"<why work resumed>\"` first, then bind it", todo.ID, todo.Status, todo.ID),
 			)
 			appErr.Details = map[string]any{
-				"todo_id":        todo.ID,
-				"current_status": todo.Status,
+				"todo_id":          todo.ID,
+				"current_status":   todo.Status,
+				"required_command": "todo start",
+				"required_flag":    "--reopen-reason",
+				"reopen_required":  true,
 			}
 			return appErr
+		}
+		reopenReason := strings.TrimSpace(input.ReopenReason)
+		reopenMessage := ""
+		if todo.Status == store.TodoStatusReview {
+			if reopenReason == "" {
+				appErr := application.NewError(
+					application.CodeConflict,
+					fmt.Sprintf("todo %s is in review; binding it would reopen submitted work; run `atm session bind %s --reopen-reason \"<why review resumed>\"`", todo.ID, todo.ID),
+				)
+				appErr.Details = map[string]any{
+					"todo_id": todo.ID, "current_status": todo.Status,
+					"required_flag": "--reopen-reason", "reopen_required": true,
+				}
+				return appErr
+			}
+			reopenMessage = "[reopen] " + reopenReason
+			if err := store.ValidateTodoLogMessage(reopenMessage, "进展"); err != nil {
+				return bindingInvalidArgument(err.Error(), "reopen_reason", input.ReopenReason)
+			}
+			if unknown := store.UnknownTodoReferences(transaction.Todos(), reopenMessage); len(unknown) > 0 {
+				appErr := bindingInvalidArgument(
+					fmt.Sprintf("reopen reason references unknown todo IDs: %s", strings.Join(unknown, ", ")),
+					"reopen_reason", input.ReopenReason,
+				)
+				appErr.Details["unknown_todo_ids"] = unknown
+				return appErr
+			}
+			result.Reopened = true
 		}
 		if unmet := store.UnmetTodoDependencies(transaction.Todos(), *todo); len(unmet) > 0 {
 			appErr := application.NewError(
@@ -147,6 +181,15 @@ func (service Service) Bind(
 		}
 		result.Binding = *binding
 		result.Todo = *todo
+		if result.Reopened {
+			if err := transaction.enqueueEffect(call, EffectTodoStarted, *todo, reopenMessage); err != nil {
+				return fmt.Errorf("enqueue reopen effect: %w", err)
+			}
+		}
+		result.Effects, err = transaction.pendingEffects(todo.ID)
+		if err != nil {
+			return fmt.Errorf("read pending bind effects: %w", err)
+		}
 		return nil
 	})
 	if err != nil {

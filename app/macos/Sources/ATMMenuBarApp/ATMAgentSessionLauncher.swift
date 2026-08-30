@@ -12,6 +12,17 @@ enum ATMAgentSessionLaunchRoute: Equatable {
         let tool = normalized(session.tool)
         let client = normalized(session.client)
         let resumeID = nonEmpty(session.resumeID)
+        // A Codex subagent's own rollout is an implementation detail rather than
+        // a user-owned task. Return deep branches to the visible root task; the
+        // direct parent remains the compatibility fallback for older payloads.
+        let codexThreadID: String?
+        if session.isSubagent {
+            codexThreadID = nonEmpty(session.rootSessionID)
+                ?? nonEmpty(session.parentSessionID)
+                ?? resumeID
+        } else {
+            codexThreadID = resumeID
+        }
         let isCodexDesktop = tool.contains("codex")
             && (client.contains("desktop") || client.contains("app") || (client.isEmpty && session.pid == nil))
         let isGrok = tool.contains("grok")
@@ -20,8 +31,8 @@ enum ATMAgentSessionLaunchRoute: Equatable {
             || isGrok
             || tool == "pi"
 
-        if isCodexDesktop, let resumeID {
-            return .codexThread(threadID: resumeID)
+        if isCodexDesktop, let codexThreadID {
+            return .codexThread(threadID: codexThreadID)
         }
 
         if let bundleIdentifier = nonEmpty(session.terminalApp) {

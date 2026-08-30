@@ -68,7 +68,13 @@ import (
 // A plan is execution state, not Todo lifecycle: completing every item never
 // submits or closes the Todo. v52 removes the background-dispatch subsystem:
 // task_runs, the collection dispatch columns and todo_plan_revisions.run_id all
-// go, because ATM no longer starts an Agent and nothing can write them.
+// go, because ATM no longer starts an Agent and nothing can write them. v53
+// persists session lineage, parser/content quality, structured result state and
+// message provenance so a copied subagent history is no longer presented or
+// counted as the child's own conversation. v54 adds a content-free CLI
+// invocation ledger: command paths and stable outcome classes are observable,
+// while arguments, error messages, working directories and user content are not
+// representable in the schema.
 //
 // Keep the minimum at 21 while those upgrade steps exist; after the live database
 // has been upgraded, raise this to SchemaVersion and delete the steps. Note what a
@@ -77,7 +83,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 52
+	SchemaVersion        = 54
 	minUpgradableVersion = 21
 )
 
@@ -108,27 +114,46 @@ func createSchema(tx *sql.Tx) error {
 			last_synced_files INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE sessions (
-			id         TEXT PRIMARY KEY,
-			short_id   TEXT NOT NULL,
-			agent      TEXT NOT NULL,
-			project    TEXT NOT NULL DEFAULT '',
-			file_path  TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT '',
-			created_ts INTEGER NOT NULL DEFAULT 0,
-			summary    TEXT NOT NULL DEFAULT '',
-			last_ts    INTEGER NOT NULL DEFAULT 0
+			id                TEXT PRIMARY KEY,
+			short_id          TEXT NOT NULL,
+			agent             TEXT NOT NULL,
+			project           TEXT NOT NULL DEFAULT '',
+			file_path         TEXT NOT NULL,
+			created_at        TEXT NOT NULL DEFAULT '',
+			created_ts        INTEGER NOT NULL DEFAULT 0,
+			summary           TEXT NOT NULL DEFAULT '',
+			last_ts           INTEGER NOT NULL DEFAULT 0,
+			resume_id         TEXT NOT NULL DEFAULT '',
+			root_session_id   TEXT NOT NULL DEFAULT '',
+			parent_session_id TEXT NOT NULL DEFAULT '',
+			agent_path        TEXT NOT NULL DEFAULT '',
+			agent_nickname    TEXT NOT NULL DEFAULT '',
+			subagent_depth    INTEGER NOT NULL DEFAULT 0,
+			is_subagent       INTEGER NOT NULL DEFAULT 0,
+			is_internal       INTEGER NOT NULL DEFAULT 0,
+			parser_version    INTEGER NOT NULL DEFAULT 0,
+			content_state     TEXT NOT NULL DEFAULT 'empty',
+			result_status     TEXT NOT NULL DEFAULT 'unknown',
+			latest_progress   TEXT NOT NULL DEFAULT '',
+			final_result      TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX idx_sessions_agent ON sessions(agent)`,
 		`CREATE INDEX idx_sessions_created_ts ON sessions(created_ts)`,
 		`CREATE INDEX idx_sessions_short_id ON sessions(short_id)`,
 		`CREATE INDEX idx_sessions_last_ts ON sessions(last_ts)`,
+		`CREATE INDEX idx_sessions_resume_id ON sessions(resume_id)`,
+		`CREATE INDEX idx_sessions_root_session ON sessions(root_session_id)`,
+		`CREATE INDEX idx_sessions_parent_session ON sessions(parent_session_id)`,
 		`CREATE TABLE messages (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 			seq        INTEGER NOT NULL,
 			role       TEXT NOT NULL,
 			content    TEXT NOT NULL,
-			ts         INTEGER NOT NULL DEFAULT 0
+			ts         INTEGER NOT NULL DEFAULT 0,
+			scope      TEXT NOT NULL DEFAULT 'local',
+			kind       TEXT NOT NULL DEFAULT 'conversation',
+			phase      TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX idx_messages_session ON messages(session_id)`,
 		// seq is dense per session: a full re-sync deletes the session and starts
@@ -188,6 +213,27 @@ func createSchema(tx *sql.Tx) error {
 		`CREATE INDEX idx_usage_events_model ON usage_events(model)`,
 		`CREATE UNIQUE INDEX idx_usage_events_fingerprint
 			ON usage_events(fingerprint) WHERE fingerprint <> ''`,
+		// ATM's own CLI invocation telemetry is intentionally independent of the
+		// rebuildable session mirror. A session sync or forget must not erase the
+		// success denominator used to diagnose command-contract failures.
+		`CREATE TABLE cli_invocations (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			occurred_at  INTEGER NOT NULL,
+			session_id  TEXT NOT NULL DEFAULT '',
+			agent        TEXT NOT NULL DEFAULT '',
+			version      TEXT NOT NULL DEFAULT '',
+			command_path TEXT NOT NULL CHECK (command_path <> ''),
+			exit_code    INTEGER NOT NULL,
+			error_code   TEXT NOT NULL DEFAULT '',
+			cause_class  TEXT NOT NULL DEFAULT '',
+			retryable    INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0,1)),
+			duration_ms  INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+			success      INTEGER NOT NULL CHECK (success IN (0,1)),
+			CHECK (success = 0 OR exit_code = 0)
+		)`,
+		`CREATE INDEX idx_cli_invocations_time ON cli_invocations(occurred_at DESC)`,
+		`CREATE INDEX idx_cli_invocations_session_time ON cli_invocations(session_id,occurred_at DESC)`,
+		`CREATE INDEX idx_cli_invocations_failure_time ON cli_invocations(success,occurred_at DESC)`,
 		// --- AI Day: rebuildable daily projections ---
 		// These tables are derived from the session mirror. A rebuild replaces
 		// one row per local calendar day, making the operation idempotent and the

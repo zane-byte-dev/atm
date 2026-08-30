@@ -325,9 +325,10 @@ struct ATMCollectionNotificationPayload: Equatable {
 /// Diff two todo snapshots for external human-relevant changes (agent CLI, other
 /// terminals). First observation is a baseline only — no flood of historical work.
 ///
-/// Done/archived stay out of the refresh path: local UI complete already notifies,
-/// and agent `todo done` fires the CLI banner. Create + review are the gaps the
-/// menubar must close when an agent mutates work while the app is open.
+/// Done/archived stay out of the refresh path: local human completion already
+/// notifies, while Agent completion must enter `review` through `todo submit` and
+/// is covered below. Create + review are the gaps the menubar closes when another
+/// process mutates work while the app is open.
 enum ATMTodoNotificationDiff {
     static func events(
         previous: [String: String]?,

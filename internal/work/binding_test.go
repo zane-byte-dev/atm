@@ -136,6 +136,26 @@ func TestBindRejectsLifecycleAndWorkspaceConflictsBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestBindRequiresExplicitReasonToResumeReview(t *testing.T) {
+	withTempWorkStore(t)
+	seedWorkTodos(t, store.Todo{
+		ID: "t1", Title: "Submitted work", Priority: "P1", Status: store.TodoStatusReview,
+		Project: "atm", Creator: store.TodoCreatorMe, Created: store.Today(),
+	})
+	call := bindingCall(application.ActorAgent, "session-1")
+	_, err := Default.Bind(context.Background(), call, BindInput{TodoID: "t1"})
+	if !errors.Is(err, application.ErrConflict) || !strings.Contains(err.Error(), "--reopen-reason") {
+		t.Fatalf("Bind error = %v", err)
+	}
+	result, err := Default.Bind(context.Background(), call, BindInput{
+		TodoID: "t1", ReopenReason: "review requested a parser correction",
+	})
+	if err != nil || !result.Reopened || result.Todo.Status != store.TodoStatusInProgress ||
+		len(result.Effects) != 1 || result.Effects[0].Message != "[reopen] review requested a parser correction" {
+		t.Fatalf("Bind = %+v, err=%v", result, err)
+	}
+}
+
 func TestBindForceAndUnknownWorkspaceDoNotInventAConflict(t *testing.T) {
 	tests := []struct {
 		name  string

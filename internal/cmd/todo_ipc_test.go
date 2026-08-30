@@ -49,17 +49,17 @@ func TestIPCTodoReadAndMetadataWorkflowUsesWorkService(t *testing.T) {
 		t.Fatalf("document = %+v", document)
 	}
 
-	title, status, source := "Updated Typed Todo", store.TodoStatusReview, "menu bar"
+	title, source := "Updated Typed Todo", "menu bar"
 	updated := runTodoIPCSuccess[appipc.TodoUpdateRequest, workapp.Todo](t, "todo.update", appipc.TodoUpdateRequest{
-		TodoID: created.ID, Title: &title, Status: &status, Source: &source,
+		TodoID: created.ID, Title: &title, Source: &source,
 	})
-	if updated.Title != title || updated.Status != status || updated.Source != source {
+	if updated.Title != title || updated.Status != store.TodoStatusOpen || updated.Source != source {
 		t.Fatalf("updated = %+v", updated)
 	}
 	persisted := runTodoIPCSuccess[appipc.TodoIDRequest, appipc.TodoShowResponse](t, "todo.show", appipc.TodoIDRequest{
 		TodoID: created.ID,
 	})
-	if persisted.Todo.Title != title || persisted.Todo.Status != status {
+	if persisted.Todo.Title != title || persisted.Todo.Status != store.TodoStatusOpen {
 		t.Fatalf("persisted = %+v", persisted.Todo)
 	}
 }
@@ -105,19 +105,54 @@ func TestIPCTodoRequestsRejectCLIAndHiddenMutationFields(t *testing.T) {
 	created := runTodoIPCSuccess[appipc.TodoCreateRequest, workapp.Todo](t, "todo.create", appipc.TodoCreateRequest{
 		Title: "First accepted Todo",
 	})
-	if created.ID != "t1" || created.Status != store.TodoStatusOpen || created.Creator != store.TodoCreatorMe {
+	if created.ID != "t1" || created.Status != store.TodoStatusOpen || created.Creator != store.TodoCreatorMe || created.Priority != "P2" {
 		t.Fatalf("rejected requests mutated defaults or consumed an ID: %+v", created)
 	}
 	var output bytes.Buffer
-	err := rawTodoIPC("todo.update", `{"todo_id":"t1","status":"done"}`, &output)
-	if !errors.Is(err, application.ErrInvalidArgument) {
-		t.Fatalf("lifecycle bypass = %v\n%s", err, output.String())
+	for _, status := range []string{"in_progress", "review", "done"} {
+		output.Reset()
+		err := rawTodoIPC("todo.update", `{"todo_id":"t1","status":"`+status+`"}`, &output)
+		if !errors.Is(err, application.ErrInvalidArgument) {
+			t.Fatalf("lifecycle bypass %s = %v\n%s", status, err, output.String())
+		}
 	}
 	shown := runTodoIPCSuccess[appipc.TodoIDRequest, appipc.TodoShowResponse](t, "todo.show", appipc.TodoIDRequest{
 		TodoID: created.ID,
 	})
 	if shown.Todo.Status != store.TodoStatusOpen {
 		t.Fatalf("rejected lifecycle bypass changed state: %+v", shown.Todo)
+	}
+}
+
+func TestIPCTodoLifecycleRequiresReopenAndAcceptanceEvidence(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Review guard", Priority: "P2", Status: store.TodoStatusReview,
+		Creator: store.TodoCreatorMe, Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	err := rawTodoIPC("todo.start", `{"todo_id":"t1"}`, &output)
+	if !errors.Is(err, application.ErrConflict) || !strings.Contains(err.Error(), "reopen_reason") && !strings.Contains(err.Error(), "--reopen-reason") {
+		t.Fatalf("missing reopen evidence = %v\n%s", err, output.String())
+	}
+	reopened := runTodoIPCSuccess[appipc.TodoStartRequest, workapp.Todo](t, "todo.start", appipc.TodoStartRequest{
+		TodoID: "t1", ReopenReason: "review found a boundary regression",
+	})
+	if reopened.Status != store.TodoStatusInProgress {
+		t.Fatalf("reopened = %+v", reopened)
+	}
+	output.Reset()
+	err = rawTodoIPC("todo.done", `{"todo_id":"t1","reason":"通过 ATM 菜单栏完成"}`, &output)
+	if !errors.Is(err, application.ErrInvalidArgument) || !strings.Contains(err.Error(), "evidence") {
+		t.Fatalf("generic acceptance = %v\n%s", err, output.String())
+	}
+	completed := runTodoIPCSuccess[appipc.TodoDoneRequest, workapp.Todo](t, "todo.done", appipc.TodoDoneRequest{
+		TodoID: "t1", Reason: "reviewed the fix and reran lifecycle tests",
+	})
+	if completed.Status != store.TodoStatusDone || completed.ClosedReason == nil || *completed.ClosedReason == "" {
+		t.Fatalf("completed = %+v", completed)
 	}
 }
 

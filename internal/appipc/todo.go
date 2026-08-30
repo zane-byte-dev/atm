@@ -72,13 +72,14 @@ type TodoUpdateRequest struct {
 // its Status field goes through Work.Edit, which only returns work to open, and
 // retention and permanent deletion are not metadata patches.
 //
-// Unlike Guard's decision path, these admit OriginIPC. The distinction is what
-// the transport can escalate: `atm todo done` is already something an Agent may
-// run from a plain terminal, so a replayable `_ipc` adds no authority. Guard's
-// approve exists precisely to require a human the Agent cannot impersonate, and
-// therefore stays CLI-only.
+// Unlike Guard's decision path, these admit OriginIPC. Work still applies the
+// actor policy at the use-case boundary: Todo Done requires a human actor and
+// concrete acceptance evidence, while an Agent must submit. OriginIPC is a
+// transport fact, never authority to bypass that policy. Guard's approve stays
+// CLI-only because it protects a separate outbound-action decision.
 type TodoStartRequest struct {
-	TodoID string `json:"todo_id"`
+	TodoID       string `json:"todo_id"`
+	ReopenReason string `json:"reopen_reason,omitempty"`
 }
 
 // TodoDoneRequest carries the human acceptance decision. Work still enforces
@@ -298,7 +299,9 @@ func registerTodo(registry *ipc.Registry, dependencies Dependencies) {
 		call application.Call,
 		input TodoStartRequest,
 	) (work.Todo, error) {
-		result, err := dependencies.Work.Start(ctx, call, work.StartInput{TodoID: input.TodoID})
+		result, err := dependencies.Work.Start(ctx, call, work.StartInput{
+			TodoID: input.TodoID, ReopenReason: input.ReopenReason,
+		})
 		if err != nil {
 			return work.Todo{}, err
 		}

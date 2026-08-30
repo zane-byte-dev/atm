@@ -13,8 +13,22 @@ import "strings"
 // lives here rather than being copied per caller.
 func VisibleUserText(s string) string {
 	s = strings.TrimSpace(s)
-	if marker := "## My request for Codex:"; strings.Contains(s, marker) {
-		s = s[strings.Index(s, marker)+len(marker):]
+	// Attachment and app wrappers put the human-authored request after a stable
+	// marker.  Extract it before checking control prefixes: the wrapper itself
+	// may begin with an attachment or AGENTS block even though a real request is
+	// present later in the same record.
+	requestIndex, requestMarkerLen := -1, 0
+	for _, marker := range []string{
+		"## My request for Codex:",
+		"## My request:",
+		"# My request:",
+	} {
+		if index := strings.LastIndex(s, marker); index > requestIndex {
+			requestIndex, requestMarkerLen = index, len(marker)
+		}
+	}
+	if requestIndex >= 0 {
+		s = s[requestIndex+requestMarkerLen:]
 	}
 	for _, prefix := range []string{
 		"<recommended_plugins>",
@@ -25,6 +39,11 @@ func VisibleUserText(s string) string {
 		"<skills_instructions>",
 		"<image name=",
 		"</image>",
+		"Message Type: NEW_TASK",
+		"Message Type: MESSAGE",
+		"Message Type: FINAL_ANSWER",
+		"Within the root conversation",
+		"You are an agent in a team of agents collaborating",
 		"Some conversation entries were omitted.",
 	} {
 		if strings.HasPrefix(strings.TrimSpace(s), prefix) {

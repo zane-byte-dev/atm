@@ -49,14 +49,16 @@ atm todo log "<关键里程碑>"                         # 已绑定时省略 ID
 atm todo submit --reason "<结果与证据>"             # Agent 完成实现，进入 review 并自动解绑
 ```
 
-`review` 表示等待人验收；验收通过后由人执行 `atm todo done --reason "<结论>"`。
+`review` 表示等待人验收；验收通过后由人执行 `atm todo done --reason "<具体验收证据>"`。
+首次 done 不接受“通过 ATM 菜单栏完成”这类只描述入口的原因。
 
 TODO 只保留一套生命周期状态；当前会话焦点由 session 绑定表达：
 
 ```bash
 atm todo start <id>
-atm todo wait <id> --wake "外部状态变化"
-atm todo maintain <id> --limit 3
+atm todo start <id> --reopen-reason "验收后为什么恢复工作"
+atm todo edit <id> --wake "外部状态变化"
+atm todo edit <id> --maintenance-limit 3
 atm now
 ```
 

@@ -11,15 +11,18 @@ import (
 )
 
 var (
-	daysFlag           int
-	projectFlag        string
-	sessionSinceFlag   string
-	sessionReviewFlag  string
-	sessionListAllFlag bool
-	sessionListLimit   int
-	sessionListOffset  int
-	sessionListOrder   string
+	daysFlag            int
+	projectFlag         string
+	sessionSinceFlag    string
+	sessionReviewFlag   string
+	sessionListAllFlag  bool
+	sessionListLimit    int
+	sessionListOffset   int
+	sessionListOrder    string
+	sessionListEnvelope bool
 )
+
+const defaultSessionListLimit = 200
 
 func init() {
 	listCmd.Flags().IntVar(&daysFlag, "days", 1, "number of days to look back")
@@ -27,19 +30,31 @@ func init() {
 	listCmd.Flags().StringVar(&sessionSinceFlag, "since", "", "look back from RFC3339 timestamp or YYYY-MM-DD (overrides --days)")
 	listCmd.Flags().StringVar(&sessionReviewFlag, "review", "all", "memory review state: all, pending, or reviewed")
 	listCmd.Flags().BoolVar(&sessionListAllFlag, "all", false, "list every indexed session, ignoring the time window")
-	listCmd.Flags().StringVar(&sessionListOrder, "order", "asc", "sort by start time: asc (oldest first) or desc (newest first)")
-	listCmd.Flags().IntVar(&sessionListLimit, "limit", 0, "maximum number of sessions (0 means all)")
+	listCmd.Flags().StringVar(&sessionListOrder, "order", "activity-desc", "sort order: activity-desc (latest activity first), asc, or desc (by start time)")
+	listCmd.Flags().IntVar(&sessionListLimit, "limit", defaultSessionListLimit, "maximum number of sessions (0 means all)")
 	listCmd.Flags().IntVar(&sessionListOffset, "offset", 0, "number of sessions to skip")
+	listCmd.Flags().BoolVar(&sessionListEnvelope, "envelope", false, "wrap JSON rows with schema and pagination metadata")
 	sessionCmd.AddCommand(listCmd)
 }
 
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List recent sessions",
-	RunE:  runList,
+	Long: `List indexed sessions in latest-activity order with a bounded default page.
+
+Use --offset to fetch the next page, --limit 0 for an explicitly unbounded
+result, or --all to ignore the time window. Historical --json output remains a
+top-level array; --envelope adds schema and pagination metadata.`,
+	Example: `  atm session list --days 7
+  atm session list --all --limit 200 --offset 200 --json --envelope`,
+	Args: cobra.NoArgs,
+	RunE: runList,
 }
 
 func runList(cmd *cobra.Command, args []string) error {
+	if sessionListEnvelope && !jsonOutput {
+		return fmt.Errorf("--envelope requires --json")
+	}
 	agent, err := resolveAgent()
 	if err != nil {
 		return err
@@ -56,26 +71,61 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	if jsonOutput {
 		type jsonSession struct {
-			ID        string             `json:"id"`
-			ShortID   string             `json:"short_id"`
-			Agent     string             `json:"agent"`
-			Project   string             `json:"project"`
-			CreatedAt string             `json:"created_at"`
-			LastAt    string             `json:"last_at,omitempty"`
-			QCount    int                `json:"q_count"`
-			Summary   string             `json:"summary,omitempty"`
-			FirstQ    string             `json:"first_q,omitempty"`
-			Review    *sessionapp.Review `json:"memory_review,omitempty"`
+			ID                 string             `json:"id"`
+			ShortID            string             `json:"short_id"`
+			Agent              string             `json:"agent"`
+			Project            string             `json:"project"`
+			CreatedAt          string             `json:"created_at"`
+			LastAt             string             `json:"last_at,omitempty"`
+			QCount             int                `json:"q_count"`
+			LocalUserTurnCount int                `json:"local_user_turn_count"`
+			Summary            string             `json:"summary,omitempty"`
+			FirstQ             string             `json:"first_q,omitempty"`
+			ResumeID           string             `json:"resume_id,omitempty"`
+			RootSessionID      string             `json:"root_session_id,omitempty"`
+			ParentSessionID    string             `json:"parent_session_id,omitempty"`
+			AgentPath          string             `json:"agent_path,omitempty"`
+			AgentNickname      string             `json:"agent_nickname,omitempty"`
+			SubagentDepth      int                `json:"subagent_depth,omitempty"`
+			IsSubagent         bool               `json:"is_subagent,omitempty"`
+			ParserVersion      int                `json:"parser_version"`
+			ContentState       string             `json:"content_state"`
+			ResultStatus       string             `json:"result_status"`
+			LatestProgress     string             `json:"latest_progress,omitempty"`
+			FinalResult        string             `json:"final_result,omitempty"`
+			Review             *sessionapp.Review `json:"memory_review,omitempty"`
 		}
 		var sessions []jsonSession
 		for _, row := range result.Sessions {
 			sessions = append(sessions, jsonSession{
 				ID: row.ID, ShortID: row.ShortID, Agent: row.Agent, Project: row.Project,
 				CreatedAt: row.CreatedAt, LastAt: row.LastAt, QCount: row.QuestionCount,
-				Summary: row.Summary, FirstQ: truncLine(row.FirstQuestion, 200), Review: row.Review,
+				LocalUserTurnCount: row.LocalUserTurnCount, Summary: row.Summary,
+				FirstQ: truncLine(row.FirstQuestion, 200), ResumeID: row.ResumeID,
+				RootSessionID: row.RootSessionID, ParentSessionID: row.ParentSessionID,
+				AgentPath: row.AgentPath, AgentNickname: row.AgentNickname,
+				SubagentDepth: row.SubagentDepth, IsSubagent: row.IsSubagent,
+				ParserVersion: row.ParserVersion, ContentState: row.ContentState,
+				ResultStatus: row.ResultStatus, LatestProgress: row.LatestProgress,
+				FinalResult: row.FinalResult, Review: row.Review,
 			})
 		}
-		output.JSON(sessions)
+		if sessionListEnvelope {
+			output.JSON(map[string]any{
+				"schema_version": sessionCLIOutputSchemaVersion,
+				"total":          result.Total,
+				"returned":       len(sessions),
+				"truncated":      result.Offset+len(sessions) < result.Total,
+				"limit":          result.Limit,
+				"offset":         result.Offset,
+				"order":          sessionListOrder,
+				"sessions":       sessions,
+			})
+		} else {
+			// Preserve the historical top-level array for scripts and older clients.
+			// New integrations can opt into the common metadata envelope above.
+			output.JSON(sessions)
+		}
 		return nil
 	}
 

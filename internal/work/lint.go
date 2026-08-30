@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -54,6 +55,36 @@ func (service Service) Lint(ctx context.Context, call application.Call, input Li
 		if issues == nil {
 			issues = []TodoLintIssue{}
 		}
+	}
+
+	bindings, err := store.ListTodoSessionBindings(todo.ID)
+	if err != nil {
+		return LintResult{}, lintUnavailable("read todo binding history", err)
+	}
+	db, err := store.OpenReadOnly()
+	if err != nil {
+		return LintResult{}, lintUnavailable("open todo session read model", err)
+	}
+	sessions, sessionsErr := store.FindSessionsForTodo(db, todo.ID)
+	closeErr := db.Close()
+	if sessionsErr != nil {
+		return LintResult{}, lintUnavailable("read todo session history", sessionsErr)
+	}
+	if closeErr != nil {
+		return LintResult{}, lintUnavailable("close todo session read model", closeErr)
+	}
+	effects, err := store.ListWorkEffects(todo.ID)
+	if err != nil {
+		return LintResult{}, lintUnavailable("read todo lifecycle history", err)
+	}
+	issues = append(issues, store.LintTodoLifecycle(todos, todo, store.TodoLintRuntime{
+		Bindings: bindings,
+		Sessions: sessions,
+		Effects:  effects,
+		Now:      time.Now(),
+	})...)
+	if issues == nil {
+		issues = []TodoLintIssue{}
 	}
 
 	return LintResult{

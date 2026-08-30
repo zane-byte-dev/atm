@@ -119,8 +119,8 @@ func TestTodoLintAdapterPreservesJSONAndTextShapes(t *testing.T) {
 	oldJSON := jsonOutput
 	t.Cleanup(func() { jsonOutput = oldJSON })
 	todo := store.Todo{
-		ID: "t1", Title: "Lint adapter", Priority: "P1", Status: store.TodoStatusOpen,
-		Project: "atm", Created: store.Today(),
+		ID: "t1", Title: "Lint adapter", Priority: "P2", Status: store.TodoStatusOpen,
+		Project: "atm", Creator: store.TodoCreatorMe, Created: store.Today(),
 	}
 	if err := seedTodos(todo); err != nil {
 		t.Fatal(err)

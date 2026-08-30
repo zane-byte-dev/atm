@@ -33,7 +33,7 @@ enum ATMTodoIPCCommand {
         timeout: 180,
         responseKeyDecoding: .useDefault
     )
-    static let start = ATMIPCMethod<ATMTodoIDRequest, ATMTodo>(
+    static let start = ATMIPCMethod<ATMTodoStartRequest, ATMTodo>(
         "todo.start",
         responseKeyDecoding: .useDefault
     )
@@ -62,6 +62,16 @@ struct ATMTodoDoneRequest: Encodable, Equatable {
     enum CodingKeys: String, CodingKey {
         case reason
         case todoID = "todo_id"
+    }
+}
+
+struct ATMTodoStartRequest: Encodable, Equatable {
+    let todoID: String
+    let reopenReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case todoID = "todo_id"
+        case reopenReason = "reopen_reason"
     }
 }
 
@@ -333,8 +343,11 @@ struct ATMTodoIPCClient: Sendable {
         try await ipc.call(ATMTodoIPCCommand.refine, request: request)
     }
 
-    func start(_ todoID: String) async throws -> ATMTodo {
-        try await ipc.call(ATMTodoIPCCommand.start, request: ATMTodoIDRequest(todoID: todoID))
+    func start(_ todoID: String, reopenReason: String? = nil) async throws -> ATMTodo {
+        try await ipc.call(
+            ATMTodoIPCCommand.start,
+            request: ATMTodoStartRequest(todoID: todoID, reopenReason: reopenReason)
+        )
     }
 
     func done(_ todoID: String, reason: String) async throws -> ATMTodo {

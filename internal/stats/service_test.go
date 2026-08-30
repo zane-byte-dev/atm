@@ -61,7 +61,7 @@ func TestQueryOwnsWindowNormalizationAndQuerySelection(t *testing.T) {
 	if got.group != GroupSession || got.agent != "codex" || got.sessionID != "session-1" {
 		t.Fatalf("query spec = %+v", got)
 	}
-	wantStart := time.Date(2026, 8, 18, 0, 0, 0, 0, config.Loc)
+	wantStart := time.Date(2026, 8, 17, 15, 4, 5, 0, config.Loc)
 	if !got.window.Start.Equal(wantStart) || !got.window.End.Equal(now) || got.window.Label != "last 3 days" {
 		t.Fatalf("window = %+v", got.window)
 	}
@@ -185,6 +185,26 @@ func TestAggregationsAreComputedInService(t *testing.T) {
 	comparison := buildSubscriptionComparison(10, 5, map[string]float64{"Zed": 20, "Alpha": 10})
 	if comparison == nil || comparison.Plans[0].Name != "Alpha" || comparison.APIEquivalentMonthlyUSD != 60 || comparison.ValueRatio != 2 {
 		t.Fatalf("subscription comparison = %+v", comparison)
+	}
+}
+
+func TestFinalizeQualityExposesCoverageAndEstimatedCostShare(t *testing.T) {
+	result := projectResult([]store.StatsResult{
+		{Project: "atm", Agent: "codex", Sessions: 2, TokenSessions: 1,
+			Requests: 10, DetailedRequests: 8, AggregateRequests: 2,
+			CostUSD: 100, CostEstimated: true, EstimatedCostUSD: 90,
+			PricingSource: store.PricingMixed},
+		{Project: "docs", Agent: "qoderwork", Sessions: 3},
+	})
+	finalizeQuality(&result)
+	if result.Quality.ActiveSessions != 5 || result.Quality.TokenSessions != 1 ||
+		result.Quality.SessionCoveragePct != 20 || result.Quality.ActiveAgents != 2 ||
+		result.Quality.TokenAgents != 1 || result.Quality.AgentCoveragePct != 50 ||
+		result.Quality.RequestCoveragePct != 80 || result.Quality.EstimatedCostShare != 0.9 {
+		t.Fatalf("quality = %+v", result.Quality)
+	}
+	if len(result.Quality.PricingSources) != 1 || result.Quality.PricingSources[0] != "mixed" {
+		t.Fatalf("pricing sources = %#v", result.Quality.PricingSources)
 	}
 }
 

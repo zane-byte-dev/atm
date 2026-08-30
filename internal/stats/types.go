@@ -45,27 +45,54 @@ type Window struct {
 }
 
 type ProjectRow struct {
-	Project         string  `json:"project"`
-	Agent           string  `json:"agent"`
-	Sessions        int     `json:"sessions"`
-	Queries         int     `json:"queries"`
-	ToolCalls       int     `json:"tool_calls"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
+	Project             string  `json:"project"`
+	Agent               string  `json:"agent"`
+	Sessions            int     `json:"sessions"`
+	TokenSessions       int     `json:"token_sessions"`
+	Queries             int     `json:"queries"`
+	ToolCalls           int     `json:"tool_calls"`
+	InputTokens         int64   `json:"input_tokens"`
+	FreshInputTokens    int64   `json:"fresh_input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheCreateTokens   int64   `json:"cache_create_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	Requests            int     `json:"requests"`
+	DetailedRequests    int     `json:"detailed_requests"`
+	AggregateRequests   int     `json:"aggregate_requests"`
+	RequestCoveragePct  float64 `json:"request_coverage_percent"`
+	SampledRequests     int     `json:"sampled_requests"`
+	UntimedRequests     int     `json:"untimed_requests"`
+	OutOfWindowRequests int     `json:"out_of_window_requests"`
+	CostUSD             float64 `json:"cost_usd"`
+	CostEstimated       bool    `json:"cost_estimated"`
+	EstimatedCostUSD    float64 `json:"estimated_cost_usd"`
+	PricingSource       string  `json:"pricing_source"`
 }
 
 type ModelRow struct {
-	Client          string  `json:"client"`
-	Model           string  `json:"model"`
-	Sessions        int     `json:"sessions"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
-	CostEstimated   bool    `json:"cost_estimated"`
-	PricingSource   string  `json:"pricing_source"`
+	Client              string  `json:"client"`
+	Model               string  `json:"model"`
+	Sessions            int     `json:"sessions"`
+	InputTokens         int64   `json:"input_tokens"`
+	FreshInputTokens    int64   `json:"fresh_input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheCreateTokens   int64   `json:"cache_create_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	Requests            int     `json:"requests"`
+	DetailedRequests    int     `json:"detailed_requests"`
+	AggregateRequests   int     `json:"aggregate_requests"`
+	RequestCoveragePct  float64 `json:"request_coverage_percent"`
+	SampledRequests     int     `json:"sampled_requests"`
+	UntimedRequests     int     `json:"untimed_requests"`
+	OutOfWindowRequests int     `json:"out_of_window_requests"`
+	CostUSD             float64 `json:"cost_usd"`
+	CostEstimated       bool    `json:"cost_estimated"`
+	EstimatedCostUSD    float64 `json:"estimated_cost_usd"`
+	PricingSource       string  `json:"pricing_source"`
 }
 
 type ModelPeriodRow struct {
@@ -74,10 +101,22 @@ type ModelPeriodRow struct {
 	Model                string  `json:"model"`
 	Sessions             int     `json:"sessions"`
 	InputTokens          int64   `json:"input_tokens"`
+	FreshInputTokens     int64   `json:"fresh_input_tokens"`
 	OutputTokens         int64   `json:"output_tokens"`
+	CacheCreateTokens    int64   `json:"cache_create_tokens"`
 	CacheReadTokens      int64   `json:"cache_read_tokens"`
+	TotalInputTokens     int64   `json:"total_input_tokens"`
+	TotalTokens          int64   `json:"total_tokens"`
+	Requests             int     `json:"requests"`
+	DetailedRequests     int     `json:"detailed_requests"`
+	AggregateRequests    int     `json:"aggregate_requests"`
+	RequestCoveragePct   float64 `json:"request_coverage_percent"`
+	SampledRequests      int     `json:"sampled_requests"`
+	UntimedRequests      int     `json:"untimed_requests"`
+	OutOfWindowRequests  int     `json:"out_of_window_requests"`
 	CostUSD              float64 `json:"cost_usd"`
 	CostEstimated        bool    `json:"cost_estimated"`
+	EstimatedCostUSD     float64 `json:"estimated_cost_usd"`
 	PricingSource        string  `json:"pricing_source"`
 	MeasuredOutputTokens int64   `json:"measured_output_tokens"`
 	MeasuredDurationMS   int64   `json:"measured_duration_ms"`
@@ -91,48 +130,84 @@ type SkillRow struct {
 }
 
 type SessionRow struct {
-	ShortID      string  `json:"short_id"`
-	Project      string  `json:"project"`
-	Model        string  `json:"model"`
-	Queries      int     `json:"queries"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CacheTokens  int64   `json:"cache_tokens"`
-	CostUSD      float64 `json:"cost_usd"`
+	ShortID             string  `json:"short_id"`
+	Project             string  `json:"project"`
+	Model               string  `json:"model"`
+	Queries             int     `json:"queries"`
+	InputTokens         int64   `json:"input_tokens"`
+	FreshInputTokens    int64   `json:"fresh_input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheTokens         int64   `json:"cache_tokens"`
+	CacheCreateTokens   int64   `json:"cache_create_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	DetailedRequests    int     `json:"detailed_requests"`
+	AggregateRequests   int     `json:"aggregate_requests"`
+	RequestCoveragePct  float64 `json:"request_coverage_percent"`
+	SampledRequests     int     `json:"sampled_requests"`
+	UntimedRequests     int     `json:"untimed_requests"`
+	OutOfWindowRequests int     `json:"out_of_window_requests"`
+	CostUSD             float64 `json:"cost_usd"`
+	CostEstimated       bool    `json:"cost_estimated"`
+	EstimatedCostUSD    float64 `json:"estimated_cost_usd"`
+	PricingSource       string  `json:"pricing_source"`
 	// Share is an application aggregate used by the text view. It is deliberately
 	// excluded from JSON to preserve the legacy Session row contract.
 	Share float64 `json:"-"`
 }
 
 type SessionUsageRow struct {
-	SessionID         string  `json:"session_id"`
-	ShortID           string  `json:"short_id"`
-	Agent             string  `json:"agent"`
-	Project           string  `json:"project"`
-	Model             string  `json:"model"`
-	StartedTS         int64   `json:"started_ts"`
-	LastTS            int64   `json:"last_ts"`
-	Requests          int     `json:"requests"`
-	InputTokens       int64   `json:"input_tokens"`
-	OutputTokens      int64   `json:"output_tokens"`
-	CacheCreateTokens int64   `json:"cache_create_tokens"`
-	CacheReadTokens   int64   `json:"cache_read_tokens"`
-	TotalTokens       int64   `json:"total_tokens"`
-	CostUSD           float64 `json:"cost_usd"`
-	Share             float64 `json:"share"`
+	SessionID           string  `json:"session_id"`
+	ShortID             string  `json:"short_id"`
+	Agent               string  `json:"agent"`
+	Project             string  `json:"project"`
+	Model               string  `json:"model"`
+	StartedTS           int64   `json:"started_ts"`
+	LastTS              int64   `json:"last_ts"`
+	Requests            int     `json:"requests"`
+	InputTokens         int64   `json:"input_tokens"`
+	FreshInputTokens    int64   `json:"fresh_input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheCreateTokens   int64   `json:"cache_create_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	DetailedRequests    int     `json:"detailed_requests"`
+	AggregateRequests   int     `json:"aggregate_requests"`
+	RequestCoveragePct  float64 `json:"request_coverage_percent"`
+	SampledRequests     int     `json:"sampled_requests"`
+	UntimedRequests     int     `json:"untimed_requests"`
+	OutOfWindowRequests int     `json:"out_of_window_requests"`
+	CostUSD             float64 `json:"cost_usd"`
+	CostEstimated       bool    `json:"cost_estimated"`
+	EstimatedCostUSD    float64 `json:"estimated_cost_usd"`
+	PricingSource       string  `json:"pricing_source"`
+	Share               float64 `json:"share"`
 }
 
 type RequestRow struct {
-	SessionID    string  `json:"session_id"`
-	Agent        string  `json:"agent"`
-	Project      string  `json:"project"`
-	Model        string  `json:"model"`
-	TS           int64   `json:"ts"`
-	RequestCount int     `json:"request_count"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CacheTokens  int64   `json:"cache_tokens"`
-	CostUSD      float64 `json:"cost_usd"`
+	SessionID           string  `json:"session_id"`
+	Agent               string  `json:"agent"`
+	Project             string  `json:"project"`
+	Model               string  `json:"model"`
+	TS                  int64   `json:"ts"`
+	RequestCount        int     `json:"request_count"`
+	InputTokens         int64   `json:"input_tokens"`
+	FreshInputTokens    int64   `json:"fresh_input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheTokens         int64   `json:"cache_tokens"`
+	CacheCreateTokens   int64   `json:"cache_create_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	SampledRequests     int     `json:"sampled_requests"`
+	UntimedRequests     int     `json:"untimed_requests"`
+	OutOfWindowRequests int     `json:"out_of_window_requests"`
+	CostUSD             float64 `json:"cost_usd"`
+	CostEstimated       bool    `json:"cost_estimated"`
+	EstimatedCostUSD    float64 `json:"estimated_cost_usd"`
+	PricingSource       string  `json:"pricing_source"`
 }
 
 type SpeedModelRow struct {
@@ -166,27 +241,77 @@ type SpeedReport struct {
 }
 
 type PeriodRow struct {
-	Date            string  `json:"date"`
-	Sessions        int     `json:"sessions"`
-	Queries         int     `json:"queries"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
+	Date                string  `json:"date"`
+	Sessions            int     `json:"sessions"`
+	Queries             int     `json:"queries"`
+	InputTokens         int64   `json:"input_tokens"`
+	FreshInputTokens    int64   `json:"fresh_input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheCreateTokens   int64   `json:"cache_create_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	Requests            int     `json:"requests"`
+	DetailedRequests    int     `json:"detailed_requests"`
+	AggregateRequests   int     `json:"aggregate_requests"`
+	RequestCoveragePct  float64 `json:"request_coverage_percent"`
+	SampledRequests     int     `json:"sampled_requests"`
+	UntimedRequests     int     `json:"untimed_requests"`
+	OutOfWindowRequests int     `json:"out_of_window_requests"`
+	CostUSD             float64 `json:"cost_usd"`
+	CostEstimated       bool    `json:"cost_estimated"`
+	EstimatedCostUSD    float64 `json:"estimated_cost_usd"`
+	PricingSource       string  `json:"pricing_source"`
 }
 
 type Totals struct {
-	Sessions         int
-	Queries          int
-	ToolCalls        int
-	Requests         int
-	InputTokens      int64
-	OutputTokens     int64
-	CacheTokens      int64
-	CostUSD          float64
-	EstimatedCostUSD float64
-	AnyEstimated     bool
-	MaxCostUSD       float64
+	Sessions            int
+	TokenSessions       int
+	ActiveAgents        int
+	TokenAgents         int
+	Queries             int
+	ToolCalls           int
+	Requests            int
+	InputTokens         int64
+	FreshInputTokens    int64
+	OutputTokens        int64
+	CacheCreateTokens   int64
+	CacheReadTokens     int64
+	TotalInputTokens    int64
+	TotalTokens         int64
+	CacheTokens         int64
+	DetailedRequests    int
+	AggregateRequests   int
+	SampledRequests     int
+	UntimedRequests     int
+	OutOfWindowRequests int
+	CostUSD             float64
+	EstimatedCostUSD    float64
+	AnyEstimated        bool
+	MaxCostUSD          float64
+}
+
+// Quality is additive report metadata. It keeps coverage and estimate caveats
+// next to totals in typed IPC without changing the legacy CLI JSON row arrays.
+type Quality struct {
+	ActiveSessions      int      `json:"active_sessions"`
+	TokenSessions       int      `json:"token_sessions"`
+	SessionCoveragePct  float64  `json:"session_coverage_percent"`
+	ActiveAgents        int      `json:"active_agents"`
+	TokenAgents         int      `json:"token_agents"`
+	AgentCoveragePct    float64  `json:"agent_coverage_percent"`
+	Requests            int      `json:"requests"`
+	DetailedRequests    int      `json:"detailed_requests"`
+	AggregateRequests   int      `json:"aggregate_requests"`
+	RequestCoveragePct  float64  `json:"request_coverage_percent"`
+	SampledRequests     int      `json:"sampled_requests"`
+	UntimedRequests     int      `json:"untimed_requests"`
+	OutOfWindowRequests int      `json:"out_of_window_requests"`
+	SpeedSamplePct      float64  `json:"speed_sample_percent"`
+	CostUSD             float64  `json:"cost_usd"`
+	EstimatedCostUSD    float64  `json:"estimated_cost_usd"`
+	EstimatedCostShare  float64  `json:"estimated_cost_share"`
+	PricingSources      []string `json:"pricing_sources"`
 }
 
 type SubscriptionPlan struct {
@@ -239,5 +364,6 @@ type Result struct {
 	Wrapped      *Wrapped
 
 	Totals       Totals
+	Quality      Quality
 	Subscription *SubscriptionComparison
 }

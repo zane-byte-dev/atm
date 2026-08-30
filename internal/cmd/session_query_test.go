@@ -19,6 +19,43 @@ func TestSessionSearchDefaultsBoundJSONOutput(t *testing.T) {
 	}
 }
 
+func TestSessionListDefaultsToLatestActivityAndBoundPage(t *testing.T) {
+	if got := listCmd.Flags().Lookup("order").DefValue; got != "activity-desc" {
+		t.Fatalf("list --order default = %q, want activity-desc", got)
+	}
+	if got := listCmd.Flags().Lookup("limit").DefValue; got != "200" {
+		t.Fatalf("list --limit default = %q, want 200", got)
+	}
+}
+
+func TestSessionSearchAcceptsQueryAliasAndReportsSchema(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	seedCommandSession(t)
+
+	jsonOutput = true
+	searchQueryFlag = "deployment"
+	out := captureStdout(t, func() {
+		if err := runSearch(searchCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var payload struct {
+		SchemaVersion int    `json:"schema_version"`
+		Keyword       string `json:"keyword"`
+		Returned      int    `json:"returned"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode search alias: %v\n%s", err, out)
+	}
+	if payload.SchemaVersion != sessionCLIOutputSchemaVersion || payload.Keyword != "deployment" || payload.Returned == 0 {
+		t.Fatalf("search alias payload = %#v", payload)
+	}
+	if err := runSearch(searchCmd, []string{"second"}); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("positional plus --query error = %v", err)
+	}
+}
+
 func TestSessionSearchJSONAppliesFiltersAndSnippetBudget(t *testing.T) {
 	withIsolatedCommandEnv(t)
 	withCommandFlags(t)
@@ -348,5 +385,83 @@ func TestSessionListPagesTheWholeIndexNewestFirst(t *testing.T) {
 	sessionListOrder = "sideways"
 	if err := runList(listCmd, nil); err == nil {
 		t.Fatal("an unknown --order was accepted")
+	}
+}
+
+func TestSessionListEnvelopeKeepsPaginationMetadata(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	seedCommandSession(t)
+
+	jsonOutput = true
+	sessionListAllFlag = true
+	sessionListLimit = 1
+	sessionListEnvelope = true
+	out := captureStdout(t, func() {
+		if err := runList(listCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var payload struct {
+		SchemaVersion int `json:"schema_version"`
+		Total         int `json:"total"`
+		Returned      int `json:"returned"`
+		Sessions      []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode list envelope: %v\n%s", err, out)
+	}
+	if payload.SchemaVersion != sessionCLIOutputSchemaVersion || payload.Total != 1 ||
+		payload.Returned != 1 || len(payload.Sessions) != 1 {
+		t.Fatalf("list envelope = %#v", payload)
+	}
+}
+
+func TestSessionExportFiltersPaginatesAndSupportsJSONL(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	seedCommandSession(t)
+
+	exportDaysFlag = 2
+	exportQueryFlag = "deployment"
+	exportLimitFlag = 1
+	exportOffsetFlag = 1
+	exportEnvelopeFlag = true
+	out := captureStdout(t, func() {
+		if err := runExport(exportCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var payload struct {
+		SchemaVersion int               `json:"schema_version"`
+		Total         int               `json:"total"`
+		Returned      int               `json:"returned"`
+		Messages      []store.ExportRow `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode export envelope: %v\n%s", err, out)
+	}
+	if payload.SchemaVersion != sessionCLIOutputSchemaVersion || payload.Total != 2 ||
+		payload.Returned != 1 || len(payload.Messages) != 1 {
+		t.Fatalf("export envelope = %#v", payload)
+	}
+
+	exportFormatFlag = "jsonl"
+	exportEnvelopeFlag = false
+	exportOffsetFlag = 0
+	jsonl := captureStdout(t, func() {
+		if err := runExport(exportCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(jsonl), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("jsonl lines = %d, want paged 1\n%s", len(lines), jsonl)
+	}
+	var row store.ExportRow
+	if err := json.Unmarshal([]byte(lines[0]), &row); err != nil || !strings.Contains(strings.ToLower(row.Content), "deployment") {
+		t.Fatalf("jsonl row = %#v, err = %v", row, err)
 	}
 }

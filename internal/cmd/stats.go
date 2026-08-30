@@ -31,6 +31,7 @@ var (
 var statsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show usage statistics",
+	Args:  cobra.NoArgs,
 	RunE:  runStats,
 }
 
@@ -83,21 +84,24 @@ func runStats(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("\n  %-20s %-11s %8s %8s %8s %10s %10s %8s\n",
-		"Project", "Agent", "Sessions", "Queries", "Tools", "In", "Out", "Cost($)")
-	statsSep := output.Dashes(20, 11, 8, 8, 8, 10, 10, 8)
-	fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %8s\n", statsSep...)
+	fmt.Printf("\n  %-20s %-11s %8s %8s %8s %10s %10s %10s %8s\n",
+		"Project", "Agent", "Sessions", "Queries", "Tools", "Fresh", "Cache", "Out", "Cost($)")
+	statsSep := output.Dashes(20, 11, 8, 8, 8, 10, 10, 10, 8)
+	fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %10s %8s\n", statsSep...)
 
 	for _, r := range results {
-		fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %8.2f\n",
+		fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %10s %8s\n",
 			r.Project, r.Agent, r.Sessions, r.Queries, r.ToolCalls,
-			fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), r.CostUSD)
+			fmtTokens(r.FreshInputTokens), fmtTokens(r.CacheCreateTokens+r.CacheReadTokens),
+			fmtTokens(r.OutputTokens), fmtCost(r.CostUSD, r.CostEstimated))
 	}
-	fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %8s\n", statsSep...)
-	fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %8.2f\n",
+	fmt.Printf("  %-20s %-11s %8s %8s %8s %10s %10s %10s %8s\n", statsSep...)
+	fmt.Printf("  %-20s %-11s %8d %8d %8d %10s %10s %10s %8s\n",
 		"Total", "", result.Totals.Sessions, result.Totals.Queries, result.Totals.ToolCalls,
-		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens), result.Totals.CostUSD)
+		fmtTokens(result.Totals.FreshInputTokens), fmtTokens(result.Totals.CacheTokens),
+		fmtTokens(result.Totals.OutputTokens), fmtCost(result.Totals.CostUSD, result.Totals.AnyEstimated))
 
+	printQualitySummary(result.Quality)
 	printSubscriptionSummary(result.Subscription)
 	return nil
 }
@@ -123,7 +127,7 @@ func runRequestStats(result statsapp.Result) error {
 	}
 	// Req shows model-call multiplicity (×N when a row aggregates several calls,
 	// as Grok turn_completed does). Tokens/cost on the row are the full total.
-	fmt.Printf("\n  %-16s %-11s %-12s %-24s %5s %8s %8s %8s %8s\n", "Time", "Agent", "Session", "Model", "Req", "In", "Out", "Cache", "Cost($)")
+	fmt.Printf("\n  %-16s %-11s %-12s %-24s %5s %8s %8s %8s %8s\n", "Time", "Agent", "Session", "Model", "Req", "Fresh", "Out", "Cache", "Cost($)")
 	for _, r := range results {
 		model := r.Model
 		if len(model) > 24 {
@@ -141,6 +145,7 @@ func runRequestStats(result statsapp.Result) error {
 	if len(results) > 0 && result.Totals.Requests != len(results) {
 		fmt.Printf("\n  %d rows · %d model calls\n", len(results), result.Totals.Requests)
 	}
+	printQualitySummary(result.Quality)
 	return nil
 }
 
@@ -235,7 +240,7 @@ func runSessionStats(result statsapp.Result) error {
 	}
 
 	fmt.Printf("\n  %-3s %-10s %-16s %-16s %4s %8s %8s %8s %8s %5s\n",
-		"#", "Session", "Project", "Model", "Req", "In", "Out", "Cache", "Cost($)", "%")
+		"#", "Session", "Project", "Model", "Req", "Fresh", "Out", "Cache", "Cost($)", "%")
 	sep := strings.Repeat("-", 88)
 	fmt.Printf("  %s\n", sep)
 
@@ -260,6 +265,7 @@ func runSessionStats(result statsapp.Result) error {
 		fmtTokens(result.Totals.CacheTokens), result.Totals.CostUSD)
 
 	printSubscriptionSummary(result.Subscription)
+	printQualitySummary(result.Quality)
 	return nil
 }
 
@@ -280,7 +286,7 @@ func runSessionUsageStats(result statsapp.Result) error {
 	}
 
 	fmt.Printf("\n  %-3s %-10s %-16s %-16s %4s %8s %8s %8s %8s %5s\n",
-		"#", "Session", "Project", "Model", "Req", "In", "Out", "Cache", "Cost($)", "%")
+		"#", "Session", "Project", "Model", "Req", "Fresh", "Out", "Cache", "Cost($)", "%")
 	fmt.Printf("  %s\n", strings.Repeat("-", 94))
 	for index, result := range results {
 		model := result.Model
@@ -302,6 +308,7 @@ func runSessionUsageStats(result statsapp.Result) error {
 		"", "Total", "", "", result.Totals.Requests,
 		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens),
 		fmtTokens(result.Totals.CacheTokens), result.Totals.CostUSD)
+	printQualitySummary(result.Quality)
 	return nil
 }
 
@@ -323,7 +330,7 @@ func runWrapped(result statsapp.Result) error {
 	fmt.Printf("  Sessions          %d\n", wrapped.Sessions)
 	fmt.Printf("  Queries           %d\n", wrapped.Queries)
 	fmt.Printf("  Tool Calls        %d\n", wrapped.ToolCalls)
-	fmt.Printf("  Tokens In         %s\n", fmtTokens(wrapped.InputTokens))
+	fmt.Printf("  Tokens In         %s (legacy total input)\n", fmtTokens(wrapped.InputTokens))
 	fmt.Printf("  Tokens Out        %s\n", fmtTokens(wrapped.OutputTokens))
 	fmt.Printf("  Active Days       %d / %d\n", wrapped.ActiveDays, wrapped.Days)
 	fmt.Printf("  Avg Cost/Day      $%.2f\n", wrapped.CostUSD/float64(wrapped.Days))
@@ -346,8 +353,8 @@ func runDayStats(result statsapp.Result) error {
 		return nil
 	}
 
-	fmt.Printf("\n  %-12s %5s %5s %8s %8s %8s  %s\n",
-		"Date", "Sess", "Query", "In", "Out", "Cost($)", "")
+	fmt.Printf("\n  %-12s %5s %5s %8s %8s %8s %8s  %s\n",
+		"Date", "Sess", "Query", "Fresh", "Cache", "Out", "Cost($)", "")
 	sep := strings.Repeat("-", 72)
 	fmt.Printf("  %s\n", sep)
 
@@ -362,16 +369,18 @@ func runDayStats(result statsapp.Result) error {
 				bar = "▏"
 			}
 		}
-		fmt.Printf("  %-12s %5d %5d %8s %8s %8.2f  %s\n",
+		fmt.Printf("  %-12s %5d %5d %8s %8s %8s %8s  %s\n",
 			r.Date, r.Sessions, r.Queries,
-			fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens),
-			r.CostUSD, bar)
+			fmtTokens(r.FreshInputTokens), fmtTokens(r.CacheCreateTokens+r.CacheReadTokens),
+			fmtTokens(r.OutputTokens), fmtCost(r.CostUSD, r.CostEstimated), bar)
 	}
 	fmt.Printf("  %s\n", sep)
-	fmt.Printf("  %-12s %5d %5d %8s %8s %8.2f\n",
+	fmt.Printf("  %-12s %5d %5d %8s %8s %8s %8s\n",
 		"Total", result.Totals.Sessions, result.Totals.Queries,
-		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens), result.Totals.CostUSD)
+		fmtTokens(result.Totals.FreshInputTokens), fmtTokens(result.Totals.CacheTokens),
+		fmtTokens(result.Totals.OutputTokens), fmtCost(result.Totals.CostUSD, result.Totals.AnyEstimated))
 
+	printQualitySummary(result.Quality)
 	printSubscriptionSummary(result.Subscription)
 	return nil
 }
@@ -385,14 +394,18 @@ func runHourStats(result statsapp.Result) error {
 	if !ok {
 		return nil
 	}
-	fmt.Printf("\n  %-18s %5s %5s %8s %8s %8s\n", "Hour", "Sess", "Query", "In", "Out", "Cost($)")
+	fmt.Printf("\n  %-18s %5s %5s %8s %8s %8s %8s\n", "Hour", "Sess", "Query", "Fresh", "Cache", "Out", "Cost($)")
 	for _, r := range results {
-		fmt.Printf("  %-18s %5d %5d %8s %8s %8.2f\n",
-			r.Date, r.Sessions, r.Queries, fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), r.CostUSD)
+		fmt.Printf("  %-18s %5d %5d %8s %8s %8s %8s\n",
+			r.Date, r.Sessions, r.Queries, fmtTokens(r.FreshInputTokens),
+			fmtTokens(r.CacheCreateTokens+r.CacheReadTokens), fmtTokens(r.OutputTokens),
+			fmtCost(r.CostUSD, r.CostEstimated))
 	}
-	fmt.Printf("  %-18s %5d %5d %8s %8s %8.2f\n",
+	fmt.Printf("  %-18s %5d %5d %8s %8s %8s %8s\n",
 		"Total", result.Totals.Sessions, result.Totals.Queries,
-		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens), result.Totals.CostUSD)
+		fmtTokens(result.Totals.FreshInputTokens), fmtTokens(result.Totals.CacheTokens),
+		fmtTokens(result.Totals.OutputTokens), fmtCost(result.Totals.CostUSD, result.Totals.AnyEstimated))
+	printQualitySummary(result.Quality)
 	printSubscriptionSummary(result.Subscription)
 	return nil
 }
@@ -447,21 +460,24 @@ func runModelStats(result statsapp.Result) error {
 		return nil
 	}
 
-	fmt.Printf("\n  %-12s %-30s %8s %10s %10s %8s\n",
-		"Client", "Model", "Sessions", "In", "Out", "Cost($)")
-	modelSep := output.Dashes(12, 30, 8, 10, 10, 8)
-	fmt.Printf("  %-12s %-30s %8s %10s %10s %8s\n", modelSep...)
+	fmt.Printf("\n  %-12s %-30s %8s %10s %10s %10s %8s\n",
+		"Client", "Model", "Sessions", "Fresh", "Cache", "Out", "Cost($)")
+	modelSep := output.Dashes(12, 30, 8, 10, 10, 10, 8)
+	fmt.Printf("  %-12s %-30s %8s %10s %10s %10s %8s\n", modelSep...)
 
 	for _, r := range results {
-		fmt.Printf("  %-12s %-30s %8d %10s %10s %8s\n",
-			r.Client, r.Model, r.Sessions, fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens),
+		fmt.Printf("  %-12s %-30s %8d %10s %10s %10s %8s\n",
+			r.Client, r.Model, r.Sessions, fmtTokens(r.FreshInputTokens),
+			fmtTokens(r.CacheCreateTokens+r.CacheReadTokens), fmtTokens(r.OutputTokens),
 			fmtCost(r.CostUSD, r.CostEstimated))
 	}
-	fmt.Printf("  %-12s %-30s %8s %10s %10s %8s\n", modelSep...)
-	fmt.Printf("  %-12s %-30s %8d %10s %10s %8s\n",
-		"", "Total", result.Totals.Sessions, fmtTokens(result.Totals.InputTokens),
-		fmtTokens(result.Totals.OutputTokens), fmtCost(result.Totals.CostUSD, result.Totals.AnyEstimated))
+	fmt.Printf("  %-12s %-30s %8s %10s %10s %10s %8s\n", modelSep...)
+	fmt.Printf("  %-12s %-30s %8d %10s %10s %10s %8s\n",
+		"", "Total", result.Totals.Sessions, fmtTokens(result.Totals.FreshInputTokens),
+		fmtTokens(result.Totals.CacheTokens), fmtTokens(result.Totals.OutputTokens),
+		fmtCost(result.Totals.CostUSD, result.Totals.AnyEstimated))
 	printEstimatedCostLegend(result.Totals.CostUSD, result.Totals.EstimatedCostUSD, result.Totals.AnyEstimated)
+	printQualitySummary(result.Quality)
 
 	printSubscriptionSummary(result.Subscription)
 	return nil
@@ -490,6 +506,31 @@ func printEstimatedCostLegend(totalCost, estimatedCost float64, anyEstimated boo
 	}
 	fmt.Printf("\n  ~ = estimated rate: $%.2f (%.0f%%) of this total comes from models with no exact rate.\n", estimatedCost, share)
 	fmt.Println("      Run `atm doctor` for the models, or set rates in ~/.atm/pricing.json.")
+}
+
+func printQualitySummary(quality statsapp.Quality) {
+	parts := make([]string, 0, 4)
+	if quality.ActiveSessions > 0 {
+		parts = append(parts, fmt.Sprintf("token sessions %d/%d (%.0f%%)",
+			quality.TokenSessions, quality.ActiveSessions, quality.SessionCoveragePct))
+	}
+	if quality.Requests > 0 {
+		parts = append(parts, fmt.Sprintf("request detail %d/%d (%.0f%%)",
+			quality.DetailedRequests, quality.Requests, quality.RequestCoveragePct))
+	}
+	measured := quality.SampledRequests + quality.UntimedRequests + quality.OutOfWindowRequests
+	if measured > 0 {
+		parts = append(parts, fmt.Sprintf("speed sample %d/%d (%.0f%%; untimed %d, rejected %d)",
+			quality.SampledRequests, measured, float64(quality.SampledRequests)/float64(measured)*100,
+			quality.UntimedRequests, quality.OutOfWindowRequests))
+	}
+	if quality.CostUSD > 0 && quality.EstimatedCostUSD > 0 {
+		parts = append(parts, fmt.Sprintf("estimated cost $%.2f/%.2f (%.0f%%)",
+			quality.EstimatedCostUSD, quality.CostUSD, quality.EstimatedCostShare*100))
+	}
+	if len(parts) > 0 {
+		fmt.Printf("\n  Quality: %s.\n", strings.Join(parts, " · "))
+	}
 }
 
 func runModelDayStats(result statsapp.Result) error {

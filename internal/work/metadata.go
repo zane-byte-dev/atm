@@ -183,7 +183,7 @@ func (service Service) BatchAdd(ctx context.Context, call application.Call, inpu
 		return BatchAddResult{}, err
 	}
 	defaults := AddInput{
-		Priority: valueOr(input.Defaults.Priority, "P1"),
+		Priority: valueOr(input.Defaults.Priority, "P2"),
 		Project:  input.Defaults.Project,
 		Source:   input.Defaults.Source,
 		Creator:  defaultCreator,
@@ -500,7 +500,7 @@ func normalizeAdd(call application.Call, input AddInput) (normalizedAdd, error) 
 	if err := store.ValidateTodoDescription(normalized.description); err != nil {
 		return normalized, metadataInvalidArgument(err.Error(), "description", input.Description)
 	}
-	priority, err := normalizePriority(valueOr(input.Priority, "P1"))
+	priority, err := normalizePriority(valueOr(input.Priority, "P2"))
 	if err != nil {
 		return normalized, err
 	}
@@ -540,15 +540,13 @@ func normalizePriority(value string) (string, error) {
 
 func normalizeMetadataStatus(value string) (string, error) {
 	status := strings.ToLower(strings.TrimSpace(value))
-	switch status {
-	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusReview:
+	if status == store.TodoStatusOpen {
 		return status, nil
-	default:
-		return "", metadataInvalidArgument(
-			fmt.Sprintf("invalid todo status %q (use open, in_progress, or review)", value),
-			"status", value,
-		)
 	}
+	return "", metadataInvalidArgument(
+		fmt.Sprintf("metadata edits may only return a todo to open; use start, submit, or done for status %q", value),
+		"status", value,
+	)
 }
 
 func validateMetadataCall(ctx context.Context, call application.Call) error {

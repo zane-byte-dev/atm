@@ -471,6 +471,7 @@ var knowledgeImportCmd = &cobra.Command{
 var knowledgeDoctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Inspect central knowledge, memory, and artifact storage",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		documents, err := knowledge.Discover(config.AtmDir)
 		if err != nil {

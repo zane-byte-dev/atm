@@ -84,7 +84,7 @@ struct ATMTodoSuggestion: Equatable {
     static let empty = ATMTodoSuggestion(
         project: "",
         projectReason: "无历史项目可参考",
-        priority: "P1",
+        priority: "P2",
         priorityReason: "默认",
     )
 

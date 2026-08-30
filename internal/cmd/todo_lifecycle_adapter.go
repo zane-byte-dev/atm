@@ -11,7 +11,9 @@ import (
 
 func runTodoStart(cmd *cobra.Command, args []string) error {
 	call := todoWorkflowCLICall("start")
-	result, err := workapp.Default.Start(cmd.Context(), call, workapp.StartInput{TodoID: args[0]})
+	result, err := workapp.Default.Start(cmd.Context(), call, workapp.StartInput{
+		TodoID: args[0], ReopenReason: todoStartReopenReasonFlag,
+	})
 	if err != nil {
 		return err
 	}
@@ -22,7 +24,11 @@ func runTodoStart(cmd *cobra.Command, args []string) error {
 		output.JSON(result.Todo)
 		return nil
 	}
-	fmt.Printf("Started %s: %s\n", result.Todo.ID, result.Todo.Title)
+	verb := "Started"
+	if result.Reopened {
+		verb = "Reopened"
+	}
+	fmt.Printf("%s %s: %s\n", verb, result.Todo.ID, result.Todo.Title)
 	return nil
 }
 

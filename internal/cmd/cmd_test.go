@@ -193,18 +193,29 @@ func withCommandFlags(t *testing.T) {
 	oldSince, oldReview := sessionSinceFlag, sessionReviewFlag
 	oldSearchLimit, oldSearchProject := searchLimitFlag, searchProjectFlag
 	oldSearchSince, oldSearchDays := searchSinceFlag, searchDaysFlag
-	oldSearchRole, oldSearchSnippet := searchRoleFlag, searchSnippetFlag
+	oldSearchRole, oldSearchSnippet, oldSearchQuery := searchRoleFlag, searchSnippetFlag, searchQueryFlag
 	oldStatsDays, oldStatsBy := statsDaysFlag, statsByFlag
 	oldExportDays, oldExportFormat := exportDaysFlag, exportFormatFlag
+	oldExportSince, oldExportUntil := exportSinceFlag, exportUntilFlag
+	oldExportProject, oldExportRole, oldExportQuery := exportProjectFlag, exportRoleFlag, exportQueryFlag
+	oldExportLimit, oldExportOffset, oldExportEnvelope := exportLimitFlag, exportOffsetFlag, exportEnvelopeFlag
 	oldThinking, oldShowTurns := showThinking, showTurnsFlag
 	oldShowLast, oldShowMaxChars := showLastFlag, showMaxCharsFlag
 	oldListAll, oldListOrder := sessionListAllFlag, sessionListOrder
-	oldListLimit, oldListOffset := sessionListLimit, sessionListOffset
+	oldListLimit, oldListOffset, oldListEnvelope := sessionListLimit, sessionListOffset, sessionListEnvelope
+	oldToolsFailed, oldToolsDays, oldToolsSince := sessionToolsFailed, sessionToolsDays, sessionToolsSince
+	oldToolsLimit, oldToolsOffset := sessionToolsLimit, sessionToolsOffset
 	t.Cleanup(func() {
 		sessionListAllFlag = oldListAll
 		sessionListOrder = oldListOrder
 		sessionListLimit = oldListLimit
 		sessionListOffset = oldListOffset
+		sessionListEnvelope = oldListEnvelope
+		sessionToolsFailed = oldToolsFailed
+		sessionToolsDays = oldToolsDays
+		sessionToolsSince = oldToolsSince
+		sessionToolsLimit = oldToolsLimit
+		sessionToolsOffset = oldToolsOffset
 		agentFlag = oldAgent
 		jsonOutput = oldJSON
 		syncBeforeRead = oldSync
@@ -218,10 +229,19 @@ func withCommandFlags(t *testing.T) {
 		searchDaysFlag = oldSearchDays
 		searchRoleFlag = oldSearchRole
 		searchSnippetFlag = oldSearchSnippet
+		searchQueryFlag = oldSearchQuery
 		statsDaysFlag = oldStatsDays
 		statsByFlag = oldStatsBy
 		exportDaysFlag = oldExportDays
 		exportFormatFlag = oldExportFormat
+		exportSinceFlag = oldExportSince
+		exportUntilFlag = oldExportUntil
+		exportProjectFlag = oldExportProject
+		exportRoleFlag = oldExportRole
+		exportQueryFlag = oldExportQuery
+		exportLimitFlag = oldExportLimit
+		exportOffsetFlag = oldExportOffset
+		exportEnvelopeFlag = oldExportEnvelope
 		showThinking = oldThinking
 		showTurnsFlag = oldShowTurns
 		showLastFlag = oldShowLast
@@ -240,10 +260,29 @@ func withCommandFlags(t *testing.T) {
 	searchDaysFlag = 0
 	searchRoleFlag = ""
 	searchSnippetFlag = defaultSearchSnippet
+	searchQueryFlag = ""
 	statsDaysFlag = 1
 	statsByFlag = ""
 	exportDaysFlag = 7
 	exportFormatFlag = "json"
+	exportSinceFlag = ""
+	exportUntilFlag = ""
+	exportProjectFlag = ""
+	exportRoleFlag = ""
+	exportQueryFlag = ""
+	exportLimitFlag = 0
+	exportOffsetFlag = 0
+	exportEnvelopeFlag = false
+	sessionListAllFlag = false
+	sessionListOrder = "activity-desc"
+	sessionListLimit = defaultSessionListLimit
+	sessionListOffset = 0
+	sessionListEnvelope = false
+	sessionToolsFailed = false
+	sessionToolsDays = 7
+	sessionToolsSince = ""
+	sessionToolsLimit = 100
+	sessionToolsOffset = 0
 	showThinking = false
 	showTurnsFlag = ""
 	showLastFlag = 0
@@ -321,9 +360,10 @@ func TestStatsBySpeedReportsRatesWaitsAndWhatWasLeftOut(t *testing.T) {
 }
 
 func TestVersionCommandUsesConfiguredVersion(t *testing.T) {
-	oldVersion := rootCmd.Version
+	oldVersion, oldJSON := rootCmd.Version, jsonOutput
 	t.Cleanup(func() {
 		rootCmd.Version = oldVersion
+		jsonOutput = oldJSON
 	})
 
 	SetVersion("9.9.9-test")
@@ -332,6 +372,22 @@ func TestVersionCommandUsesConfiguredVersion(t *testing.T) {
 	})
 	if out != "atm 9.9.9-test\n" {
 		t.Fatalf("version output = %q", out)
+	}
+
+	jsonOutput = true
+	out = captureStdout(t, func() {
+		versionCmd.Run(versionCmd, nil)
+	})
+	var payload struct {
+		SchemaVersion int    `json:"schema_version"`
+		Name          string `json:"name"`
+		Version       string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("version --json is not JSON: %v\n%s", err, out)
+	}
+	if payload.SchemaVersion != 1 || payload.Name != "atm" || payload.Version != "9.9.9-test" {
+		t.Fatalf("version payload = %#v", payload)
 	}
 }
 

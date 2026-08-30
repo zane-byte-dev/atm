@@ -9,16 +9,22 @@ import (
 	"github.com/zane-byte-dev/atm/internal/output"
 )
 
-func init() { rootCmd.AddCommand(doctorCmd) }
+var doctorDaysFlag int
+
+func init() {
+	doctorCmd.Flags().IntVar(&doctorDaysFlag, "days", 0, "request coverage window in rolling days (0 = all history)")
+	rootCmd.AddCommand(doctorCmd)
+}
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check data sources and request-level coverage",
+	Args:  cobra.NoArgs,
 	RunE:  runDoctor,
 }
 
 func runDoctor(cmd *cobra.Command, args []string) error {
-	report, err := doctorapp.Default.Check(commandContext(cmd), cliApplicationCall("doctor", ""), doctorapp.Input{})
+	report, err := doctorapp.Default.Check(commandContext(cmd), cliApplicationCall("doctor", ""), doctorapp.Input{Days: doctorDaysFlag})
 	if err != nil {
 		return err
 	}
@@ -39,6 +45,10 @@ func printDoctorReport(report doctorapp.Report) {
 			s.Agent, s.Status, s.Files, s.IndexedSessions, s.RetainedSessions, s.Path)
 	}
 	fmt.Println("\nRequest detail coverage")
+	if report.CoverageWindow.Mode == "rolling" {
+		fmt.Printf("  window: last %d days (%s to %s)\n", report.CoverageWindow.Days,
+			report.CoverageWindow.Start, report.CoverageWindow.End)
+	}
 	for _, c := range report.Coverage {
 		fmt.Printf("  %-11s %-12s sessions=%-5d detailed=%-6d reported=%-6d coverage=%6.1f%% unknown_model=%-4d timed=%6.1f%%\n",
 			c.Agent, c.CoverageStatus, c.Sessions, c.DetailedRequests, c.ReportedRequests,

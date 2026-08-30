@@ -10,9 +10,13 @@ import (
 
 func TestTodoStartReopensClosedTodoWithFreshLifecycle(t *testing.T) {
 	withTempAtmDir(t)
-	oldJSON := jsonOutput
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	oldJSON, oldReopenReason := jsonOutput, todoStartReopenReasonFlag
+	t.Cleanup(func() {
+		jsonOutput = oldJSON
+		todoStartReopenReasonFlag = oldReopenReason
+	})
 	jsonOutput = false
+	todoStartReopenReasonFlag = "acceptance found follow-up work"
 
 	closed := "2026-07-01"
 	reason := "first attempt completed"

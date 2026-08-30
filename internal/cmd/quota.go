@@ -20,7 +20,25 @@ func init() {
 var quotaCmd = &cobra.Command{
 	Use:   "quota",
 	Short: "Show AI agent rate limit / quota status",
-	RunE:  runQuota,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return nil
+		}
+		if args[0] == "disable" || args[0] == "enable" {
+			value := "false"
+			if args[0] == "enable" {
+				value = "true"
+			}
+			return fmt.Errorf("quota has no %q action; run `atm config set grok_live_quota %s`", args[0], value)
+		}
+		return cobra.NoArgs(cmd, args)
+	},
+	Example: `  atm quota
+  atm quota --agent codex --json
+
+Quota is read-only. To disable live Grok quota fetching, run:
+  atm config set grok_live_quota false`,
+	RunE: runQuota,
 }
 
 func runQuota(cmd *cobra.Command, args []string) error {

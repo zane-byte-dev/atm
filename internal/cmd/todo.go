@@ -46,6 +46,8 @@ var (
 	todoHandoffCopyFlag          bool
 	todoContextCWD               string
 	todoSubmitReasonFlag         string
+	todoStartReopenReasonFlag    string
+	todoEditCreatorFlag          string
 )
 
 func init() {
@@ -57,7 +59,7 @@ func init() {
 	todoListCmd.Flags().IntVar(&todoListLimitFlag, "limit", 0, "maximum number of todos (0 means all)")
 	todoListCmd.Flags().IntVar(&todoListOffsetFlag, "offset", 0, "number of todos to skip")
 
-	todoAddCmd.Flags().StringVar(&todoAddPriorityFlag, "priority", "P1", "priority: P0, P1, P2")
+	todoAddCmd.Flags().StringVar(&todoAddPriorityFlag, "priority", "P2", "priority: P0, P1, P2 (default P2; choose P1 only for time-critical or blocked work)")
 	todoAddCmd.Flags().StringVar(&todoAddProjectFlag, "project", "", "project name")
 	todoAddCmd.Flags().StringVar(&todoSourceFlag, "source", "", "source of the task")
 	todoAddCmd.Flags().StringVar(&todoAddCreatorFlag, "creator", "", "who filed it: "+strings.Join(store.TodoCreatorVocabulary, ", ")+" (default: the agent in the environment, otherwise me)")
@@ -69,8 +71,9 @@ func init() {
 	todoAddCmd.MarkFlagsMutuallyExclusive("batch", "desc-file")
 	todoAddCmd.MarkFlagsMutuallyExclusive("batch", "image")
 
-	todoDoneCmd.Flags().StringVar(&todoReasonFlag, "reason", "", "closing reason")
+	todoDoneCmd.Flags().StringVar(&todoReasonFlag, "reason", "", "acceptance evidence (required when first marking done)")
 	todoSubmitCmd.Flags().StringVar(&todoSubmitReasonFlag, "reason", "", "submission summary or evidence")
+	todoStartCmd.Flags().StringVar(&todoStartReopenReasonFlag, "reopen-reason", "", "why review or completed work must resume (required when reopening)")
 
 	todoEditCmd.Flags().StringVar(&todoEditTitleFlag, "title", "", "new title")
 	todoEditCmd.Flags().StringVar(&todoEditDescFlag, "desc", "", "new single-line description (use --desc-file for multiline text)")
@@ -79,7 +82,8 @@ func init() {
 	todoEditCmd.Flags().StringVar(&todoEditPriorityFlag, "priority", "", "new priority: P0, P1, P2")
 	todoEditCmd.Flags().StringVar(&todoEditProjectFlag, "project", "", "new project name")
 	todoEditCmd.Flags().StringVar(&todoEditSourceFlag, "source", "", "new source")
-	todoEditCmd.Flags().StringVar(&todoEditStatusFlag, "status", "", "return lifecycle status to open")
+	todoEditCmd.Flags().StringVar(&todoEditCreatorFlag, "creator", "", "verified creator for legacy rows: "+strings.Join(store.TodoCreatorVocabulary, ", "))
+	todoEditCmd.Flags().StringVar(&todoEditStatusFlag, "status", "", "return lifecycle status to open (other transitions use start, submit, done, or archive)")
 	todoEditCmd.Flags().StringVar(&todoEditWakeFlag, "wake", "", "waiting-style condition for in_progress (empty clears it)")
 	todoEditCmd.Flags().StringVar(&todoEditReviewAtFlag, "review-at", "", "new review date YYYY-MM-DD (empty clears it)")
 	todoEditCmd.Flags().IntVar(&todoEditMaintenanceLimitFlag, "maintenance-limit", 0, "bounded maintenance batch size (0 clears maintenance)")
@@ -137,6 +141,7 @@ wake condition or review date on in-progress work with ` + "`edit --wake`" + ` o
 var todoListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List todos",
+	Args:  cobra.NoArgs,
 	RunE:  runTodoList,
 }
 
@@ -149,7 +154,7 @@ var todoAddCmd = &cobra.Command{
   printf 'Multiline description\nwith details\n' | atm todo add "Fix release checks" --desc-file -
   cat <<'YAML' | atm todo add --batch
   project: atm
-  priority: P1
+  priority: P2
   items:
     - title: Fix release checks
       desc: Verify the release checklist
@@ -162,7 +167,7 @@ var todoAddCmd = &cobra.Command{
 var todoDoneCmd = &cobra.Command{
 	Use:   "done [id]",
 	Short: "Accept a todo as done (human only; agents use submit)",
-	Long:  "Accept completed work as done. This is the human review decision; Agent work must use `atm todo submit` instead.",
+	Long:  "Accept completed work as done. This is the human review decision; Agent work must use `atm todo submit` instead. The first acceptance requires --reason with concrete verification evidence.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE:  runTodoDone,
 }
@@ -185,7 +190,7 @@ var todoStartCmd = &cobra.Command{
 	// pointed at the new one instead of a bare "unknown command" — a stale skill
 	// file or a copied note is the likeliest source of it.
 	SuggestFor: []string{"focus"},
-	Short:      "Start or reopen a todo (records start time for session linking)",
+	Short:      "Start a todo; reopening review/done requires --reopen-reason",
 	Args:       cobra.ExactArgs(1),
 	RunE:       runTodoStart,
 }
@@ -219,8 +224,15 @@ snapshot can be used to resume work, hand it off, or begin a review.`,
 var todoEditCmd = &cobra.Command{
 	Use:   "edit <id>",
 	Short: "Edit a todo's metadata and work state",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runTodoEdit,
+	Long: `Edit metadata, waiting information, maintenance scope, or return work to open.
+
+--status is intentionally limited to open. Use start for in_progress, submit
+for review, human-only done for acceptance, and archive for retention.`,
+	Example: `  atm todo edit t42 --priority P0 --project atm
+  atm todo edit t42 --wake "deployment 123 finishes"
+  atm todo edit t42 --status open`,
+	Args: cobra.ExactArgs(1),
+	RunE: runTodoEdit,
 }
 
 var todoLogCmd = &cobra.Command{

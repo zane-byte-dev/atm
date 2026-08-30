@@ -272,6 +272,16 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 52
+		case 52:
+			if err := migrateV52ToV53(db); err != nil {
+				return err
+			}
+			version = 53
+		case 53:
+			if err := migrateV53ToV54(db); err != nil {
+				return err
+			}
+			version = 54
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -1521,6 +1531,108 @@ func migrateV51ToV52(db *sql.DB) error {
 	}
 	if _, err := tx.Exec(`UPDATE schema_version SET version = 52`); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV52ToV53 adds durable lineage and message provenance to the rebuildable
+// session mirror. Existing rows intentionally stay at parser_version 0: the
+// sync loop compares that field with parser.CurrentSessionParserVersion and
+// reparses an unchanged source on its next normal pass. Retained rows whose
+// source is already gone remain honest legacy data rather than being assigned
+// lineage ATM cannot reconstruct.
+func migrateV52ToV53(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	sessionColumns := []string{
+		`resume_id TEXT NOT NULL DEFAULT ''`,
+		`root_session_id TEXT NOT NULL DEFAULT ''`,
+		`parent_session_id TEXT NOT NULL DEFAULT ''`,
+		`agent_path TEXT NOT NULL DEFAULT ''`,
+		`agent_nickname TEXT NOT NULL DEFAULT ''`,
+		`subagent_depth INTEGER NOT NULL DEFAULT 0`,
+		`is_subagent INTEGER NOT NULL DEFAULT 0`,
+		`is_internal INTEGER NOT NULL DEFAULT 0`,
+		`parser_version INTEGER NOT NULL DEFAULT 0`,
+		`content_state TEXT NOT NULL DEFAULT 'empty'`,
+		`result_status TEXT NOT NULL DEFAULT 'unknown'`,
+		`latest_progress TEXT NOT NULL DEFAULT ''`,
+		`final_result TEXT NOT NULL DEFAULT ''`,
+	}
+	messageColumns := []string{
+		`scope TEXT NOT NULL DEFAULT 'local'`,
+		`kind TEXT NOT NULL DEFAULT 'conversation'`,
+		`phase TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, column := range sessionColumns {
+		if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN ` + column); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	for _, column := range messageColumns {
+		if _, err := tx.Exec(`ALTER TABLE messages ADD COLUMN ` + column); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET content_state = CASE
+		WHEN EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id) THEN 'available'
+		ELSE 'empty' END WHERE parser_version = 0`); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_sessions_resume_id ON sessions(resume_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_root_session ON sessions(root_session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_parent_session ON sessions(parent_session_id)`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 53`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV53ToV54 adds ATM's own content-free CLI invocation ledger. There is
+// no backfill: older logs contain redacted error strings but no success events,
+// so importing only their failures would manufacture a misleading rate.
+func migrateV53ToV54(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS cli_invocations (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			occurred_at  INTEGER NOT NULL,
+			session_id  TEXT NOT NULL DEFAULT '',
+			agent        TEXT NOT NULL DEFAULT '',
+			version      TEXT NOT NULL DEFAULT '',
+			command_path TEXT NOT NULL CHECK (command_path <> ''),
+			exit_code    INTEGER NOT NULL,
+			error_code   TEXT NOT NULL DEFAULT '',
+			cause_class  TEXT NOT NULL DEFAULT '',
+			retryable    INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0,1)),
+			duration_ms  INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+			success      INTEGER NOT NULL CHECK (success IN (0,1)),
+			CHECK (success = 0 OR exit_code = 0)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cli_invocations_time ON cli_invocations(occurred_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_cli_invocations_session_time ON cli_invocations(session_id,occurred_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_cli_invocations_failure_time ON cli_invocations(success,occurred_at DESC)`,
+		`UPDATE schema_version SET version = 54`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

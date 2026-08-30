@@ -24,11 +24,16 @@ struct DesktopAgentsView: View {
     @State private var scope: ListScope = .live
     @State private var selectedIndexedSessionID: String?
     @AppStorage("ATMCollapsedAgentGroups") private var collapsedGroupsRaw = ""
+    @AppStorage("ATMExpandedAgentLineages") private var expandedLineagesRaw = ""
     @AppStorage(ATMNavigatorPresentationPreferences.agentsKey)
     private var liveListPresentationRaw = ATMNavigatorPresentationPreferences.defaultValue
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private var expandedLineages: Set<String> {
+        Set(expandedLineagesRaw.split(separator: ",").map(String.init))
     }
 
     private var liveListPresentation: ATMNavigatorPresentation {
@@ -52,7 +57,7 @@ struct DesktopAgentsView: View {
         )
     }
 
-    private var selectedSession: ATMLiveSession? {
+    private func selectedSession(in sessions: [ATMLiveSession]) -> ATMLiveSession? {
         guard let id = navigation.selectedAgentID else { return nil }
         return sessions.first { $0.id == id }
     }
@@ -62,14 +67,18 @@ struct DesktopAgentsView: View {
     }
 
     var body: some View {
-        ATMSplitColumn(
+        // Sorting and lineage construction are list-level work. Keep one
+        // snapshot for this render pass so row construction cannot re-run them.
+        let sessions = sessions
+        let selectedSession = selectedSession(in: sessions)
+        return ATMSplitColumn(
             id: "agents",
             defaultWidth: ATMWorkspaceLayout.navigatorDefaultWidth,
             minWidth: ATMWorkspaceLayout.navigatorMinWidth,
             maxWidth: ATMWorkspaceLayout.navigatorMaxWidth,
             detailMinWidth: ATMWorkspaceLayout.readingDetailMinWidth
         ) {
-            agentList
+            agentList(sessions: sessions)
         } detail: {
             Group {
                     switch scope {
@@ -101,7 +110,10 @@ struct DesktopAgentsView: View {
                     }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .atmAnimatedSwap(detailIdentity, style: .detail)
+            .atmAnimatedSwap(
+                detailIdentity(selectedLiveSession: selectedSession),
+                style: .detail
+            )
         }
         .onAppear {
             selectFirstIfNeeded()
@@ -137,7 +149,7 @@ struct DesktopAgentsView: View {
         }
     }
 
-    private var agentList: some View {
+    private func agentList(sessions: [ATMLiveSession]) -> some View {
         ATMGroupedNavigator {
             ATMNavigatorHeader {
                 ATMCompactSegmentedTabs(
@@ -153,13 +165,26 @@ struct DesktopAgentsView: View {
             if scope == .all {
                 indexedList
             } else {
-                liveList
+                liveList(sessions: sessions)
             }
         }
     }
 
-    private var liveList: some View {
-        VStack(spacing: 0) {
+    private func liveList(sessions: [ATMLiveSession]) -> some View {
+        let sessionsByState = Dictionary(grouping: sessions, by: \.presenceState)
+        let visibleByState = sessionsByState.mapValues {
+            ATMAgentPresenceOrdering.visibleSessions(
+                $0,
+                expandedLineages: expandedLineages,
+                selectedID: navigation.selectedAgentID
+            )
+        }
+        let visibleDepths = ATMAgentPresenceOrdering.visibleDepths(in: visibleByState)
+        let childCounts = sessionsByState.values.reduce(into: [String: Int]()) { result, values in
+            result.merge(ATMAgentPresenceOrdering.childCounts(values), uniquingKeysWith: +)
+        }
+        let visibleIDs = Set(visibleByState.values.flatMap { $0 }.map(\.id))
+        return VStack(spacing: 0) {
             if sessions.isEmpty {
                 ATMEmptyState(
                     icon: "cpu",
@@ -170,28 +195,45 @@ struct DesktopAgentsView: View {
                 ATMGroupedNavigatorScroll {
                     if liveListPresentation == .grouped {
                         ForEach(ATMAgentPresenceState.allCases) { state in
-                            let values = sessions.filter { $0.presenceState == state }
-                            if !values.isEmpty {
+                            let allValues = sessionsByState[state] ?? []
+                            let values = visibleByState[state] ?? []
+                            if !allValues.isEmpty {
                                 let expanded = expandedBinding(for: state)
                                 ATMNavigatorGroup {
                                     ATMNavigatorGroupHeader(
                                         title: state.title,
-                                        count: values.count,
+                                        count: allValues.count,
                                         tint: state.tint,
                                         isExpanded: expanded
                                     )
                                 } content: {
                                     if expanded.wrappedValue {
                                         ForEach(values) { session in
-                                            liveSessionRow(session, showsPresence: false)
+                                            liveSessionRow(
+                                                session,
+                                                showsPresence: false,
+                                                subagentDisplayDepth: visibleDepths[session.id] ?? 0,
+                                                subagentCount: childCounts[session.id] ?? 0,
+                                                lineageExpanded: expandedLineages.contains(
+                                                    ATMAgentPresenceOrdering.lineageID(session)
+                                                )
+                                            )
                                         }
                                     }
                                 }
                             }
                         }
                     } else {
-                        ForEach(sessions) { session in
-                            liveSessionRow(session, showsPresence: true)
+                        ForEach(sessions.filter { visibleIDs.contains($0.id) }) { session in
+                            liveSessionRow(
+                                session,
+                                showsPresence: true,
+                                subagentDisplayDepth: visibleDepths[session.id] ?? 0,
+                                subagentCount: childCounts[session.id] ?? 0,
+                                lineageExpanded: expandedLineages.contains(
+                                    ATMAgentPresenceOrdering.lineageID(session)
+                                )
+                            )
                         }
                     }
                 }
@@ -274,15 +316,27 @@ struct DesktopAgentsView: View {
         return store.indexedSessions.first { $0.id == id }
     }
 
-    private func liveSessionRow(_ session: ATMLiveSession, showsPresence: Bool) -> some View {
+    private func liveSessionRow(
+        _ session: ATMLiveSession,
+        showsPresence: Bool,
+        subagentDisplayDepth: Int,
+        subagentCount: Int,
+        lineageExpanded: Bool
+    ) -> some View {
         Button {
             navigation.selectedAgentID = session.id
             navigation.selectedAgentRunTodoID = nil
+            if subagentCount > 0 {
+                toggleLineage(ATMAgentPresenceOrdering.lineageID(session))
+            }
         } label: {
             DesktopAgentPresenceRow(
                 session: session,
                 isSelected: navigation.selectedAgentID == session.id,
-                showsPresence: showsPresence
+                showsPresence: showsPresence,
+                subagentDisplayDepth: subagentDisplayDepth,
+                subagentCount: subagentCount,
+                lineageExpanded: lineageExpanded
             )
         }
         .buttonStyle(.atmRow)
@@ -291,18 +345,37 @@ struct DesktopAgentsView: View {
         .atmContentStackRow()
     }
 
-    private var detailIdentity: String {
+    private func detailIdentity(selectedLiveSession: ATMLiveSession?) -> String {
         switch scope {
-        case .live: return selectedSession?.id ?? "empty"
+        case .live: return selectedLiveSession?.id ?? "empty"
         case .all: return selectedIndexedSessionID ?? "empty"
         }
     }
 
     private func revealSelectedGroup() {
-        guard liveListPresentation == .grouped, let session = selectedSession else { return }
+        revealSelectedLineage()
+        guard liveListPresentation == .grouped,
+              let session = selectedSession(in: sessions) else { return }
         var set = collapsedGroups
         guard set.remove(session.presenceState.id) != nil else { return }
         collapsedGroupsRaw = set.sorted().joined(separator: ",")
+    }
+
+    private func revealSelectedLineage() {
+        guard let session = selectedSession(in: sessions), session.isSubagent else { return }
+        var set = expandedLineages
+        guard set.insert(ATMAgentPresenceOrdering.lineageID(session)).inserted else { return }
+        expandedLineagesRaw = set.sorted().joined(separator: ",")
+    }
+
+    private func toggleLineage(_ lineage: String) {
+        var set = expandedLineages
+        if set.contains(lineage) {
+            set.remove(lineage)
+        } else {
+            set.insert(lineage)
+        }
+        expandedLineagesRaw = set.sorted().joined(separator: ",")
     }
 
     /// 行里不画来源（单项目单客户端时它是各行唯一不变的东西），完整来源只挂 tooltip。
@@ -383,14 +456,16 @@ private struct DesktopAgentPresenceRow: View {
     let session: ATMLiveSession
     let isSelected: Bool
     var showsPresence = false
+    var subagentDisplayDepth = 0
+    var subagentCount = 0
+    var lineageExpanded = false
 
     var body: some View {
-        ATMNavigatorRow(isSelected: isSelected) {
-            ATMAgentMark(agent: session.tool, size: 16)
-                .frame(
-                    width: ATMContentRowLayout.leadingVisualSize,
-                    height: ATMContentRowLayout.leadingVisualSize
-                )
+        // Markdown summarisation is deliberately computed once: the optional
+        // drives both row existence and content, and some child updates are long.
+        let subtitle = session.presenceSubtitle
+        return ATMNavigatorRow(isSelected: isSelected) {
+            leadingIdentity
         } content: {
             VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
                 Text(session.presenceTitle)
@@ -399,7 +474,7 @@ private struct DesktopAgentPresenceRow: View {
                     .foregroundStyle(ATMTheme.primary)
                     .lineLimit(1)
 
-                if session.bindingTodoID != nil || session.latestUserInputBelowTitle != nil {
+                if session.bindingTodoID != nil || subtitle != nil {
                     HStack(alignment: .firstTextBaseline, spacing: 5) {
                         if let todoID = session.bindingTodoID {
                             Text(todoID.uppercased())
@@ -409,10 +484,12 @@ private struct DesktopAgentPresenceRow: View {
                                 .padding(.vertical, 2)
                                 .background(ATMTheme.accentFill, in: Capsule())
                         }
-                        if let input = session.latestUserInputBelowTitle {
-                            Text("你")
-                                .font(ATMFont.font(.caption, weight: .semibold))
-                            Text(input)
+                        if let subtitle {
+                            if !session.isSubagent {
+                                Text("你")
+                                    .font(ATMFont.font(.caption, weight: .semibold))
+                            }
+                            Text(subtitle)
                                 .font(ATMFont.footnote)
                                 .lineLimit(1)
                         }
@@ -426,9 +503,37 @@ private struct DesktopAgentPresenceRow: View {
         }
     }
 
+    /// Root sessions retain the established 24pt mark. Child rows add one quiet
+    /// branch glyph, then a small capped offset for each deeper collaboration
+    /// level so siblings remain easy to scan in the narrow navigator.
+    private var leadingIdentity: some View {
+        HStack(spacing: 3) {
+            if session.isSubagent {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(ATMFont.font(.caption, weight: .medium))
+                    .foregroundStyle(ATMTheme.secondary.opacity(0.75))
+            }
+            ATMAgentMark(agent: session.tool, size: 16)
+                .frame(
+                    width: ATMContentRowLayout.leadingVisualSize,
+                    height: ATMContentRowLayout.leadingVisualSize
+                )
+        }
+        .padding(.leading, CGFloat(max(subagentDisplayDepth - 1, 0)) * 7)
+    }
+
     /// 尾部整块 `fixedSize`：让长标题先被截断，而不是把介入状态和时长挤没。
     private var trailingMeta: some View {
         HStack(spacing: 6) {
+            if subagentCount > 0 {
+                HStack(spacing: 3) {
+                    Text("\(subagentCount) 子")
+                    Image(systemName: lineageExpanded ? "chevron.down" : "chevron.right")
+                }
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+                .accessibilityLabel("\(subagentCount) 个子 Agent，\(lineageExpanded ? "已展开" : "已折叠")")
+            }
             if showsPresence {
                 HStack(spacing: 4) {
                     Circle()
@@ -443,7 +548,7 @@ private struct DesktopAgentPresenceRow: View {
                     .font(ATMFont.font(.caption, weight: .semibold))
                     .foregroundStyle(ATMTheme.danger)
             }
-            Text(NumberFormat.age(session.ageSeconds))
+            Text(ATMAgentPresenceAge.label(seconds: session.ageSeconds))
                 .font(ATMFont.mono(.caption, .medium))
                 .foregroundStyle(ATMTheme.secondary)
         }

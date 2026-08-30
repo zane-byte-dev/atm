@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -151,7 +152,7 @@ func QoderWorkParseFile(virtualPath string) *ParsedFile {
 	if project == "" {
 		project = config.CanonicalProject(projectName)
 	}
-	summary := firstNonEmpty(subChatName, chatName)
+	summary := qoderWorkSummary(firstNonEmpty(subChatName, chatName), inputs)
 	createdAt := ""
 	if createdTS > 0 {
 		createdAt = time.Unix(createdTS, 0).In(config.Loc).Format("01-02 15:04")
@@ -163,6 +164,38 @@ func QoderWorkParseFile(virtualPath string) *ParsedFile {
 	return &ParsedFile{SessionID: "qoderwork:" + id, ShortID: shortID, Agent: "qoderwork", Project: project,
 		CreatedAt: createdAt, CreatedTS: createdTS, LastTS: lastTS, Summary: summary,
 		Inputs: inputs, Outputs: outputs, Messages: messages, Tools: tools, Skills: compactSkillEvents(skills), Usage: usage, UsageEvents: usageEvents}
+}
+
+func qoderWorkSummary(title string, inputs []Message) string {
+	title = strings.TrimSpace(title)
+	for _, input := range inputs {
+		path := qoderWorkAttachedPath(input.Content)
+		if path == "" {
+			continue
+		}
+		base := strings.TrimSpace(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
+		if base == "" || strings.Contains(title, base) {
+			break
+		}
+		if title == "" {
+			return truncateText(base, 200)
+		}
+		return truncateText(title+" · "+base, 200)
+	}
+	return truncateText(title, 200)
+}
+
+func qoderWorkAttachedPath(content string) string {
+	const marker = "@[file:local:"
+	start := strings.Index(content, marker)
+	if start < 0 {
+		return ""
+	}
+	value := content[start+len(marker):]
+	if end := strings.IndexByte(value, ']'); end >= 0 {
+		value = value[:end]
+	}
+	return strings.TrimSpace(value)
 }
 
 func qoderWorkText(parts []map[string]any) string {
@@ -204,7 +237,9 @@ func QoderWorkLiveSessions(maxAge time.Duration) []Session {
 	defer db.Close()
 	cutoff := time.Now().Add(-maxAge).Unix()
 	rows, err := db.Query(`SELECT sc.id, COALESCE(sc.name,''), COALESCE(sc.model_level,''),
-		COALESCE(sc.updated_at, c.updated_at, sc.created_at, c.created_at, 0), COALESCE(p.name,''), COALESCE(p.path,'')
+		COALESCE(sc.updated_at, c.updated_at, sc.created_at, c.created_at, 0), COALESCE(p.name,''), COALESCE(p.path,''),
+		COALESCE((SELECT m.searchable_text FROM messages m WHERE m.sub_chat_id = sc.id
+			AND m.role = 'user' ORDER BY m.sequence LIMIT 1), '')
 		FROM sub_chats sc JOIN chats c ON c.id = sc.chat_id JOIN projects p ON p.id = c.project_id
 		WHERE c.deleted_at IS NULL AND COALESCE(sc.updated_at, c.updated_at, sc.created_at, c.created_at, 0) >= ?
 		ORDER BY COALESCE(sc.updated_at, c.updated_at, sc.created_at, c.created_at, 0) DESC`, cutoff)
@@ -215,11 +250,12 @@ func QoderWorkLiveSessions(maxAge time.Duration) []Session {
 	var sessions []Session
 	now := time.Now()
 	for rows.Next() {
-		var id, summary, model, projectName, projectPath string
+		var id, summary, model, projectName, projectPath, firstQ string
 		var updated int64
-		if rows.Scan(&id, &summary, &model, &updated, &projectName, &projectPath) != nil {
+		if rows.Scan(&id, &summary, &model, &updated, &projectName, &projectPath, &firstQ) != nil {
 			continue
 		}
+		summary = qoderWorkSummary(summary, []Message{{Content: firstQ}})
 		project := config.ProjectFromPath(projectPath)
 		if project == "" {
 			project = config.CanonicalProject(projectName)

@@ -9,6 +9,13 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
+func TestTodoAddPriorityDefaultsToP2(t *testing.T) {
+	flag := todoAddCmd.Flags().Lookup("priority")
+	if flag == nil || flag.DefValue != "P2" {
+		t.Fatalf("priority default = %#v, want P2", flag)
+	}
+}
+
 // A batch key this grammar does not have is rejected, not skipped. `status:`
 // and `wake:` were accepted until creation was fixed to open; silently dropping
 // them would turn an existing batch file into a pile of plain open Todos while
@@ -92,6 +99,41 @@ func TestRunTodoBatchAddStillAcceptsJSONInput(t *testing.T) {
 	if len(todos.Items) != 1 || todos.Items[0].Title != "From JSON" ||
 		todos.Items[0].Project != "atm" || todos.Items[0].Creator != "claude" {
 		t.Fatalf("todos = %+v", todos.Items)
+	}
+}
+
+func TestRunTodoBatchAddExplicitP2OverridesBatchPriority(t *testing.T) {
+	withTempAtmDir(t)
+	if err := seedTodos(); err != nil {
+		t.Fatal(err)
+	}
+	withHumanCLI(t)
+
+	oldPriority := todoAddPriorityFlag
+	priorityFlag := todoAddCmd.Flags().Lookup("priority")
+	oldChanged := priorityFlag.Changed
+	t.Cleanup(func() {
+		todoAddPriorityFlag = oldPriority
+		priorityFlag.Changed = oldChanged
+		todoAddCmd.SetIn(os.Stdin)
+		todoAddCmd.SetErr(os.Stderr)
+	})
+	todoAddPriorityFlag = "P2"
+	priorityFlag.Changed = true
+	todoAddCmd.SetErr(io.Discard)
+	todoAddCmd.SetIn(strings.NewReader("priority: P1\nitems:\n  - title: Explicit override\n"))
+
+	captureStdout(t, func() {
+		if err := runTodoBatchAdd(todoAddCmd); err != nil {
+			t.Fatalf("runTodoBatchAdd: %v", err)
+		}
+	})
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(todos.Items) != 1 || todos.Items[0].Priority != "P2" {
+		t.Fatalf("todos = %+v, want explicit --priority P2 to override batch P1", todos.Items)
 	}
 }
 

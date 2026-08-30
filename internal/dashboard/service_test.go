@@ -113,6 +113,30 @@ func TestStatsOnlySnapshotDoesNotReadWorkOrLiveState(t *testing.T) {
 	}
 }
 
+func TestBuildStatsQualityCarriesCoveragePricingAndSpeedSamples(t *testing.T) {
+	quality := buildStatsQuality(
+		[]store.StatsResult{
+			{Agent: "codex", Sessions: 2, TokenSessions: 1, Requests: 10, DetailedRequests: 8, AggregateRequests: 2, CostUSD: 100},
+			{Agent: "qoderwork", Sessions: 3},
+		},
+		[]store.ModelStatsResult{
+			{Model: "gpt-5.5", CostUSD: 1, PricingSource: store.PricingExact},
+			{Model: "gpt-5.6-sol", CostUSD: 99, CostEstimated: true, PricingSource: store.PricingFamily},
+		},
+		store.SpeedReport{Models: []store.SpeedStatsResult{{Requests: 8, Sampled: 6}}, Untimed: 1, OutOfWindow: 1},
+	)
+	if quality.ActiveSessions != 5 || quality.TokenSessions != 1 || quality.SessionCoveragePct != 20 ||
+		quality.ActiveAgents != 2 || quality.TokenAgents != 1 || quality.AgentCoveragePct != 50 ||
+		quality.RequestCoveragePct != 80 || quality.SpeedRequests != 8 ||
+		quality.SpeedSampledRequests != 6 || quality.SpeedSamplePct != 75 ||
+		quality.EstimatedCostUSD != 99 || quality.EstimatedCostShare != 0.99 {
+		t.Fatalf("quality = %+v", quality)
+	}
+	if len(quality.PricingSources) != 2 || quality.PricingSources[0] != "exact" || quality.PricingSources[1] != "family" {
+		t.Fatalf("pricing sources = %#v", quality.PricingSources)
+	}
+}
+
 func TestBuildSnapshotRejectsNilContextAsTypedInputError(t *testing.T) {
 	service := Service{now: time.Now}
 	_, err := service.BuildSnapshot(nil, dashboardTestCall(), Request{})

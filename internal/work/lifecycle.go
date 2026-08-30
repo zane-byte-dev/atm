@@ -13,12 +13,14 @@ import (
 )
 
 type StartInput struct {
-	TodoID string `json:"todo_id"`
+	TodoID       string `json:"todo_id"`
+	ReopenReason string `json:"reopen_reason,omitempty"`
 }
 
 type StartResult struct {
 	Todo           Todo     `json:"todo"`
 	AlreadyStarted bool     `json:"already_started"`
+	Reopened       bool     `json:"reopened,omitempty"`
 	Effects        []Effect `json:"-"`
 }
 
@@ -90,6 +92,32 @@ func (service Service) Start(ctx context.Context, call application.Call, input S
 			)
 		}
 		wasClosed := !store.TodoIsActive(*todo)
+		wasReview := todo.Status == store.TodoStatusReview
+		reopenReason := strings.TrimSpace(input.ReopenReason)
+		message := ""
+		if wasClosed || wasReview {
+			if reopenReason == "" {
+				appErr := lifecycleConflict(
+					fmt.Sprintf("todo %s is %s; reopening review or completed work requires an audit reason; run `atm todo start %s --reopen-reason \"<why work resumed>\"`", todo.ID, todo.Status, todo.ID),
+					todo.ID, todo.Status,
+				)
+				appErr.Details["required_flag"] = "--reopen-reason"
+				appErr.Details["reopen_required"] = true
+				return appErr
+			}
+			message = "[reopen] " + reopenReason
+			if err := store.ValidateTodoLogMessage(message, "进展"); err != nil {
+				return lifecycleInvalidArgument(err.Error(), "reopen_reason", input.ReopenReason)
+			}
+			if unknown := store.UnknownTodoReferences(transaction.Todos(), message); len(unknown) > 0 {
+				err := lifecycleInvalidArgument(
+					fmt.Sprintf("reopen reason references unknown todo IDs: %s", strings.Join(unknown, ", ")),
+					"reopen_reason", input.ReopenReason,
+				)
+				err.Details["unknown_todo_ids"] = unknown
+				return err
+			}
+		}
 		changed := todo.Status != store.TodoStatusInProgress || todo.StartTS == nil ||
 			todo.WakeCondition != "" || todo.ReviewAt != "" || wasClosed
 		if wasClosed {
@@ -107,8 +135,9 @@ func (service Service) Start(ctx context.Context, call application.Call, input S
 		todo.ReviewAt = ""
 		result.Todo = cloneTodo(*todo)
 		result.AlreadyStarted = !changed
+		result.Reopened = wasClosed || wasReview
 		if changed {
-			if err := transaction.enqueueOrReplaceEffect(call, EffectTodoStarted, *todo, ""); err != nil {
+			if err := transaction.enqueueOrReplaceEffect(call, EffectTodoStarted, *todo, message); err != nil {
 				return fmt.Errorf("enqueue start effect: %w", err)
 			}
 		}
@@ -222,6 +251,14 @@ func (service Service) close(
 			result.AlreadyClosed = true
 			result.Effects, err = transaction.pendingLifecycleEffects(todo.ID, EffectTodoClosed)
 			return err
+		}
+		if status == store.TodoStatusDone {
+			if reasonErr := store.ValidateTodoCompletionReason(reason); reasonErr != nil {
+				appErr := lifecycleInvalidArgument(reasonErr.Error(), "reason", input.Reason)
+				appErr.Details["required_flag"] = "--reason"
+				appErr.Details["evidence_required"] = true
+				return appErr
+			}
 		}
 		if !store.TodoIsActive(*todo) {
 			return lifecycleConflict(

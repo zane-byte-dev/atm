@@ -117,6 +117,31 @@ func TestCheckReportsAMissingIndexWithoutFailing(t *testing.T) {
 	}
 }
 
+func TestCheckCarriesRollingCoverageWindowMetadata(t *testing.T) {
+	withTempAtmDir(t)
+	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
+	service := offlineService(t, ServiceOptions{Now: func() time.Time { return now }})
+	report, err := service.Check(context.Background(), doctorTestCall(), Input{Days: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.CoverageWindow.Mode != "rolling" || report.CoverageWindow.Days != 7 ||
+		report.CoverageWindow.Start != "2026-08-23T12:00:00Z" ||
+		report.CoverageWindow.End != "2026-08-30T12:00:00Z" {
+		t.Fatalf("coverage window = %+v", report.CoverageWindow)
+	}
+}
+
+func TestCheckRejectsNegativeCoverageWindow(t *testing.T) {
+	withTempAtmDir(t)
+	_, err := offlineService(t, ServiceOptions{}).Check(
+		context.Background(), doctorTestCall(), Input{Days: -1},
+	)
+	if !errors.Is(err, application.ErrInvalidArgument) {
+		t.Fatalf("error = %v, want invalid argument", err)
+	}
+}
+
 // The check must never build or migrate the index it reports on: doing so would
 // make running a diagnostic change the thing being diagnosed.
 func TestCheckDoesNotOpenTheIndexWhenItDoesNotExist(t *testing.T) {

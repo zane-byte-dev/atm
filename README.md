@@ -49,8 +49,8 @@ atm stats --days 7      # 这周花了多少 token 和钱
 
 ```bash
 atm session status                      # 实时状态
-atm session list --days 7               # 最近会话
-atm session search <关键词>              # 全文搜索历史
+atm session list --days 7               # 最近活动，默认最多 200 条；--offset 翻页
+atm session search <关键词>              # 全文搜索历史；生成调用也可用 --query
 atm session show <session-id>           # 完整 Q/A，--thinking 带思考过程
 atm session clip <关键词>                # 复制 AI 回复到剪贴板
 ```
@@ -62,11 +62,12 @@ atm todo add "<标题>"                    # 加一条；--refine 立刻润色�
 atm todo add "<标题>" --image a.png       # 附本地图片；--image 可重复，最多 10 张
 atm todo list                           # 看列表
 atm todo start <id>                     # 进入工作中
+atm todo start <id> --reopen-reason "验收后为什么恢复" # 重开 review/done
 atm todo handoff <id>                   # 在 Codex Desktop 打开并填好指针，不按回车
 atm todo handoff <id> --copy            # 只复制那行指针，粘贴进新的 Agent 会话
 atm todo plan set [id] --file -         # 原子替换结构化执行计划快照
-atm todo submit <id> --reason "实现及证据" # 提交待确认
-atm todo done <id>                      # 验收完成
+atm todo submit <id> --reason "实现及证据" # Agent 完成实现后提交待确认
+atm todo done <id> --reason "验收证据"     # 仅由人验收完成
 atm todo archive <id>                   # 归档（可恢复，保留生命周期与历史）
 atm todo restore <id>                   # 从归档恢复
 ```
@@ -207,8 +208,9 @@ Qoder 装完要重启才生效；Pi 需要手动复制
 - **pi**：把 [`integrations/pi-prompt.md`](integrations/pi-prompt.md) 复制到
   `~/.pi/agent/prompts/atm.md`；可将 [`integrations/pi-atm-attention.ts`](integrations/pi-atm-attention.ts)
   安装到 `~/.pi/agent/extensions/`，在每个会话首次执行前只注入当前绑定或最多 3 条仓库候选
-- **Codex**：SessionStart hook 可调用 [`integrations/codex-atm-context.sh`](integrations/codex-atm-context.sh)，
-  避免把完整 `atm now --json` 反复塞入上下文
+- **Codex**：把 [`integrations/codex-agents.md`](integrations/codex-agents.md) 的 ATM 段落合入
+  `~/.codex/AGENTS.md`；SessionStart hook 可调用 [`integrations/codex-atm-context.sh`](integrations/codex-atm-context.sh)，
+  避免把完整 `atm now --json` 反复塞入上下文。Agent 完成实现使用 `todo submit`，`todo done` 留给人的验收
 - **其他 agent**（Claude Code 等）：以该文件内容作为 prompt/skill 参考
 
 ## 数据源
@@ -253,6 +255,8 @@ Qoder 装完要重启才生效；Pi 需要手动复制
 - stdout 给机器读（JSON），stderr 给人读（sync 进度）
 - `--json` 模式下 stdout 是纯净 JSON，可直接 pipe 到 `jq`
 - 空列表统一输出 `[]`，不会输出 `null`
+- `session list` / `session export` 为兼容旧脚本默认保留顶层数组；新调用加 `--envelope` 可同时取得
+  `schema_version`、总数和分页信息，`session search` 默认就是同一类信封
 - 时间戳使用 ISO 8601 格式（`2026-06-24T10:05:25+08:00`）
 
 ## 平台能力

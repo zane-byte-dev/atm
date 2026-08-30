@@ -206,6 +206,7 @@ var configCredentialDeleteCmd = &cobra.Command{
 var updatePricingCmd = &cobra.Command{
 	Use:   "update-pricing",
 	Short: "Fetch latest model pricing from OpenRouter",
+	Args:  cobra.NoArgs,
 	RunE:  runUpdatePricing,
 }
 

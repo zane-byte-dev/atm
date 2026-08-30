@@ -22,6 +22,7 @@ var (
 	searchDaysFlag    int
 	searchRoleFlag    string
 	searchSnippetFlag int
+	searchQueryFlag   string
 )
 
 func init() {
@@ -31,24 +32,37 @@ func init() {
 	searchCmd.Flags().IntVar(&searchDaysFlag, "days", 0, "search today plus the previous N-1 days")
 	searchCmd.Flags().StringVar(&searchRoleFlag, "role", "", "filter by message role: user or assistant")
 	searchCmd.Flags().IntVar(&searchSnippetFlag, "snippet", defaultSearchSnippet, "maximum characters returned around each match")
+	searchCmd.Flags().StringVar(&searchQueryFlag, "query", "", "search text (alias for the positional keyword)")
 	searchCmd.MarkFlagsMutuallyExclusive("since", "days")
 	sessionCmd.AddCommand(searchCmd)
 }
 
 var searchCmd = &cobra.Command{
-	Use:   "search <keyword>",
+	Use:   "search [keyword]",
 	Short: "Search all AI session history",
-	Args:  cobra.ExactArgs(1),
-	RunE:  runSearch,
+	Example: `  atm session search "release check"
+  atm session search --query "release check" --project atm --days 7 --json`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: runSearch,
 }
 
 func runSearch(cmd *cobra.Command, args []string) error {
+	keyword := strings.TrimSpace(searchQueryFlag)
+	if len(args) > 0 {
+		if keyword != "" {
+			return fmt.Errorf("pass the search text either as [keyword] or --query, not both")
+		}
+		keyword = args[0]
+	}
+	if strings.TrimSpace(keyword) == "" {
+		return fmt.Errorf("requires a search keyword: use `atm session search <keyword>` or `atm session search --query <keyword>`")
+	}
 	agent, err := resolveAgent()
 	if err != nil {
 		return err
 	}
 	result, err := currentSessionService().Search(cmd.Context(), sessionapp.SearchInput{
-		Keyword: args[0], Agent: agent, Project: searchProjectFlag,
+		Keyword: keyword, Agent: agent, Project: searchProjectFlag,
 		Since: searchSinceFlag, Days: searchDaysFlag, Role: searchRoleFlag,
 		Limit: searchLimitFlag, Snippet: searchSnippetFlag, SyncBeforeRead: syncBeforeRead,
 	})
@@ -59,14 +73,16 @@ func runSearch(cmd *cobra.Command, args []string) error {
 
 	if jsonOutput {
 		payload := struct {
-			Keyword   string                 `json:"keyword"`
-			Total     int                    `json:"total"`
-			Returned  int                    `json:"returned"`
-			Truncated bool                   `json:"truncated"`
-			Limit     int                    `json:"limit"`
-			Matches   []sessionapp.SearchHit `json:"matches"`
+			SchemaVersion int                    `json:"schema_version"`
+			Keyword       string                 `json:"keyword"`
+			Total         int                    `json:"total"`
+			Returned      int                    `json:"returned"`
+			Truncated     bool                   `json:"truncated"`
+			Limit         int                    `json:"limit"`
+			Matches       []sessionapp.SearchHit `json:"matches"`
 		}{
-			Keyword: result.Keyword, Total: result.Total, Returned: result.Returned,
+			SchemaVersion: sessionCLIOutputSchemaVersion,
+			Keyword:       result.Keyword, Total: result.Total, Returned: result.Returned,
 			Truncated: result.Truncated, Limit: result.Limit, Matches: result.Matches,
 		}
 		output.JSON(payload)

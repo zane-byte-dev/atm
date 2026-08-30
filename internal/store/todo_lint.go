@@ -23,6 +23,10 @@ type TodoLintIssue struct {
 	Code       string `json:"code"`
 	Detail     string `json:"detail"`
 	Suggestion string `json:"suggestion"`
+	// Details carries stable counters and thresholds for JSON consumers. Detail
+	// remains the human sentence; clients should branch on Code and read these
+	// named values rather than scrape that sentence.
+	Details map[string]any `json:"details,omitempty"`
 }
 
 type todoProgressEntry struct {

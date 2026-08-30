@@ -22,10 +22,11 @@ type ShowInput struct {
 }
 
 type QA struct {
-	Turn     int    `json:"turn"`
-	Q        string `json:"q,omitempty"`
-	A        string `json:"a,omitempty"`
-	Thinking string `json:"thinking,omitempty"`
+	Turn     int      `json:"turn"`
+	Q        string   `json:"q,omitempty"`
+	A        string   `json:"a,omitempty"`
+	Progress []string `json:"progress,omitempty"`
+	Thinking string   `json:"thinking,omitempty"`
 }
 
 type ShowResult struct {
@@ -41,6 +42,18 @@ type ShowResult struct {
 	ThinkingSourceMissing bool           `json:"thinking_source_missing,omitempty"`
 	ThinkingAbsent        bool           `json:"thinking_absent,omitempty"`
 	TranscriptPath        string         `json:"-"`
+	ResumeID              string         `json:"resume_id,omitempty"`
+	RootSessionID         string         `json:"root_session_id,omitempty"`
+	ParentSessionID       string         `json:"parent_session_id,omitempty"`
+	AgentPath             string         `json:"agent_path,omitempty"`
+	AgentNickname         string         `json:"agent_nickname,omitempty"`
+	SubagentDepth         int            `json:"subagent_depth,omitempty"`
+	IsSubagent            bool           `json:"is_subagent,omitempty"`
+	ParserVersion         int            `json:"parser_version"`
+	ContentState          string         `json:"content_state"`
+	ResultStatus          string         `json:"result_status"`
+	LatestProgress        string         `json:"latest_progress,omitempty"`
+	FinalResult           string         `json:"final_result,omitempty"`
 	Meta                  ReadMeta       `json:"meta"`
 }
 
@@ -101,10 +114,16 @@ func (service Service) Show(ctx context.Context, input ShowInput) (ShowResult, e
 	return ShowResult{
 		ID: stored.FullID, Agent: stored.Agent,
 		Project: stored.Project, QA: qas, Tools: stored.Tools,
-		TotalTurns: len(stored.Inputs), ReturnedTurns: len(qas),
+		TotalTurns: len(allQAs), ReturnedTurns: len(qas),
 		Truncated: rangeTruncated || contentTruncated, ContentTruncated: contentTruncated,
 		ThinkingSourceMissing: thinkingSourceMissing, ThinkingAbsent: thinkingAbsent,
-		TranscriptPath: stored.FilePath, Meta: meta,
+		TranscriptPath: stored.FilePath, ResumeID: stored.ResumeID,
+		RootSessionID: stored.RootSessionID, ParentSessionID: stored.ParentSessionID,
+		AgentPath: stored.AgentPath, AgentNickname: stored.AgentNickname,
+		SubagentDepth: stored.SubagentDepth, IsSubagent: stored.IsSubagent,
+		ParserVersion: stored.ParserVersion, ContentState: stored.ContentState,
+		ResultStatus: stored.ResultStatus, LatestProgress: stored.LatestProgress,
+		FinalResult: stored.FinalResult, Meta: meta,
 	}, nil
 }
 
@@ -120,17 +139,24 @@ func extractThinking(agent, filePath string) []parser.ThinkingBlock {
 }
 
 func buildQAs(stored *store.ShowResult, thinkingBlocks []parser.ThinkingBlock, includeThinking bool) []QA {
-	qas := make([]QA, 0, len(stored.Inputs))
+	qas := make([]QA, 0, len(stored.Turns))
 	thinkingIndex := 0
-	for index, input := range stored.Inputs {
-		qa := QA{Turn: index + 1, Q: cleanMessage(input)}
-		if index < len(stored.Outputs) {
-			qa.A = cleanMessage(stored.Outputs[index])
-			if includeThinking {
-				qa.Thinking, thinkingIndex = collectTurnThinking(thinkingBlocks, thinkingIndex, qa.A)
+	for index, turn := range stored.Turns {
+		qa := QA{Turn: index + 1, Q: cleanMessage(turn.Question)}
+		for _, progress := range turn.Progress {
+			if cleaned := cleanMessage(progress); cleaned != "" {
+				qa.Progress = append(qa.Progress, cleaned)
 			}
 		}
-		if qa.Q == "" && qa.A == "" && qa.Thinking == "" {
+		answer := turn.Answer
+		if turn.Final != "" {
+			answer = turn.Final
+		}
+		qa.A = cleanMessage(answer)
+		if includeThinking && qa.A != "" {
+			qa.Thinking, thinkingIndex = collectTurnThinking(thinkingBlocks, thinkingIndex, qa.A)
+		}
+		if qa.Q == "" && qa.A == "" && len(qa.Progress) == 0 && qa.Thinking == "" {
 			continue
 		}
 		qas = append(qas, qa)
@@ -226,6 +252,18 @@ func limitQAChars(qas []QA, maxChars int) ([]QA, bool) {
 		var fieldTruncated bool
 		qa.Q, remaining, fieldTruncated = takeCharacterBudget(original.Q, remaining)
 		truncated = truncated || fieldTruncated
+		for _, progress := range original.Progress {
+			if remaining == 0 {
+				truncated = true
+				break
+			}
+			var limitedProgress string
+			limitedProgress, remaining, fieldTruncated = takeCharacterBudget(progress, remaining)
+			truncated = truncated || fieldTruncated
+			if limitedProgress != "" {
+				qa.Progress = append(qa.Progress, limitedProgress)
+			}
+		}
 		if remaining > 0 {
 			qa.Thinking, remaining, fieldTruncated = takeCharacterBudget(original.Thinking, remaining)
 			truncated = truncated || fieldTruncated

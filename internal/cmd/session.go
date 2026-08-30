@@ -8,6 +8,8 @@ import (
 	sessionapp "github.com/zane-byte-dev/atm/internal/session"
 )
 
+const sessionCLIOutputSchemaVersion = 1
+
 var sessionCmd = &cobra.Command{
 	Use:     "session",
 	Short:   "Query and browse AI sessions",

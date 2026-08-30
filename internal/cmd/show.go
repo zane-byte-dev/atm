@@ -56,12 +56,36 @@ func runShow(cmd *cobra.Command, args []string) error {
 			Truncated             bool            `json:"truncated"`
 			ThinkingSourceMissing bool            `json:"thinking_source_missing,omitempty"`
 			ThinkingAbsent        bool            `json:"thinking_absent,omitempty"`
+			ResumeID              string          `json:"resume_id,omitempty"`
+			RootSessionID         string          `json:"root_session_id,omitempty"`
+			ParentSessionID       string          `json:"parent_session_id,omitempty"`
+			AgentPath             string          `json:"agent_path,omitempty"`
+			AgentNickname         string          `json:"agent_nickname,omitempty"`
+			SubagentDepth         int             `json:"subagent_depth,omitempty"`
+			IsSubagent            bool            `json:"is_subagent,omitempty"`
+			ParserVersion         int             `json:"parser_version"`
+			ContentState          string          `json:"content_state"`
+			ResultStatus          string          `json:"result_status"`
+			LatestProgress        string          `json:"latest_progress,omitempty"`
+			FinalResult           string          `json:"final_result,omitempty"`
 		}{
 			ID: result.ID, Agent: result.Agent, Project: result.Project,
 			QA: result.QA, Tools: result.Tools, TotalTurns: result.TotalTurns,
 			ReturnedTurns: result.ReturnedTurns, Truncated: result.Truncated,
 			ThinkingSourceMissing: result.ThinkingSourceMissing,
 			ThinkingAbsent:        result.ThinkingAbsent,
+			ResumeID:              result.ResumeID,
+			RootSessionID:         result.RootSessionID,
+			ParentSessionID:       result.ParentSessionID,
+			AgentPath:             result.AgentPath,
+			AgentNickname:         result.AgentNickname,
+			SubagentDepth:         result.SubagentDepth,
+			IsSubagent:            result.IsSubagent,
+			ParserVersion:         result.ParserVersion,
+			ContentState:          result.ContentState,
+			ResultStatus:          result.ResultStatus,
+			LatestProgress:        result.LatestProgress,
+			FinalResult:           result.FinalResult,
 		}
 		output.JSON(payload)
 		return nil
@@ -93,6 +117,9 @@ func runShow(cmd *cobra.Command, args []string) error {
 		}
 		if qa.Thinking != "" {
 			fmt.Printf("\n💭 %s\n", qa.Thinking)
+		}
+		for _, progress := range qa.Progress {
+			fmt.Printf("\n… %s\n", progress)
 		}
 		if qa.A != "" {
 			fmt.Printf("\nA: %s\n", qa.A)

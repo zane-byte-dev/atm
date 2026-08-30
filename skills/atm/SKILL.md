@@ -72,6 +72,11 @@ TODO 只使用四个生命周期状态：
 4. 需要事件顺序时使用 `atm session timeline <session-id> --json`；
 5. 需要当前 Agent 活动时使用 `atm session status --json`。
 
+分析 ATM CLI 自身的命令失败、重试类别或耗时时，使用
+`atm session tools --failed --days <N> --json`；需要关联某个 Agent 会话时再追加
+`<session-id>`。该查询只含命令路径和结构化结果元数据，不含 argv、错误原文或用户内容；
+失败率必须使用同一结果里的 `total/succeeded/failed`，不能用返回页长度代替分母。
+
 需要从多个历史会话抽取、筛选并沉淀共享记忆时，使用 `atm-memory-curator` skill。普通会话查询和单条明确事实的 memory CRUD 仍按本技能执行。
 
 优先读取真正相关的少量 session。搜索词过宽时，用 `--project`、`--days/--since`、`--role` 缩小范围，用 `--limit` 和 `--snippet` 控制返回量，避免被仓库说明、系统提示或重复上下文淹没。
@@ -124,6 +129,9 @@ atm session bind <id>
 ```
 
 无法取得会话 ID 的人工终端才使用 `atm todo start <id>`。绑定关系会保留历史，可用 `atm session current` 或 `atm todo show <id>` 查看。
+`review` 或 `done` 代表已经提交或验收过的工作，重新开始必须留下审计原因：人工重开使用
+`atm todo start <id> --reopen-reason "<为什么恢复工作>"`；Agent 重新绑定 review Todo 使用
+`atm session bind <id> --reopen-reason "<为什么恢复工作>"`。不要用空泛的“继续处理”绕过这条要求。
 
 用户要把任务交给另一个 Agent 时，用 `atm todo handoff <id> --copy` 复制一行指针交给用户粘贴；
 ATM 不代为启动任何会话。收到这样一行指针时，按它列出的命令读 `atm todo doc <id>` 再 `atm session bind <id>`。
@@ -168,7 +176,7 @@ atm todo log "结果：<交付变化>；证据：<验证边界>；下一步：<�
 - 每个阶段最多一条完成动态；中间准备状态不写，除非工作暂停在可观察的外部条件。
 - 单条不超过 400 个 Unicode 字符，只写一个段落。源码调查、架构映射、备选方案和列表写到
   `atm todo log <id> "<detail>" --section 分析`，不要塞进 `进展`。
-- 状态先结构化、后留痕：开始用 `start`，执行计划用 `plan set`，Agent 实现完成用 `submit`，人的最终验收用 `done`，生命周期用 `edit --status`，外部等待元数据用 `edit --wake/--review-at`，维护标签用 `edit --maintenance-limit`，依赖用
+- 状态先结构化、后留痕：开始或重开用 `start`，执行计划用 `plan set`，Agent 实现完成用 `submit`，人的最终验收用 `done`，退回待办用 `edit --status open`，外部等待元数据用 `edit --wake/--review-at`，维护标签用 `edit --maintenance-limit`，依赖用
   `depend`。日志不能代替这些状态命令，也不能代替 description 或 plan 中的真实清单更新。
 - 日志里提到的 `tNN` 必须已经创建且可由 `atm todo show <id>` 查到；不得先在自由文本中声称拆出了不存在的子任务。
 - 写完或接手历史任务时可运行 `atm todo lint <id>`，检查超长/多段动态、未知 todo 引用、重复阶段日志和 Markdown 元数据漂移。
@@ -186,18 +194,21 @@ atm todo submit --reason "<结果与证据>"
 人已完成验收且没有剩余必需工作时：
 
 ```bash
-atm todo done --reason "<最终结果>"
+atm todo done --reason "<具体验收证据>"
 ```
+
+首次标记 done 必须由人提供具体验收证据；“通过 ATM 菜单栏完成”只描述点击入口，不是验收，CLI 会拒绝。
+批量验收同样要求 `atm todo bulk done <id>... --reason "<具体验收证据>"`。Agent 不执行 done，仍使用 submit。
 
 暂停在外部条件时：
 
 ```bash
-atm todo edit <id> --status in_progress --wake "<可观察的唤醒条件>"
+atm todo edit <id> --wake "<可观察的唤醒条件>"
 ```
 
 `submit`、`done`、`archive` 以及设置等待元数据会自动解除关联会话，避免下次启动沿用失效任务。
 
-主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status` 或 `edit --maintenance-limit`。不要只在回复里描述状态变化而不更新 ATM。
+主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status open` 或 `edit --maintenance-limit`。`edit --status` 不代替 `start`、`submit` 或人的 `done`。不要只在回复里描述状态变化而不更新 ATM。
 
 普通移出工作集使用无确认、可恢复的 `atm todo archive`，需要时以 `atm todo restore` 取回。
 `trash/drop` 是 archive 的兼容别名，`unarchive` 是 restore 的兼容别名。永久删除只针对已归档数据，

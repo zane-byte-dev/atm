@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -33,6 +34,73 @@ func TestNormalizeProcessTTY(t *testing.T) {
 func TestStatusSessionRetentionMatchesPrimaryAgentHistoryWindow(t *testing.T) {
 	if statusSessionRetention != 30*time.Minute {
 		t.Fatalf("statusSessionRetention = %s, want 30m", statusSessionRetention)
+	}
+}
+
+func TestStatusSessionViewPropagatesSubagentMetadata(t *testing.T) {
+	view := newStatusSessionView(parser.Session{
+		Tool:            "Codex",
+		SessionID:       "child-short",
+		ResumeID:        "child-full",
+		RootSessionID:   "root-full",
+		ParentSessionID: "parent-full",
+		AgentPath:       "/root/recent_todos/status_model",
+		AgentNickname:   "Goodall",
+		SubagentDepth:   2,
+		Project:         "atm",
+		AgeSeconds:      3,
+	}, "")
+	if view.ParentSessionID != "parent-full" || view.AgentPath != "/root/recent_todos/status_model" ||
+		view.AgentNickname != "Goodall" || view.SubagentDepth != 2 {
+		t.Fatalf("subagent metadata = %#v", view)
+	}
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"root_session_id":   "root-full",
+		"parent_session_id": "parent-full",
+		"agent_path":        "/root/recent_todos/status_model",
+		"agent_nickname":    "Goodall",
+		"subagent_depth":    float64(2),
+	} {
+		if got := payload[key]; got != want {
+			t.Errorf("%s = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestDashboardLiveStatusPropagatesSubagentLineage(t *testing.T) {
+	view := statusView{
+		GeneratedAt: "2026-08-30T01:02:03Z",
+		Time:        "09:02:03",
+		Sessions: []statusSessionView{{
+			Tool:            "Codex",
+			SessionID:       "child-short",
+			ResumeID:        "child-full",
+			RootSessionID:   "root-full",
+			ParentSessionID: "parent-full",
+			AgentPath:       "/root/session_truth_fix",
+			AgentNickname:   "Goodall",
+			SubagentDepth:   1,
+			Project:         "atm",
+		}},
+	}
+
+	got := dashboardLiveStatusFromView(view)
+	if got.GeneratedAt != view.GeneratedAt || got.Time != view.Time || len(got.Sessions) != 1 {
+		t.Fatalf("live status envelope = %#v", got)
+	}
+	session := got.Sessions[0]
+	if session.ResumeID != "child-full" || session.RootSessionID != "root-full" ||
+		session.ParentSessionID != "parent-full" || session.AgentPath != "/root/session_truth_fix" ||
+		session.AgentNickname != "Goodall" || session.SubagentDepth != 1 {
+		t.Fatalf("live status lineage = %#v", session)
 	}
 }
 

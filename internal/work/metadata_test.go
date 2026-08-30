@@ -65,6 +65,25 @@ func TestAddOwnsNormalizationDocumentAndEffects(t *testing.T) {
 	}
 }
 
+func TestAddDefaultsOrdinaryWorkToP2AndPreservesExplicitP1(t *testing.T) {
+	withTempWorkStore(t)
+	call := metadataTestCall(application.ActorHuman, "")
+	ordinary, err := Default.Add(context.Background(), call, AddInput{Title: "Ordinary work"})
+	if err != nil || ordinary.Todo.Priority != "P2" {
+		t.Fatalf("ordinary = %+v, err=%v", ordinary.Todo, err)
+	}
+	explicit, err := Default.Add(context.Background(), call, AddInput{Title: "Urgent work", Priority: "P1"})
+	if err != nil || explicit.Todo.Priority != "P1" {
+		t.Fatalf("explicit = %+v, err=%v", explicit.Todo, err)
+	}
+	batch, err := Default.BatchAdd(context.Background(), call, BatchAddInput{
+		Items: []BatchAddItem{{Title: "Ordinary batch work"}},
+	})
+	if err != nil || len(batch.Todos) != 1 || batch.Todos[0].Priority != "P2" {
+		t.Fatalf("batch = %+v, err=%v", batch.Todos, err)
+	}
+}
+
 func TestAddRejectsInvalidMetadataBeforeMutation(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -187,7 +206,7 @@ func TestEditRefusesAMaintenanceLimitOnClosedWorkButStillClearsIt(t *testing.T) 
 	}
 }
 
-func TestEditCommitsStatusAndBindingPolicyThenSyncsDocument(t *testing.T) {
+func TestEditReturnsToOpenAndCommitsBindingPolicyThenSyncsDocument(t *testing.T) {
 	withTempWorkStore(t)
 	todo := store.Todo{
 		ID: "t1", Title: "Old title", Description: "Old requirement", Priority: "P1",
@@ -208,7 +227,7 @@ func TestEditCommitsStatusAndBindingPolicyThenSyncsDocument(t *testing.T) {
 			Description: stringPointerForTest("New requirement"),
 			Priority:    stringPointerForTest("p0"),
 			Project:     stringPointerForTest(" atm "),
-			Status:      stringPointerForTest("review"),
+			Status:      stringPointerForTest("open"),
 		},
 	})
 	if err != nil {
@@ -216,17 +235,17 @@ func TestEditCommitsStatusAndBindingPolicyThenSyncsDocument(t *testing.T) {
 	}
 	if result.PreviousStatus != store.TodoStatusInProgress || result.Todo.Title != "New title" ||
 		result.Todo.Priority != "P0" || result.Todo.Project != "atm" ||
-		result.Todo.Status != store.TodoStatusReview || result.Todo.WakeCondition != "" || result.Todo.ReviewAt != "" {
+		result.Todo.Status != store.TodoStatusOpen || result.Todo.WakeCondition != "" || result.Todo.ReviewAt != "" {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(result.Effects) != 1 || result.Effects[0].Kind != MetadataEffectEnteredReview {
+	if len(result.Effects) != 0 {
 		t.Fatalf("effects = %+v", result.Effects)
 	}
 	if binding, err := store.CurrentTodoBinding("edit-session"); err != nil || binding != nil {
 		t.Fatalf("binding after Edit = %+v, err=%v", binding, err)
 	}
 	history, err := store.ListTodoSessionBindings("t1")
-	if err != nil || len(history) != 1 || history[0].Reason != "status-style:review" {
+	if err != nil || len(history) != 1 || history[0].Reason != "status-style:open" {
 		t.Fatalf("binding history = %+v, err=%v", history, err)
 	}
 	document, err := store.ReadTodoDoc("t1")
@@ -250,7 +269,7 @@ func TestEditRollsBackTodoWhenBindingUnbindFails(t *testing.T) {
 	}
 	_, err = db.Exec(`CREATE TRIGGER fail_metadata_edit_unbind
 		BEFORE UPDATE OF unbound_at ON todo_session_bindings
-		WHEN NEW.reason = 'status-style:review'
+		WHEN NEW.reason = 'status-style:open'
 		BEGIN SELECT RAISE(ABORT, 'injected metadata unbind failure'); END`)
 	db.Close()
 	if err != nil {
@@ -258,7 +277,7 @@ func TestEditRollsBackTodoWhenBindingUnbindFails(t *testing.T) {
 	}
 
 	_, err = Default.Edit(context.Background(), metadataTestCall(application.ActorHuman, ""), EditInput{
-		TodoID: "t1", Patch: EditPatch{Status: stringPointerForTest(store.TodoStatusReview)},
+		TodoID: "t1", Patch: EditPatch{Status: stringPointerForTest(store.TodoStatusOpen)},
 	})
 	if !errors.Is(err, application.ErrUnavailable) {
 		t.Fatalf("Edit error = %v, want unavailable", err)

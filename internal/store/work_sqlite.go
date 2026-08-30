@@ -462,6 +462,41 @@ func ListPendingWorkEffects(todoID string) ([]WorkEffectRecord, error) {
 	return pendingWorkEffects(db, todoID)
 }
 
+// ListWorkEffects returns the complete lifecycle-effect history for one Todo.
+// Unlike ListPendingWorkEffects this is a read model: completed rows are kept
+// because lint needs to distinguish a first submit from work that was reopened
+// and submitted again. Callers must not infer delivery state from absence here.
+func ListWorkEffects(todoID string) ([]WorkEffectRecord, error) {
+	db, err := OpenReadOnly()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	statement := `SELECT id,request_id,todo_id,kind,payload_json,created_at,
+		completed_at,attempt_count,last_attempt_at,last_error
+		FROM work_effect_outbox`
+	args := []any{}
+	if todoID != "" {
+		statement += ` WHERE todo_id=?`
+		args = append(args, todoID)
+	}
+	statement += ` ORDER BY created_at,id`
+	rows, err := db.Query(statement, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	effects := []WorkEffectRecord{}
+	for rows.Next() {
+		effect, err := scanWorkEffect(rows)
+		if err != nil {
+			return nil, err
+		}
+		effects = append(effects, effect)
+	}
+	return effects, rows.Err()
+}
+
 func pendingWorkEffects(query sqlQueryer, todoID string) ([]WorkEffectRecord, error) {
 	statement := `SELECT id,request_id,todo_id,kind,payload_json,created_at,
 		completed_at,attempt_count,last_attempt_at,last_error

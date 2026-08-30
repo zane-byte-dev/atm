@@ -85,7 +85,7 @@ func NewService(options ServiceOptions) Service {
 func (service Service) Check(
 	ctx context.Context,
 	call application.Call,
-	_ Input,
+	input Input,
 ) (Report, error) {
 	if ctx == nil {
 		return Report{}, invalid("context", nil, "doctor context is required")
@@ -93,11 +93,14 @@ func (service Service) Check(
 	if err := call.Validate(); err != nil {
 		return Report{}, err
 	}
+	if input.Days < 0 {
+		return Report{}, invalid("days", input.Days, "doctor days must be zero (all history) or positive")
+	}
 	if err := ctx.Err(); err != nil {
 		return Report{}, unavailable("run doctor", err)
 	}
 	if !service.databaseExists() {
-		return service.check(ctx, call, nil)
+		return service.check(ctx, call, nil, input)
 	}
 	// Read-only: a self-check must never create or migrate the index it is
 	// reporting on.
@@ -109,18 +112,32 @@ func (service Service) Check(
 		return Report{}, unavailable("open session index", errors.New("database opener returned nil"))
 	}
 	defer db.Close()
-	return service.check(ctx, call, db)
+	return service.check(ctx, call, db, input)
 }
 
-func (service Service) check(ctx context.Context, call application.Call, db *sql.DB) (Report, error) {
-	report := Report{Coverage: []store.Coverage{}}
+func (service Service) check(ctx context.Context, call application.Call, db *sql.DB, input Input) (Report, error) {
+	report := Report{Coverage: []store.Coverage{}, CoverageWindow: CoverageWindow{Mode: "all_time"}}
 	var issues []Issue
+	var coverageStart, coverageEnd time.Time
+	if input.Days > 0 {
+		coverageEnd = service.now()
+		coverageStart = coverageEnd.Add(-time.Duration(input.Days) * 24 * time.Hour)
+		report.CoverageWindow = CoverageWindow{
+			Mode: "rolling", Days: input.Days,
+			Start: coverageStart.Format(time.RFC3339), End: coverageEnd.Format(time.RFC3339),
+		}
+	}
 
 	retained := map[string]int{}
 	extraction := map[string]store.ExtractionCounts{}
 	if db != nil {
 		var err error
-		if report.Coverage, err = store.GetCoverage(db); err != nil {
+		if input.Days > 0 {
+			report.Coverage, err = store.GetCoverageWindow(db, coverageStart.Unix(), coverageEnd.Unix())
+		} else {
+			report.Coverage, err = store.GetCoverage(db)
+		}
+		if err != nil {
 			return Report{}, unavailable("read request coverage", err)
 		}
 		if retained, err = store.GetRetainedSessionCounts(db); err != nil {

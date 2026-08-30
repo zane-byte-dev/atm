@@ -11,16 +11,28 @@ import (
 )
 
 type ListResult struct {
-	FullID    string
-	ShortID   string
-	Agent     string
-	Project   string
-	CreatedAt string
-	CreatedTS int64
-	LastTS    int64
-	QCount    int
-	FirstQ    string
-	Summary   string
+	FullID          string
+	ShortID         string
+	Agent           string
+	Project         string
+	CreatedAt       string
+	CreatedTS       int64
+	LastTS          int64
+	QCount          int
+	FirstQ          string
+	Summary         string
+	ResumeID        string
+	RootSessionID   string
+	ParentSessionID string
+	AgentPath       string
+	AgentNickname   string
+	SubagentDepth   int
+	IsSubagent      bool
+	ParserVersion   int
+	ContentState    string
+	ResultStatus    string
+	LatestProgress  string
+	FinalResult     string
 }
 
 type SearchHit struct {
@@ -59,14 +71,37 @@ type ShowResult struct {
 	// Agent is the display name ("Grok Build"). AgentKey is the stored key
 	// ("grokbuild"), which is what callers must switch on: routing on the display
 	// name silently matched nothing and made every transcript read as Claude's.
-	Agent    string
-	AgentKey string
-	Project  string
-	FullID   string
-	FilePath string
-	Inputs   []string
-	Outputs  []string
-	Tools    map[string]int
+	Agent           string
+	AgentKey        string
+	Project         string
+	FullID          string
+	FilePath        string
+	ResumeID        string
+	RootSessionID   string
+	ParentSessionID string
+	AgentPath       string
+	AgentNickname   string
+	SubagentDepth   int
+	IsSubagent      bool
+	ParserVersion   int
+	ContentState    string
+	ResultStatus    string
+	LatestProgress  string
+	FinalResult     string
+	Inputs          []string
+	Outputs         []string
+	Turns           []SessionTurn
+	Tools           map[string]int
+}
+
+// SessionTurn preserves transcript order. Progress and final messages are kept
+// separately so several assistant records no longer shift the answer onto the
+// next user question or get flattened into one opaque string.
+type SessionTurn struct {
+	Question string
+	Answer   string
+	Progress []string
+	Final    string
 }
 
 type ReportResult struct {
@@ -83,12 +118,19 @@ type ReportResult struct {
 
 func ListSessions(db *sql.DB, startTS, endTS int64, agent, project string) ([]ListResult, error) {
 	query := `SELECT s.id, s.short_id, s.agent, s.project, s.created_at, s.created_ts, s.last_ts,
-		(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id AND m.role = 'user') AS q_count,
+		(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id AND m.role = 'user'
+			AND m.scope = 'local' AND m.kind = 'conversation') AS q_count,
 		COALESCE((SELECT m.content FROM messages m WHERE m.session_id = s.id AND m.role = 'user'
+				AND m.scope = 'local' AND m.kind = 'conversation'
 				ORDER BY m.seq LIMIT 1), '') AS first_q,
-		s.summary
+		s.summary, s.resume_id, s.root_session_id, s.parent_session_id, s.agent_path,
+		s.agent_nickname, s.subagent_depth, s.is_subagent, s.parser_version,
+		CASE WHEN NOT EXISTS (SELECT 1 FROM sync_state st WHERE st.file_path = s.file_path)
+			THEN 'retained' ELSE s.content_state END AS content_state,
+		s.result_status, s.latest_progress, s.final_result
 		FROM sessions s
-		WHERE s.created_ts < ? AND CASE WHEN s.last_ts > 0 THEN s.last_ts ELSE s.created_ts END >= ?`
+		WHERE s.is_internal = 0 AND s.created_ts < ?
+		AND CASE WHEN s.last_ts > 0 THEN s.last_ts ELSE s.created_ts END >= ?`
 	args := []any{endTS, startTS}
 	if agent != "" {
 		query += " AND s.agent = ?"
@@ -111,7 +153,10 @@ func ListSessions(db *sql.DB, startTS, endTS int64, agent, project string) ([]Li
 	var results []ListResult
 	for rows.Next() {
 		var r ListResult
-		if err := rows.Scan(&r.FullID, &r.ShortID, &r.Agent, &r.Project, &r.CreatedAt, &r.CreatedTS, &r.LastTS, &r.QCount, &r.FirstQ, &r.Summary); err != nil {
+		if err := rows.Scan(&r.FullID, &r.ShortID, &r.Agent, &r.Project, &r.CreatedAt, &r.CreatedTS,
+			&r.LastTS, &r.QCount, &r.FirstQ, &r.Summary, &r.ResumeID, &r.RootSessionID,
+			&r.ParentSessionID, &r.AgentPath, &r.AgentNickname, &r.SubagentDepth, &r.IsSubagent,
+			&r.ParserVersion, &r.ContentState, &r.ResultStatus, &r.LatestProgress, &r.FinalResult); err != nil {
 			return nil, err
 		}
 		r.Project = config.CanonicalProject(r.Project)
@@ -132,7 +177,8 @@ func SearchMessagesWithOptions(db *sql.DB, keyword string, options SearchOptions
 	query := `SELECT s.id, s.agent, s.project, s.short_id, s.created_at, s.created_ts, m.role, m.content
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
-		WHERE instr(lower(m.content), lower(?)) > 0`
+		WHERE s.is_internal = 0 AND m.scope = 'local' AND m.kind <> 'control'
+		AND instr(lower(m.content), lower(?)) > 0`
 	args := []any{keyword}
 	if options.Agent != "" {
 		query += " AND s.agent = ?"
@@ -270,35 +316,99 @@ func sessionLookupArgs(idOrPrefix string) []any {
 }
 
 func GetSession(db *sql.DB, idOrPrefix string) (*ShowResult, error) {
-	var fullID, agent, project, filePath string
-	err := db.QueryRow("SELECT id, agent, project, file_path FROM sessions WHERE id = ? OR short_id LIKE ? ORDER BY last_ts DESC LIMIT 1",
-		sessionLookupArgs(idOrPrefix)...).Scan(&fullID, &agent, &project, &filePath)
+	var stored ShowResult
+	var internal bool
+	err := db.QueryRow(`SELECT s.id, s.agent, s.project, s.file_path, s.resume_id,
+		s.root_session_id, s.parent_session_id, s.agent_path, s.agent_nickname,
+		s.subagent_depth, s.is_subagent, s.is_internal, s.parser_version,
+		CASE WHEN NOT EXISTS (SELECT 1 FROM sync_state st WHERE st.file_path = s.file_path)
+			THEN 'retained' ELSE s.content_state END,
+		s.result_status, s.latest_progress, s.final_result
+		FROM sessions s WHERE s.id = ? OR s.short_id LIKE ? ORDER BY s.last_ts DESC LIMIT 1`,
+		sessionLookupArgs(idOrPrefix)...).Scan(&stored.FullID, &stored.AgentKey, &stored.Project,
+		&stored.FilePath, &stored.ResumeID, &stored.RootSessionID, &stored.ParentSessionID,
+		&stored.AgentPath, &stored.AgentNickname, &stored.SubagentDepth, &stored.IsSubagent,
+		&internal, &stored.ParserVersion, &stored.ContentState, &stored.ResultStatus,
+		&stored.LatestProgress, &stored.FinalResult)
 	if err != nil {
 		return nil, err
 	}
-	project = config.CanonicalProject(project)
+	stored.Project = config.CanonicalProject(stored.Project)
 
-	inputs, outputs, err := scanMessages(db, "SELECT role, content FROM messages WHERE session_id = ? ORDER BY seq", fullID)
+	turns, err := scanSessionTurns(db, stored.FullID)
+	if err != nil {
+		return nil, err
+	}
+	stored.Turns = turns
+	for _, turn := range turns {
+		if turn.Question != "" {
+			stored.Inputs = append(stored.Inputs, turn.Question)
+		}
+		answer := turn.Answer
+		if turn.Final != "" {
+			answer = turn.Final
+		}
+		if answer != "" {
+			stored.Outputs = append(stored.Outputs, answer)
+		}
+	}
+
+	tools, err := scanTools(db, stored.FullID)
 	if err != nil {
 		return nil, err
 	}
 
-	tools, err := scanTools(db, fullID)
+	stored.Agent = AgentDisplayName(stored.AgentKey)
+	stored.Tools = tools
+	return &stored, nil
+}
+
+func scanSessionTurns(db *sql.DB, sessionID string) ([]SessionTurn, error) {
+	rows, err := db.Query(`SELECT role, content, scope, kind FROM messages
+		WHERE session_id = ? ORDER BY seq`, sessionID)
 	if err != nil {
 		return nil, err
 	}
+	defer rows.Close()
 
-	agentDisplay := AgentDisplayName(agent)
-	return &ShowResult{
-		Agent:    agentDisplay,
-		AgentKey: agent,
-		Project:  project,
-		FullID:   fullID,
-		FilePath: filePath,
-		Inputs:   inputs,
-		Outputs:  outputs,
-		Tools:    tools,
-	}, nil
+	var turns []SessionTurn
+	for rows.Next() {
+		var role, content, scope, kind string
+		if err := rows.Scan(&role, &content, &scope, &kind); err != nil {
+			return nil, err
+		}
+		content = strings.TrimSpace(content)
+		if content == "" || scope != parser.MessageScopeLocal || kind == parser.MessageKindControl {
+			continue
+		}
+		if role == "user" && kind == parser.MessageKindConversation {
+			turns = append(turns, SessionTurn{Question: content})
+			continue
+		}
+		if role != "assistant" {
+			continue
+		}
+		if len(turns) == 0 {
+			turns = append(turns, SessionTurn{})
+		}
+		turn := &turns[len(turns)-1]
+		switch kind {
+		case parser.MessageKindProgress:
+			turn.Progress = append(turn.Progress, content)
+		case parser.MessageKindFinal:
+			turn.Final = appendMessageBlock(turn.Final, content)
+		default:
+			turn.Answer = appendMessageBlock(turn.Answer, content)
+		}
+	}
+	return turns, rows.Err()
+}
+
+func appendMessageBlock(existing, next string) string {
+	if existing == "" {
+		return next
+	}
+	return existing + "\n\n" + next
 }
 
 func GetReport(db *sql.DB, startTS, endTS int64, agent string) ([]ReportResult, error) {
@@ -306,7 +416,7 @@ func GetReport(db *sql.DB, startTS, endTS int64, agent string) ([]ReportResult, 
 	// `AND agent = ?` 只作用在 OR 的第二个分支上——于是 `atm report --agent claude`
 	// 会把窗口内**任何** Agent 新建的会话都算进来。
 	query := `SELECT id, short_id, agent, project, created_at, summary, file_path FROM sessions
-		WHERE ((created_ts >= ? AND created_ts < ?) OR (last_ts >= ? AND last_ts < ?))`
+		WHERE is_internal = 0 AND ((created_ts >= ? AND created_ts < ?) OR (last_ts >= ? AND last_ts < ?))`
 	args := []any{startTS, endTS, startTS, endTS}
 	if agent != "" {
 		query += " AND agent = ?"
@@ -343,7 +453,8 @@ func GetReport(db *sql.DB, startTS, endTS int64, agent string) ([]ReportResult, 
 	var results []ReportResult
 	for _, m := range metas {
 		inputs, outputs, err := scanMessages(db,
-			"SELECT role, content FROM messages WHERE session_id = ? AND ts >= ? AND ts < ? ORDER BY seq",
+			`SELECT role, content FROM messages WHERE session_id = ? AND ts >= ? AND ts < ?
+			AND scope = 'local' AND kind NOT IN ('control','progress') ORDER BY seq`,
 			m.id, startTS, endTS)
 		if err != nil {
 			return nil, err
@@ -420,14 +531,19 @@ type ExportRow struct {
 	CreatedAt string `json:"created_at"`
 	Role      string `json:"role"`
 	Content   string `json:"content"`
+	Scope     string `json:"scope,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Phase     string `json:"phase,omitempty"`
 	TS        int64  `json:"ts"`
 }
 
 func ExportMessages(db *sql.DB, startTS, endTS int64, agent string) ([]ExportRow, error) {
-	query := `SELECT s.short_id, s.agent, s.project, s.created_at, m.role, m.content, m.ts
+	query := `SELECT s.short_id, s.agent, s.project, s.created_at, m.role, m.content,
+		m.scope, m.kind, m.phase, m.ts
 		FROM messages m
 		JOIN sessions s ON m.session_id = s.id
-		WHERE s.created_ts < ? AND CASE WHEN s.last_ts > 0 THEN s.last_ts ELSE s.created_ts END >= ?`
+		WHERE s.is_internal = 0 AND m.scope = 'local' AND m.kind <> 'control'
+		AND s.created_ts < ? AND CASE WHEN s.last_ts > 0 THEN s.last_ts ELSE s.created_ts END >= ?`
 	args := []any{endTS, startTS}
 	if agent != "" {
 		query += " AND s.agent = ?"
@@ -444,7 +560,8 @@ func ExportMessages(db *sql.DB, startTS, endTS int64, agent string) ([]ExportRow
 	var results []ExportRow
 	for rows.Next() {
 		var r ExportRow
-		if err := rows.Scan(&r.SessionID, &r.Agent, &r.Project, &r.CreatedAt, &r.Role, &r.Content, &r.TS); err != nil {
+		if err := rows.Scan(&r.SessionID, &r.Agent, &r.Project, &r.CreatedAt, &r.Role,
+			&r.Content, &r.Scope, &r.Kind, &r.Phase, &r.TS); err != nil {
 			return nil, err
 		}
 		r.Project = config.CanonicalProject(r.Project)
@@ -454,64 +571,135 @@ func ExportMessages(db *sql.DB, startTS, endTS int64, agent string) ([]ExportRow
 }
 
 type StatsResult struct {
-	Project         string  `json:"project"`
-	Agent           string  `json:"agent"`
-	Sessions        int     `json:"sessions"`
-	Queries         int     `json:"queries"`
-	ToolCalls       int     `json:"tool_calls"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
+	Project       string `json:"project"`
+	Agent         string `json:"agent"`
+	Sessions      int    `json:"sessions"`
+	TokenSessions int    `json:"token_sessions"`
+	Queries       int    `json:"queries"`
+	ToolCalls     int    `json:"tool_calls"`
+	// InputTokens is the legacy total prompt-input field retained for JSON
+	// compatibility. New consumers should use FreshInputTokens plus the two cache
+	// fields, or TotalInputTokens when they want the already-combined value.
+	InputTokens         int64         `json:"input_tokens"`
+	FreshInputTokens    int64         `json:"fresh_input_tokens"`
+	OutputTokens        int64         `json:"output_tokens"`
+	CacheCreateTokens   int64         `json:"cache_create_tokens"`
+	CacheReadTokens     int64         `json:"cache_read_tokens"`
+	TotalInputTokens    int64         `json:"total_input_tokens"`
+	TotalTokens         int64         `json:"total_tokens"`
+	Requests            int           `json:"requests"`
+	DetailedRequests    int           `json:"detailed_requests"`
+	AggregateRequests   int           `json:"aggregate_requests"`
+	RequestCoveragePct  float64       `json:"request_coverage_percent"`
+	SampledRequests     int           `json:"sampled_requests"`
+	UntimedRequests     int           `json:"untimed_requests"`
+	OutOfWindowRequests int           `json:"out_of_window_requests"`
+	CostUSD             float64       `json:"cost_usd"`
+	CostEstimated       bool          `json:"cost_estimated"`
+	EstimatedCostUSD    float64       `json:"estimated_cost_usd"`
+	PricingSource       PricingSource `json:"pricing_source"`
 }
 
 func GetStats(db *sql.DB, startTS, endTS int64, agent string) ([]StatsResult, error) {
 	query := `WITH active_sessions AS (
-			SELECT id, project, agent FROM sessions WHERE created_ts >= ? AND created_ts < ?
+			SELECT id, resume_id, project, agent FROM sessions
+			WHERE is_internal = 0 AND is_subagent = 0 AND created_ts >= ? AND created_ts < ?
 			UNION
-			SELECT s.id, s.project, s.agent
+			SELECT s.id, s.resume_id, s.project, s.agent
 			FROM messages m JOIN sessions s ON s.id = m.session_id
-			WHERE m.role = 'user' AND m.ts >= ? AND m.ts < ?
+			WHERE s.is_internal = 0 AND s.is_subagent = 0
+				AND m.role = 'user' AND m.scope = 'local' AND m.kind = 'conversation'
+				AND m.ts >= ? AND m.ts < ?
 			UNION
-			SELECT s.id, s.project, s.agent
+			SELECT COALESCE(root.id, s.id),
+				COALESCE(NULLIF(root.resume_id, ''), NULLIF(s.root_session_id, ''), s.resume_id),
+				COALESCE(NULLIF(root.project, ''), s.project),
+				COALESCE(NULLIF(root.agent, ''), s.agent)
 			FROM usage_events e JOIN sessions s ON s.id = e.session_id
-			WHERE e.ts >= ? AND e.ts < ?
+			LEFT JOIN sessions root ON s.root_session_id <> ''
+				AND (root.resume_id = s.root_session_id OR root.id = s.root_session_id)
+			WHERE s.is_internal = 0 AND e.ts >= ? AND e.ts < ?
 		),
 		period_usage AS (
-			SELECT s.project, s.agent,
-				e.input_tokens + e.cache_create_tokens + e.cache_read_tokens AS input_tokens,
-				e.output_tokens, e.cache_read_tokens, e.cost_usd
+			SELECT CASE WHEN s.root_session_id <> '' THEN s.root_session_id
+				ELSE COALESCE(NULLIF(s.resume_id, ''), e.session_id) END AS task_id,
+				COALESCE(NULLIF(root.project, ''), s.project) AS project,
+				COALESCE(NULLIF(root.agent, ''), s.agent) AS agent,
+				e.input_tokens AS fresh_input_tokens, e.output_tokens,
+				e.cache_create_tokens, e.cache_read_tokens, e.cost_usd,
+				max(COALESCE(e.request_count, 1), 1) AS requests,
+				max(COALESCE(e.request_count, 1), 1) AS detailed_requests,
+				0 AS aggregate_requests,
+				CASE WHEN e.duration_ms > 0 AND
+					e.duration_ms / max(COALESCE(e.request_count, 1), 1) BETWEEN ? AND ? AND
+					e.output_tokens / max(COALESCE(e.request_count, 1), 1) >= ?
+					THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS sampled_requests,
+				CASE WHEN e.duration_ms <= 0 THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS untimed_requests,
+				CASE WHEN e.duration_ms > 0 AND NOT (
+					e.duration_ms / max(COALESCE(e.request_count, 1), 1) BETWEEN ? AND ? AND
+					e.output_tokens / max(COALESCE(e.request_count, 1), 1) >= ?)
+					THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS out_of_window_requests
 			FROM usage_events e JOIN sessions s ON s.id = e.session_id
-			WHERE e.ts >= ? AND e.ts < ?
+			LEFT JOIN sessions root ON s.root_session_id <> ''
+				AND (root.resume_id = s.root_session_id OR root.id = s.root_session_id)
+			WHERE s.is_internal = 0 AND e.ts >= ? AND e.ts < ?
 			UNION ALL
-			SELECT s.project, s.agent,
-				u.input_tokens + u.cache_create_tokens + u.cache_read_tokens,
-				u.output_tokens, u.cache_read_tokens, u.cost_usd
+			SELECT CASE WHEN s.root_session_id <> '' THEN s.root_session_id
+				ELSE COALESCE(NULLIF(s.resume_id, ''), u.session_id) END,
+				COALESCE(NULLIF(root.project, ''), s.project),
+				COALESCE(NULLIF(root.agent, ''), s.agent),
+				u.input_tokens, u.output_tokens, u.cache_create_tokens,
+				u.cache_read_tokens, u.cost_usd,
+				max(COALESCE(u.request_count, 1), 1), 0,
+				max(COALESCE(u.request_count, 1), 1), 0, 0, 0
 			FROM usage u JOIN sessions s ON s.id = u.session_id
-			WHERE s.created_ts >= ? AND s.created_ts < ?
+			LEFT JOIN sessions root ON s.root_session_id <> ''
+				AND (root.resume_id = s.root_session_id OR root.id = s.root_session_id)
+			WHERE s.is_internal = 0 AND s.created_ts >= ? AND s.created_ts < ?
 			AND NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id = u.session_id)
 		),
 		usage_totals AS (
-			SELECT project, agent, SUM(input_tokens) AS input_tokens,
-				SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens,
-				SUM(cost_usd) AS cost_usd
+			SELECT project, agent, COUNT(DISTINCT task_id) AS token_sessions,
+				SUM(fresh_input_tokens) AS fresh_input_tokens,
+				SUM(output_tokens) AS output_tokens,
+				SUM(cache_create_tokens) AS cache_create_tokens,
+				SUM(cache_read_tokens) AS cache_read_tokens,
+				SUM(cost_usd) AS cost_usd, SUM(requests) AS requests,
+				SUM(detailed_requests) AS detailed_requests,
+				SUM(aggregate_requests) AS aggregate_requests,
+				SUM(sampled_requests) AS sampled_requests,
+				SUM(untimed_requests) AS untimed_requests,
+				SUM(out_of_window_requests) AS out_of_window_requests
 			FROM period_usage GROUP BY project, agent
 		),
 		query_totals AS (
 			SELECT s.project, s.agent, COUNT(*) AS queries
 			FROM messages m JOIN sessions s ON s.id = m.session_id
-			WHERE m.role = 'user' AND m.ts >= ? AND m.ts < ?
+			WHERE s.is_internal = 0 AND s.is_subagent = 0
+				AND m.role = 'user' AND m.scope = 'local' AND m.kind = 'conversation'
+				AND m.ts >= ? AND m.ts < ?
 			GROUP BY s.project, s.agent
 		),
 		tool_totals AS (
 			SELECT a.project, a.agent, SUM(t.count) AS tool_calls
-			FROM active_sessions a JOIN tools t ON t.session_id = a.id
+			FROM active_sessions a
+			JOIN sessions member ON member.is_internal = 0 AND (
+				member.id = a.id OR (a.resume_id <> '' AND member.root_session_id = a.resume_id))
+			JOIN tools t ON t.session_id = member.id
 			GROUP BY a.project, a.agent
 		)
 		SELECT a.project, a.agent, COUNT(DISTINCT a.id) AS sessions,
 			COALESCE(q.queries, 0), COALESCE(t.tool_calls, 0),
-			COALESCE(u.input_tokens, 0), COALESCE(u.output_tokens, 0),
-			COALESCE(u.cache_read_tokens, 0), COALESCE(u.cost_usd, 0)
+			COALESCE(u.token_sessions, 0),
+			COALESCE(u.fresh_input_tokens + u.cache_create_tokens + u.cache_read_tokens, 0),
+			COALESCE(u.fresh_input_tokens, 0), COALESCE(u.output_tokens, 0),
+			COALESCE(u.cache_create_tokens, 0), COALESCE(u.cache_read_tokens, 0),
+			COALESCE(u.fresh_input_tokens + u.cache_create_tokens + u.cache_read_tokens, 0),
+			COALESCE(u.fresh_input_tokens + u.cache_create_tokens + u.cache_read_tokens + u.output_tokens, 0),
+			COALESCE(u.requests, 0), COALESCE(u.detailed_requests, 0),
+			COALESCE(u.aggregate_requests, 0), COALESCE(u.sampled_requests, 0),
+			COALESCE(u.untimed_requests, 0), COALESCE(u.out_of_window_requests, 0),
+			COALESCE(u.cost_usd, 0)
 		FROM active_sessions a
 		LEFT JOIN query_totals q ON q.project = a.project AND q.agent = a.agent
 		LEFT JOIN tool_totals t ON t.project = a.project AND t.agent = a.agent
@@ -522,6 +710,8 @@ func GetStats(db *sql.DB, startTS, endTS int64, agent string) ([]StatsResult, er
 		startTS, endTS,
 		startTS, endTS,
 		startTS, endTS,
+		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
+		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
 		startTS, endTS,
 		startTS, endTS,
 		startTS, endTS,
@@ -535,13 +725,23 @@ func GetStats(db *sql.DB, startTS, endTS int64, agent string) ([]StatsResult, er
 	for rows.Next() {
 		var r StatsResult
 		if err := rows.Scan(&r.Project, &r.Agent, &r.Sessions, &r.Queries, &r.ToolCalls,
-			&r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CostUSD); err != nil {
+			&r.TokenSessions,
+			&r.InputTokens, &r.FreshInputTokens, &r.OutputTokens,
+			&r.CacheCreateTokens, &r.CacheReadTokens, &r.TotalInputTokens,
+			&r.TotalTokens, &r.Requests, &r.DetailedRequests, &r.AggregateRequests,
+			&r.SampledRequests, &r.UntimedRequests, &r.OutOfWindowRequests, &r.CostUSD); err != nil {
 			return nil, err
+		}
+		if r.Requests > 0 {
+			r.RequestCoveragePct = float64(r.DetailedRequests) / float64(r.Requests) * 100
 		}
 		r.Project = config.CanonicalProject(r.Project)
 		results = append(results, r)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	merged := make([]StatsResult, 0, len(results))
@@ -553,33 +753,73 @@ func GetStats(db *sql.DB, startTS, endTS int64, agent string) ([]StatsResult, er
 		key := result.Agent + "\x00" + result.Project
 		if index, ok := indexes[key]; ok {
 			merged[index].Sessions += result.Sessions
+			merged[index].TokenSessions += result.TokenSessions
 			merged[index].Queries += result.Queries
 			merged[index].ToolCalls += result.ToolCalls
 			merged[index].InputTokens += result.InputTokens
+			merged[index].FreshInputTokens += result.FreshInputTokens
 			merged[index].OutputTokens += result.OutputTokens
+			merged[index].CacheCreateTokens += result.CacheCreateTokens
 			merged[index].CacheReadTokens += result.CacheReadTokens
+			merged[index].TotalInputTokens += result.TotalInputTokens
+			merged[index].TotalTokens += result.TotalTokens
+			merged[index].Requests += result.Requests
+			merged[index].DetailedRequests += result.DetailedRequests
+			merged[index].AggregateRequests += result.AggregateRequests
+			merged[index].SampledRequests += result.SampledRequests
+			merged[index].UntimedRequests += result.UntimedRequests
+			merged[index].OutOfWindowRequests += result.OutOfWindowRequests
 			merged[index].CostUSD += result.CostUSD
+			if merged[index].Requests > 0 {
+				merged[index].RequestCoveragePct = float64(merged[index].DetailedRequests) /
+					float64(merged[index].Requests) * 100
+			}
 			continue
 		}
 		indexes[key] = len(merged)
 		merged = append(merged, result)
 	}
+	pricing, err := getProjectPricingQuality(db, startTS, endTS, agent)
+	if err != nil {
+		return nil, err
+	}
+	for index := range merged {
+		key := merged[index].Agent + "\x00" + merged[index].Project
+		quality := pricing[key]
+		merged[index].PricingSource = quality.source
+		merged[index].EstimatedCostUSD = quality.estimatedCostUSD
+		merged[index].CostEstimated = quality.estimatedCostUSD > 0
+	}
 	return merged, nil
 }
 
 type ModelStatsResult struct {
-	Client          string  `json:"client"`
-	Model           string  `json:"model"`
-	Sessions        int     `json:"sessions"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
+	Client   string `json:"client"`
+	Model    string `json:"model"`
+	Sessions int    `json:"sessions"`
+	// InputTokens keeps its historical meaning: total prompt input including
+	// cache. The explicit fields below make cache-safe arithmetic possible.
+	InputTokens         int64   `json:"input_tokens"`
+	FreshInputTokens    int64   `json:"fresh_input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheCreateTokens   int64   `json:"cache_create_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	Requests            int     `json:"requests"`
+	DetailedRequests    int     `json:"detailed_requests"`
+	AggregateRequests   int     `json:"aggregate_requests"`
+	RequestCoveragePct  float64 `json:"request_coverage_percent"`
+	SampledRequests     int     `json:"sampled_requests"`
+	UntimedRequests     int     `json:"untimed_requests"`
+	OutOfWindowRequests int     `json:"out_of_window_requests"`
+	CostUSD             float64 `json:"cost_usd"`
 	// CostEstimated marks a row whose rate ATM guessed, either from the model's
 	// family or from the Opus-tier default it falls back to. Without it an
 	// invented number is indistinguishable from a known one; see PricingSource.
-	CostEstimated bool          `json:"cost_estimated"`
-	PricingSource PricingSource `json:"pricing_source"`
+	CostEstimated    bool          `json:"cost_estimated"`
+	EstimatedCostUSD float64       `json:"estimated_cost_usd"`
+	PricingSource    PricingSource `json:"pricing_source"`
 }
 
 type SkillStatsResult struct {
@@ -622,22 +862,48 @@ func GetSkillStats(db *sql.DB, startTS, endTS int64, agent string) ([]SkillStats
 }
 
 func GetModelStats(db *sql.DB, startTS, endTS int64, agent string) ([]ModelStatsResult, error) {
-	query := `SELECT s.agent, u.model, COUNT(DISTINCT u.session_id),
+	query := `SELECT s.agent, u.model,
+		COUNT(DISTINCT CASE WHEN s.root_session_id <> '' THEN s.root_session_id
+			ELSE COALESCE(NULLIF(s.resume_id, ''), u.session_id) END),
 		SUM(u.input_tokens + u.cache_create_tokens + u.cache_read_tokens),
-		SUM(u.output_tokens), SUM(u.cache_read_tokens), SUM(u.cost_usd)
+		SUM(u.input_tokens), SUM(u.output_tokens), SUM(u.cache_create_tokens),
+		SUM(u.cache_read_tokens),
+		SUM(u.input_tokens + u.cache_create_tokens + u.cache_read_tokens),
+		SUM(u.input_tokens + u.output_tokens + u.cache_create_tokens + u.cache_read_tokens),
+		SUM(u.request_count), SUM(u.detailed_requests), SUM(u.aggregate_requests),
+		SUM(u.sampled_requests), SUM(u.untimed_requests), SUM(u.out_of_window_requests),
+		SUM(u.cost_usd)
 		FROM (
 			SELECT e.session_id, e.model, e.ts, e.input_tokens, e.output_tokens,
-				e.cache_create_tokens, e.cache_read_tokens, e.cost_usd
+				e.cache_create_tokens, e.cache_read_tokens, e.cost_usd,
+				max(COALESCE(e.request_count, 1), 1) AS request_count,
+				max(COALESCE(e.request_count, 1), 1) AS detailed_requests,
+				0 AS aggregate_requests,
+				CASE WHEN e.duration_ms > 0 AND
+					e.duration_ms / max(COALESCE(e.request_count, 1), 1) BETWEEN ? AND ? AND
+					e.output_tokens / max(COALESCE(e.request_count, 1), 1) >= ?
+					THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS sampled_requests,
+				CASE WHEN e.duration_ms <= 0 THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS untimed_requests,
+				CASE WHEN e.duration_ms > 0 AND NOT (
+					e.duration_ms / max(COALESCE(e.request_count, 1), 1) BETWEEN ? AND ? AND
+					e.output_tokens / max(COALESCE(e.request_count, 1), 1) >= ?)
+					THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS out_of_window_requests
 			FROM usage_events e
 			UNION ALL
 			SELECT x.session_id, x.model, s0.created_ts, x.input_tokens, x.output_tokens,
-				x.cache_create_tokens, x.cache_read_tokens, x.cost_usd
+				x.cache_create_tokens, x.cache_read_tokens, x.cost_usd,
+				max(COALESCE(x.request_count, 1), 1), 0,
+				max(COALESCE(x.request_count, 1), 1), 0, 0, 0
 			FROM usage x JOIN sessions s0 ON s0.id = x.session_id
 			WHERE NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id=x.session_id)
 		) u
 		JOIN sessions s ON u.session_id = s.id
-		WHERE u.ts >= ? AND u.ts < ? AND u.model != ''`
-	args := []any{startTS, endTS}
+		WHERE s.is_internal = 0 AND u.ts >= ? AND u.ts < ? AND u.model != ''`
+	args := []any{
+		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
+		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
+		startTS, endTS,
+	}
 	if agent != "" {
 		query += " AND s.agent = ?"
 		args = append(args, agent)
@@ -655,28 +921,51 @@ func GetModelStats(db *sql.DB, startTS, endTS int64, agent string) ([]ModelStats
 	var results []ModelStatsResult
 	for rows.Next() {
 		var r ModelStatsResult
-		if err := rows.Scan(&r.Client, &r.Model, &r.Sessions, &r.InputTokens, &r.OutputTokens, &r.CacheReadTokens, &r.CostUSD); err != nil {
+		if err := rows.Scan(&r.Client, &r.Model, &r.Sessions,
+			&r.InputTokens, &r.FreshInputTokens, &r.OutputTokens,
+			&r.CacheCreateTokens, &r.CacheReadTokens, &r.TotalInputTokens,
+			&r.TotalTokens, &r.Requests, &r.DetailedRequests, &r.AggregateRequests,
+			&r.SampledRequests, &r.UntimedRequests, &r.OutOfWindowRequests, &r.CostUSD); err != nil {
 			return nil, err
+		}
+		if r.Requests > 0 {
+			r.RequestCoveragePct = float64(r.DetailedRequests) / float64(r.Requests) * 100
 		}
 		_, r.PricingSource = PricingFor(r.Model)
 		r.CostEstimated = r.PricingSource.Estimated()
+		if r.CostEstimated {
+			r.EstimatedCostUSD = r.CostUSD
+		}
 		results = append(results, r)
 	}
 	return results, rows.Err()
 }
 
 type ModelDayStatsResult struct {
-	Date            string  `json:"date"`
-	Client          string  `json:"client"`
-	Model           string  `json:"model"`
-	Sessions        int     `json:"sessions"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
+	Date     string `json:"date"`
+	Client   string `json:"client"`
+	Model    string `json:"model"`
+	Sessions int    `json:"sessions"`
+	// InputTokens is the legacy total-input alias; use the explicit breakdown.
+	InputTokens         int64   `json:"input_tokens"`
+	FreshInputTokens    int64   `json:"fresh_input_tokens"`
+	OutputTokens        int64   `json:"output_tokens"`
+	CacheCreateTokens   int64   `json:"cache_create_tokens"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	TotalInputTokens    int64   `json:"total_input_tokens"`
+	TotalTokens         int64   `json:"total_tokens"`
+	Requests            int     `json:"requests"`
+	DetailedRequests    int     `json:"detailed_requests"`
+	AggregateRequests   int     `json:"aggregate_requests"`
+	RequestCoveragePct  float64 `json:"request_coverage_percent"`
+	SampledRequests     int     `json:"sampled_requests"`
+	UntimedRequests     int     `json:"untimed_requests"`
+	OutOfWindowRequests int     `json:"out_of_window_requests"`
+	CostUSD             float64 `json:"cost_usd"`
 	// See ModelStatsResult: whether this row's rate was ATM's guess.
-	CostEstimated bool          `json:"cost_estimated"`
-	PricingSource PricingSource `json:"pricing_source"`
+	CostEstimated    bool          `json:"cost_estimated"`
+	EstimatedCostUSD float64       `json:"estimated_cost_usd"`
+	PricingSource    PricingSource `json:"pricing_source"`
 	// Output tokens and milliseconds of the requests in this bucket whose
 	// generation window was measurable. Their ratio is the bucket's throughput;
 	// carried separately so any further grouping divides sums, not rates.
@@ -693,14 +982,29 @@ func GetModelHourStats(db *sql.DB, startTS, endTS int64, agent string, loc *time
 }
 
 type ProjectDayStatsResult struct {
-	Date            string  `json:"date"`
-	Client          string  `json:"client"`
-	Project         string  `json:"project"`
-	Sessions        int     `json:"sessions"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
+	Date     string `json:"date"`
+	Client   string `json:"client"`
+	Project  string `json:"project"`
+	Sessions int    `json:"sessions"`
+	// InputTokens is the legacy total-input alias; use the explicit breakdown.
+	InputTokens         int64         `json:"input_tokens"`
+	FreshInputTokens    int64         `json:"fresh_input_tokens"`
+	OutputTokens        int64         `json:"output_tokens"`
+	CacheCreateTokens   int64         `json:"cache_create_tokens"`
+	CacheReadTokens     int64         `json:"cache_read_tokens"`
+	TotalInputTokens    int64         `json:"total_input_tokens"`
+	TotalTokens         int64         `json:"total_tokens"`
+	Requests            int           `json:"requests"`
+	DetailedRequests    int           `json:"detailed_requests"`
+	AggregateRequests   int           `json:"aggregate_requests"`
+	RequestCoveragePct  float64       `json:"request_coverage_percent"`
+	SampledRequests     int           `json:"sampled_requests"`
+	UntimedRequests     int           `json:"untimed_requests"`
+	OutOfWindowRequests int           `json:"out_of_window_requests"`
+	CostUSD             float64       `json:"cost_usd"`
+	CostEstimated       bool          `json:"cost_estimated"`
+	EstimatedCostUSD    float64       `json:"estimated_cost_usd"`
+	PricingSource       PricingSource `json:"pricing_source"`
 	// See ModelDayStatsResult: measured-speed components, kept as sums.
 	MeasuredOutputTokens int64 `json:"measured_output_tokens"`
 	MeasuredDurationMS   int64 `json:"measured_duration_ms"`
@@ -743,10 +1047,22 @@ func modelPeriodStats(
 			Model:                stat.Label,
 			Sessions:             stat.Sessions,
 			InputTokens:          stat.InputTokens,
+			FreshInputTokens:     stat.FreshInputTokens,
 			OutputTokens:         stat.OutputTokens,
+			CacheCreateTokens:    stat.CacheCreateTokens,
 			CacheReadTokens:      stat.CacheReadTokens,
+			TotalInputTokens:     stat.TotalInputTokens,
+			TotalTokens:          stat.TotalTokens,
+			Requests:             stat.Requests,
+			DetailedRequests:     stat.DetailedRequests,
+			AggregateRequests:    stat.AggregateRequests,
+			RequestCoveragePct:   stat.RequestCoveragePct,
+			SampledRequests:      stat.SampledRequests,
+			UntimedRequests:      stat.UntimedRequests,
+			OutOfWindowRequests:  stat.OutOfWindowRequests,
 			CostUSD:              stat.CostUSD,
 			CostEstimated:        source.Estimated(),
+			EstimatedCostUSD:     stat.EstimatedCostUSD,
 			PricingSource:        source,
 			MeasuredOutputTokens: stat.MeasuredOutputTokens,
 			MeasuredDurationMS:   stat.MeasuredDurationMS,
@@ -765,7 +1081,7 @@ func projectPeriodStats(
 	// Every usage row belongs to a session, so no row is dropped here; keeping
 	// them makes the project series add up to the totals in GetDayStats.
 	stats, err := periodStats(db, startTS, endTS, agent, loc, layout, periodStatsLabel{
-		column:    "s.project",
+		column:    "COALESCE(NULLIF(root.project, ''), s.project)",
 		normalize: config.CanonicalProject,
 	})
 	if err != nil {
@@ -779,9 +1095,23 @@ func projectPeriodStats(
 			Project:              stat.Label,
 			Sessions:             stat.Sessions,
 			InputTokens:          stat.InputTokens,
+			FreshInputTokens:     stat.FreshInputTokens,
 			OutputTokens:         stat.OutputTokens,
+			CacheCreateTokens:    stat.CacheCreateTokens,
 			CacheReadTokens:      stat.CacheReadTokens,
+			TotalInputTokens:     stat.TotalInputTokens,
+			TotalTokens:          stat.TotalTokens,
+			Requests:             stat.Requests,
+			DetailedRequests:     stat.DetailedRequests,
+			AggregateRequests:    stat.AggregateRequests,
+			RequestCoveragePct:   stat.RequestCoveragePct,
+			SampledRequests:      stat.SampledRequests,
+			UntimedRequests:      stat.UntimedRequests,
+			OutOfWindowRequests:  stat.OutOfWindowRequests,
 			CostUSD:              stat.CostUSD,
+			CostEstimated:        stat.CostEstimated,
+			EstimatedCostUSD:     stat.EstimatedCostUSD,
+			PricingSource:        stat.PricingSource,
 			MeasuredOutputTokens: stat.MeasuredOutputTokens,
 			MeasuredDurationMS:   stat.MeasuredDurationMS,
 		})
@@ -790,14 +1120,28 @@ func projectPeriodStats(
 }
 
 type periodStat struct {
-	Date            string
-	Client          string
-	Label           string
-	Sessions        int
-	InputTokens     int64
-	OutputTokens    int64
-	CacheReadTokens int64
-	CostUSD         float64
+	Date                string
+	Client              string
+	Label               string
+	Sessions            int
+	InputTokens         int64
+	FreshInputTokens    int64
+	OutputTokens        int64
+	CacheCreateTokens   int64
+	CacheReadTokens     int64
+	TotalInputTokens    int64
+	TotalTokens         int64
+	Requests            int
+	DetailedRequests    int
+	AggregateRequests   int
+	RequestCoveragePct  float64
+	SampledRequests     int
+	UntimedRequests     int
+	OutOfWindowRequests int
+	CostUSD             float64
+	CostEstimated       bool
+	EstimatedCostUSD    float64
+	PricingSource       PricingSource
 	// The two measured-speed components. They are carried as sums rather than a
 	// rate because sums stay correct under further aggregation: a chart that
 	// merges models into clients, or hours into days, divides the totals it has
@@ -835,25 +1179,44 @@ func periodStats(
 			AND e.output_tokens / MAX(COALESCE(e.request_count, 1), 1) >= ?`
 	measuredTokens := `CASE WHEN ` + inWindow + ` THEN e.output_tokens ELSE 0 END`
 	measuredDuration := `CASE WHEN ` + inWindow + ` THEN e.duration_ms ELSE 0 END`
-	query := `SELECT u.session_id, s.agent, ` + label.column + `, u.ts,
+	query := `SELECT CASE WHEN s.root_session_id <> '' THEN s.root_session_id
+		ELSE COALESCE(NULLIF(s.resume_id, ''), u.session_id) END,
+		COALESCE(NULLIF(root.agent, ''), s.agent), ` + label.column + `, u.model, u.ts,
 		u.input_tokens + u.cache_create_tokens + u.cache_read_tokens,
-		u.output_tokens, u.cache_read_tokens, u.cost_usd,
+		u.input_tokens, u.output_tokens, u.cache_create_tokens, u.cache_read_tokens,
+		u.input_tokens + u.cache_create_tokens + u.cache_read_tokens,
+		u.input_tokens + u.output_tokens + u.cache_create_tokens + u.cache_read_tokens,
+		u.request_count, u.detailed_requests, u.aggregate_requests,
+		u.sampled_requests, u.untimed_requests, u.out_of_window_requests, u.cost_usd,
 		u.measured_output_tokens, u.measured_duration_ms
 		FROM (
 			SELECT e.session_id, e.model, e.ts, e.input_tokens, e.output_tokens,
 				e.cache_create_tokens, e.cache_read_tokens, e.cost_usd,
+				max(COALESCE(e.request_count, 1), 1) AS request_count,
+				max(COALESCE(e.request_count, 1), 1) AS detailed_requests,
+				0 AS aggregate_requests,
+				CASE WHEN ` + inWindow + ` THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS sampled_requests,
+				CASE WHEN e.duration_ms <= 0 THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS untimed_requests,
+				CASE WHEN e.duration_ms > 0 AND NOT (` + inWindow + `)
+					THEN max(COALESCE(e.request_count, 1), 1) ELSE 0 END AS out_of_window_requests,
 				` + measuredTokens + ` AS measured_output_tokens,
 				` + measuredDuration + ` AS measured_duration_ms
 			FROM usage_events e
 			UNION ALL
 			SELECT x.session_id, x.model, s0.created_ts, x.input_tokens, x.output_tokens,
-				x.cache_create_tokens, x.cache_read_tokens, x.cost_usd, 0, 0
+				x.cache_create_tokens, x.cache_read_tokens, x.cost_usd,
+				max(COALESCE(x.request_count, 1), 1), 0,
+				max(COALESCE(x.request_count, 1), 1), 0, 0, 0, 0, 0
 			FROM usage x JOIN sessions s0 ON s0.id = x.session_id
 			WHERE NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id=x.session_id)
 		) u
 		JOIN sessions s ON u.session_id = s.id
-		WHERE u.ts >= ? AND u.ts < ?`
+		LEFT JOIN sessions root ON s.root_session_id <> ''
+			AND (root.resume_id = s.root_session_id OR root.id = s.root_session_id)
+		WHERE s.is_internal = 0 AND u.ts >= ? AND u.ts < ?`
 	args := []any{
+		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
+		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
 		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
 		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
 		startTS, endTS,
@@ -880,11 +1243,16 @@ func periodStats(
 	}
 	aggregates := make(map[periodKey]*periodStat)
 	sessions := make(map[periodKey]map[string]struct{})
+	pricing := make(map[periodKey]pricingQuality)
 	for rows.Next() {
-		var sessionID, client, value string
-		var ts, input, output, cacheRead, measuredOutput, measuredDuration int64
+		var sessionID, client, value, model string
+		var ts, input, freshInput, output, cacheCreate, cacheRead, totalInput, totalTokens int64
+		var requests, detailed, aggregate, sampled, untimed, outOfWindow int
+		var measuredOutput, measuredDuration int64
 		var cost float64
-		if err := rows.Scan(&sessionID, &client, &value, &ts, &input, &output, &cacheRead, &cost,
+		if err := rows.Scan(&sessionID, &client, &value, &model, &ts,
+			&input, &freshInput, &output, &cacheCreate, &cacheRead, &totalInput, &totalTokens,
+			&requests, &detailed, &aggregate, &sampled, &untimed, &outOfWindow, &cost,
 			&measuredOutput, &measuredDuration); err != nil {
 			return nil, err
 		}
@@ -903,9 +1271,22 @@ func periodStats(
 			sessions[key] = make(map[string]struct{})
 		}
 		result.InputTokens += input
+		result.FreshInputTokens += freshInput
 		result.OutputTokens += output
+		result.CacheCreateTokens += cacheCreate
 		result.CacheReadTokens += cacheRead
+		result.TotalInputTokens += totalInput
+		result.TotalTokens += totalTokens
+		result.Requests += requests
+		result.DetailedRequests += detailed
+		result.AggregateRequests += aggregate
+		result.SampledRequests += sampled
+		result.UntimedRequests += untimed
+		result.OutOfWindowRequests += outOfWindow
 		result.CostUSD += cost
+		quality := pricing[key]
+		quality.add(model, cost)
+		pricing[key] = quality
 		result.MeasuredOutputTokens += measuredOutput
 		result.MeasuredDurationMS += measuredDuration
 		sessions[key][sessionID] = struct{}{}
@@ -917,6 +1298,13 @@ func periodStats(
 	results := make([]periodStat, 0, len(aggregates))
 	for key, result := range aggregates {
 		result.Sessions = len(sessions[key])
+		if result.Requests > 0 {
+			result.RequestCoveragePct = float64(result.DetailedRequests) / float64(result.Requests) * 100
+		}
+		quality := pricing[key]
+		result.PricingSource = quality.source
+		result.EstimatedCostUSD = quality.estimatedCostUSD
+		result.CostEstimated = quality.estimatedCostUSD > 0
 		results = append(results, *result)
 	}
 	sort.Slice(results, func(i, j int) bool {
@@ -932,14 +1320,29 @@ func periodStats(
 }
 
 type SessionStatsResult struct {
-	ShortID      string  `json:"short_id"`
-	Project      string  `json:"project"`
-	Model        string  `json:"model"`
-	Queries      int     `json:"queries"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CacheTokens  int64   `json:"cache_tokens"`
-	CostUSD      float64 `json:"cost_usd"`
+	ShortID string `json:"short_id"`
+	Project string `json:"project"`
+	Model   string `json:"model"`
+	Queries int    `json:"queries"`
+	// InputTokens remains the legacy fresh-input field for this projection.
+	InputTokens         int64         `json:"input_tokens"`
+	FreshInputTokens    int64         `json:"fresh_input_tokens"`
+	OutputTokens        int64         `json:"output_tokens"`
+	CacheTokens         int64         `json:"cache_tokens"`
+	CacheCreateTokens   int64         `json:"cache_create_tokens"`
+	CacheReadTokens     int64         `json:"cache_read_tokens"`
+	TotalInputTokens    int64         `json:"total_input_tokens"`
+	TotalTokens         int64         `json:"total_tokens"`
+	DetailedRequests    int           `json:"detailed_requests"`
+	AggregateRequests   int           `json:"aggregate_requests"`
+	RequestCoveragePct  float64       `json:"request_coverage_percent"`
+	SampledRequests     int           `json:"sampled_requests"`
+	UntimedRequests     int           `json:"untimed_requests"`
+	OutOfWindowRequests int           `json:"out_of_window_requests"`
+	CostUSD             float64       `json:"cost_usd"`
+	CostEstimated       bool          `json:"cost_estimated"`
+	EstimatedCostUSD    float64       `json:"estimated_cost_usd"`
+	PricingSource       PricingSource `json:"pricing_source"`
 }
 
 // SessionUsageStatsResult is one session's usage inside an event-time window.
@@ -948,21 +1351,33 @@ type SessionStatsResult struct {
 // timestamps fall inside [startTS, endTS). StartedTS and LastTS are likewise the
 // first and last requests in that window, not the lifetime session boundaries.
 type SessionUsageStatsResult struct {
-	SessionID         string  `json:"session_id"`
-	ShortID           string  `json:"short_id"`
-	Agent             string  `json:"agent"`
-	Project           string  `json:"project"`
-	Model             string  `json:"model"`
-	StartedTS         int64   `json:"started_ts"`
-	LastTS            int64   `json:"last_ts"`
-	Requests          int     `json:"requests"`
-	InputTokens       int64   `json:"input_tokens"`
-	OutputTokens      int64   `json:"output_tokens"`
-	CacheCreateTokens int64   `json:"cache_create_tokens"`
-	CacheReadTokens   int64   `json:"cache_read_tokens"`
-	TotalTokens       int64   `json:"total_tokens"`
-	CostUSD           float64 `json:"cost_usd"`
-	Share             float64 `json:"share"`
+	SessionID string `json:"session_id"`
+	ShortID   string `json:"short_id"`
+	Agent     string `json:"agent"`
+	Project   string `json:"project"`
+	Model     string `json:"model"`
+	StartedTS int64  `json:"started_ts"`
+	LastTS    int64  `json:"last_ts"`
+	Requests  int    `json:"requests"`
+	// InputTokens remains the legacy fresh-input alias.
+	InputTokens         int64         `json:"input_tokens"`
+	FreshInputTokens    int64         `json:"fresh_input_tokens"`
+	OutputTokens        int64         `json:"output_tokens"`
+	CacheCreateTokens   int64         `json:"cache_create_tokens"`
+	CacheReadTokens     int64         `json:"cache_read_tokens"`
+	TotalInputTokens    int64         `json:"total_input_tokens"`
+	TotalTokens         int64         `json:"total_tokens"`
+	DetailedRequests    int           `json:"detailed_requests"`
+	AggregateRequests   int           `json:"aggregate_requests"`
+	RequestCoveragePct  float64       `json:"request_coverage_percent"`
+	SampledRequests     int           `json:"sampled_requests"`
+	UntimedRequests     int           `json:"untimed_requests"`
+	OutOfWindowRequests int           `json:"out_of_window_requests"`
+	CostUSD             float64       `json:"cost_usd"`
+	CostEstimated       bool          `json:"cost_estimated"`
+	EstimatedCostUSD    float64       `json:"estimated_cost_usd"`
+	PricingSource       PricingSource `json:"pricing_source"`
+	Share               float64       `json:"share"`
 }
 
 type RequestStatsResult struct {
@@ -974,15 +1389,35 @@ type RequestStatsResult struct {
 	// RequestCount is how many model calls this row aggregates. Always >= 1.
 	// Grok turn_completed rows often cover several modelCalls; other agents
 	// are typically 1. Token fields are the total for the whole row, not per call.
-	RequestCount int     `json:"request_count"`
-	InputTokens  int64   `json:"input_tokens"`
-	OutputTokens int64   `json:"output_tokens"`
-	CacheTokens  int64   `json:"cache_tokens"`
-	CostUSD      float64 `json:"cost_usd"`
+	RequestCount int `json:"request_count"`
+	// InputTokens remains the legacy fresh-input alias.
+	InputTokens         int64         `json:"input_tokens"`
+	FreshInputTokens    int64         `json:"fresh_input_tokens"`
+	OutputTokens        int64         `json:"output_tokens"`
+	CacheTokens         int64         `json:"cache_tokens"`
+	CacheCreateTokens   int64         `json:"cache_create_tokens"`
+	CacheReadTokens     int64         `json:"cache_read_tokens"`
+	TotalInputTokens    int64         `json:"total_input_tokens"`
+	TotalTokens         int64         `json:"total_tokens"`
+	SampledRequests     int           `json:"sampled_requests"`
+	UntimedRequests     int           `json:"untimed_requests"`
+	OutOfWindowRequests int           `json:"out_of_window_requests"`
+	CostUSD             float64       `json:"cost_usd"`
+	CostEstimated       bool          `json:"cost_estimated"`
+	EstimatedCostUSD    float64       `json:"estimated_cost_usd"`
+	PricingSource       PricingSource `json:"pricing_source"`
 }
 
 func GetRequestStats(db *sql.DB, startTS, endTS int64, agent, session string) ([]RequestStatsResult, error) {
-	query := `SELECT s.short_id,s.agent,s.project,e.model,e.ts,COALESCE(e.request_count,1),e.input_tokens,e.output_tokens,e.cache_create_tokens+e.cache_read_tokens,e.cost_usd FROM usage_events e JOIN sessions s ON e.session_id=s.id WHERE s.created_ts>=? AND s.created_ts<?`
+	query := `SELECT s.short_id, s.agent, s.project, e.model, e.ts,
+		max(COALESCE(e.request_count,1),1), e.input_tokens, e.input_tokens,
+		e.output_tokens, e.cache_create_tokens + e.cache_read_tokens,
+		e.cache_create_tokens, e.cache_read_tokens,
+		e.input_tokens + e.cache_create_tokens + e.cache_read_tokens,
+		e.input_tokens + e.output_tokens + e.cache_create_tokens + e.cache_read_tokens,
+		e.duration_ms, e.cost_usd
+		FROM usage_events e JOIN sessions s ON e.session_id=s.id
+		WHERE s.is_internal = 0 AND e.ts>=? AND e.ts<?`
 	args := []any{startTS, endTS}
 	if agent != "" {
 		query += " AND s.agent=?"
@@ -1001,16 +1436,130 @@ func GetRequestStats(db *sql.DB, startTS, endTS int64, agent, session string) ([
 	var out []RequestStatsResult
 	for rows.Next() {
 		var r RequestStatsResult
-		if err := rows.Scan(&r.SessionID, &r.Agent, &r.Project, &r.Model, &r.TS, &r.RequestCount, &r.InputTokens, &r.OutputTokens, &r.CacheTokens, &r.CostUSD); err != nil {
+		var durationMS int64
+		if err := rows.Scan(&r.SessionID, &r.Agent, &r.Project, &r.Model, &r.TS,
+			&r.RequestCount, &r.InputTokens, &r.FreshInputTokens, &r.OutputTokens,
+			&r.CacheTokens, &r.CacheCreateTokens, &r.CacheReadTokens,
+			&r.TotalInputTokens, &r.TotalTokens, &durationMS, &r.CostUSD); err != nil {
 			return nil, err
 		}
 		if r.RequestCount <= 0 {
 			r.RequestCount = 1
 		}
 		r.Project = config.CanonicalProject(r.Project)
+		switch {
+		case durationMS <= 0:
+			r.UntimedRequests = r.RequestCount
+		case withinSpeedWindow(durationMS, r.OutputTokens, r.RequestCount):
+			r.SampledRequests = r.RequestCount
+		default:
+			r.OutOfWindowRequests = r.RequestCount
+		}
+		_, r.PricingSource = PricingFor(r.Model)
+		r.CostEstimated = r.PricingSource.Estimated()
+		if r.CostEstimated {
+			r.EstimatedCostUSD = r.CostUSD
+		}
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+type pricingQuality struct {
+	source           PricingSource
+	estimatedCostUSD float64
+}
+
+func getProjectPricingQuality(db *sql.DB, startTS, endTS int64, agent string) (map[string]pricingQuality, error) {
+	query := `SELECT COALESCE(NULLIF(root.agent, ''), s.agent),
+		COALESCE(NULLIF(root.project, ''), s.project), u.model, SUM(u.cost_usd)
+		FROM (
+			SELECT e.session_id, e.model, e.ts, e.cost_usd
+			FROM usage_events e
+			UNION ALL
+			SELECT x.session_id, x.model, s0.created_ts, x.cost_usd
+			FROM usage x JOIN sessions s0 ON s0.id = x.session_id
+			WHERE NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id=x.session_id)
+		) u JOIN sessions s ON s.id=u.session_id
+		LEFT JOIN sessions root ON s.root_session_id <> ''
+			AND (root.resume_id = s.root_session_id OR root.id = s.root_session_id)
+		WHERE s.is_internal = 0 AND u.ts >= ? AND u.ts < ?`
+	args := []any{startTS, endTS}
+	if agent != "" {
+		query += " AND s.agent = ?"
+		args = append(args, agent)
+	}
+	query += ` GROUP BY COALESCE(NULLIF(root.agent, ''), s.agent),
+		COALESCE(NULLIF(root.project, ''), s.project), u.model`
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]pricingQuality{}
+	for rows.Next() {
+		var client, project, model string
+		var cost float64
+		if err := rows.Scan(&client, &project, &model, &cost); err != nil {
+			return nil, err
+		}
+		key := client + "\x00" + config.CanonicalProject(project)
+		quality := result[key]
+		quality.add(model, cost)
+		result[key] = quality
+	}
+	return result, rows.Err()
+}
+
+func (quality *pricingQuality) add(model string, cost float64) {
+	_, source := PricingFor(model)
+	if quality.source == "" {
+		quality.source = source
+	} else if quality.source != source {
+		quality.source = PricingMixed
+	}
+	if source.Estimated() {
+		quality.estimatedCostUSD += cost
+	}
+}
+
+// getSessionPricingQuality applies the same event-time/fallback policy as
+// GetSessionUsageStats, but keeps model identity long enough to say how much of
+// an aggregate session cost used an estimated rate.
+func getSessionPricingQuality(db *sql.DB, startTS, endTS int64, agent string) (map[string]pricingQuality, error) {
+	query := `SELECT u.session_id, u.model, SUM(u.cost_usd)
+		FROM (
+			SELECT e.session_id, e.model, e.ts, e.cost_usd
+			FROM usage_events e
+			UNION ALL
+			SELECT x.session_id, x.model, s0.created_ts, x.cost_usd
+			FROM usage x JOIN sessions s0 ON s0.id = x.session_id
+			WHERE NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id=x.session_id)
+		) u JOIN sessions s ON s.id=u.session_id
+		WHERE s.is_internal = 0 AND u.ts >= ? AND u.ts < ?`
+	args := []any{startTS, endTS}
+	if agent != "" {
+		query += " AND s.agent = ?"
+		args = append(args, agent)
+	}
+	query += " GROUP BY u.session_id, u.model"
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := map[string]pricingQuality{}
+	for rows.Next() {
+		var sessionID, model string
+		var cost float64
+		if err := rows.Scan(&sessionID, &model, &cost); err != nil {
+			return nil, err
+		}
+		quality := result[sessionID]
+		quality.add(model, cost)
+		result[sessionID] = quality
+	}
+	return result, rows.Err()
 }
 
 // GetSessionUsageStats groups usage by session using request timestamps. The
@@ -1023,19 +1572,19 @@ func GetSessionUsageStats(db *sql.DB, startTS, endTS int64, agent string) ([]Ses
 				COALESCE(NULLIF(e.model, ''), 'unknown') AS model,
 				e.ts, max(COALESCE(e.request_count, 1), 1) AS request_count,
 				e.input_tokens, e.output_tokens, e.cache_create_tokens,
-				e.cache_read_tokens, e.cost_usd
+				e.cache_read_tokens, e.cost_usd, e.duration_ms, 1 AS detailed
 			FROM usage_events e
 			JOIN sessions s ON s.id = e.session_id
-			WHERE e.ts >= ? AND e.ts < ?
+			WHERE s.is_internal = 0 AND e.ts >= ? AND e.ts < ?
 			UNION ALL
 			SELECT u.session_id, s.short_id, s.agent, s.project,
 				COALESCE(NULLIF(u.model, ''), 'unknown') AS model,
 				s.created_ts, max(COALESCE(u.request_count, 1), 1) AS request_count,
 				u.input_tokens, u.output_tokens, u.cache_create_tokens,
-				u.cache_read_tokens, u.cost_usd
+				u.cache_read_tokens, u.cost_usd, 0 AS duration_ms, 0 AS detailed
 			FROM usage u
 			JOIN sessions s ON s.id = u.session_id
-			WHERE s.created_ts >= ? AND s.created_ts < ?
+			WHERE s.is_internal = 0 AND s.created_ts >= ? AND s.created_ts < ?
 				AND NOT EXISTS (
 					SELECT 1 FROM usage_events e WHERE e.session_id = u.session_id
 				)
@@ -1048,7 +1597,17 @@ func GetSessionUsageStats(db *sql.DB, startTS, endTS int64, agent string) ([]Ses
 				SUM(output_tokens) AS output_tokens,
 				SUM(cache_create_tokens) AS cache_create_tokens,
 				SUM(cache_read_tokens) AS cache_read_tokens,
+				SUM(input_tokens + cache_create_tokens + cache_read_tokens) AS total_input_tokens,
 				SUM(input_tokens + output_tokens + cache_create_tokens + cache_read_tokens) AS total_tokens,
+				SUM(CASE WHEN detailed = 1 THEN request_count ELSE 0 END) AS detailed_requests,
+				SUM(CASE WHEN detailed = 0 THEN request_count ELSE 0 END) AS aggregate_requests,
+				SUM(CASE WHEN detailed = 1 AND duration_ms > 0 AND
+					duration_ms / request_count BETWEEN ? AND ? AND
+					output_tokens / request_count >= ? THEN request_count ELSE 0 END) AS sampled_requests,
+				SUM(CASE WHEN detailed = 1 AND duration_ms <= 0 THEN request_count ELSE 0 END) AS untimed_requests,
+				SUM(CASE WHEN detailed = 1 AND duration_ms > 0 AND NOT (
+					duration_ms / request_count BETWEEN ? AND ? AND
+					output_tokens / request_count >= ?) THEN request_count ELSE 0 END) AS out_of_window_requests,
 				SUM(cost_usd) AS cost_usd
 			FROM usage_rows
 			GROUP BY session_id, short_id, agent, project
@@ -1069,14 +1628,20 @@ func GetSessionUsageStats(db *sql.DB, startTS, endTS int64, agent string) ([]Ses
 		)
 		SELECT ps.session_id, ps.short_id, ps.agent, ps.project,
 			COALESCE(rm.model, 'unknown'), ps.started_ts, ps.last_ts,
-			ps.requests, ps.input_tokens, ps.output_tokens,
-			ps.cache_create_tokens, ps.cache_read_tokens,
-			ps.total_tokens, ps.cost_usd
+			ps.requests, ps.input_tokens, ps.input_tokens, ps.output_tokens,
+			ps.cache_create_tokens, ps.cache_read_tokens, ps.total_input_tokens,
+			ps.total_tokens, ps.detailed_requests, ps.aggregate_requests,
+			ps.sampled_requests, ps.untimed_requests, ps.out_of_window_requests,
+			ps.cost_usd
 		FROM per_session ps
 		LEFT JOIN ranked_model rm
 			ON rm.session_id = ps.session_id AND rm.model_rank = 1
 		WHERE ps.total_tokens > 0`
-	args := []any{startTS, endTS, startTS, endTS}
+	args := []any{
+		startTS, endTS, startTS, endTS,
+		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
+		speedMinDurationMS, speedMaxDurationMS, speedMinOutputTokens,
+	}
 	if agent != "" {
 		query += " AND ps.agent = ?"
 		args = append(args, agent)
@@ -1096,17 +1661,36 @@ func GetSessionUsageStats(db *sql.DB, startTS, endTS int64, agent string) ([]Ses
 		if err := rows.Scan(
 			&result.SessionID, &result.ShortID, &result.Agent, &result.Project,
 			&result.Model, &result.StartedTS, &result.LastTS, &result.Requests,
-			&result.InputTokens, &result.OutputTokens, &result.CacheCreateTokens,
-			&result.CacheReadTokens, &result.TotalTokens, &result.CostUSD,
+			&result.InputTokens, &result.FreshInputTokens, &result.OutputTokens,
+			&result.CacheCreateTokens, &result.CacheReadTokens, &result.TotalInputTokens,
+			&result.TotalTokens, &result.DetailedRequests, &result.AggregateRequests,
+			&result.SampledRequests, &result.UntimedRequests,
+			&result.OutOfWindowRequests, &result.CostUSD,
 		); err != nil {
 			return nil, err
 		}
 		result.Project = config.CanonicalProject(result.Project)
+		if result.Requests > 0 {
+			result.RequestCoveragePct = float64(result.DetailedRequests) / float64(result.Requests) * 100
+		}
 		grandTotal += result.TotalTokens
 		results = append(results, result)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	pricing, err := getSessionPricingQuality(db, startTS, endTS, agent)
+	if err != nil {
+		return nil, err
+	}
+	for index := range results {
+		quality := pricing[results[index].SessionID]
+		results[index].PricingSource = quality.source
+		results[index].EstimatedCostUSD = quality.estimatedCostUSD
+		results[index].CostEstimated = quality.estimatedCostUSD > 0
 	}
 	if grandTotal > 0 {
 		for index := range results {
@@ -1120,6 +1704,9 @@ type TimelineEvent struct {
 	Kind         string  `json:"kind"`
 	Role         string  `json:"role,omitempty"`
 	Content      string  `json:"content,omitempty"`
+	Scope        string  `json:"scope,omitempty"`
+	MessageKind  string  `json:"message_kind,omitempty"`
+	Phase        string  `json:"phase,omitempty"`
 	Model        string  `json:"model,omitempty"`
 	TS           int64   `json:"ts"`
 	InputTokens  int64   `json:"input_tokens,omitempty"`
@@ -1134,9 +1721,13 @@ func GetSessionTimeline(db *sql.DB, sid string) ([]TimelineEvent, error) {
 		sessionLookupArgs(sid)...).Scan(&fullID); err != nil {
 		return nil, err
 	}
-	rows, err := db.Query(`SELECT kind,role,content,model,ts,input_tokens,output_tokens,cache_tokens,cost_usd FROM (
-		SELECT 'message' kind,role,content,'' model,ts,0 input_tokens,0 output_tokens,0 cache_tokens,0.0 cost_usd,seq sort_id FROM messages WHERE session_id=?
-		UNION ALL SELECT 'request','','',model,ts,input_tokens,output_tokens,cache_create_tokens+cache_read_tokens,cost_usd,1000000+id FROM usage_events WHERE session_id=?) ORDER BY ts,sort_id`, fullID, fullID)
+	rows, err := db.Query(`SELECT kind,role,content,scope,message_kind,phase,model,ts,input_tokens,output_tokens,cache_tokens,cost_usd FROM (
+		SELECT 'message' kind,role,content,scope,kind message_kind,phase,'' model,ts,
+			0 input_tokens,0 output_tokens,0 cache_tokens,0.0 cost_usd,seq sort_id
+			FROM messages WHERE session_id=? AND scope='local' AND kind<>'control'
+		UNION ALL SELECT 'request','','','','','',model,ts,input_tokens,output_tokens,
+			cache_create_tokens+cache_read_tokens,cost_usd,1000000+id
+			FROM usage_events WHERE session_id=?) ORDER BY ts,sort_id`, fullID, fullID)
 	if err != nil {
 		return nil, err
 	}
@@ -1144,7 +1735,8 @@ func GetSessionTimeline(db *sql.DB, sid string) ([]TimelineEvent, error) {
 	var out []TimelineEvent
 	for rows.Next() {
 		var e TimelineEvent
-		if err := rows.Scan(&e.Kind, &e.Role, &e.Content, &e.Model, &e.TS, &e.InputTokens, &e.OutputTokens, &e.CacheTokens, &e.CostUSD); err != nil {
+		if err := rows.Scan(&e.Kind, &e.Role, &e.Content, &e.Scope, &e.MessageKind, &e.Phase,
+			&e.Model, &e.TS, &e.InputTokens, &e.OutputTokens, &e.CacheTokens, &e.CostUSD); err != nil {
 			return nil, err
 		}
 		out = append(out, e)
@@ -1153,49 +1745,52 @@ func GetSessionTimeline(db *sql.DB, sid string) ([]TimelineEvent, error) {
 }
 
 func GetSessionStats(db *sql.DB, startTS, endTS int64, agent string) ([]SessionStatsResult, error) {
-	query := `SELECT s.short_id, s.project, u.model,
-		COALESCE(u.request_count, 0) AS queries,
-		u.input_tokens, u.output_tokens,
-		u.cache_create_tokens + u.cache_read_tokens AS cache_tokens,
-		u.cost_usd
-		FROM usage u
-		JOIN sessions s ON u.session_id = s.id
-		WHERE s.created_ts >= ? AND s.created_ts < ?
-		AND (u.input_tokens > 0 OR u.output_tokens > 0)`
-	args := []any{startTS, endTS}
-	if agent != "" {
-		query += " AND s.agent = ?"
-		args = append(args, agent)
-	}
-	query += " ORDER BY (u.input_tokens + u.output_tokens + u.cache_create_tokens + u.cache_read_tokens) DESC"
-
-	rows, err := db.Query(query, args...)
+	usage, err := GetSessionUsageStats(db, startTS, endTS, agent)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var results []SessionStatsResult
-	for rows.Next() {
-		var r SessionStatsResult
-		if err := rows.Scan(&r.ShortID, &r.Project, &r.Model, &r.Queries,
-			&r.InputTokens, &r.OutputTokens, &r.CacheTokens, &r.CostUSD); err != nil {
-			return nil, err
-		}
-		r.Project = config.CanonicalProject(r.Project)
-		results = append(results, r)
+	results := make([]SessionStatsResult, 0, len(usage))
+	for _, row := range usage {
+		results = append(results, SessionStatsResult{
+			ShortID: row.ShortID, Project: row.Project, Model: row.Model,
+			Queries: row.Requests, InputTokens: row.InputTokens,
+			FreshInputTokens: row.FreshInputTokens, OutputTokens: row.OutputTokens,
+			CacheTokens:       row.CacheCreateTokens + row.CacheReadTokens,
+			CacheCreateTokens: row.CacheCreateTokens, CacheReadTokens: row.CacheReadTokens,
+			TotalInputTokens: row.TotalInputTokens, TotalTokens: row.TotalTokens,
+			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
+			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
+			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
+			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
+			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: row.PricingSource,
+		})
 	}
-	return results, rows.Err()
+	return results, nil
 }
 
 type DayStatsResult struct {
-	Date            string  `json:"date"`
-	Sessions        int     `json:"sessions"`
-	Queries         int     `json:"queries"`
-	InputTokens     int64   `json:"input_tokens"`
-	OutputTokens    int64   `json:"output_tokens"`
-	CacheReadTokens int64   `json:"cache_read_tokens"`
-	CostUSD         float64 `json:"cost_usd"`
+	Date     string `json:"date"`
+	Sessions int    `json:"sessions"`
+	Queries  int    `json:"queries"`
+	// InputTokens is the legacy total-input alias; use the explicit breakdown.
+	InputTokens         int64         `json:"input_tokens"`
+	FreshInputTokens    int64         `json:"fresh_input_tokens"`
+	OutputTokens        int64         `json:"output_tokens"`
+	CacheCreateTokens   int64         `json:"cache_create_tokens"`
+	CacheReadTokens     int64         `json:"cache_read_tokens"`
+	TotalInputTokens    int64         `json:"total_input_tokens"`
+	TotalTokens         int64         `json:"total_tokens"`
+	Requests            int           `json:"requests"`
+	DetailedRequests    int           `json:"detailed_requests"`
+	AggregateRequests   int           `json:"aggregate_requests"`
+	RequestCoveragePct  float64       `json:"request_coverage_percent"`
+	SampledRequests     int           `json:"sampled_requests"`
+	UntimedRequests     int           `json:"untimed_requests"`
+	OutOfWindowRequests int           `json:"out_of_window_requests"`
+	CostUSD             float64       `json:"cost_usd"`
+	CostEstimated       bool          `json:"cost_estimated"`
+	EstimatedCostUSD    float64       `json:"estimated_cost_usd"`
+	PricingSource       PricingSource `json:"pricing_source"`
 }
 
 func GetDayStats(db *sql.DB, startTS, endTS int64, agent string, loc *time.Location) ([]DayStatsResult, error) {
@@ -1233,6 +1828,7 @@ func forEachPeriodRow(db *sql.DB, query string, startTS, endTS int64, agent stri
 func getPeriodStats(db *sql.DB, startTS, endTS int64, agent string, loc *time.Location, hourly bool) ([]DayStatsResult, error) {
 	dayMap := make(map[string]*DayStatsResult)
 	sessionsByDay := make(map[string]map[string]struct{})
+	pricingByDay := make(map[string]pricingQuality)
 	layout := "2006-01-02"
 	if hourly {
 		layout = "2006-01-02 15:00"
@@ -1256,25 +1852,54 @@ func getPeriodStats(db *sql.DB, startTS, endTS int64, agent string, loc *time.Lo
 	// The two usage queries differ only in which table they read, so they
 	// accumulate through one scan.
 	accumulateUsage := func(rows *sql.Rows) error {
-		var ts, input, output, cacheRead int64
-		var id string
+		var ts, input, freshInput, output, cacheCreate, cacheRead, totalInput, totalTokens int64
+		var durationMS int64
+		var requests, detailed int
+		var id, model string
 		var cost float64
-		if err := rows.Scan(&ts, &id, &input, &output, &cacheRead, &cost); err != nil {
+		if err := rows.Scan(&ts, &id, &model, &input, &freshInput, &output, &cacheCreate,
+			&cacheRead, &totalInput, &totalTokens, &requests, &detailed, &durationMS, &cost); err != nil {
 			return err
+		}
+		if requests < 1 {
+			requests = 1
 		}
 		d, day := ensureDay(ts)
 		d.InputTokens += input
+		d.FreshInputTokens += freshInput
 		d.OutputTokens += output
+		d.CacheCreateTokens += cacheCreate
 		d.CacheReadTokens += cacheRead
+		d.TotalInputTokens += totalInput
+		d.TotalTokens += totalTokens
+		d.Requests += requests
+		if detailed != 0 {
+			d.DetailedRequests += requests
+			switch {
+			case durationMS <= 0:
+				d.UntimedRequests += requests
+			case withinSpeedWindow(durationMS, output, requests):
+				d.SampledRequests += requests
+			default:
+				d.OutOfWindowRequests += requests
+			}
+		} else {
+			d.AggregateRequests += requests
+		}
 		d.CostUSD += cost
+		quality := pricingByDay[day]
+		quality.add(model, cost)
+		pricingByDay[day] = quality
 		addSession(day, id)
 		return nil
 	}
 
 	// A session is active on the day it is created, receives a user message,
 	// or records token usage. This keeps cross-midnight/resumed work visible.
-	err := forEachPeriodRow(db, `SELECT s.created_ts, s.id FROM sessions s
-		WHERE s.created_ts >= ? AND s.created_ts < ?`, startTS, endTS, agent,
+	err := forEachPeriodRow(db, `SELECT s.created_ts,
+		COALESCE(NULLIF(s.resume_id, ''), s.id) FROM sessions s
+		WHERE s.is_internal = 0 AND s.is_subagent = 0
+		AND s.created_ts >= ? AND s.created_ts < ?`, startTS, endTS, agent,
 		func(rows *sql.Rows) error {
 			var ts int64
 			var id string
@@ -1289,8 +1914,12 @@ func getPeriodStats(db *sql.DB, startTS, endTS int64, agent string, loc *time.Lo
 		return nil, err
 	}
 
-	err = forEachPeriodRow(db, `SELECT m.ts, m.session_id FROM messages m JOIN sessions s ON s.id = m.session_id
-		WHERE m.role = 'user' AND m.ts >= ? AND m.ts < ?`, startTS, endTS, agent,
+	err = forEachPeriodRow(db, `SELECT m.ts,
+		COALESCE(NULLIF(s.resume_id, ''), m.session_id)
+		FROM messages m JOIN sessions s ON s.id = m.session_id
+		WHERE s.is_internal = 0 AND s.is_subagent = 0
+		AND m.role = 'user' AND m.scope = 'local' AND m.kind = 'conversation'
+		AND m.ts >= ? AND m.ts < ?`, startTS, endTS, agent,
 		func(rows *sql.Rows) error {
 			var ts int64
 			var id string
@@ -1306,22 +1935,32 @@ func getPeriodStats(db *sql.DB, startTS, endTS int64, agent string, loc *time.Lo
 		return nil, err
 	}
 
-	err = forEachPeriodRow(db, `SELECT e.ts, e.session_id,
+	err = forEachPeriodRow(db, `SELECT e.ts,
+		CASE WHEN s.root_session_id <> '' THEN s.root_session_id
+			ELSE COALESCE(NULLIF(s.resume_id, ''), e.session_id) END, e.model,
 		e.input_tokens + e.cache_create_tokens + e.cache_read_tokens,
-		e.output_tokens, e.cache_read_tokens, e.cost_usd
+		e.input_tokens, e.output_tokens, e.cache_create_tokens, e.cache_read_tokens,
+		e.input_tokens + e.cache_create_tokens + e.cache_read_tokens,
+		e.input_tokens + e.output_tokens + e.cache_create_tokens + e.cache_read_tokens,
+		max(COALESCE(e.request_count,1),1), 1, e.duration_ms, e.cost_usd
 		FROM usage_events e JOIN sessions s ON s.id = e.session_id
-		WHERE e.ts >= ? AND e.ts < ?`, startTS, endTS, agent, accumulateUsage)
+		WHERE s.is_internal = 0 AND e.ts >= ? AND e.ts < ?`, startTS, endTS, agent, accumulateUsage)
 	if err != nil {
 		return nil, err
 	}
 
 	// Preserve totals for older/imported sessions that only have the aggregate
 	// usage row. Once per-request events exist, they are the source of truth.
-	err = forEachPeriodRow(db, `SELECT s.created_ts, s.id,
+	err = forEachPeriodRow(db, `SELECT s.created_ts,
+		CASE WHEN s.root_session_id <> '' THEN s.root_session_id
+			ELSE COALESCE(NULLIF(s.resume_id, ''), s.id) END, u.model,
 		u.input_tokens + u.cache_create_tokens + u.cache_read_tokens,
-		u.output_tokens, u.cache_read_tokens, u.cost_usd
+		u.input_tokens, u.output_tokens, u.cache_create_tokens, u.cache_read_tokens,
+		u.input_tokens + u.cache_create_tokens + u.cache_read_tokens,
+		u.input_tokens + u.output_tokens + u.cache_create_tokens + u.cache_read_tokens,
+		max(COALESCE(u.request_count,1),1), 0, 0, u.cost_usd
 		FROM usage u JOIN sessions s ON s.id = u.session_id
-		WHERE s.created_ts >= ? AND s.created_ts < ?
+		WHERE s.is_internal = 0 AND s.created_ts >= ? AND s.created_ts < ?
 		AND NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id = u.session_id)`,
 		startTS, endTS, agent, accumulateUsage)
 	if err != nil {
@@ -1330,6 +1969,14 @@ func getPeriodStats(db *sql.DB, startTS, endTS int64, agent string, loc *time.Lo
 
 	for day, sessions := range sessionsByDay {
 		dayMap[day].Sessions = len(sessions)
+		if dayMap[day].Requests > 0 {
+			dayMap[day].RequestCoveragePct = float64(dayMap[day].DetailedRequests) /
+				float64(dayMap[day].Requests) * 100
+		}
+		quality := pricingByDay[day]
+		dayMap[day].PricingSource = quality.source
+		dayMap[day].EstimatedCostUSD = quality.estimatedCostUSD
+		dayMap[day].CostEstimated = quality.estimatedCostUSD > 0
 	}
 
 	// Fill missing periods so charts show real zero-usage gaps.
@@ -1367,18 +2014,18 @@ type TodoBoundSession struct {
 	// IndexedID is the transcript index's own id for the session, which differs
 	// from SessionID for codex (the ledger stores the thread uuid, the index the
 	// rollout filename). Empty when the session was never indexed.
-	IndexedID    string  `json:"indexed_id,omitempty"`
-	ShortID      string  `json:"short_id"`
-	Agent        string  `json:"agent"`
-	Project      string  `json:"project"`
-	Summary string `json:"summary,omitempty"`
+	IndexedID string `json:"indexed_id,omitempty"`
+	ShortID   string `json:"short_id"`
+	Agent     string `json:"agent"`
+	Project   string `json:"project"`
+	Summary   string `json:"summary,omitempty"`
 	// LatestResult is the session's last assistant message, so a Todo can show
 	// what the Agent concluded without depending on the session still being
 	// inside the live-status window. Capped because a bound-session list is a
 	// list, not a transcript.
-	LatestResult string `json:"latest_result,omitempty"`
-	Indexed      bool   `json:"indexed"`
-	CWD          string `json:"cwd,omitempty"`
+	LatestResult string  `json:"latest_result,omitempty"`
+	Indexed      bool    `json:"indexed"`
+	CWD          string  `json:"cwd,omitempty"`
 	StartedAt    int64   `json:"started_at,omitempty"`
 	LastAt       int64   `json:"last_at,omitempty"`
 	BindingCount int     `json:"binding_count"`
@@ -1406,9 +2053,11 @@ func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) 
 		COALESCE(NULLIF(b.agent, ''), s.agent, '') AS agent,
 		COALESCE(NULLIF(b.project, ''), s.project, '') AS project,
 		COALESCE(s.summary, '') AS summary,
-		COALESCE((SELECT SUBSTR(m.content, 1, 2000) FROM messages m
+		COALESCE(NULLIF(SUBSTR(s.final_result, 1, 2000), ''),
+			(SELECT SUBSTR(m.content, 1, 2000) FROM messages m
 			WHERE m.session_id = s.id AND m.role = 'assistant'
-			ORDER BY m.seq DESC LIMIT 1), '') AS latest_result,
+				AND m.scope = 'local' AND m.kind <> 'control' AND m.kind <> 'progress'
+			ORDER BY CASE WHEN m.kind = 'final' THEN 0 ELSE 1 END, m.seq DESC LIMIT 1), '') AS latest_result,
 		CASE WHEN s.id IS NULL THEN 0 ELSE 1 END AS indexed,
 		b.cwd,
 		COALESCE(s.created_ts, 0) AS started_at,
@@ -1418,7 +2067,8 @@ func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) 
 		(SELECT MIN(bf.bound_at) FROM todo_session_bindings bf
 			WHERE bf.todo_id = b.todo_id AND bf.session_id = b.session_id) AS first_bound_at,
 		b.bound_at, b.unbound_at, b.reason,
-		(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id AND m.role = 'user') AS queries,
+		(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.id AND m.role = 'user'
+			AND m.scope = 'local' AND m.kind = 'conversation') AS queries,
 		COALESCE((SELECT SUM(t.count) FROM tools t WHERE t.session_id = s.id), 0) AS tool_calls,
 		COALESCE((SELECT u.input_tokens + u.cache_create_tokens + u.cache_read_tokens FROM usage u WHERE u.session_id = s.id), 0) AS input_tokens,
 		COALESCE((SELECT u.output_tokens FROM usage u WHERE u.session_id = s.id), 0) AS output_tokens,
@@ -1427,8 +2077,10 @@ func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) 
 		LEFT JOIN sessions s ON s.id = (
 			SELECT sm.id FROM sessions sm
 			WHERE sm.id = b.session_id
+				OR sm.resume_id = b.session_id
 				OR (sm.agent = 'codex' AND sm.id LIKE '%-' || b.session_id)
-			ORDER BY CASE WHEN sm.id = b.session_id THEN 0 ELSE 1 END, sm.last_ts DESC
+			ORDER BY CASE WHEN sm.id = b.session_id THEN 0 WHEN sm.resume_id = b.session_id THEN 1 ELSE 2 END,
+				sm.last_ts DESC
 			LIMIT 1)
 		WHERE b.todo_id = ?
 			AND b.id = (SELECT MAX(bl.id) FROM todo_session_bindings bl

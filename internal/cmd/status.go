@@ -22,6 +22,7 @@ func init() {
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show what AI tools are currently doing",
+	Args:  cobra.NoArgs,
 	RunE:  runStatus,
 }
 
@@ -60,29 +61,34 @@ type aiProcess struct {
 const statusSessionRetention = 30 * time.Minute
 
 type statusSessionView struct {
-	Tool          string                    `json:"tool"`
-	SessionID     string                    `json:"session_id,omitempty"`
-	ResumeID      string                    `json:"resume_id,omitempty"`
-	Project       string                    `json:"project"`
-	Client        string                    `json:"client,omitempty"`
-	CWD           string                    `json:"cwd,omitempty"`
-	Model         string                    `json:"model,omitempty"`
-	Summary       string                    `json:"summary,omitempty"`
-	AgeSeconds    int                       `json:"age_seconds"`
-	ActivityState string                    `json:"activity_state"`
-	BindingState  string                    `json:"binding_state"`
-	Binding       *store.TodoSessionBinding `json:"binding,omitempty"`
-	Todo          *compactTodoContext       `json:"todo,omitempty"`
-	PID           string                    `json:"pid,omitempty"`
-	TTY           string                    `json:"tty,omitempty"`
-	TerminalApp   string                    `json:"terminal_app,omitempty"`
-	FirstQ        string                    `json:"first_q,omitempty"`
-	LastQ         string                    `json:"last_q,omitempty"`
-	LastA         string                    `json:"last_a,omitempty"`
-	LatestResult  string                    `json:"latest_result,omitempty"`
-	Updates       []string                  `json:"updates,omitempty"`
-	Tools         []string                  `json:"tools,omitempty"`
-	Topics        []string                  `json:"topics,omitempty"`
+	Tool            string                    `json:"tool"`
+	SessionID       string                    `json:"session_id,omitempty"`
+	ResumeID        string                    `json:"resume_id,omitempty"`
+	RootSessionID   string                    `json:"root_session_id,omitempty"`
+	ParentSessionID string                    `json:"parent_session_id,omitempty"`
+	AgentPath       string                    `json:"agent_path,omitempty"`
+	AgentNickname   string                    `json:"agent_nickname,omitempty"`
+	SubagentDepth   int                       `json:"subagent_depth,omitempty"`
+	Project         string                    `json:"project"`
+	Client          string                    `json:"client,omitempty"`
+	CWD             string                    `json:"cwd,omitempty"`
+	Model           string                    `json:"model,omitempty"`
+	Summary         string                    `json:"summary,omitempty"`
+	AgeSeconds      int                       `json:"age_seconds"`
+	ActivityState   string                    `json:"activity_state"`
+	BindingState    string                    `json:"binding_state"`
+	Binding         *store.TodoSessionBinding `json:"binding,omitempty"`
+	Todo            *compactTodoContext       `json:"todo,omitempty"`
+	PID             string                    `json:"pid,omitempty"`
+	TTY             string                    `json:"tty,omitempty"`
+	TerminalApp     string                    `json:"terminal_app,omitempty"`
+	FirstQ          string                    `json:"first_q,omitempty"`
+	LastQ           string                    `json:"last_q,omitempty"`
+	LastA           string                    `json:"last_a,omitempty"`
+	LatestResult    string                    `json:"latest_result,omitempty"`
+	Updates         []string                  `json:"updates,omitempty"`
+	Tools           []string                  `json:"tools,omitempty"`
+	Topics          []string                  `json:"topics,omitempty"`
 }
 
 type statusView struct {
@@ -90,6 +96,46 @@ type statusView struct {
 	Time        string                  `json:"time"`
 	Sessions    []statusSessionView     `json:"sessions"`
 	Bindings    []sessionBindingContext `json:"bindings"`
+}
+
+func newStatusSessionView(session parser.Session, pid string) statusSessionView {
+	var cleanTopics []string
+	for _, topic := range session.Topics {
+		if clean := cleanMsg(topic); clean != "" {
+			cleanTopics = append(cleanTopics, clean)
+		}
+	}
+	view := statusSessionView{
+		Tool:            session.Tool,
+		SessionID:       session.SessionID,
+		ResumeID:        session.ResumeID,
+		RootSessionID:   session.RootSessionID,
+		ParentSessionID: session.ParentSessionID,
+		AgentPath:       session.AgentPath,
+		AgentNickname:   session.AgentNickname,
+		SubagentDepth:   session.SubagentDepth,
+		Project:         session.Project,
+		Client:          session.Client,
+		CWD:             session.CWD,
+		Model:           session.Model,
+		Summary:         session.Summary,
+		AgeSeconds:      session.AgeSeconds,
+		ActivityState:   statusActivityState(session.AgeSeconds),
+		BindingState:    sessionBindingStateUnbound,
+		PID:             pid,
+		FirstQ:          cleanMsg(session.FirstQ),
+		LastQ:           cleanMsg(session.LastUserMsg),
+		LastA:           cleanMsg(session.LastAssistant),
+		LatestResult:    cleanMsg(session.LatestResult),
+		Tools:           session.RecentTools,
+		Topics:          cleanTopics,
+	}
+	for _, update := range session.RecentUpdates {
+		if clean := cleanMsg(update); clean != "" {
+			view.Updates = append(view.Updates, clean)
+		}
+	}
+	return view
 }
 
 func buildStatusView(agent string) (statusView, error) {
@@ -132,37 +178,7 @@ func buildStatusView(agent string) (statusView, error) {
 			pid = procs[processIndex].PID
 			usedProcs[processIndex] = true
 		}
-		var cleanTopics []string
-		for _, topic := range session.Topics {
-			if clean := cleanMsg(topic); clean != "" {
-				cleanTopics = append(cleanTopics, clean)
-			}
-		}
-		view := statusSessionView{
-			Tool:          session.Tool,
-			SessionID:     session.SessionID,
-			ResumeID:      session.ResumeID,
-			Project:       session.Project,
-			Client:        session.Client,
-			CWD:           session.CWD,
-			Model:         session.Model,
-			Summary:       session.Summary,
-			AgeSeconds:    session.AgeSeconds,
-			ActivityState: statusActivityState(session.AgeSeconds),
-			BindingState:  sessionBindingStateUnbound,
-			PID:           pid,
-			FirstQ:        cleanMsg(session.FirstQ),
-			LastQ:         cleanMsg(session.LastUserMsg),
-			LastA:         cleanMsg(session.LastAssistant),
-			LatestResult:  cleanMsg(session.LatestResult),
-			Tools:         session.RecentTools,
-			Topics:        cleanTopics,
-		}
-		for _, update := range session.RecentUpdates {
-			if clean := cleanMsg(update); clean != "" {
-				view.Updates = append(view.Updates, clean)
-			}
-		}
+		view := newStatusSessionView(session, pid)
 		if pid != "" {
 			for _, process := range procs {
 				if process.PID == pid {

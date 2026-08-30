@@ -113,7 +113,7 @@ func GetSpeedStats(db *sql.DB, startTS, endTS int64, agent string) (SpeedReport,
 	report := SpeedReport{}
 	query := `SELECT s.agent, e.model, COALESCE(e.request_count, 1), e.output_tokens, e.duration_ms
 		FROM usage_events e JOIN sessions s ON e.session_id = s.id
-		WHERE e.ts >= ? AND e.ts < ? AND e.model != ''`
+		WHERE s.is_internal = 0 AND e.ts >= ? AND e.ts < ? AND e.model != ''`
 	args := []any{startTS, endTS}
 	if agent != "" {
 		query += " AND s.agent = ?"
@@ -224,7 +224,9 @@ func GetSpeedStats(db *sql.DB, startTS, endTS int64, agent string) (SpeedReport,
 func getTurnWaitStats(db *sql.DB, startTS, endTS int64, agent string) ([]TurnWaitStatsResult, error) {
 	query := `SELECT s.agent, s.id, m.ts
 		FROM messages m JOIN sessions s ON m.session_id = s.id
-		WHERE m.role = 'user' AND m.ts >= ? AND m.ts < ?`
+		WHERE s.is_internal = 0 AND s.is_subagent = 0
+			AND m.role = 'user' AND m.scope = 'local' AND m.kind = 'conversation'
+			AND m.ts >= ? AND m.ts < ?`
 	args := []any{startTS, endTS}
 	if agent != "" {
 		query += " AND s.agent = ?"
@@ -346,9 +348,12 @@ type turnReply struct {
 // Requests are bounded by the same window as the turn starts, so a turn opened
 // just before the window closes reports only the replies inside it.
 func requestEndsBySession(db *sql.DB, startTS, endTS int64, agent string) (map[string][]turnReply, error) {
-	query := `SELECT e.session_id, e.ts, COALESCE(e.request_count, 1)
+	query := `SELECT COALESCE(root.id, e.session_id),
+		e.ts, COALESCE(e.request_count, 1)
 		FROM usage_events e JOIN sessions s ON e.session_id = s.id
-		WHERE e.ts >= ? AND e.ts < ?`
+		LEFT JOIN sessions root ON s.root_session_id <> ''
+			AND (root.resume_id = s.root_session_id OR root.id = s.root_session_id)
+		WHERE s.is_internal = 0 AND e.ts >= ? AND e.ts < ?`
 	args := []any{startTS, endTS}
 	if agent != "" {
 		query += " AND s.agent = ?"

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/application"
@@ -35,7 +36,9 @@ func TestStartReopensOnceAndRecoversPendingProjection(t *testing.T) {
 		Created: store.Today(), Closed: &closed, ClosedReason: &reason, StartTS: &oldStart, DoneTS: &oldDone,
 	})
 
-	first, err := Default.Start(context.Background(), lifecycleCall(application.ActorAgent, "start-1"), StartInput{TodoID: "#T01"})
+	first, err := Default.Start(context.Background(), lifecycleCall(application.ActorAgent, "start-1"), StartInput{
+		TodoID: "#T01", ReopenReason: "acceptance found a regression",
+	})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -54,6 +57,47 @@ func TestStartReopensOnceAndRecoversPendingProjection(t *testing.T) {
 	if !second.AlreadyStarted || second.Todo.StartTS == nil || *second.Todo.StartTS != *first.Todo.StartTS ||
 		len(second.Effects) != 1 || second.Effects[0].ID != first.Effects[0].ID {
 		t.Fatalf("second result = %+v", second)
+	}
+}
+
+func TestStartRequiresExplicitReasonToReopenReview(t *testing.T) {
+	withTempWorkStore(t)
+	seedWorkTodos(t, store.Todo{
+		ID: "t1", Title: "Submitted", Priority: "P1", Status: store.TodoStatusReview,
+		Creator: store.TodoCreatorMe, Created: store.Today(),
+	})
+	_, err := Default.Start(context.Background(), lifecycleCall(application.ActorHuman, "reopen-missing"), StartInput{TodoID: "t1"})
+	if !errors.Is(err, application.ErrConflict) || !strings.Contains(err.Error(), "--reopen-reason") {
+		t.Fatalf("Start error = %v", err)
+	}
+	result, err := Default.Start(context.Background(), lifecycleCall(application.ActorHuman, "reopen-explicit"), StartInput{
+		TodoID: "t1", ReopenReason: "review found an unhandled boundary",
+	})
+	if err != nil || !result.Reopened || result.Todo.Status != store.TodoStatusInProgress ||
+		len(result.Effects) != 1 || result.Effects[0].Message != "[reopen] review found an unhandled boundary" {
+		t.Fatalf("Start = %+v, err=%v", result, err)
+	}
+}
+
+func TestDoneRequiresAcceptanceEvidenceButRetryRemainsIdempotent(t *testing.T) {
+	withTempWorkStore(t)
+	seedWorkTodos(t, store.Todo{
+		ID: "t1", Title: "Await evidence", Priority: "P1", Status: store.TodoStatusReview,
+		Creator: store.TodoCreatorMe, Created: store.Today(),
+	})
+	call := lifecycleCall(application.ActorHuman, "done-evidence")
+	for _, reason := range []string{"", "通过 ATM 菜单栏完成"} {
+		_, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1", Reason: reason})
+		if !errors.Is(err, application.ErrInvalidArgument) || !strings.Contains(err.Error(), "evidence") {
+			t.Fatalf("Done(%q) error = %v", reason, err)
+		}
+	}
+	result, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1", Reason: "reviewed output and reran tests"})
+	if err != nil || result.Todo.ClosedReason == nil || *result.Todo.ClosedReason != "reviewed output and reran tests" {
+		t.Fatalf("Done = %+v, err=%v", result, err)
+	}
+	if _, err := Default.Done(context.Background(), lifecycleCall(application.ActorHuman, "done-retry-evidence"), CloseInput{TodoID: "t1"}); err != nil {
+		t.Fatalf("idempotent retry required evidence again: %v", err)
 	}
 }
 
@@ -136,7 +180,9 @@ func TestDoneRollsBackLifecycleWakeAndOutboxWhenUnbindFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = Default.Done(context.Background(), lifecycleCall(application.ActorHuman, "done-rollback"), CloseInput{TodoID: "t1"})
+	_, err = Default.Done(context.Background(), lifecycleCall(application.ActorHuman, "done-rollback"), CloseInput{
+		TodoID: "t1", Reason: "verified before injected rollback",
+	})
 	if !errors.Is(err, application.ErrUnavailable) {
 		t.Fatalf("Done error = %v, want unavailable", err)
 	}

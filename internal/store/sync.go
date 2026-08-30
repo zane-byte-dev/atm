@@ -81,9 +81,13 @@ func syncAgent(db *sql.DB, a parser.Agent) (int, error) {
 		}
 
 		var oldMtime, oldSize, oldOffset int64
-		row := db.QueryRow("SELECT mtime_unix, size_bytes, offset_bytes FROM sync_state WHERE file_path = ?", fp)
-		known := row.Scan(&oldMtime, &oldSize, &oldOffset) == nil
-		if known && !virtual && oldMtime == mtime && oldSize == size {
+		var storedParserVersion int
+		row := db.QueryRow(`SELECT st.mtime_unix, st.size_bytes, st.offset_bytes,
+			COALESCE((SELECT MAX(s.parser_version) FROM sessions s WHERE s.file_path = st.file_path), 0)
+			FROM sync_state st WHERE st.file_path = ?`, fp)
+		known := row.Scan(&oldMtime, &oldSize, &oldOffset, &storedParserVersion) == nil
+		parserCurrent := storedParserVersion >= parser.CurrentSessionParserVersion
+		if known && parserCurrent && !virtual && oldMtime == mtime && oldSize == size {
 			continue
 		}
 
@@ -92,7 +96,7 @@ func syncAgent(db *sql.DB, a parser.Agent) (int, error) {
 		// whether it supports this (ParseAppend returns nil otherwise). The
 		// boundary guard rejects offsets that no longer land on a record boundary,
 		// which indicates the file was rewritten rather than appended.
-		if known && !virtual && oldOffset > 0 && size > oldOffset &&
+		if known && parserCurrent && !virtual && oldOffset > 0 && size > oldOffset &&
 			parser.OffsetOnRecordBoundary(fp, oldOffset) {
 			if p := a.ParseAppend(fp, oldOffset); p != nil {
 				if err := appendSession(db, p, fp, agent, mtime, size); err != nil {
@@ -121,6 +125,7 @@ func syncAgent(db *sql.DB, a parser.Agent) (int, error) {
 
 func upsertSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, size int64) error {
 	p.Project = config.CanonicalProject(p.Project)
+	normalizeParsedSession(p)
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -146,34 +151,19 @@ func upsertSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, si
 	if lastTS == 0 {
 		lastTS = mtime
 	}
-	if _, err = tx.Exec(`INSERT INTO sessions (id, short_id, agent, project, file_path, created_at, created_ts, summary, last_ts)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.SessionID, p.ShortID, p.Agent, p.Project, fp, p.CreatedAt, p.CreatedTS, p.Summary, lastTS); err != nil {
+	if _, err = tx.Exec(`INSERT INTO sessions (id, short_id, agent, project, file_path, created_at, created_ts,
+		summary, last_ts, resume_id, root_session_id, parent_session_id, agent_path, agent_nickname,
+		subagent_depth, is_subagent, is_internal, parser_version, content_state, result_status,
+		latest_progress, final_result)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.SessionID, p.ShortID, p.Agent, p.Project, fp, p.CreatedAt, p.CreatedTS, p.Summary, lastTS,
+		p.ResumeID, p.RootSessionID, p.ParentSessionID, p.AgentPath, p.AgentNickname,
+		p.SubagentDepth, p.IsSubagent, p.IsInternal, p.ParserVersion, p.ContentState, p.ResultStatus,
+		p.LatestProgress, p.FinalResult); err != nil {
 		return err
 	}
-	seq := 0
-	if len(p.Messages) > 0 {
-		for _, m := range p.Messages {
-			if err := execTx(tx, "INSERT INTO messages (session_id, seq, role, content, ts) VALUES (?, ?, ?, ?, ?)", p.SessionID, seq, m.Role, m.Content, m.TS); err != nil {
-				return err
-			}
-			seq++
-		}
-	} else {
-		for i, input := range p.Inputs {
-			if err := execTx(tx, "INSERT INTO messages (session_id, seq, role, content, ts) VALUES (?, ?, 'user', ?, ?)",
-				p.SessionID, seq, input.Content, input.TS); err != nil {
-				return err
-			}
-			seq++
-			if i < len(p.Outputs) {
-				if err := execTx(tx, "INSERT INTO messages (session_id, seq, role, content, ts) VALUES (?, ?, 'assistant', ?, ?)",
-					p.SessionID, seq, p.Outputs[i].Content, p.Outputs[i].TS); err != nil {
-					return err
-				}
-				seq++
-			}
-		}
+	if _, err := insertParsedMessages(tx, p, 0); err != nil {
+		return err
 	}
 
 	for name, count := range p.Tools {
@@ -201,6 +191,7 @@ func upsertSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, si
 // appendSession inserts only the newly parsed messages/tools/usage onto an
 // existing session without rewriting prior rows.
 func appendSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, size int64) error {
+	normalizeParsedSession(p)
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -221,28 +212,8 @@ func appendSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, si
 		return err
 	}
 
-	if len(p.Messages) > 0 {
-		for _, m := range p.Messages {
-			if err := execTx(tx, "INSERT INTO messages (session_id, seq, role, content, ts) VALUES (?, ?, ?, ?, ?)", p.SessionID, seq, m.Role, m.Content, m.TS); err != nil {
-				return err
-			}
-			seq++
-		}
-	} else {
-		for i, input := range p.Inputs {
-			if err := execTx(tx, "INSERT INTO messages (session_id, seq, role, content, ts) VALUES (?, ?, 'user', ?, ?)",
-				p.SessionID, seq, input.Content, input.TS); err != nil {
-				return err
-			}
-			seq++
-			if i < len(p.Outputs) {
-				if err := execTx(tx, "INSERT INTO messages (session_id, seq, role, content, ts) VALUES (?, ?, 'assistant', ?, ?)",
-					p.SessionID, seq, p.Outputs[i].Content, p.Outputs[i].TS); err != nil {
-					return err
-				}
-				seq++
-			}
-		}
+	if _, err := insertParsedMessages(tx, p, seq); err != nil {
+		return err
 	}
 
 	for name, count := range p.Tools {
@@ -257,7 +228,17 @@ func appendSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, si
 	}
 
 	if p.LastTS != 0 {
-		if err := execTx(tx, "UPDATE sessions SET last_ts = ? WHERE id = ?", p.LastTS, p.SessionID); err != nil {
+		if err := execTx(tx, `UPDATE sessions SET last_ts = ?, parser_version = ?,
+			content_state = CASE WHEN content_state IN ('empty','control_only') AND ? = 'available'
+				THEN ? ELSE content_state END,
+			result_status = CASE WHEN ? = 'completed' THEN 'completed'
+				WHEN result_status = 'completed' THEN result_status
+				WHEN ? <> 'unknown' THEN ? ELSE result_status END,
+			latest_progress = CASE WHEN ? <> '' THEN ? ELSE latest_progress END,
+			final_result = CASE WHEN ? <> '' THEN ? ELSE final_result END
+			WHERE id = ?`, p.LastTS, p.ParserVersion, p.ContentState, p.ContentState,
+			p.ResultStatus, p.ResultStatus, p.ResultStatus, p.LatestProgress, p.LatestProgress,
+			p.FinalResult, p.FinalResult, p.SessionID); err != nil {
 			return err
 		}
 	}
@@ -272,6 +253,147 @@ func appendSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, si
 	}
 
 	return tx.Commit()
+}
+
+func normalizeParsedSession(p *parser.ParsedFile) {
+	if p.ParserVersion <= 0 {
+		p.ParserVersion = parser.CurrentSessionParserVersion
+	}
+	if strings.TrimSpace(p.ResumeID) == "" {
+		p.ResumeID = p.SessionID
+	}
+	if p.ParentSessionID != "" || p.RootSessionID != "" || p.AgentPath != "" || p.SubagentDepth > 0 {
+		p.IsSubagent = true
+	}
+	if p.ResultStatus == "" {
+		switch {
+		case strings.TrimSpace(p.FinalResult) != "":
+			p.ResultStatus = parser.SessionResultCompleted
+		case strings.TrimSpace(p.LatestProgress) != "":
+			p.ResultStatus = parser.SessionResultInProgress
+		default:
+			p.ResultStatus = parser.SessionResultUnknown
+		}
+	}
+	if p.ContentState == "" {
+		p.ContentState = parser.ContentStateEmpty
+		currentTurnControl := false
+		for _, message := range p.Messages {
+			if strings.TrimSpace(message.Content) == "" {
+				continue
+			}
+			control := message.Scope == parser.MessageScopeControl ||
+				message.Kind == parser.MessageKindControl || message.Role == "developer" || message.Role == "system"
+			if message.Role == "user" {
+				control = control || parser.VisibleUserText(message.Content) == ""
+				currentTurnControl = control
+			} else if message.Role == "assistant" && currentTurnControl && !p.IsSubagent {
+				control = true
+			}
+			if control {
+				p.ContentState = parser.ContentStateControlOnly
+				continue
+			}
+			p.ContentState = parser.ContentStateAvailable
+			break
+		}
+		if len(p.Messages) == 0 {
+			for _, input := range p.Inputs {
+				if parser.VisibleUserText(input.Content) != "" {
+					p.ContentState = parser.ContentStateAvailable
+					break
+				}
+				p.ContentState = parser.ContentStateControlOnly
+			}
+			if len(p.Outputs) > len(p.Inputs) {
+				p.ContentState = parser.ContentStateAvailable
+			}
+			if p.IsSubagent && len(p.Outputs) > 0 {
+				p.ContentState = parser.ContentStateAvailable
+			}
+		}
+		if p.ContentState == parser.ContentStateEmpty && strings.TrimSpace(p.Summary) != "" {
+			p.ContentState = parser.ContentStateEphemeral
+		}
+	}
+}
+
+func insertParsedMessages(tx *sql.Tx, p *parser.ParsedFile, seq int) (int, error) {
+	if len(p.Messages) > 0 {
+		currentTurnControl := false
+		for _, message := range p.Messages {
+			scope := strings.TrimSpace(message.Scope)
+			if scope == "" {
+				scope = parser.MessageScopeLocal
+			}
+			kind := strings.TrimSpace(message.Kind)
+			if kind == "" {
+				kind = parser.MessageKindConversation
+			}
+			if message.Role == "developer" || message.Role == "system" {
+				scope, kind = parser.MessageScopeControl, parser.MessageKindControl
+			}
+			content := message.Content
+			if message.Role == "user" && scope == parser.MessageScopeLocal && kind == parser.MessageKindConversation {
+				content = parser.VisibleUserText(content)
+				if strings.TrimSpace(content) == "" {
+					content = message.Content
+					scope, kind = parser.MessageScopeControl, parser.MessageKindControl
+				}
+			}
+			if message.Role == "user" {
+				currentTurnControl = scope == parser.MessageScopeControl || kind == parser.MessageKindControl
+			} else if message.Role == "assistant" && currentTurnControl && !p.IsSubagent {
+				scope, kind = parser.MessageScopeControl, parser.MessageKindControl
+			}
+			if err := execTx(tx, `INSERT INTO messages
+				(session_id, seq, role, content, ts, scope, kind, phase)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, p.SessionID, seq, message.Role,
+				content, message.TS, scope, kind, message.Phase); err != nil {
+				return seq, err
+			}
+			seq++
+		}
+		return seq, nil
+	}
+	for index, input := range p.Inputs {
+		content := parser.VisibleUserText(input.Content)
+		scope, kind := parser.MessageScopeLocal, parser.MessageKindConversation
+		if strings.TrimSpace(content) == "" {
+			content = input.Content
+			scope, kind = parser.MessageScopeControl, parser.MessageKindControl
+		}
+		if err := execTx(tx, `INSERT INTO messages
+			(session_id, seq, role, content, ts, scope, kind)
+			VALUES (?, ?, 'user', ?, ?, ?, ?)`,
+			p.SessionID, seq, content, input.TS, scope, kind); err != nil {
+			return seq, err
+		}
+		seq++
+		if index < len(p.Outputs) {
+			outputScope, outputKind := scope, kind
+			if p.IsSubagent {
+				outputScope, outputKind = parser.MessageScopeLocal, parser.MessageKindConversation
+			}
+			if err := execTx(tx, `INSERT INTO messages
+				(session_id, seq, role, content, ts, scope, kind)
+				VALUES (?, ?, 'assistant', ?, ?, ?, ?)`,
+				p.SessionID, seq, p.Outputs[index].Content, p.Outputs[index].TS, outputScope, outputKind); err != nil {
+				return seq, err
+			}
+			seq++
+		}
+	}
+	for index := len(p.Inputs); index < len(p.Outputs); index++ {
+		if err := execTx(tx, `INSERT INTO messages
+			(session_id, seq, role, content, ts, scope, kind)
+			VALUES (?, ?, 'assistant', ?, ?, 'local', 'conversation')`,
+			p.SessionID, seq, p.Outputs[index].Content, p.Outputs[index].TS); err != nil {
+			return seq, err
+		}
+		seq++
+	}
+	return seq, nil
 }
 
 // syncUsage records the file's token usage: the individual requests, then the

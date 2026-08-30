@@ -12,6 +12,9 @@ struct ATMRangeData {
 	let skillStats: [ATMSkillStats]
     let projectStats: [ATMProjectStats]
     let speed: ATMSpeedStats
+    /// Coverage and pricing provenance for this exact window. Older CLIs omit
+    /// this additive field, so `nil` means "quality not reported", not 0%.
+    let quality: ATMStatsQuality?
 
     init(
         startDate: String = "",
@@ -20,7 +23,8 @@ struct ATMRangeData {
         sessions: [ATMSessionSummary],
         skillStats: [ATMSkillStats] = [],
         projectStats: [ATMProjectStats] = [],
-        speed: ATMSpeedStats = .empty
+        speed: ATMSpeedStats = .empty,
+        quality: ATMStatsQuality? = nil
     ) {
         self.startDate = startDate
         self.endDate = endDate
@@ -29,6 +33,7 @@ struct ATMRangeData {
         self.skillStats = skillStats
         self.projectStats = projectStats
         self.speed = speed
+        self.quality = quality
     }
 
     /// Whether the CLI sent this window's bounds. Without them `contains` matches
@@ -46,6 +51,106 @@ struct ATMRangeData {
     }
 
     static let empty = ATMRangeData(modelStats: [], sessions: [])
+}
+
+/// Explains how complete a usage window is instead of presenting partial or
+/// estimated values as exact. Percent fields arrive from the CLI on a 0...100
+/// scale; `estimatedCostShare` is a conventional 0...1 ratio.
+struct ATMStatsQuality: Decodable, Equatable {
+    let activeSessions: Int
+    let tokenSessions: Int
+    let sessionCoveragePercent: Double
+    let activeAgents: Int
+    let tokenAgents: Int
+    let agentCoveragePercent: Double
+    let requests: Int
+    let detailedRequests: Int
+    let aggregateRequests: Int
+    let requestCoveragePercent: Double
+    let speedRequests: Int
+    let speedSampledRequests: Int
+    let speedSamplePercent: Double
+    let untimedRequests: Int
+    let outOfWindowRequests: Int
+    let costUSD: Double
+    let estimatedCostUSD: Double
+    let estimatedCostShare: Double
+    let pricingSources: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case activeSessions = "active_sessions"
+        case tokenSessions = "token_sessions"
+        case sessionCoveragePercent = "session_coverage_percent"
+        case activeAgents = "active_agents"
+        case tokenAgents = "token_agents"
+        case agentCoveragePercent = "agent_coverage_percent"
+        case requests
+        case detailedRequests = "detailed_requests"
+        case aggregateRequests = "aggregate_requests"
+        case requestCoveragePercent = "request_coverage_percent"
+        case speedRequests = "speed_requests"
+        case speedSampledRequests = "speed_sampled_requests"
+        case speedSamplePercent = "speed_sample_percent"
+        case untimedRequests = "untimed_requests"
+        case outOfWindowRequests = "out_of_window_requests"
+        case costUSD = "cost_usd"
+        case estimatedCostUSD = "estimated_cost_usd"
+        case estimatedCostShare = "estimated_cost_share"
+        case pricingSources = "pricing_sources"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        activeSessions = try values.decodeIfPresent(Int.self, forKey: .activeSessions) ?? 0
+        tokenSessions = try values.decodeIfPresent(Int.self, forKey: .tokenSessions) ?? 0
+        sessionCoveragePercent = try values.decodeIfPresent(Double.self, forKey: .sessionCoveragePercent) ?? 0
+        activeAgents = try values.decodeIfPresent(Int.self, forKey: .activeAgents) ?? 0
+        tokenAgents = try values.decodeIfPresent(Int.self, forKey: .tokenAgents) ?? 0
+        agentCoveragePercent = try values.decodeIfPresent(Double.self, forKey: .agentCoveragePercent) ?? 0
+        requests = try values.decodeIfPresent(Int.self, forKey: .requests) ?? 0
+        detailedRequests = try values.decodeIfPresent(Int.self, forKey: .detailedRequests) ?? 0
+        aggregateRequests = try values.decodeIfPresent(Int.self, forKey: .aggregateRequests) ?? 0
+        requestCoveragePercent = try values.decodeIfPresent(Double.self, forKey: .requestCoveragePercent) ?? 0
+        speedRequests = try values.decodeIfPresent(Int.self, forKey: .speedRequests) ?? 0
+        speedSampledRequests = try values.decodeIfPresent(Int.self, forKey: .speedSampledRequests) ?? 0
+        speedSamplePercent = try values.decodeIfPresent(Double.self, forKey: .speedSamplePercent) ?? 0
+        untimedRequests = try values.decodeIfPresent(Int.self, forKey: .untimedRequests) ?? 0
+        outOfWindowRequests = try values.decodeIfPresent(Int.self, forKey: .outOfWindowRequests) ?? 0
+        costUSD = try values.decodeIfPresent(Double.self, forKey: .costUSD) ?? 0
+        estimatedCostUSD = try values.decodeIfPresent(Double.self, forKey: .estimatedCostUSD) ?? 0
+        estimatedCostShare = try values.decodeIfPresent(Double.self, forKey: .estimatedCostShare) ?? 0
+        pricingSources = try values.decodeIfPresent([String].self, forKey: .pricingSources) ?? []
+    }
+
+    var limitations: [String] {
+        var values: [String] = []
+        if activeSessions > 0, tokenSessions < activeSessions {
+            values.append("Token 覆盖 \(Self.percent100(sessionCoveragePercent))（\(tokenSessions)/\(activeSessions) 个会话）")
+        }
+        if requests > 0, detailedRequests < requests {
+            values.append("请求明细覆盖 \(Self.percent100(requestCoveragePercent))（\(detailedRequests)/\(requests)）")
+        }
+        if speedRequests > 0, speedSampledRequests < speedRequests {
+            values.append("速度采样覆盖 \(Self.percent100(speedSamplePercent))（\(speedSampledRequests)/\(speedRequests)）")
+        }
+        if estimatedCostUSD > 0 {
+            values.append("费用中 \(NumberFormat.percent(estimatedCostShare)) 为估算")
+        }
+        return values
+    }
+
+    var details: String {
+        var values = limitations
+        if aggregateRequests > 0 { values.append("聚合请求：\(aggregateRequests)") }
+        if untimedRequests > 0 { values.append("无耗时请求：\(untimedRequests)") }
+        if outOfWindowRequests > 0 { values.append("窗口外请求：\(outOfWindowRequests)") }
+        if !pricingSources.isEmpty { values.append("定价来源：\(pricingSources.joined(separator: "、"))") }
+        return values.joined(separator: "\n")
+    }
+
+    private static func percent100(_ value: Double) -> String {
+        String(format: "%.0f%%", value)
+    }
 }
 
 enum ATMDashboardContract {
@@ -116,9 +221,10 @@ struct ATMDashboardRangeEnvelope: Decodable {
     let skillStats: [ATMSkillStats]
     let projectStats: [ATMProjectStats]
     let speed: ATMSpeedStats
+    let quality: ATMStatsQuality?
 
     enum CodingKeys: String, CodingKey {
-        case sessions, speed
+        case sessions, speed, quality
         case startDate = "start_date"
         case endDate = "end_date"
         case modelStats = "model_stats"
@@ -135,6 +241,7 @@ struct ATMDashboardRangeEnvelope: Decodable {
         skillStats = try values.decodeIfPresent([ATMSkillStats].self, forKey: .skillStats) ?? []
         projectStats = try values.decodeIfPresent([ATMProjectStats].self, forKey: .projectStats) ?? []
         speed = try values.decodeIfPresent(ATMSpeedStats.self, forKey: .speed) ?? .empty
+        quality = try values.decodeIfPresent(ATMStatsQuality.self, forKey: .quality)
     }
 }
 
@@ -210,7 +317,8 @@ struct ATMDashboardEnvelope: Decodable {
                 sessions: value.sessions,
                 skillStats: value.skillStats,
                 projectStats: value.projectStats,
-                speed: value.speed
+                speed: value.speed,
+                quality: value.quality
             )
         }
         return ATMDashboardSnapshot(

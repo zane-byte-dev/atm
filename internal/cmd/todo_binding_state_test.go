@@ -67,7 +67,7 @@ func TestNonWorkingTodoTransitionsUnbindSessions(t *testing.T) {
 		if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "bulk-session", TodoID: "t2"}); err != nil {
 			t.Fatal(err)
 		}
-		todoBulkReasonFlag = ""
+		todoBulkReasonFlag = "verified bulk transition output"
 		if err := runTodoBulk(todoBulkCmd, []string{"done", "t2"}); err != nil {
 			t.Fatalf("bulk done: %v", err)
 		}

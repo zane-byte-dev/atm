@@ -265,6 +265,7 @@ func DiscoverCodex() []string {
 }
 
 func CodexParseFile(fp string) *ParsedFile {
+	metadata := codexLiveMetadata(fp)
 	stem := strings.TrimSuffix(filepath.Base(fp), ".jsonl")
 	fullID := stem
 	shortID := stem
@@ -290,10 +291,11 @@ func CodexParseFile(fp string) *ParsedFile {
 	sawPreciseTS := false
 
 	var userInputs, assistantOutputs []Message
+	var transcriptMessages []TranscriptMessage
 	tools := map[string]int{}
 	var skills []SkillEvent
-	cwd := ""
-	threadID := ""
+	cwd := metadata.CWD
+	threadID := metadata.ResumeID
 	curAssistant := ""
 	var curAssistantTS int64
 	var usage Usage
@@ -301,6 +303,8 @@ func CodexParseFile(fp string) *ParsedFile {
 	var previousTotal [3]int64
 	var sawTotal bool
 	var timing durationTracker
+	seenStructuredMessages := map[string]int64{}
+	legacyUnboundedSubagent := metadata.IsSubagent && !metadata.HasHistoryStartOrdinal
 
 	scanJSONL(fp, func(r map[string]any) bool {
 		p := config.GetMap(r, "payload")
@@ -320,16 +324,43 @@ func CodexParseFile(fp string) *ParsedFile {
 			}
 		}
 		typ := config.GetStr(r, "type")
+		ownRecord := !metadata.IsSubagent || !metadata.HasHistoryStartOrdinal || codexRecordBelongsToLiveSession(r, metadata)
+		if !ownRecord {
+			// Keep only the copied lineage's last cumulative total as the baseline
+			// for old logs whose first own token_count lacks last_token_usage. The
+			// copied request itself must not become usage owned by this child.
+			if typ == "event_msg" && config.GetStr(p, "type") == "token_count" {
+				if info := config.GetMap(p, "info"); info != nil {
+					if totalUsage := config.GetMap(info, "total_token_usage"); totalUsage != nil {
+						inTok, _ := config.GetFloat(totalUsage, "input_tokens")
+						outTok, _ := config.GetFloat(totalUsage, "output_tokens")
+						cached, _ := config.GetFloat(totalUsage, "cached_input_tokens")
+						previousTotal = [3]int64{int64(inTok), int64(outTok), int64(cached)}
+						sawTotal = true
+					}
+				}
+			}
+			return true
+		}
+		// Old spawned rollouts copied their entire parent transcript but carried no
+		// ordinal boundary.  There is no honest way to tell the child's rows from
+		// the inherited ones, so quarantine the ambiguous payload rather than
+		// presenting the parent's prompts, tools, and spend as the child's.  The
+		// lineage row itself is still indexed and can be grouped under its root.
+		if (legacyUnboundedSubagent || metadata.IsInternalSubagent) && typ != "session_meta" {
+			return true
+		}
 		codexTrackTiming(&timing, typ, p, recordTSMS)
 		if typ == "session_meta" {
-			cwd = config.GetStr(p, "cwd")
-			// The thread id is what Codex keys its own generated titles by; the
-			// rollout filename only carries it as a suffix.
-			if threadID == "" {
+			// codexLiveMetadata owns the canonical first session_meta. Retain the
+			// old fallback only for malformed files whose head had no metadata.
+			if !metadata.HasSessionMeta {
+				cwd = config.GetStr(p, "cwd")
 				threadID = strings.TrimSpace(config.GetStr(p, "id"))
 				if threadID == "" {
 					threadID = strings.TrimSpace(config.GetStr(p, "session_id"))
 				}
+				metadata.HasSessionMeta = true
 			}
 		} else if typ == "turn_context" {
 			if m := config.GetStr(p, "model"); m != "" {
@@ -394,6 +425,22 @@ func CodexParseFile(fp string) *ParsedFile {
 					sawTotal = true
 				}
 			}
+		} else if typ == "event_msg" && config.GetStr(p, "type") == "agent_message" {
+			message := strings.TrimSpace(config.GetStr(p, "message"))
+			kind, phase := codexAssistantMessageKind(config.GetStr(p, "phase"))
+			key := kind + "\x00" + message
+			if previousTS, duplicate := seenStructuredMessages[key]; message != "" && (!duplicate || previousTS != recordTS) {
+				seenStructuredMessages[key] = recordTS
+				transcriptMessages = append(transcriptMessages, TranscriptMessage{
+					Role: "assistant", Content: message, TS: recordTS,
+					Scope: MessageScopeLocal, Kind: kind, Phase: phase,
+				})
+				if kind == MessageKindFinal {
+					metadata.FinalResult = message
+				} else if kind == MessageKindProgress {
+					metadata.LatestProgress = message
+				}
+			}
 		} else if typ == "response_item" {
 			role := config.GetStr(p, "role")
 			if role == "user" {
@@ -402,33 +449,86 @@ func CodexParseFile(fp string) *ParsedFile {
 					curAssistant = ""
 					curAssistantTS = 0
 				}
-				content := config.GetSlice(p, "content")
-				for _, c := range content {
+				var userText string
+				for _, c := range config.GetSlice(p, "content") {
 					if m, ok := c.(map[string]any); ok {
 						if config.GetStr(m, "type") == "input_text" {
-							t := config.GetStr(m, "text")
+							t := VisibleUserText(config.GetStr(m, "text"))
 							if len(strings.TrimSpace(t)) > 2 && !isCodexNoise(t) {
-								userInputs = append(userInputs, Message{Content: t, TS: recordTS})
+								userText = appendTextBlock(userText, t)
 							}
 						}
 					}
 				}
+				if userText != "" {
+					userInputs = append(userInputs, Message{Content: userText, TS: recordTS})
+					scope, kind := MessageScopeLocal, MessageKindConversation
+					if metadata.IsSubagent {
+						scope, kind = MessageScopeControl, MessageKindControl
+					}
+					transcriptMessages = append(transcriptMessages, TranscriptMessage{
+						Role: "user", Content: userText, TS: recordTS, Scope: scope, Kind: kind,
+					})
+				}
 			} else if role == "assistant" {
-				content := config.GetSlice(p, "content")
-				for _, c := range content {
+				var responseText string
+				for _, c := range config.GetSlice(p, "content") {
 					if m, ok := c.(map[string]any); ok {
 						if config.GetStr(m, "type") == "output_text" {
 							txt := strings.TrimSpace(config.GetStr(m, "text"))
 							if len(txt) > 2 && !strings.HasPrefix(txt, "{") {
 								curAssistant = appendTextBlock(curAssistant, txt)
+								responseText = appendTextBlock(responseText, txt)
 								curAssistantTS = recordTS
 							}
 						}
 					}
 				}
-			} else if config.GetStr(p, "type") == "function_call" {
-				name := config.GetStr(p, "name")
-				tools[name]++
+				if responseText != "" {
+					kind, phase := codexAssistantMessageKind(config.GetStr(p, "phase"))
+					key := kind + "\x00" + responseText
+					if previousTS, duplicate := seenStructuredMessages[key]; !duplicate || previousTS != recordTS {
+						seenStructuredMessages[key] = recordTS
+						transcriptMessages = append(transcriptMessages, TranscriptMessage{
+							Role: "assistant", Content: responseText, TS: recordTS,
+							Scope: MessageScopeLocal, Kind: kind, Phase: phase,
+						})
+					}
+					if kind == MessageKindFinal {
+						metadata.FinalResult = responseText
+					} else if kind == MessageKindProgress {
+						metadata.LatestProgress = responseText
+					}
+				}
+			} else if config.GetStr(p, "type") == "agent_message" {
+				if len(userInputs) > 0 && curAssistant != "" {
+					assistantOutputs = append(assistantOutputs, Message{Content: curAssistant, TS: curAssistantTS})
+					curAssistant = ""
+					curAssistantTS = 0
+				}
+				var delegatedText string
+				for _, c := range config.GetSlice(p, "content") {
+					if m, ok := c.(map[string]any); ok && config.GetStr(m, "type") == "input_text" {
+						text := strings.TrimSpace(config.GetStr(m, "text"))
+						if len(text) > 2 && !isCodexNoise(text) {
+							delegatedText = appendTextBlock(delegatedText, text)
+						}
+					}
+				}
+				if delegatedText != "" {
+					// Preserve it as a title fallback for a child card, but mark it as
+					// control input so it is not a human query and is not searchable.
+					userInputs = append(userInputs, Message{Content: delegatedText, TS: recordTS})
+					transcriptMessages = append(transcriptMessages, TranscriptMessage{
+						Role: "user", Content: delegatedText, TS: recordTS,
+						Scope: MessageScopeControl, Kind: MessageKindControl,
+					})
+				}
+			} else if payloadType := config.GetStr(p, "type"); payloadType == "function_call" || payloadType == "custom_tool_call" || payloadType == "tool_search_call" {
+				name := strings.TrimSpace(config.GetStr(p, "name"))
+				if name != "" {
+					tools[name]++
+				}
 				skill := skillFromToolCall(name, config.GetMap(p, "input"))
 				if skill == "" {
 					skill = skillFromJSONArguments(config.GetStr(p, "arguments"))
@@ -441,29 +541,75 @@ func CodexParseFile(fp string) *ParsedFile {
 	if curAssistant != "" {
 		assistantOutputs = append(assistantOutputs, Message{Content: curAssistant, TS: curAssistantTS})
 	}
-	if len(userInputs) == 0 && len(tools) == 0 {
+	if len(userInputs) == 0 && len(tools) == 0 && len(transcriptMessages) == 0 && !metadata.HasSessionMeta {
 		return nil
 	}
 	project := ""
 	if cwd != "" {
 		project = config.ProjectFromPath(cwd)
 	}
+	summary := codexSummary(threadID, userInputs)
+	contentState := ContentStateEmpty
+	for _, message := range transcriptMessages {
+		if message.Scope == MessageScopeLocal && message.Kind != MessageKindControl {
+			contentState = ContentStateAvailable
+			break
+		}
+		contentState = ContentStateControlOnly
+	}
+	if legacyUnboundedSubagent || metadata.IsInternalSubagent {
+		contentState = ContentStateControlOnly
+	} else if contentState == ContentStateEmpty && summary != "" {
+		contentState = ContentStateEphemeral
+	}
+	resultStatus := SessionResultUnknown
+	if metadata.FinalResult != "" {
+		resultStatus = SessionResultCompleted
+	} else if metadata.LatestProgress != "" {
+		resultStatus = SessionResultInProgress
+	}
 	return &ParsedFile{
-		SessionID:   fullID,
-		ShortID:     shortID,
-		Agent:       "codex",
-		Project:     project,
-		CreatedAt:   createdAt,
-		CreatedTS:   createdTS,
-		LastTS:      lastTS,
-		Summary:     codexSummary(threadID, userInputs),
-		Inputs:      userInputs,
-		Outputs:     assistantOutputs,
-		Tools:       tools,
-		Skills:      compactSkillEvents(skills),
-		Usage:       usage,
-		UsageEvents: usageEvents,
-		EndOffset:   fileSize(fp),
+		SessionID:       fullID,
+		ShortID:         shortID,
+		Agent:           "codex",
+		Project:         project,
+		CreatedAt:       createdAt,
+		CreatedTS:       createdTS,
+		LastTS:          lastTS,
+		Summary:         summary,
+		ResumeID:        metadata.ResumeID,
+		RootSessionID:   metadata.RootSessionID,
+		ParentSessionID: metadata.ParentSessionID,
+		AgentPath:       metadata.AgentPath,
+		AgentNickname:   metadata.AgentNickname,
+		SubagentDepth:   metadata.SubagentDepth,
+		IsSubagent:      metadata.IsSubagent,
+		IsInternal:      metadata.IsInternalSubagent,
+		ParserVersion:   CurrentSessionParserVersion,
+		ContentState:    contentState,
+		ResultStatus:    resultStatus,
+		LatestProgress:  truncateText(metadata.LatestProgress, 1_000),
+		FinalResult:     truncateText(metadata.FinalResult, 4_000),
+		Inputs:          userInputs,
+		Outputs:         assistantOutputs,
+		Messages:        transcriptMessages,
+		Tools:           tools,
+		Skills:          compactSkillEvents(skills),
+		Usage:           usage,
+		UsageEvents:     usageEvents,
+		EndOffset:       fileSize(fp),
+	}
+}
+
+func codexAssistantMessageKind(rawPhase string) (kind, phase string) {
+	phase = strings.ToLower(strings.TrimSpace(rawPhase))
+	switch phase {
+	case "commentary":
+		return MessageKindProgress, phase
+	case "final_answer":
+		return MessageKindFinal, phase
+	default:
+		return MessageKindConversation, phase
 	}
 }
 
@@ -494,7 +640,17 @@ func codexTrackTiming(timing *durationTracker, typ string, payload map[string]an
 			return
 		}
 		switch payloadType {
-		case "reasoning", "agent_message", "custom_tool_call", "function_call", "tool_search_call":
+		case "agent_message":
+			// Current collaboration messages carry direction explicitly and are
+			// context delivered to this rollout. Legacy role-less agent_message
+			// records have no direction and represented model output.
+			if strings.TrimSpace(config.GetStr(payload, "author")) != "" ||
+				strings.TrimSpace(config.GetStr(payload, "recipient")) != "" {
+				timing.Input(ms)
+			} else {
+				timing.Output(ms)
+			}
+		case "reasoning", "custom_tool_call", "function_call", "tool_search_call":
 			timing.Output(ms)
 		case "function_call_output", "custom_tool_call_output", "tool_search_output":
 			timing.Input(ms)
@@ -569,6 +725,165 @@ func isCodexNoise(txt string) bool {
 	return false
 }
 
+// codexLiveSessionMetadata is the identity carried by the rollout's own first
+// session_meta record. A spawned subagent copies parent history into its JSONL,
+// including older session_meta rows, so later metadata must never overwrite it.
+type codexLiveSessionMetadata struct {
+	ResumeID               string
+	RootSessionID          string
+	ParentSessionID        string
+	AgentPath              string
+	AgentNickname          string
+	SubagentDepth          int
+	Client                 string
+	CWD                    string
+	StartedAt              time.Time
+	Model                  string
+	FirstQ                 string
+	LatestProgress         string
+	FinalResult            string
+	HistoryStartOrdinal    int
+	HasHistoryStartOrdinal bool
+	IsSubagent             bool
+	IsInternalSubagent     bool
+	HasSessionMeta         bool
+}
+
+func codexLiveMetadata(path string) codexLiveSessionMetadata {
+	var metadata codexLiveSessionMetadata
+	sawSessionMeta := false
+	for _, record := range config.HeadJSONL(path, 30) {
+		if metadata.StartedAt.IsZero() {
+			metadata.StartedAt, _ = time.Parse(time.RFC3339Nano, config.GetStr(record, "timestamp"))
+		}
+		typ := config.GetStr(record, "type")
+		payload := config.GetMap(record, "payload")
+		if payload == nil {
+			payload = map[string]any{}
+		}
+		if typ == "session_meta" && !sawSessionMeta {
+			sawSessionMeta = true
+			metadata.HasSessionMeta = true
+			metadata.ResumeID = strings.TrimSpace(config.GetStr(payload, "id"))
+			metadata.RootSessionID = strings.TrimSpace(config.GetStr(payload, "session_id"))
+			metadata.AgentPath = strings.TrimSpace(config.GetStr(payload, "agent_path"))
+			metadata.AgentNickname = strings.TrimSpace(config.GetStr(payload, "agent_nickname"))
+			metadata.Client = config.GetStr(payload, "originator")
+			metadata.CWD = config.GetStr(payload, "cwd")
+
+			source := config.GetMap(payload, "source")
+			_, sourceHasSubagent := source["subagent"]
+			subagent := config.GetMap(source, "subagent")
+			spawn := config.GetMap(subagent, "thread_spawn")
+			if metadata.AgentPath == "" {
+				metadata.AgentPath = strings.TrimSpace(config.GetStr(spawn, "agent_path"))
+			}
+			if metadata.AgentNickname == "" {
+				metadata.AgentNickname = strings.TrimSpace(config.GetStr(spawn, "agent_nickname"))
+			}
+			if depth, ok := config.GetFloat(payload, "subagent_depth"); ok {
+				metadata.SubagentDepth = int(depth)
+			} else if depth, ok := config.GetFloat(spawn, "depth"); ok {
+				metadata.SubagentDepth = int(depth)
+			}
+			if ordinal, ok := config.GetFloat(payload, "subagent_history_start_ordinal"); ok {
+				metadata.HistoryStartOrdinal = int(ordinal)
+				metadata.HasHistoryStartOrdinal = true
+			}
+			threadSource := strings.ToLower(strings.TrimSpace(config.GetStr(payload, "thread_source")))
+			subagentKind := strings.ToLower(strings.TrimSpace(config.GetStr(source, "subagent")))
+			subagentOther := strings.ToLower(strings.TrimSpace(config.GetStr(subagent, "other")))
+			metadata.IsInternalSubagent = threadSource == "guardian_review" || threadSource == "review" ||
+				subagentKind == "guardian" || subagentKind == "review" ||
+				subagentOther == "guardian" || subagentOther == "review"
+			metadata.IsSubagent = threadSource == "subagent" || metadata.IsInternalSubagent ||
+				strings.TrimSpace(config.GetStr(payload, "source")) == "subagent" || sourceHasSubagent ||
+				spawn != nil || metadata.AgentPath != "" || metadata.SubagentDepth > 0 || metadata.HasHistoryStartOrdinal
+			if metadata.ResumeID == "" && metadata.IsSubagent {
+				metadata.ResumeID = codexRolloutThreadID(path)
+			}
+			if metadata.ResumeID == "" {
+				metadata.ResumeID = metadata.RootSessionID
+			}
+			if metadata.IsSubagent {
+				metadata.ParentSessionID = strings.TrimSpace(config.GetStr(payload, "parent_thread_id"))
+				if metadata.ParentSessionID == "" {
+					metadata.ParentSessionID = strings.TrimSpace(config.GetStr(spawn, "parent_thread_id"))
+				}
+				if metadata.ParentSessionID == "" {
+					metadata.ParentSessionID = strings.TrimSpace(config.GetStr(payload, "forked_from_id"))
+				}
+			} else {
+				metadata.RootSessionID = ""
+			}
+			continue
+		}
+		if metadata.Model == "" && typ == "turn_context" && codexRecordBelongsToLiveSession(record, metadata) {
+			if model := config.GetStr(payload, "model"); model != "" {
+				metadata.Model = model
+			}
+		}
+		// Spawned Agent tasks arrive through the collaboration channel, not as a
+		// human user turn. Treating a copied user row as FirstQ gives every child
+		// its parent's title and exposes the parent's prompt on the child card.
+		if !metadata.IsSubagent && typ == "response_item" && metadata.FirstQ == "" && config.GetStr(payload, "role") == "user" {
+			for _, content := range config.GetSlice(payload, "content") {
+				item, ok := content.(map[string]any)
+				if !ok || config.GetStr(item, "type") != "input_text" {
+					continue
+				}
+				text := VisibleUserText(config.GetStr(item, "text"))
+				if len(text) > 2 && !isCodexNoise(text) {
+					metadata.FirstQ = truncateText(text, 200)
+					break
+				}
+			}
+		}
+	}
+	if metadata.Model == "" && metadata.IsSubagent && metadata.HasHistoryStartOrdinal {
+		metadata.Model = codexFirstOwnModel(path, metadata)
+	}
+	return metadata
+}
+
+func codexRolloutThreadID(path string) string {
+	stem := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+	const uuidLength = 36
+	if len(stem) < uuidLength {
+		return ""
+	}
+	candidate := stem[len(stem)-uuidLength:]
+	if candidate[8] != '-' || candidate[13] != '-' || candidate[18] != '-' || candidate[23] != '-' {
+		return ""
+	}
+	return candidate
+}
+
+// codexFirstOwnModel is the bounded fallback for deeply nested subagents whose
+// copied history pushes their first turn_context past the cheap 30-record head
+// read. It streams from the start and stops on the first eligible record, so a
+// live poll pays only through the subagent boundary rather than parsing the
+// rest of a long, still-growing rollout.
+func codexFirstOwnModel(path string, metadata codexLiveSessionMetadata) string {
+	model := ""
+	scanJSONL(path, func(record map[string]any) bool {
+		if !codexRecordBelongsToLiveSession(record, metadata) || config.GetStr(record, "type") != "turn_context" {
+			return true
+		}
+		model = strings.TrimSpace(config.GetStr(config.GetMap(record, "payload"), "model"))
+		return model == ""
+	})
+	return model
+}
+
+func codexRecordBelongsToLiveSession(record map[string]any, metadata codexLiveSessionMetadata) bool {
+	if !metadata.HasHistoryStartOrdinal {
+		return true
+	}
+	ordinal, ok := config.GetFloat(record, "ordinal")
+	return ok && int(ordinal) >= metadata.HistoryStartOrdinal
+}
+
 func CodexLiveSessions(maxAge time.Duration) []Session {
 	var sessions []Session
 	now := time.Now().In(config.Loc)
@@ -584,27 +899,35 @@ func CodexLiveSessions(maxAge time.Duration) []Session {
 			if age > maxAge {
 				continue
 			}
+			metadata := codexLiveMetadata(fp)
+			// Guardian/security-review rollouts are Codex implementation machinery,
+			// not user-returnable sessions. Source metadata is available before the
+			// review process writes its model, so filter it before reading activity.
+			if metadata.IsInternalSubagent || metadata.Model == "codex-auto-review" {
+				continue
+			}
 			records := config.TailJSONL(fp, 40)
-			cwd := ""
+			cwd := metadata.CWD
 			var lastUserMsg string
 			var recentTools []string
 			var lastAssistant string
 			for _, r := range records {
+				if !codexRecordBelongsToLiveSession(r, metadata) {
+					continue
+				}
 				typ := config.GetStr(r, "type")
 				p := config.GetMap(r, "payload")
 				if p == nil {
 					p = map[string]any{}
 				}
-				if typ == "session_meta" {
-					cwd = config.GetStr(p, "cwd")
-				} else if typ == "response_item" {
+				if typ == "response_item" {
 					role := config.GetStr(p, "role")
-					if role == "user" {
+					if role == "user" && !metadata.IsSubagent {
 						content := config.GetSlice(p, "content")
 						for _, c := range content {
 							if m, ok := c.(map[string]any); ok {
 								if config.GetStr(m, "type") == "input_text" {
-									txt := config.GetStr(m, "text")
+									txt := VisibleUserText(config.GetStr(m, "text"))
 									if len(txt) > 2 && !isCodexNoise(txt) {
 										txt = truncateText(txt, 200)
 										lastUserMsg = txt
@@ -625,17 +948,19 @@ func CodexLiveSessions(maxAge time.Duration) []Session {
 								}
 							}
 						}
-					} else if config.GetStr(p, "type") == "function_call" {
-						recentTools = append(recentTools, config.GetStr(p, "name"))
+					} else if payloadType := config.GetStr(p, "type"); payloadType == "function_call" || payloadType == "custom_tool_call" || payloadType == "tool_search_call" {
+						if name := strings.TrimSpace(config.GetStr(p, "name")); name != "" {
+							recentTools = append(recentTools, name)
+						}
 					}
 				}
 			}
-			if message := codexLastEventMessage(fp, "user_message"); message != "" {
+			if message := codexLastEventMessage(fp, "user_message", metadata); message != "" && !metadata.IsSubagent {
 				lastUserMsg = codexVisibleUserMessage(message)
 			}
 			// Keep enough agent_message rows to still fill 10 commentary updates
 			// after final_answer phases are filtered out.
-			agentEvents := codexRecentAgentEvents(fp, 24)
+			agentEvents := codexRecentAgentEvents(fp, 24, metadata)
 			var latestResult string
 			var recentUpdates []string
 			if len(agentEvents) > 0 {
@@ -675,68 +1000,28 @@ func CodexLiveSessions(maxAge time.Duration) []Session {
 			if len(recentTools) > 5 {
 				recentTools = recentTools[len(recentTools)-5:]
 			}
-			var firstQ, model string
-			var resumeID, client, sessionCWD string
-			var startedAt time.Time
-			for _, r := range config.HeadJSONL(fp, 30) {
-				typ := config.GetStr(r, "type")
-				if startedAt.IsZero() {
-					startedAt, _ = time.Parse(time.RFC3339Nano, config.GetStr(r, "timestamp"))
-				}
-				if typ == "session_meta" {
-					payload := config.GetMap(r, "payload")
-					resumeID = config.GetStr(payload, "id")
-					if resumeID == "" {
-						resumeID = config.GetStr(payload, "session_id")
-					}
-					client = config.GetStr(payload, "originator")
-					sessionCWD = config.GetStr(payload, "cwd")
-				} else if typ == "turn_context" {
-					if m := config.GetStr(config.GetMap(r, "payload"), "model"); m != "" {
-						model = m
-					}
-				} else if typ == "response_item" && firstQ == "" {
-					p := config.GetMap(r, "payload")
-					if p != nil && config.GetStr(p, "role") == "user" {
-						for _, c := range config.GetSlice(p, "content") {
-							if m, ok := c.(map[string]any); ok && config.GetStr(m, "type") == "input_text" {
-								txt := config.GetStr(m, "text")
-								if len(txt) > 2 && !isCodexNoise(txt) {
-									txt = truncateText(txt, 200)
-									firstQ = txt
-								}
-							}
-						}
-					}
-				}
-				if firstQ != "" && model != "" {
-					break
-				}
-			}
-			// Codex Desktop writes short-lived guardian/security-review rollouts
-			// beside user-owned threads. They are implementation machinery rather
-			// than a session the user can return to, so keep them out of presence.
-			if model == "codex-auto-review" {
-				continue
-			}
-
 			sessions = append(sessions, Session{
-				Tool:          "Codex",
-				Project:       project,
-				SessionID:     sid,
-				ResumeID:      resumeID,
-				Client:        client,
-				CWD:           sessionCWD,
-				StartedAt:     startedAt,
-				Model:         model,
-				AgeSeconds:    int(age.Seconds()),
-				Summary:       titles[resumeID],
-				FirstQ:        firstQ,
-				LastUserMsg:   lastUserMsg,
-				RecentTools:   recentTools,
-				LastAssistant: lastAssistant,
-				LatestResult:  latestResult,
-				RecentUpdates: recentUpdates,
+				Tool:            "Codex",
+				Project:         project,
+				SessionID:       sid,
+				ResumeID:        metadata.ResumeID,
+				RootSessionID:   metadata.RootSessionID,
+				ParentSessionID: metadata.ParentSessionID,
+				AgentPath:       metadata.AgentPath,
+				AgentNickname:   metadata.AgentNickname,
+				SubagentDepth:   metadata.SubagentDepth,
+				Client:          metadata.Client,
+				CWD:             metadata.CWD,
+				StartedAt:       metadata.StartedAt,
+				Model:           metadata.Model,
+				AgeSeconds:      int(age.Seconds()),
+				Summary:         titles[metadata.ResumeID],
+				FirstQ:          metadata.FirstQ,
+				LastUserMsg:     lastUserMsg,
+				RecentTools:     recentTools,
+				LastAssistant:   lastAssistant,
+				LatestResult:    latestResult,
+				RecentUpdates:   recentUpdates,
 			})
 		}
 	}
@@ -822,9 +1107,12 @@ func codexSessionTitlesFromFile(path string) map[string]string {
 	return titles
 }
 
-func codexLastEventMessage(path, eventType string) string {
+func codexLastEventMessage(path, eventType string, metadata codexLiveSessionMetadata) string {
 	marker := []byte(`"type":"` + eventType + `"`)
 	record := lastJSONLRecordContaining(path, marker)
+	if !codexRecordBelongsToLiveSession(record, metadata) {
+		return ""
+	}
 	payload := config.GetMap(record, "payload")
 	if config.GetStr(record, "type") != "event_msg" || config.GetStr(payload, "type") != eventType {
 		return ""
@@ -837,34 +1125,61 @@ type codexAgentEvent struct {
 	Phase   string
 }
 
-func codexRecentAgentEvents(path string, limit int) []codexAgentEvent {
-	records := lastJSONLRecordsContaining(path, []byte(`"type":"agent_message"`), limit)
-	events := make([]codexAgentEvent, 0, len(records))
-	for index := len(records) - 1; index >= 0; index-- {
-		record := records[index]
-		payload := config.GetMap(record, "payload")
-		if config.GetStr(record, "type") != "event_msg" || config.GetStr(payload, "type") != "agent_message" {
+func codexRecentAgentEvents(path string, limit int, metadata codexLiveSessionMetadata) []codexAgentEvent {
+	// Both the legacy event_msg and current response_item encodings carry a
+	// phase. Current rollouts also emit an item_completed row for each assistant
+	// item, so oversample the reverse scan and count only records we can decode.
+	records := lastJSONLRecordsContaining(path, []byte(`"phase":"`), limit*3)
+	newestFirst := make([]codexAgentEvent, 0, limit)
+	for _, record := range records {
+		if !codexRecordBelongsToLiveSession(record, metadata) {
 			continue
 		}
-		message := strings.TrimSpace(config.GetStr(payload, "message"))
-		if message == "" {
+		event, ok := codexAgentEventFromRecord(record)
+		if !ok {
 			continue
 		}
-		events = append(events, codexAgentEvent{
-			Message: message,
-			Phase:   config.GetStr(payload, "phase"),
-		})
+		newestFirst = append(newestFirst, event)
+		if len(newestFirst) == limit {
+			break
+		}
+	}
+	events := make([]codexAgentEvent, len(newestFirst))
+	for index, event := range newestFirst {
+		events[len(newestFirst)-1-index] = event
 	}
 	return events
 }
 
-func codexVisibleUserMessage(message string) string {
-	message = strings.TrimSpace(message)
-	const requestMarker = "## My request for Codex:"
-	if index := strings.LastIndex(message, requestMarker); index >= 0 {
-		message = strings.TrimSpace(message[index+len(requestMarker):])
+func codexAgentEventFromRecord(record map[string]any) (codexAgentEvent, bool) {
+	payload := config.GetMap(record, "payload")
+	phase := strings.TrimSpace(config.GetStr(payload, "phase"))
+	var message string
+	switch {
+	case config.GetStr(record, "type") == "event_msg" && config.GetStr(payload, "type") == "agent_message":
+		message = strings.TrimSpace(config.GetStr(payload, "message"))
+	case config.GetStr(record, "type") == "response_item" && config.GetStr(payload, "role") == "assistant":
+		for _, content := range config.GetSlice(payload, "content") {
+			item, ok := content.(map[string]any)
+			if !ok || config.GetStr(item, "type") != "output_text" {
+				continue
+			}
+			text := strings.TrimSpace(config.GetStr(item, "text"))
+			if text != "" {
+				message = appendTextBlock(message, text)
+			}
+		}
+	default:
+		return codexAgentEvent{}, false
 	}
-	return truncateText(message, 200)
+	if message == "" || phase == "" {
+		return codexAgentEvent{}, false
+	}
+	return codexAgentEvent{Message: message, Phase: phase}, true
+}
+
+func codexVisibleUserMessage(message string) string {
+	return truncateText(VisibleUserText(message), 200)
 }
 
 func codexSessionDayDirs(root string, now time.Time, maxAge time.Duration) []string {

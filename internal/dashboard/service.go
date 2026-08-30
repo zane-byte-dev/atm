@@ -434,19 +434,83 @@ func (parts rangeParts) build() Range {
 		sessions = append(sessions, RangeSession{
 			ID: session.FullID, ShortID: session.ShortID, Agent: session.Agent,
 			Project: session.Project, CreatedAt: createdAt, LastAt: lastAt,
-			QCount: session.QCount, Summary: session.Summary,
-			FirstQ: truncateLine(parser.VisibleUserText(session.FirstQ), 200),
+			QCount: session.QCount, LocalUserTurnCount: session.QCount, Summary: session.Summary,
+			FirstQ:   truncateLine(parser.VisibleUserText(session.FirstQ), 200),
+			ResumeID: session.ResumeID, RootSessionID: session.RootSessionID,
+			ParentSessionID: session.ParentSessionID, AgentPath: session.AgentPath,
+			AgentNickname: session.AgentNickname, SubagentDepth: session.SubagentDepth,
+			IsSubagent: session.IsSubagent, ParserVersion: session.ParserVersion,
+			ContentState: session.ContentState, ResultStatus: session.ResultStatus,
+			LatestProgress: session.LatestProgress, FinalResult: session.FinalResult,
 		})
 	}
 	speed := parts.speed
 	speed.Models = nonNil(speed.Models)
 	speed.Turns = nonNil(speed.Turns)
+	quality := buildStatsQuality(parts.projects, parts.models, speed)
 	return Range{
 		StartDate:  parts.startTime.Format("2006-01-02"),
 		EndDate:    parts.endTime.AddDate(0, 0, -1).Format("2006-01-02"),
 		ModelStats: nonNil(parts.models), Sessions: nonNil(sessions),
 		SkillStats: nonNil(parts.skills), ProjectStats: nonNil(parts.projects), Speed: speed,
+		Quality: quality,
 	}
+}
+
+func buildStatsQuality(projects []store.StatsResult, models []store.ModelStatsResult, speed store.SpeedReport) StatsQuality {
+	quality := StatsQuality{PricingSources: []string{}}
+	activeAgents := map[string]struct{}{}
+	tokenAgents := map[string]struct{}{}
+	for _, row := range projects {
+		quality.ActiveSessions += row.Sessions
+		quality.TokenSessions += row.TokenSessions
+		quality.Requests += row.Requests
+		quality.DetailedRequests += row.DetailedRequests
+		quality.AggregateRequests += row.AggregateRequests
+		quality.CostUSD += row.CostUSD
+		activeAgents[row.Agent] = struct{}{}
+		if row.TokenSessions > 0 {
+			tokenAgents[row.Agent] = struct{}{}
+		}
+	}
+	quality.ActiveAgents = len(activeAgents)
+	quality.TokenAgents = len(tokenAgents)
+	if quality.ActiveSessions > 0 {
+		quality.SessionCoveragePct = float64(quality.TokenSessions) / float64(quality.ActiveSessions) * 100
+	}
+	if quality.ActiveAgents > 0 {
+		quality.AgentCoveragePct = float64(quality.TokenAgents) / float64(quality.ActiveAgents) * 100
+	}
+	if quality.Requests > 0 {
+		quality.RequestCoveragePct = float64(quality.DetailedRequests) / float64(quality.Requests) * 100
+	}
+	sources := map[string]struct{}{}
+	for _, row := range models {
+		source := string(row.PricingSource)
+		if source != "" {
+			sources[source] = struct{}{}
+		}
+		if row.CostEstimated {
+			quality.EstimatedCostUSD += row.CostUSD
+		}
+	}
+	for source := range sources {
+		quality.PricingSources = append(quality.PricingSources, source)
+	}
+	sort.Strings(quality.PricingSources)
+	if quality.CostUSD > 0 {
+		quality.EstimatedCostShare = quality.EstimatedCostUSD / quality.CostUSD
+	}
+	for _, row := range speed.Models {
+		quality.SpeedRequests += row.Requests
+		quality.SpeedSampledRequests += row.Sampled
+	}
+	quality.UntimedRequests = speed.Untimed
+	quality.OutOfWindowRequests = speed.OutOfWindow
+	if quality.SpeedRequests > 0 {
+		quality.SpeedSamplePct = float64(quality.SpeedSampledRequests) / float64(quality.SpeedRequests) * 100
+	}
+	return quality
 }
 
 func buildWork(file *store.TodoFile, now time.Time) WorkView {

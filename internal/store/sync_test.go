@@ -193,6 +193,45 @@ func TestCoverageCapsInconsistentRequestCountsAtOneHundredPercent(t *testing.T) 
 	}
 }
 
+func TestCoverageWindowUsesRequestTimeAndMarksAggregateFallback(t *testing.T) {
+	db := openTempDB(t)
+	detailed := &parser.ParsedFile{
+		SessionID: "coverage-window-detailed", ShortID: "covdetail", Agent: "codex", Project: "atm",
+		CreatedTS: 50, LastTS: 160,
+		UsageEvents: []parser.UsageEvent{
+			{Model: "gpt-5.5", TS: 80, InputTokens: 10, Fingerprint: "coverage:old"},
+			{Model: "gpt-5.5", TS: 150, InputTokens: 20, DurationMS: 1000, Fingerprint: "coverage:new"},
+		},
+	}
+	legacy := &parser.ParsedFile{
+		SessionID: "coverage-window-legacy", ShortID: "covlegacy", Agent: "pi", Project: "atm",
+		CreatedTS: 160, LastTS: 160,
+		Usage: parser.Usage{Model: "legacy", InputTokens: 7, RequestCount: 2},
+	}
+	if err := upsertSession(db, detailed, "/tmp/coverage-window-detailed.jsonl", "codex", 1, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := upsertSession(db, legacy, "/tmp/coverage-window-legacy.jsonl", "pi", 1, 10); err != nil {
+		t.Fatal(err)
+	}
+	coverage, err := GetCoverageWindow(db, 100, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byAgent := map[string]Coverage{}
+	for _, row := range coverage {
+		byAgent[row.Agent] = row
+	}
+	if got := byAgent["codex"]; got.ReportedRequests != 1 || got.DetailedRequests != 1 ||
+		got.TimedRequests != 1 || got.CoverageStatus != "complete" {
+		t.Fatalf("codex coverage = %+v", got)
+	}
+	if got := byAgent["pi"]; got.ReportedRequests != 2 || got.DetailedRequests != 0 ||
+		got.CoverageStatus != "partial" {
+		t.Fatalf("pi coverage = %+v", got)
+	}
+}
+
 func TestStatsMergeConfiguredProjectAliases(t *testing.T) {
 	db := openTempDB(t)
 	oldAliases := config.ProjectAliases
@@ -316,6 +355,78 @@ func TestSessionUsageStatsUsesEventWindowAndRanksPrimaryModel(t *testing.T) {
 	}
 	if len(filtered) != 1 || filtered[0].ShortID != "legacy-u" || filtered[0].Share != 1 {
 		t.Fatalf("filtered stats = %#v", filtered)
+	}
+}
+
+func TestRequestAndLegacySessionStatsUseRequestEventWindow(t *testing.T) {
+	db := openTempDB(t)
+	parsed := &parser.ParsedFile{
+		SessionID: "event-window-session", ShortID: "eventwin", Agent: "codex", Project: "atm",
+		CreatedTS: 50, LastTS: 170,
+		Usage: parser.Usage{
+			Model: "gpt-5.5", InputTokens: 30, OutputTokens: 5,
+			CacheCreateTokens: 3, CacheReadTokens: 11, RequestCount: 2,
+		},
+		UsageEvents: []parser.UsageEvent{
+			{Model: "gpt-5.5", TS: 70, InputTokens: 10, OutputTokens: 1, CacheReadTokens: 4, Fingerprint: "event-window:old"},
+			{Model: "gpt-5.5", TS: 160, InputTokens: 20, OutputTokens: 4, CacheCreateTokens: 3, CacheReadTokens: 7, Fingerprint: "event-window:new"},
+		},
+	}
+	if err := upsertSession(db, parsed, "/tmp/event-window.jsonl", "codex", 1, 10); err != nil {
+		t.Fatal(err)
+	}
+
+	requests, err := GetRequestStats(db, 100, 200, "codex", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].TS != 160 || requests[0].FreshInputTokens != 20 ||
+		requests[0].CacheCreateTokens != 3 || requests[0].CacheReadTokens != 7 ||
+		requests[0].TotalInputTokens != 30 || requests[0].TotalTokens != 34 {
+		t.Fatalf("request stats = %#v", requests)
+	}
+
+	sessions, err := GetSessionStats(db, 100, 200, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Queries != 1 || sessions[0].FreshInputTokens != 20 ||
+		sessions[0].CacheCreateTokens != 3 || sessions[0].CacheReadTokens != 7 ||
+		sessions[0].TotalInputTokens != 30 || sessions[0].TotalTokens != 34 {
+		t.Fatalf("session stats = %#v", sessions)
+	}
+}
+
+func TestStatsCollapseSubagentUsageIntoRootTaskCounts(t *testing.T) {
+	db := openTempDB(t)
+	root := &parser.ParsedFile{
+		SessionID: "root-rollout", ResumeID: "root-thread", ShortID: "root",
+		Agent: "codex", Project: "atm", CreatedTS: 100, LastTS: 180,
+		Messages:    []parser.TranscriptMessage{{Role: "user", Content: "do it", TS: 110}},
+		Tools:       map[string]int{"exec": 1},
+		UsageEvents: []parser.UsageEvent{{Model: "gpt-5.5", TS: 120, InputTokens: 10, OutputTokens: 2, Fingerprint: "root:req"}},
+	}
+	child := &parser.ParsedFile{
+		SessionID: "child-rollout", ResumeID: "child-thread", RootSessionID: "root-thread",
+		ParentSessionID: "root-thread", IsSubagent: true, ShortID: "child",
+		Agent: "codex", Project: "child-project", CreatedTS: 130, LastTS: 170,
+		Tools:       map[string]int{"exec": 2},
+		UsageEvents: []parser.UsageEvent{{Model: "gpt-5.5", TS: 160, InputTokens: 20, OutputTokens: 3, Fingerprint: "child:req"}},
+	}
+	if err := upsertSession(db, root, "/tmp/root-rollout.jsonl", "codex", 1, 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := upsertSession(db, child, "/tmp/child-rollout.jsonl", "codex", 1, 10); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := GetStats(db, 90, 200, "codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 || stats[0].Project != "atm" || stats[0].Sessions != 1 || stats[0].TokenSessions != 1 ||
+		stats[0].Queries != 1 || stats[0].DetailedRequests != 2 ||
+		stats[0].FreshInputTokens != 30 || stats[0].ToolCalls != 3 {
+		t.Fatalf("root-collapsed stats = %#v", stats)
 	}
 }
 

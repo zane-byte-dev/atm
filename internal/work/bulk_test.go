@@ -149,7 +149,7 @@ func TestBulkRollsBackTodosBindingsWakeAndOutboxTogether(t *testing.T) {
 	}
 
 	_, err = Default.Bulk(context.Background(), lifecycleCall(application.ActorHuman, "bulk-rollback"), BulkInput{
-		Action: BulkDone, TodoIDs: []string{"t1", "t2"}, Confirmed: true,
+		Action: BulkDone, TodoIDs: []string{"t1", "t2"}, Reason: "verified before injected rollback", Confirmed: true,
 	})
 	if !errors.Is(err, application.ErrUnavailable) {
 		t.Fatalf("Bulk error = %v, want unavailable", err)
@@ -184,6 +184,11 @@ func TestBulkOwnsReasonStatusWaitingAndTransitionValidation(t *testing.T) {
 		Action: BulkEdit, TodoIDs: []string{"t1"}, Status: store.TodoStatusWaiting, Confirmed: true,
 	}); !errors.Is(err, application.ErrInvalidArgument) {
 		t.Fatalf("invalid waiting edit error = %v", err)
+	}
+	if _, err := Default.Bulk(context.Background(), call, BulkInput{
+		Action: BulkEdit, TodoIDs: []string{"t1"}, Status: store.TodoStatusReview, Confirmed: true,
+	}); !errors.Is(err, application.ErrInvalidArgument) {
+		t.Fatalf("bulk lifecycle bypass error = %v", err)
 	}
 	if _, err := Default.Bulk(context.Background(), call, BulkInput{
 		Action: BulkDone, TodoIDs: []string{"t2"}, Confirmed: true,
@@ -226,12 +231,12 @@ func TestBulkMoveAndEditReturnDurableUpdateEffects(t *testing.T) {
 		}
 	}
 	edited, err := Default.Bulk(context.Background(), lifecycleCall(application.ActorAgent, "bulk-edit"), BulkInput{
-		Action: BulkEdit, TodoIDs: []string{"t2"}, Status: "REVIEW", Confirmed: true,
+		Action: BulkEdit, TodoIDs: []string{"t2"}, Status: "OPEN", Confirmed: true,
 	})
-	if err != nil || len(edited.Effects) != 1 || edited.Todos[0].Status != store.TodoStatusReview {
+	if err != nil || len(edited.Effects) != 1 || edited.Todos[0].Status != store.TodoStatusOpen {
 		t.Fatalf("edit = %+v, err=%v", edited, err)
 	}
-	if edited.Effects[0].ID != moved.Effects[1].ID || edited.Effects[0].Todo.Status != store.TodoStatusReview {
+	if edited.Effects[0].ID != moved.Effects[1].ID || edited.Effects[0].Todo.Status != store.TodoStatusOpen {
 		t.Fatalf("coalesced edit effect = %+v, prior = %+v", edited.Effects, moved.Effects)
 	}
 	if binding, err := store.CurrentTodoBinding("bulk-edit"); err != nil || binding != nil {
@@ -257,7 +262,7 @@ func TestBulkReturnsOlderSelectedTodoProjectionsBeforeNewMutation(t *testing.T) 
 	}
 
 	result, err := Default.Bulk(context.Background(), lifecycleCall(application.ActorHuman, "new-close"), BulkInput{
-		Action: BulkDone, TodoIDs: []string{"t1"}, Confirmed: true,
+		Action: BulkDone, TodoIDs: []string{"t1"}, Reason: "verified pending projection ordering", Confirmed: true,
 	})
 	if err != nil {
 		t.Fatal(err)

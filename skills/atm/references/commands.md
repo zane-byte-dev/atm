@@ -7,10 +7,12 @@
 ```bash
 atm now --json
 atm session status --json
-atm session list --days 7 --json
+atm session list --days 7 --json             # latest activity first; default page is 200
+atm session list --days 7 --json --envelope  # schema + total/returned/offset/limit
 atm session list --days 7 --project <repo> --json
 atm session list --since <RFC3339-or-date> --review pending --json
 atm session search <keyword> --json
+atm session search --query <keyword> --json   # flag alias for generated callers
 atm session search <keyword> --limit 20 --project <repo> --role user --days 7 --json
 atm session search <keyword> --snippet 200 --json
 atm session search <keyword> --json --sync
@@ -19,7 +21,11 @@ atm session show <session-id> --last 5 --json
 atm session show <session-id> --turns 1-10 --max-chars 4000 --json
 atm session show <session-id> --thinking --json
 atm session timeline <session-id> --json
+atm session tools --failed --days 7 --json       # ATM CLI failures plus the filtered success denominator
+atm session tools <session-id> --json             # one Agent session's content-free CLI invocations
 atm session export --days 7 --format json
+atm session export --since 2026-08-01 --until 2026-09-01 --project <repo> --role user --query <text> --limit 500 --offset 0 --format jsonl
+atm session export --days 7 --format json --envelope
 atm session review <session-id> --outcome none|memory|knowledge|mixed --note "<result>" --json
 ```
 
@@ -28,6 +34,12 @@ atm session review <session-id> --outcome none|memory|knowledge|mixed --note "<r
 工作生命周期。顶层 `bindings` 包含没有实时活动的有效或异常 binding；不要用项目名或
 `in_progress` Todo 猜测 Session 绑定。`session current --json` 的 `state` 可能是
 `unbound/bound/todo_missing/todo_not_in_progress`。
+
+`session tools` 只读取 ATM 自己的结构化调用遥测：session/agent/version、命令路径、退出码、
+稳定错误类别、是否可重试和耗时。它不会保存或返回 argv、flag 值、工作目录、错误原文、查询词、
+Todo 标题或凭据；`total/succeeded/failed` 使用同一时间/session/agent 基础过滤，`matched`
+再反映 `--failed`，不能用当前页的 `returned` 代替失败率分母。
+遥测只保留最近 90 天；写入、清理或数据库不可用时均 fail-open，不改变原命令结果。
 
 会话查询默认不带 `--sync`，读取 Menubar/后台同步维护的本地索引；只有明确需要最新数据、索引缺失、预期会话未命中或后台同步不可用时，才把 `--sync` 作为显式刷新覆盖。
 
@@ -69,7 +81,7 @@ atm todo lint <id>                # audit progress verbosity, references, and ma
 
 ```bash
 atm todo submit [id] --reason "<summary/evidence>" # in_progress -> review; never marks done
-atm todo add "<title>" --project <repo> --priority P1 --status open --desc "<description>"
+atm todo add "<title>" --project <repo> --priority P1 --desc "<description>"
 atm todo add "<title>" --desc-file <path>  # use - to read a multiline description from stdin
 atm todo add "<title>" --image <path>       # repeatable local image: PNG/JPEG/WebP/GIF/HEIC, 10 MB each, 10 total
 atm todo add --batch                       # read YAML/JSON items from stdin; see --help for an example
@@ -86,16 +98,18 @@ atm config credential delete               # remove the locally saved Key
 atm todo refine [id]                       # polish title+需求; complex work gets 分析 + child todos
 atm todo refine [id] --dry-run             # print the proposal without writing
 atm todo refine [id] --no-split            # polish only; never create children
-atm todo start <id>                           # done 会重开；有未满足依赖时拒绝
-atm session bind <id>                           # bind this agent session; also starts todo
+atm todo start <id>                           # open -> in_progress；有未满足依赖时拒绝
+atm todo start <id> --reopen-reason "<why resumed>" # review/done 重开必须给审计原因
+atm session bind <id>                         # bind this agent session; also starts open todo
+atm session bind <id> --reopen-reason "<why resumed>" # 重新绑定 review Todo 必填
 atm session unbind --reason scope-changed
 atm todo log <id> "结果：...；证据：...；下一步：..."  # one paragraph, max 400 Unicode chars
 atm todo log "结果：...；证据：...；下一步：..."       # bound session: ID is optional
 atm todo log <id> "<details>" --section 分析              # route investigation/design detail out of progress
 printf '%s' '{"base_revision":0,"explanation":"进入验证","items":[{"step":"实现","status":"completed"},{"step":"回归测试","status":"in_progress"}]}' | atm todo plan set [id] --file -
-atm todo done <id> --reason "<result>"
-atm todo edit <id> --status in_progress --wake "<condition>" # waiting 仅是显示样式
-atm todo edit <id> --status in_progress --review-at YYYY-MM-DD
+atm todo done <id> --reason "<acceptance evidence>" # human only；首次完成必须具体，菜单栏点击文案会被拒绝
+atm todo edit <id> --wake "<condition>" # waiting 仅是 in_progress 的显示样式
+atm todo edit <id> --review-at YYYY-MM-DD
 atm todo edit <id> --maintenance-limit 3    # 范围标签；0 清除
 atm todo edit <id> --priority P1 --status open
 atm todo edit <id> --project <repo>
@@ -108,11 +122,11 @@ atm todo depend remove <id> <dependency-id>
 atm todo depend list <id> --json
 atm todo wake <id> --reason "<observable event>" # compatibility: clear waiting metadata
 atm todo reconcile --json
-atm todo bulk done <id>... --reason "<result>"
+atm todo bulk done <id>... --reason "<acceptance evidence>" # human only；同样拒绝空泛完成原因
 atm todo bulk move <id>... --project <repo>
 ```
 
-会话绑定后，`log/show/doc/lint/submit/done` 都可省略 `<id>`；也可写 `current`。隐藏的兼容别名 `wait/drop` 同样支持省略。`submit`、`done`、`archive` 和设置等待元数据会自动解绑并保留绑定历史。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
+会话绑定后，`log/show/doc/lint/submit` 都可省略 `<id>`；人的 `done` 也支持省略或写 `current`。隐藏的兼容别名 `wait/drop` 同样支持省略。`submit`、`done`、`archive` 和设置等待元数据会自动解绑并保留绑定历史。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
 
 `match` 的两种用途不可互换。`--prompt` 服务启动注入，总是返回 `--limit` 条候选（同项目本身加 100 分），所以它答不了「该不该新建」。查重用 `--dedup`：跨项目搜索、要求 `query_score` 达到下限（默认 30，可用 `--min-query-score` 调整）、无匹配时明确输出「可以新建」，且忽略当前会话绑定。`--json` 同时给出 `duplicate` 布尔和每条候选的 `query_score`（query 自身得分，不含项目/状态/优先级加成）。
 

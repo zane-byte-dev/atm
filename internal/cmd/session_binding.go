@@ -12,15 +12,16 @@ import (
 )
 
 var (
-	sessionBindAgentFlag   string
-	sessionBindProjectFlag string
-	sessionBindCWDFlag     string
-	sessionBindForceFlag   bool
-	sessionUnbindReason    string
-	todoMatchProjectFlag   string
-	todoMatchLimitFlag     int
-	todoMatchPromptFlag    bool
-	todoMatchDedupFlag     bool
+	sessionBindAgentFlag        string
+	sessionBindProjectFlag      string
+	sessionBindCWDFlag          string
+	sessionBindForceFlag        bool
+	sessionBindReopenReasonFlag string
+	sessionUnbindReason         string
+	todoMatchProjectFlag        string
+	todoMatchLimitFlag          int
+	todoMatchPromptFlag         bool
+	todoMatchDedupFlag          bool
 
 	todoMatchMinQueryScoreFlag int
 )
@@ -61,6 +62,8 @@ func init() {
 	sessionBindCmd.Flags().StringVar(&sessionBindCWDFlag, "cwd", "", "binding working directory (defaults to cwd)")
 	sessionBindCmd.Flags().BoolVar(&sessionBindForceFlag, "force", false,
 		"bind even when the working directory belongs to a different project than the Todo")
+	sessionBindCmd.Flags().StringVar(&sessionBindReopenReasonFlag, "reopen-reason", "",
+		"why submitted work must resume (required when binding a Todo in review)")
 	sessionUnbindCmd.Flags().StringVar(&sessionUnbindReason, "reason", "manual", "unbind reason")
 	todoMatchCmd.Flags().StringVar(&todoMatchProjectFlag, "project", "", "project to prioritize (defaults from cwd)")
 	todoMatchCmd.Flags().IntVar(&todoMatchLimitFlag, "limit", 3, "maximum compact candidates")
@@ -105,16 +108,24 @@ func runSessionBind(cmd *cobra.Command, args []string) error {
 		CWD:              cwd,
 		WorkspaceProject: config.ProjectFromPath(cwd),
 		Force:            sessionBindForceFlag,
+		ReopenReason:     sessionBindReopenReasonFlag,
 	})
 	if err != nil {
 		return err
 	}
+	if err := workapp.Default.DeliverEffects(cmd.Context(), call, result.Effects, localWorkEffectExecutor{}); err != nil {
+		return err
+	}
 	todo, binding := result.Todo, result.Binding
 	if jsonOutput {
-		output.JSON(map[string]any{"binding": &binding, "todo": workapp.CompactTodo(todo)})
+		output.JSON(map[string]any{"binding": &binding, "todo": workapp.CompactTodo(todo), "reopened": result.Reopened})
 		return nil
 	}
-	fmt.Printf("Bound session %s to %s: %s\n", shortSessionID(sessionID), todo.ID, todo.Title)
+	verb := "Bound"
+	if result.Reopened {
+		verb = "Reopened and bound"
+	}
+	fmt.Printf("%s session %s to %s: %s\n", verb, shortSessionID(sessionID), todo.ID, todo.Title)
 	return nil
 }
 

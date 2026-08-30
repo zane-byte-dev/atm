@@ -18,6 +18,9 @@ type TimelineEvent struct {
 	Kind         string  `json:"kind"`
 	Role         string  `json:"role,omitempty"`
 	Content      string  `json:"content,omitempty"`
+	Scope        string  `json:"scope,omitempty"`
+	MessageKind  string  `json:"message_kind,omitempty"`
+	Phase        string  `json:"phase,omitempty"`
 	Model        string  `json:"model,omitempty"`
 	TS           int64   `json:"ts"`
 	InputTokens  int64   `json:"input_tokens,omitempty"`
@@ -54,7 +57,8 @@ func (service Service) Timeline(ctx context.Context, input TimelineInput) (Timel
 	events := make([]TimelineEvent, 0, len(stored))
 	for _, event := range stored {
 		events = append(events, TimelineEvent{
-			Kind: event.Kind, Role: event.Role, Content: event.Content, Model: event.Model,
+			Kind: event.Kind, Role: event.Role, Content: event.Content, Scope: event.Scope,
+			MessageKind: event.MessageKind, Phase: event.Phase, Model: event.Model,
 			TS: event.TS, InputTokens: event.InputTokens, OutputTokens: event.OutputTokens,
 			CacheTokens: event.CacheTokens, CostUSD: event.CostUSD,
 		})

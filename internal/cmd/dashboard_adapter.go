@@ -20,6 +20,13 @@ func loadDashboardLiveStatus(ctx context.Context, agent string) (dashboard.LiveS
 	if err != nil {
 		return dashboard.LiveStatus{}, err
 	}
+	return dashboardLiveStatusFromView(view), nil
+}
+
+// dashboardLiveStatusFromView is deliberately pure so the transport mapping
+// (including subagent lineage) can be regression-tested without discovering
+// live processes or transcripts from the host.
+func dashboardLiveStatusFromView(view statusView) dashboard.LiveStatus {
 	result := dashboard.LiveStatus{
 		GeneratedAt: view.GeneratedAt,
 		Time:        view.Time,
@@ -28,29 +35,34 @@ func loadDashboardLiveStatus(ctx context.Context, agent string) (dashboard.LiveS
 	}
 	for _, session := range view.Sessions {
 		result.Sessions = append(result.Sessions, dashboard.LiveSession{
-			Tool:          session.Tool,
-			SessionID:     session.SessionID,
-			ResumeID:      session.ResumeID,
-			Project:       session.Project,
-			Client:        session.Client,
-			CWD:           session.CWD,
-			Model:         session.Model,
-			Summary:       session.Summary,
-			AgeSeconds:    session.AgeSeconds,
-			ActivityState: session.ActivityState,
-			BindingState:  session.BindingState,
-			Binding:       session.Binding,
-			Todo:          session.Todo,
-			PID:           session.PID,
-			TTY:           session.TTY,
-			TerminalApp:   session.TerminalApp,
-			FirstQ:        session.FirstQ,
-			LastQ:         session.LastQ,
-			LastA:         session.LastA,
-			LatestResult:  session.LatestResult,
-			Updates:       session.Updates,
-			Tools:         session.Tools,
-			Topics:        session.Topics,
+			Tool:            session.Tool,
+			SessionID:       session.SessionID,
+			ResumeID:        session.ResumeID,
+			RootSessionID:   session.RootSessionID,
+			ParentSessionID: session.ParentSessionID,
+			AgentPath:       session.AgentPath,
+			AgentNickname:   session.AgentNickname,
+			SubagentDepth:   session.SubagentDepth,
+			Project:         session.Project,
+			Client:          session.Client,
+			CWD:             session.CWD,
+			Model:           session.Model,
+			Summary:         session.Summary,
+			AgeSeconds:      session.AgeSeconds,
+			ActivityState:   session.ActivityState,
+			BindingState:    session.BindingState,
+			Binding:         session.Binding,
+			Todo:            session.Todo,
+			PID:             session.PID,
+			TTY:             session.TTY,
+			TerminalApp:     session.TerminalApp,
+			FirstQ:          session.FirstQ,
+			LastQ:           session.LastQ,
+			LastA:           session.LastA,
+			LatestResult:    session.LatestResult,
+			Updates:         session.Updates,
+			Tools:           session.Tools,
+			Topics:          session.Topics,
 		})
 	}
 	for _, binding := range view.Bindings {
@@ -62,5 +74,5 @@ func loadDashboardLiveStatus(ctx context.Context, agent string) (dashboard.LiveS
 			ObservedSessionID: binding.ObservedSessionID,
 		})
 	}
-	return result, nil
+	return result
 }

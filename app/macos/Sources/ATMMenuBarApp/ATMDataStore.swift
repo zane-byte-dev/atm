@@ -648,6 +648,89 @@ enum ATMTodoStatusActions {
     }
 }
 
+enum ATMTodoCompletionReason {
+    private static let genericReasons: Set<String> = [
+        "完成", "已完成", "done", "验收", "验收通过", "通过验收",
+        "通过 atm 菜单栏完成", "通过 atm 菜单栏验收",
+    ]
+
+    static func normalized(_ value: String) -> String? {
+        let reason = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard reason.count >= 4 else { return nil }
+        guard !genericReasons.contains(reason.lowercased()) else { return nil }
+        return reason
+    }
+}
+
+enum ATMTodoReopenReason {
+    private static let genericReasons: Set<String> = [
+        "继续", "继续做", "重新开始", "重开", "reopen", "resume",
+    ]
+
+    static func normalized(_ value: String) -> String? {
+        let reason = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard reason.count >= 4 else { return nil }
+        guard !genericReasons.contains(reason.lowercased()) else { return nil }
+        return reason
+    }
+}
+
+private enum ATMTodoCompletionPrompt {
+    @MainActor
+    static func request(for todo: ATMTodo) -> String? {
+        let field = NSTextField(string: "")
+        field.placeholderString = todo.status == "review"
+            ? "例如：功能已验收，关键路径与回归测试通过"
+            : "例如：目标已达成，结果已归档并验证"
+        field.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = todo.status == "review" ? "填写验收结论" : "填写完成结论"
+        alert.informativeText = "请写明已验证的结果或可检查的证据；结论会进入 Todo 审计记录。"
+        alert.accessoryView = field
+        alert.addButton(withTitle: todo.status == "review" ? "验收" : "完成")
+        alert.addButton(withTitle: "取消")
+
+        while alert.runModal() == .alertFirstButtonReturn {
+            if let reason = ATMTodoCompletionReason.normalized(field.stringValue) {
+                return reason
+            }
+            alert.informativeText = "结论不能只写“完成”或“验收通过”，请补充结果或证据。"
+            field.becomeFirstResponder()
+        }
+        return nil
+    }
+}
+
+private enum ATMTodoReopenPrompt {
+    @MainActor
+    static func request(for todo: ATMTodo) -> String? {
+        let field = NSTextField(string: "")
+        field.placeholderString = todo.status == "done"
+            ? "例如：验收后发现导出筛选仍遗漏一类记录"
+            : "例如：评审要求补充失败重试与迁移测试"
+        field.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
+
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = todo.status == "done" ? "说明为何重开已完成任务" : "说明为何退回继续处理"
+        alert.informativeText = "重开原因会进入 Todo 审计记录，避免后续工作被误算作原验收结果。"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "重新开始")
+        alert.addButton(withTitle: "取消")
+
+        while alert.runModal() == .alertFirstButtonReturn {
+            if let reason = ATMTodoReopenReason.normalized(field.stringValue) {
+                return reason
+            }
+            alert.informativeText = "请写明新发现的问题或评审要求，不能只写“继续”或“重新开始”。"
+            field.becomeFirstResponder()
+        }
+        return nil
+    }
+}
+
 struct ATMTodoEdit: Equatable {
     let title: String
     let description: String
@@ -1183,9 +1266,14 @@ final class ATMDataStore: ObservableObject {
     /// so a stale one disappears here rather than at the next poll.
     private func reapplyAttentionOverlay() {
         guard let rawLiveStatus else { return }
-        updateDashboardState { [agentEvents] state in
+        let liveStatus = rawLiveStatus.applyingAttentionSignals(agentEvents.signals)
+        // Tool hooks can emit `resumed` many times in one turn. Most do not
+        // change the overlay, so publishing the same dashboard would rebuild
+        // every store-observing view for no visible result.
+        guard snapshot.liveStatus != liveStatus else { return }
+        updateDashboardState { state in
             state.snapshot = state.snapshot.replacingLiveStatus(
-                rawLiveStatus.applyingAttentionSignals(agentEvents.signals)
+                liveStatus
             )
         }
     }
@@ -2452,8 +2540,35 @@ final class ATMDataStore: ObservableObject {
         errorMessage = nil
     }
 
-    func perform(_ action: ATMTodoAction, on todo: ATMTodo) {
+    func perform(
+        _ action: ATMTodoAction,
+        on todo: ATMTodo,
+        completionReason suppliedCompletionReason: String? = nil,
+        reopenReason suppliedReopenReason: String? = nil
+    ) {
         guard !isActing else { return }
+        let completionReason: String?
+        let reopenReason: String?
+        if action == .complete {
+            if let suppliedCompletionReason {
+                completionReason = ATMTodoCompletionReason.normalized(suppliedCompletionReason)
+            } else {
+                completionReason = ATMTodoCompletionPrompt.request(for: todo)
+            }
+            guard completionReason != nil else { return }
+        } else {
+            completionReason = nil
+        }
+        if action == .start, ["review", "done"].contains(todo.status) {
+            if let suppliedReopenReason {
+                reopenReason = ATMTodoReopenReason.normalized(suppliedReopenReason)
+            } else {
+                reopenReason = ATMTodoReopenPrompt.request(for: todo)
+            }
+            guard reopenReason != nil else { return }
+        } else {
+            reopenReason = nil
+        }
         isActing = true
         errorMessage = nil
         Task {
@@ -2462,11 +2577,11 @@ final class ATMDataStore: ObservableObject {
                 let client = try makeTodoIPCClient()
                 switch action {
                 case .start:
-                    _ = try await client.start(todo.id)
+                    _ = try await client.start(todo.id, reopenReason: reopenReason)
                 case .complete:
                     _ = try await client.done(
                         todo.id,
-                        reason: "通过 ATM 菜单栏\(todo.completionVerb)"
+                        reason: completionReason ?? ""
                     )
                 case .archive:
                     _ = try await client.archive(todo.id)

@@ -40,6 +40,7 @@ func init() {
 var nowCmd = &cobra.Command{
 	Use:   "now",
 	Short: "Show current work by lifecycle status",
+	Args:  cobra.NoArgs,
 	RunE:  runNow,
 }
 

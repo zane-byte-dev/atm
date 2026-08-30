@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
@@ -120,8 +121,12 @@ func (service Service) Daily(
 // dateRange resolves the requested day. "today" and "yesterday" are relative to
 // the service clock rather than to config's, so a test can pin the day.
 func (service Service) dateRange(raw string) (time.Time, time.Time, error) {
-	if raw == "" {
-		raw = service.now().In(config.Loc).Format("2006-01-02")
+	now := service.now().In(config.Loc)
+	switch strings.ToLower(raw) {
+	case "", "today":
+		raw = now.Format("2006-01-02")
+	case "yesterday":
+		raw = now.AddDate(0, 0, -1).Format("2006-01-02")
 	}
 	start, end, err := config.DateRange(raw)
 	if err != nil {

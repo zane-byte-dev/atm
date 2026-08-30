@@ -204,7 +204,7 @@ final class TodoIPCTests: XCTestCase {
 
         let started = try runGoIPC(
             executable: executable, verb: "todo.start", home: home,
-            input: encoder.encode(ATMTodoIDRequest(todoID: created.id))
+            input: encoder.encode(ATMTodoStartRequest(todoID: created.id, reopenReason: nil))
         )
         XCTAssertEqual(started.status, 0, started.stderr)
         XCTAssertEqual(
@@ -216,7 +216,10 @@ final class TodoIPCTests: XCTestCase {
         // calling as an agent still has to use submit.
         let done = try runGoIPC(
             executable: executable, verb: "todo.done", home: home,
-            input: encoder.encode(ATMTodoDoneRequest(todoID: created.id, reason: "通过 ATM 菜单栏完成"))
+            input: encoder.encode(ATMTodoDoneRequest(
+                todoID: created.id,
+                reason: "关键路径与 IPC 生命周期回归已验证通过"
+            ))
         )
         XCTAssertEqual(done.status, 0, done.stderr)
         XCTAssertEqual(

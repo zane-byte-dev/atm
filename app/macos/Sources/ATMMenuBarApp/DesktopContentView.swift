@@ -1781,7 +1781,7 @@ struct DesktopTodoDetail: View {
     @State private var isEditingSource = false
     @State private var title = ""
     @State private var description = ""
-    @State private var priority = "P1"
+    @State private var priority = "P2"
     @State private var project = ""
     @State private var status = "open"
     @State private var wakeCondition = ""
@@ -3294,6 +3294,15 @@ private struct DesktopUsageContent: View, Equatable {
                 let featuredMetrics = metrics.filter(isFeaturedMetric)
                 let supportingMetrics = metrics.filter { !isFeaturedMetric($0) }
                 let trendStats = snapshot.filteredLineTrendStats(for: range, filters: filters)
+                if let quality = snapshot.rangeData[range]?.quality,
+                   !quality.limitations.isEmpty {
+                    ATMInlineNotice(
+                        severity: .warning,
+                        title: "统计口径提示",
+                        message: quality.limitations.joined(separator: "；"),
+                        details: quality.details
+                    )
+                }
                 VStack(alignment: .leading, spacing: 10) {
                     Text("关键指标")
                         .font(ATMFont.font(.title3, weight: .semibold))
