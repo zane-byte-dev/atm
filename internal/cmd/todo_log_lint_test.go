@@ -168,6 +168,7 @@ func TestTodoLintAdapterPreservesJSONAndTextShapes(t *testing.T) {
 // session happened to be bound to, reported as success.
 func TestRunTodoLogRefusesALoneTodoIDAsTheEntry(t *testing.T) {
 	withTempAtmDir(t)
+	t.Setenv("ATM_SESSION_ID", "todo-log-lint-unbound-session")
 	oldSection, oldJSON, oldFile := todoLogSectionFlag, jsonOutput, todoLogMessageFileFlag
 	t.Cleanup(func() {
 		todoLogSectionFlag, jsonOutput, todoLogMessageFileFlag = oldSection, oldJSON, oldFile
