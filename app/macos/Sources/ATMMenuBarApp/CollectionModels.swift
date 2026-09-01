@@ -11,9 +11,16 @@ struct ATMCollectionSummary: Decodable, Equatable {
     let insightToday: Int
     let ignoredToday: Int
     let failedToday: Int
+    /// New Todo writes, supplements and unsaved conclusions that the user has
+    /// not opened yet. Optional only for compatibility with an older CLI.
+    let unreadCount: Int?
     /// 自动重试已用尽、正在等人处理的记录数。按整个台账统计，不限今天：值为 0 时界面
     /// 什么都不说，非 0 才是唯一需要人看一眼的失败信号。旧版 CLI 不返回，按 0 读。
     let retryStopped: Int?
+    /// 「全部了结」一按会关掉多少条：已读、且没存进知识库的结论。和 unreadCount 是两
+    /// 个轴——那个数的是还要人看的，这个数的是已经看过、只是没地方消掉的。旧版 CLI 不
+    /// 返回，按 0 读，按钮因此不出现。
+    let settleableCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case sources
@@ -25,12 +32,14 @@ struct ATMCollectionSummary: Decodable, Equatable {
         case ignoredToday = "ignored_today"
         case failedToday = "failed_today"
         case retryStopped = "retry_stopped"
+        case unreadCount = "unread_count"
+        case settleableCount = "settleable_count"
     }
 
     static let empty = ATMCollectionSummary(
         sources: 0, enabledSources: 0, fetchedToday: 0, createdToday: 0,
         appendedToday: 0, insightToday: 0, ignoredToday: 0, failedToday: 0,
-        retryStopped: 0
+        unreadCount: 0, retryStopped: 0, settleableCount: 0
     )
 }
 
@@ -48,14 +57,13 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     let decisionUnit: String?
     let intervalMinutes: Int?
     let priority: String
-    let autoDispatch: Bool?
     let enabled: Bool
+    let muted: Bool?
     let createdAt: Int64
     let updatedAt: Int64
 
     enum CodingKeys: String, CodingKey {
-        case id, connector, kind, name, project, priority, enabled, strategy, instruction
-        case autoDispatch = "auto_dispatch"
+        case id, connector, kind, name, project, priority, enabled, muted, strategy, instruction
         case externalID = "external_id"
         case decisionUnit = "decision_unit"
         case excludePattern = "exclude_pattern"
@@ -71,7 +79,12 @@ struct ATMCollectionSource: Decodable, Identifiable, Equatable {
     }
 
     var effectiveStrategy: String { strategy == "observe" ? "observe" : "tasks" }
-    var automaticallyDispatches: Bool { effectiveStrategy == "tasks" && autoDispatch == true }
+
+    /// Whether this source's new results are allowed to raise a desktop banner.
+    /// Muting is only about the banner: a muted source keeps collecting, its
+    /// results keep counting as unread and the badges still rise. A database or
+    /// fixture that predates the column notifies, which is what it always did.
+    var notifiesDesktop: Bool { muted != true }
 
     /// Older databases and hand-written fixtures predate the column, and window
     /// is what they behaved as.
@@ -225,12 +238,6 @@ enum ATMCollectionSourceTarget: Equatable {
         .identifier(kind: candidate.kind, externalID: candidate.externalID)
     }
 
-    var arguments: [String] {
-        switch self {
-        case .identifier(let kind, _): return ["--kind", kind, "--id", value]
-        }
-    }
-
     /// The trimmed identifier or search text this target carries.
     var value: String {
         switch self {
@@ -321,26 +328,55 @@ struct ATMCollectionRun: Decodable, Identifiable, Equatable {
     }
 }
 
-/// Keeps the App's manual action on the same source-scoped CLI path as the
-/// scheduler. A source ID is mandatory here: the Collection workspace no
-/// longer exposes the old "run every source" action.
-enum ATMCollectionRunCommand {
-    static func arguments(sourceID: String) -> [String] {
-        ["collect", "run", "--source", sourceID, "--json"]
-    }
-}
-
 /// Which failure the Collection workspace still has to announce itself. Source
 /// level failures already have a home in that source's 采集状态 card, while
 /// 添加/删除来源、修正、撤销、生成知识文档 have no source to hang on and would
 /// otherwise fail silently in the very workspace that triggered them.
 enum ATMCollectionWorkspaceNotice {
+    /// What, if anything, deserves a banner over the Collection workspace.
+    ///
+    /// Only a connector that has stopped recovering, or one whose failure will not
+    /// fix itself (login expired, permission missing). A single business error
+    /// between successes is noise: it is already being retried, and a card that has
+    /// to be dismissed by hand outlives the condition it describes — which is how
+    /// one hiccup in twenty-three runs came to look like a broken connector.
+    static func banner(for overview: ATMCollectionOverview) -> String? {
+        let broken = overview.connectorHealth.filter(\.needsAttention)
+        guard !broken.isEmpty else { return nil }
+        return broken
+            .map { health -> String in
+                let detail = health.error?.isEmpty == false ? "：\(health.error!)" : ""
+                return "\(health.connector) \(health.statusLabel)\(detail)"
+            }
+            .joined(separator: "\n")
+    }
+
+    /// The connector whose login the person can end this outage with, if any. The
+    /// banner and the notification both read this rather than each deciding for
+    /// itself what counts as "needs logging in".
+    static func loginPrompt(for overview: ATMCollectionOverview) -> ATMCollectionLoginPrompt? {
+        for health in overview.connectorHealth where health.needsCredentialAction {
+            guard let command = health.loginCommand?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !command.isEmpty else { continue }
+            return ATMCollectionLoginPrompt(connector: health.connector, command: command)
+        }
+        return nil
+    }
+
     static func message(shared: String?, sourceErrors: [String: String]) -> String? {
         guard let shared = shared?.trimmingCharacters(in: .whitespacesAndNewlines),
               !shared.isEmpty,
               !sourceErrors.values.contains(shared) else { return nil }
         return shared
     }
+}
+
+/// A connector waiting on a person to log in again, and the command that does it.
+/// ATM never runs it by itself: the login opens a browser and wants a scan, so it
+/// is offered as an action and run where the person can watch it.
+struct ATMCollectionLoginPrompt: Equatable {
+    let connector: String
+    let command: String
 }
 
 /// One day's knowledge document for one source, produced by `atm collect digest`
@@ -372,10 +408,56 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
     let status: String
     let error: String?
     let checkedAt: Int64?
+    /// The unbroken run of failures ending at the latest attempt. This, not the
+    /// latest attempt alone, is what says whether a connector is broken: these APIs
+    /// return the occasional business error, and one between successes fixes itself
+    /// at the next interval.
+    var consecutiveFailures: Int? = nil
+    var recentRuns: Int? = nil
+    var recentFailures: Int? = nil
+    /// The command this connector declared as its way back in after its login
+    /// expired. Absent for every connector that declared none, which is the answer
+    /// for all of ATM's own.
+    var loginCommand: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case connector, status, error
         case checkedAt = "checked_at"
+        case consecutiveFailures = "consecutive_failures"
+        case recentRuns = "recent_runs"
+        case recentFailures = "recent_failures"
+        case loginCommand = "login_command"
+    }
+
+    /// True for the failure ATM stops retrying and waits on a person for.
+    ///
+    /// Only the expired login. `permission_required` never recovers on its own
+    /// either, but it has been per-source in practice — one group this account
+    /// cannot read — and logging in again does not fix it, so it keeps the ordinary
+    /// banner and the ordinary retries.
+    var needsCredentialAction: Bool { status == "auth_required" }
+
+    /// Whether this needs a person to do something. A `flaky` connector does not:
+    /// it is already retrying, and interrupting for it is what taught people to
+    /// dismiss the banner without reading it.
+    var needsAttention: Bool {
+        switch status {
+        case "error", "auth_required", "permission_required": return true
+        default: return false
+        }
+    }
+
+    /// A quiet note for a connector that hiccupped and recovered, or nil when there
+    /// is nothing worth saying.
+    var transientNote: String? {
+        guard status == "flaky" || (status == "ready" && (recentFailures ?? 0) > 0) else { return nil }
+        let total = recentRuns ?? 0
+        let failures = recentFailures ?? 0
+        guard total > 0, failures > 0 else { return nil }
+        if status == "flaky" {
+            return "最近 \(total) 次里失败 \(failures) 次，会自动重试"
+        }
+        return "最近 \(total) 次里失败过 \(failures) 次，已恢复"
     }
 
     /// 状态词。设置页和「添加来源」都读这一份，同一个连接器不会在两处叫两个名字。
@@ -385,6 +467,7 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
         case "auth_required": return "需要登录"
         case "permission_required": return "缺少消息权限/权益"
         case "error": return "连接异常"
+        case "flaky": return "偶发失败"
         default: return "尚未检测"
         }
     }
@@ -395,6 +478,8 @@ struct ATMCollectionConnectorHealth: Decodable, Equatable {
         case "auth_required": return "person.crop.circle.badge.exclamationmark"
         case "permission_required": return "lock.trianglebadge.exclamationmark"
         case "error": return "exclamationmark.triangle.fill"
+        // Not a warning triangle: nothing is wrong that anyone has to act on.
+        case "flaky": return "arrow.triangle.2.circlepath"
         default: return "questionmark.circle"
         }
     }
@@ -415,6 +500,7 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     let occurredAt: Int64?
     let rawContext: String?
     let action: String
+    let proposedAction: String?
     let title: String?
     let summary: String?
     let itemType: String?
@@ -422,15 +508,23 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     let priority: String?
     let reason: String?
     let confidence: Double?
+    /// Empty while an insight only lives in the Collection workspace's
+    /// conclusion. Set after the user explicitly saves it as knowledge.
+    let knowledgeDocumentID: String?
+    let knowledgeCollection: String?
     let todoID: String?
     let status: String
+    /// Zero means this result has not been acknowledged. The current CLI always
+    /// returns the field; nil is treated as read for compatibility with old builds.
+    let readAt: Int64?
+    /// Zero means active. A positive timestamp is a manual, recoverable settle
+    /// action on this collection record; it does not close the linked Todo.
+    let archivedAt: Int64?
     /// How many times this batch has been tried. Absent from older CLI output,
     /// which is read as zero: a fresh budget is the safe reading, because it
     /// describes an item the next run will pick up rather than one already
     /// retired.
     let attempts: Int?
-    let dispatchStatus: String?
-    let dispatchError: String?
     /// Whether the automatic retry has stopped. Derived by the CLI so the
     /// attempt ceiling lives in one place instead of being restated here.
     let retryStopped: Bool?
@@ -445,8 +539,9 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, connector, fingerprint, sender, action, title, summary, project,
              priority, reason, confidence, status, attempts, error
-        case dispatchStatus = "dispatch_status"
-        case dispatchError = "dispatch_error"
+        case proposedAction = "proposed_action"
+        case readAt = "read_at"
+        case archivedAt = "archived_at"
         case sourceID = "source_id"
         case conversationID = "conversation_id"
         case messageIDs = "message_ids"
@@ -459,6 +554,8 @@ struct ATMCollectionItem: Decodable, Identifiable, Equatable {
         case todoStatus = "todo_status"
         case todoArchived = "todo_archived"
         case retryStopped = "retry_stopped"
+        case knowledgeDocumentID = "knowledge_document_id"
+        case knowledgeCollection = "knowledge_collection"
     }
 }
 
@@ -501,21 +598,88 @@ enum ATMCollectionItemType: String, CaseIterable, Identifiable {
 }
 
 extension ATMCollectionItem {
-    /// True once the Todo this record filed has been finished or dropped. The
+    /// Read state is only meaningful for a result the collection workspace asks
+    /// the person to inspect. Noise, transient failures, saved conclusions and
+    /// closed Todos never inflate the unread badge.
+    var isUnread: Bool {
+        guard readAt == 0 else { return false }
+        if proposedAction?.isEmpty == false { return true }
+        if shouldCollapseInCollection { return false }
+        return action == "create" || action == "append" || action == "insight"
+    }
+
+    /// True once the Todo this record filed has been finished or archived. The
     /// request that came in from the source has been answered, so the record is
     /// done too — whoever closed the Todo, and whenever.
     var todoClosed: Bool {
-        todoStatus == "done" || todoStatus == "dropped"
+        todoStatus == "done" || todoArchived == true
+    }
+
+    var isArchived: Bool { (archivedAt ?? 0) > 0 }
+
+    /// A group-level “全部了结” must target the same narrow class as the CLI's
+    /// global settle operation: an acknowledged conclusion that has not already
+    /// been archived or saved to knowledge. Keeping this predicate on the model
+    /// prevents a source menu from accidentally archiving linked Todo records.
+    var isSettleableConclusion: Bool {
+        !isArchived
+            && action == "insight"
+            && knowledgeDocumentID?.isEmpty != false
+            && (readAt ?? 0) > 0
     }
 
     /// The main list is what you glance at, and that means work: things ATM filed
-    /// or wants filed. An insight is deliberately not work — its readable form is
-    /// the day's digest in the knowledge base — so it collapses alongside noise
-    /// rather than competing with Todos for attention. A record whose Todo is
-    /// already closed is no longer work either: keeping it up here turned the
-    /// workspace into a history feed, where twelve of twenty rows wanted nothing.
+    /// or wants filed. An unsaved insight still needs the user's decision, so it
+    /// stays visible until its conclusion has explicitly been saved to knowledge.
+    /// A record whose Todo is already closed is no longer work either: keeping it
+    /// up here turned the workspace into a history feed, where twelve of twenty
+    /// rows wanted nothing.
     var shouldCollapseInCollection: Bool {
-        action == "ignore" || action == "insight" || todoClosed
+        isArchived
+            || action == "ignore"
+            || (action == "insight" && knowledgeDocumentID?.isEmpty == false)
+            || todoClosed
+    }
+}
+
+/// Collection's middle column is one row per filed Todo, not one row per write.
+/// A create is the durable headline; later append decisions remain audit records
+/// but are presented inside that create's detail. An append without a matching
+/// create stays visible so older or externally-created Todos never disappear.
+enum ATMCollectionItemGrouping {
+    static func visibleItems(_ items: [ATMCollectionItem]) -> [ATMCollectionItem] {
+        let createdTodoStates = Set(items.compactMap { item -> String? in
+            guard item.action == "create", let todoID = item.todoID, !todoID.isEmpty else { return nil }
+            return "\(todoID)\u{0}\(item.shouldCollapseInCollection)"
+        })
+        return items.filter { item in
+            guard item.action == "append", let todoID = item.todoID else { return true }
+            return !createdTodoStates.contains("\(todoID)\u{0}\(item.shouldCollapseInCollection)")
+        }
+    }
+
+    static func supplements(
+        for item: ATMCollectionItem,
+        in items: [ATMCollectionItem]
+    ) -> [ATMCollectionItem] {
+        guard item.action == "create", let todoID = item.todoID, !todoID.isEmpty else { return [] }
+        return items
+            .filter {
+                $0.action == "append" && $0.todoID == todoID
+                    && $0.shouldCollapseInCollection == item.shouldCollapseInCollection
+            }
+            .sorted {
+                let lhs = $0.occurredAt ?? $0.createdAt
+                let rhs = $1.occurredAt ?? $1.createdAt
+                return lhs == rhs ? $0.id < $1.id : lhs < rhs
+            }
+    }
+
+    static func unreadCount(
+        for item: ATMCollectionItem,
+        in items: [ATMCollectionItem]
+    ) -> Int {
+        ([item] + supplements(for: item, in: items)).filter(\.isUnread).count
     }
 }
 
@@ -681,7 +845,7 @@ struct ATMCollectionOverview: Decodable, Equatable {
     let enabled: Bool
     let intervalMinutes: Int
     let lookbackMinutes: Int
-    let modelCommand: String
+    let model: String
     let connectorHealth: [ATMCollectionConnectorHealth]
     let summary: ATMCollectionSummary
     let sources: [ATMCollectionSource]
@@ -690,16 +854,15 @@ struct ATMCollectionOverview: Decodable, Equatable {
     let digests: [ATMCollectionDigest]
 
     enum CodingKeys: String, CodingKey {
-        case enabled, summary, sources, runs, items, digests
+        case enabled, model, summary, sources, runs, items, digests
         case intervalMinutes = "interval_minutes"
         case lookbackMinutes = "lookback_minutes"
-        case modelCommand = "model_command"
         case connectorHealth = "connector_health"
     }
 
     static let empty = ATMCollectionOverview(
         enabled: false, intervalMinutes: 5, lookbackMinutes: 60,
-        modelCommand: "codex", connectorHealth: [], summary: .empty,
+        model: "deepseek-v4-flash", connectorHealth: [], summary: .empty,
         sources: [], runs: [], items: [], digests: []
     )
 
@@ -721,5 +884,43 @@ struct ATMCollectionOverview: Decodable, Equatable {
                 if lhs.startedAt == rhs.startedAt { return lhs.id < rhs.id }
                 return lhs.startedAt < rhs.startedAt
             }
+    }
+}
+
+/// Decides when the resident App should ask the collector to run due sources.
+///
+/// The collector remains authoritative about due-ness. This lightweight mirror
+/// avoids launching an IPC process on every minute tick, without letting one
+/// source's recent run postpone another source whose own interval has elapsed.
+enum ATMCollectionSchedulePolicy {
+    static func shouldRun(
+        _ overview: ATMCollectionOverview,
+        lastAttemptAt: Date?,
+        now: Date = Date()
+    ) -> Bool {
+        guard overview.enabled else { return false }
+        let sources = overview.sources.filter(\.enabled)
+        guard !sources.isEmpty else { return false }
+
+        let sourceInterval = sources.map(\.effectiveIntervalMinutes).min()
+            ?? overview.intervalMinutes
+        // The global interval is the scheduler polling ceiling. A source may
+        // request a faster cadence; the collector still performs the final
+        // source-by-source due check before doing network or model work.
+        let pollingInterval = TimeInterval(
+            max(min(overview.intervalMinutes, sourceInterval), 1) * 60
+        )
+        if let lastAttemptAt, now.timeIntervalSince(lastAttemptAt) < pollingInterval {
+            return false
+        }
+
+        let nowTimestamp = Int64(now.timeIntervalSince1970)
+        return sources.contains { source in
+            guard let latest = overview.latestSuccessfulRun(for: source.id) else {
+                return true
+            }
+            return nowTimestamp - latest.startedAt
+                >= Int64(max(source.effectiveIntervalMinutes, 1) * 60)
+        }
     }
 }

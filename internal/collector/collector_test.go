@@ -3,16 +3,20 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/textmodel"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
@@ -36,18 +40,6 @@ type fakeExtractor struct {
 	err     error
 	calls   int
 	batches []MessageBatch
-}
-
-type fakeTodoDispatcher struct {
-	todoIDs  []string
-	projects []string
-	err      error
-}
-
-func (dispatcher *fakeTodoDispatcher) Dispatch(_ context.Context, todoID, project string) error {
-	dispatcher.todoIDs = append(dispatcher.todoIDs, todoID)
-	dispatcher.projects = append(dispatcher.projects, project)
-	return dispatcher.err
 }
 
 func (extractor *fakeExtractor) Extract(_ context.Context, batch MessageBatch, _ []store.Todo) (Decision, error) {
@@ -84,11 +76,194 @@ func addCollectorSource(t *testing.T) store.CollectionSource {
 	return source
 }
 
+func addSecondCollectorSource(t *testing.T) store.CollectionSource {
+	t.Helper()
+	db, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-release",
+		Name: "发布协同", Project: "atm", Priority: "P1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("add second source: %v", err)
+	}
+	return source
+}
+
+func seedFailedRun(t *testing.T, source store.CollectionSource, at time.Time, message string) {
+	t.Helper()
+	db, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if err := store.SaveCollectionRun(db, store.CollectionRun{
+		ID: "seeded-" + source.ID, Connector: source.Connector, SourceID: source.ID,
+		Status: "failed", StartedAt: at.Unix(), FinishedAt: at.Unix(),
+		FailedCount: 1, Error: message,
+	}); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+}
+
+func withConnectorLoginCommand(t *testing.T, connector, command string) {
+	t.Helper()
+	previous := config.CollectionConnectors
+	config.CollectionConnectors = map[string]config.CollectionConnectorConfig{
+		connector: {Command: "/bin/true", LoginCommand: command},
+	}
+	t.Cleanup(func() { config.CollectionConnectors = previous })
+}
+
+const expiredLogin = "connector test fetch: dws returned an error: 未登录，请先执行 dws auth login"
+
+// An expired login belongs to the connector, not to the source that happened to
+// run first: every sibling is about to fail identically against the same
+// credential, and five copies of one message is how a real outage became noise.
+func TestAnExpiredLoginStopsTheRestOfItsConnector(t *testing.T) {
+	withCollectorStore(t)
+	addCollectorSource(t)
+	addSecondCollectorSource(t)
+	withConnectorLoginCommand(t, "test", "~/bin/fake auth login")
+	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+	report, err := service.Run(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "未登录") {
+		t.Fatalf("the attempt that did happen must still be reported: %v", err)
+	}
+	if len(report.Runs) != 1 || len(fetcher.since) != 1 {
+		t.Fatalf("sibling source was attempted anyway: runs=%d fetches=%v", len(report.Runs), fetcher.since)
+	}
+	if len(report.Blocked) != 1 {
+		t.Fatalf("blocked = %+v, want the connector named once", report.Blocked)
+	}
+	block := report.Blocked[0]
+	if block.Connector != "test" || block.Status != "auth_required" || block.SkippedSources != 1 {
+		t.Fatalf("blocked = %+v", block)
+	}
+	if want := config.Home + "/bin/fake auth login"; block.LoginCommand != want {
+		t.Fatalf("login command = %q, want %q with ~ expanded", block.LoginCommand, want)
+	}
+}
+
+// The background path is the one that repeats. Left to itself it re-proved the
+// same expired login every five minutes for hours.
+func TestTheBackgroundRunLeavesAnExpiredLoginAloneUntilItsWindowPasses(t *testing.T) {
+	withCollectorStore(t)
+	first := addCollectorSource(t)
+	addSecondCollectorSource(t)
+	now := time.Unix(200_000, 0)
+	seedFailedRun(t, first, now.Add(-10*time.Minute), expiredLogin)
+	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{},
+		Now: func() time.Time { return now }}
+
+	report, err := service.RunDue(context.Background(), "")
+	if err != nil {
+		t.Fatalf("skipping is not a failure: %v", err)
+	}
+	if len(report.Runs) != 0 || len(fetcher.since) != 0 {
+		t.Fatalf("connector was probed inside its window: runs=%d fetches=%v", len(report.Runs), fetcher.since)
+	}
+	if len(report.Blocked) != 1 || report.Blocked[0].SkippedSources != 2 {
+		t.Fatalf("blocked = %+v, want both sources accounted for", report.Blocked)
+	}
+	if want := now.Add(20 * time.Minute).Unix(); report.Blocked[0].RetryAt != want {
+		t.Fatalf("retry at %d, want %d (30 minutes after the failure)", report.Blocked[0].RetryAt, want)
+	}
+
+	later := now.Add(21 * time.Minute)
+	service.Now = func() time.Time { return later }
+	report, err = service.RunDue(context.Background(), "")
+	if err == nil {
+		t.Fatalf("the probe after the window failed and must be reported")
+	}
+	if len(fetcher.since) != 1 || len(report.Runs) != 1 {
+		t.Fatalf("window passed but probe was not exactly one: fetches=%v runs=%d", fetcher.since, len(report.Runs))
+	}
+	if len(report.Blocked) != 1 || report.Blocked[0].SkippedSources != 1 {
+		t.Fatalf("blocked = %+v, want the sibling skipped again", report.Blocked)
+	}
+}
+
+// Logging in again is what ends the outage, and a manual run is how a person says
+// they have done it. It must never be the thing that is waiting.
+func TestAManualRunAlwaysAttemptsAConnectorTheLedgerCallsBlocked(t *testing.T) {
+	withCollectorStore(t)
+	first := addCollectorSource(t)
+	now := time.Unix(200_000, 0)
+	seedFailedRun(t, first, now.Add(-time.Minute), expiredLogin)
+	fetcher := &fakeFetcher{newest: now.Unix()}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{},
+		Now: func() time.Time { return now }}
+	report, err := service.Run(context.Background(), "")
+	if err != nil || len(report.Runs) != 1 || len(fetcher.since) != 1 {
+		t.Fatalf("manual run was held back: runs=%d fetches=%v err=%v", len(report.Runs), fetcher.since, err)
+	}
+	if len(report.Blocked) != 0 {
+		t.Fatalf("blocked = %+v, want nothing held back", report.Blocked)
+	}
+}
+
+// A business error is not evidence about the credential. These APIs return the
+// occasional one and it fixes itself at the next interval, so every source still
+// gets its turn.
+//
+// A missing permission is not evidence about the credential either: it has been
+// per-source in practice — one group this account cannot read while its siblings
+// work — so it must not hold the connector back the way an expired login does.
+func TestOnlyAnExpiredLoginBlocksTheConnector(t *testing.T) {
+	for _, message := range []string{
+		"business error",
+		"dws returned an error: [AUTH_PERMISSION_DENIED] Permission denied",
+	} {
+		withCollectorStore(t)
+		addCollectorSource(t)
+		addSecondCollectorSource(t)
+		fetcher := &fakeFetcher{err: errors.New(message)}
+		service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+		report, err := service.Run(context.Background(), "")
+		if err == nil || len(report.Runs) != 2 || len(fetcher.since) != 2 {
+			t.Errorf("%q stopped the connector: runs=%d fetches=%v err=%v",
+				message, len(report.Runs), fetcher.since, err)
+		}
+		if len(report.Blocked) != 0 {
+			t.Errorf("%q blocked = %+v", message, report.Blocked)
+		}
+	}
+}
+
+// Nothing was held back, so there is nothing to explain: the failed run row is
+// already the whole story.
+func TestABlockedConnectorWithNoSiblingsIsNotReportedTwice(t *testing.T) {
+	withCollectorStore(t)
+	addCollectorSource(t)
+	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
+	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+	report, _ := service.Run(context.Background(), "")
+	if len(report.Runs) != 1 || len(report.Blocked) != 0 {
+		t.Fatalf("runs=%d blocked=%+v", len(report.Runs), report.Blocked)
+	}
+}
+
 func tickingClock() func() time.Time {
 	now := time.Unix(20_000, 0)
 	return func() time.Time {
 		now = now.Add(time.Second)
 		return now
+	}
+}
+
+func itemTestCall() application.Call {
+	return application.Call{
+		RequestID: "collector-test-request",
+		Actor: application.Actor{
+			Kind:   application.ActorHuman,
+			Origin: application.OriginCLI,
+		},
 	}
 }
 
@@ -151,118 +326,6 @@ func TestServiceCreatesOnceAndAdvancesCheckpoint(t *testing.T) {
 	}
 	if !strings.Contains(items[0].RawContext, "我想把需求收集做成全自动的") {
 		t.Fatalf("collection audit lost raw conversation: %+v", items[0])
-	}
-}
-
-func TestServiceAutoDispatchesNewTodoOnce(t *testing.T) {
-	withCollectorStore(t)
-	db, err := store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-auto", Name: "自动执行群",
-		Project: "atm", Priority: "P1", Strategy: store.CollectionStrategyTasks,
-		AutoDispatch: true, Enabled: true,
-	})
-	db.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	fetcher := &fakeFetcher{messages: []Message{{ID: "auto-1", ConversationID: source.ExternalID,
-		Sender: "测试用户", CreatedAt: 13_000, Content: "请实现自动派发"}}, newest: 13_000}
-	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "实现自动派发",
-		Summary: "采集后交给 Agent", ItemType: "requirement", Project: "/tmp/untrusted-message-project",
-		Priority: "P1", Reason: "明确需求", Confidence: 0.98}}
-	dispatcher := &fakeTodoDispatcher{}
-	service := Service{Fetcher: fetcher, Extractor: extractor, Dispatcher: dispatcher, Now: tickingClock()}
-
-	if _, err := service.Run(context.Background(), source.ID); err != nil {
-		t.Fatalf("first run: %v", err)
-	}
-	if _, err := service.Run(context.Background(), source.ID); err != nil {
-		t.Fatalf("repeat run: %v", err)
-	}
-	if len(dispatcher.todoIDs) != 1 || dispatcher.todoIDs[0] == "" {
-		t.Fatalf("dispatches = %v, want exactly one Todo", dispatcher.todoIDs)
-	}
-	if len(dispatcher.projects) != 1 || dispatcher.projects[0] != "atm" {
-		t.Fatalf("dispatch projects = %v", dispatcher.projects)
-	}
-	todos, err := store.LoadTodosReadOnly()
-	if err != nil || len(todos.Items) != 1 || todos.Items[0].Project != "atm" {
-		t.Fatalf("automatic Todo escaped configured project: %+v err=%v", todos, err)
-	}
-	db, err = store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	items, err := store.ListCollectionItems(db, source.ID, 10)
-	if err != nil || len(items) != 1 || items[0].DispatchStatus != "dispatched" || items[0].DispatchError != "" {
-		t.Fatalf("items = %+v, err=%v", items, err)
-	}
-}
-
-func TestServiceRecordsDispatchFailureWithoutLosingCreatedTodo(t *testing.T) {
-	withCollectorStore(t)
-	db, err := store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-auto-fail", Project: "atm",
-		Priority: "P1", AutoDispatch: true, Enabled: true,
-	})
-	db.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := Service{
-		Fetcher: &fakeFetcher{messages: []Message{{ID: "fail-1", ConversationID: source.ExternalID,
-			CreatedAt: 14_000, Content: "实现失败可重试"}}, newest: 14_000},
-		Extractor: &fakeExtractor{decision: Decision{Action: "create", Title: "实现失败重试",
-			Summary: "保留 Todo 和证据", ItemType: "requirement", Project: "atm", Priority: "P1",
-			Reason: "明确需求", Confidence: 0.98}},
-		Dispatcher: &fakeTodoDispatcher{err: errors.New("codex unavailable")}, Now: tickingClock(),
-	}
-	report, err := service.Run(context.Background(), source.ID)
-	if err == nil || len(report.Runs) != 1 || report.Runs[0].Status != "failed" {
-		t.Fatalf("run=%+v err=%v", report, err)
-	}
-	todos, loadErr := store.LoadTodosReadOnly()
-	if loadErr != nil || len(todos.Items) != 1 || todos.Items[0].Status != store.TodoStatusOpen {
-		t.Fatalf("created Todo was lost or advanced: %+v err=%v", todos, loadErr)
-	}
-	db, err = store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	items, err := store.ListCollectionItems(db, source.ID, 10)
-	if err != nil || len(items) != 1 || items[0].Status != "processed" ||
-		items[0].DispatchStatus != "failed" || !strings.Contains(items[0].DispatchError, "codex unavailable") {
-		t.Fatalf("items = %+v, err=%v", items, err)
-	}
-	checkpoint, err := store.GetCollectionCheckpoint(db, source.ID)
-	if err != nil || checkpoint.CursorTime != 14_000 {
-		t.Fatalf("checkpoint = %+v, err=%v", checkpoint, err)
-	}
-}
-
-func TestCollectionProjectWorkDirUsesConfiguredProjectRoots(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	want := filepath.Join(home, "mox", "atm")
-	if err := os.MkdirAll(want, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	got, err := collectionProjectWorkDir("atm")
-	if err != nil || got != want {
-		t.Fatalf("work dir=%q err=%v, want %q", got, err, want)
-	}
-	if _, err := collectionProjectWorkDir(""); err == nil {
-		t.Fatal("empty project resolved for automatic dispatch")
 	}
 }
 
@@ -375,6 +438,163 @@ func TestServiceAppendsFollowUpToTheTodoTheSameChatFiled(t *testing.T) {
 	}
 }
 
+func TestAppendDecisionRetryUsesOnlyTheFingerprintMarker(t *testing.T) {
+	withCollectorStore(t)
+	source := store.CollectionSource{Connector: "test", ExternalID: "cid-product"}
+	todo := store.Todo{ID: "t9", Title: "追踪同一会话", Description: "初始需求", Priority: "P1",
+		Status: store.TodoStatusOpen, Project: "atm", Created: store.Today(), Source: "test:cid-product:m1"}
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{todo}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+
+	batch := MessageBatch{Source: source, Fingerprint: "fingerprint-retry-0001", Messages: []Message{{
+		ID: "m2", ConversationID: source.ExternalID,
+	}}}
+	decision := Decision{RelatedTodoID: todo.ID, Summary: "只注入了 skill definition"}
+	for attempt := 0; attempt < 2; attempt++ {
+		got, err := appendDecision(batch, decision)
+		if err != nil || got != todo.ID {
+			t.Fatalf("append attempt %d = %q, %v", attempt+1, got, err)
+		}
+	}
+	doc, err := store.ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatalf("read Todo doc: %v", err)
+	}
+	marker := collectionAppendMarker(batch.Fingerprint)
+	if got := strings.Count(doc, marker); got != 1 {
+		t.Fatalf("same fingerprint marker count=%d, want 1:\n%s", got, doc)
+	}
+	if got := strings.Count(doc, decision.Summary); got != 1 {
+		t.Fatalf("same fingerprint summary count=%d, want 1:\n%s", got, doc)
+	}
+
+	// Summary text is not the idempotency key. A distinct batch is allowed to
+	// contribute the same sentence and carries its own marker.
+	batch.Fingerprint = "fingerprint-distinct-0002"
+	if got, err := appendDecision(batch, decision); err != nil || got != todo.ID {
+		t.Fatalf("append distinct fingerprint = %q, %v", got, err)
+	}
+	doc, err = store.ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatalf("read Todo doc after distinct append: %v", err)
+	}
+	if got := strings.Count(doc, decision.Summary); got != 2 {
+		t.Fatalf("equal summaries with distinct fingerprints count=%d, want 2:\n%s", got, doc)
+	}
+	if got := strings.Count(doc, collectionAppendMarker(batch.Fingerprint)); got != 1 {
+		t.Fatalf("distinct fingerprint marker count=%d, want 1:\n%s", got, doc)
+	}
+}
+
+func TestAppendTodoLogOnceSerializesConcurrentRetries(t *testing.T) {
+	withCollectorStore(t)
+	todo := store.Todo{ID: "t9", Title: "追踪同一会话", Priority: "P1", Status: store.TodoStatusOpen,
+		Project: "atm", Created: store.Today()}
+	marker := collectionAppendMarker("fingerprint-concurrent")
+	note := "并发到达的同一批补充\n\n" + marker
+	start := make(chan struct{})
+	errors := make(chan error, 12)
+	var writers sync.WaitGroup
+	for index := 0; index < cap(errors); index++ {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			<-start
+			errors <- appendTodoLogOnce(&todo, note, "补充", marker)
+		}()
+	}
+	close(start)
+	writers.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("concurrent append: %v", err)
+		}
+	}
+	doc, err := store.ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatalf("read Todo doc: %v", err)
+	}
+	if got := strings.Count(doc, marker); got != 1 {
+		t.Fatalf("concurrent fingerprint marker count=%d, want 1:\n%s", got, doc)
+	}
+}
+
+func TestAppendDecisionPropagatesTodoDocumentReadErrors(t *testing.T) {
+	withCollectorStore(t)
+	todo := store.Todo{ID: "t9", Title: "追踪同一会话", Priority: "P1", Status: store.TodoStatusOpen,
+		Project: "atm", Created: store.Today(), Source: "test:cid-product:m1"}
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{todo}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	// A directory at the document path produces a stable non-ENOENT read error.
+	// The collector must not reinterpret it as a missing card and attempt a write.
+	if err := os.MkdirAll(store.TodoDocPath(todo.ID), 0o755); err != nil {
+		t.Fatalf("create unreadable Todo path: %v", err)
+	}
+	batch := MessageBatch{Source: store.CollectionSource{Connector: "test", ExternalID: "cid-product"},
+		Fingerprint: "fingerprint-read-error", Messages: []Message{{ID: "m2", ConversationID: "cid-product"}}}
+	_, err := appendDecision(batch, Decision{RelatedTodoID: todo.ID, Summary: "不应写入"})
+	if err == nil || !strings.Contains(err.Error(), "read Todo t9 before appending collection marker") {
+		t.Fatalf("read error was not propagated with context: %v", err)
+	}
+}
+
+func TestRevertRetryDoesNotDuplicateCompensatingMarker(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	todo := store.Todo{ID: "t9", Title: "追踪同一会话", Priority: "P1", Status: store.TodoStatusOpen,
+		Project: "atm", Created: store.Today(), Source: "test:cid-product:m1"}
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{todo}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	fingerprint := "fingerprint-revert-retry"
+	if _, err := store.AppendTodoLog(&todo, "原自动补充\n\n"+collectionAppendMarker(fingerprint), "补充"); err != nil {
+		t.Fatalf("seed original supplement: %v", err)
+	}
+	compensatingMarker := collectionRevertMarker(fingerprint)
+	if _, err := store.AppendTodoLog(&todo, compensatingMarker+" 此前自动补充被用户标记为误判；原记录保留供审计。", "补充"); err != nil {
+		t.Fatalf("seed first compensating write: %v", err)
+	}
+
+	db, err := store.Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	item, _, err := store.PutCollectionItem(db, store.CollectionItem{
+		SourceID: source.ID, Connector: source.Connector, ConversationID: source.ExternalID,
+		Fingerprint: fingerprint, MessageIDs: []string{"m2"}, Action: "append", TodoID: todo.ID, Status: "processed",
+	})
+	db.Close()
+	if err != nil {
+		t.Fatalf("seed collection item: %v", err)
+	}
+
+	result, err := (Service{}).Revert(context.Background(), itemTestCall(), RevertInput{
+		ItemID: item.ID, Confirmed: true,
+	})
+	if err != nil || result.Item.Action != "reverted" {
+		t.Fatalf("retry revert item=%+v err=%v", result.Item, err)
+	}
+	doc, err := store.ReadTodoDoc(todo.ID)
+	if err != nil {
+		t.Fatalf("read Todo doc: %v", err)
+	}
+	if got := strings.Count(doc, compensatingMarker); got != 1 {
+		t.Fatalf("compensating marker count=%d, want 1:\n%s", got, doc)
+	}
+}
+
 // The classifier reads untrusted chat, so the one write it can aim at an existing
 // record is held to the thread that produced it. A Todo somebody wrote by hand is
 // not editable by whatever a message claims to relate to — and the batch is filed
@@ -416,6 +636,47 @@ func TestServiceRefusesToAppendOutsideTheConversationThatFiledTheTodo(t *testing
 	// a create, and Revert drops a Todo rather than writing a compensating note.
 	if len(items) != 1 || items[0].Action != "create" {
 		t.Fatalf("refused append item=%+v", items)
+	}
+}
+
+// A target that was already closed at classification time was never in the
+// candidate list, so there was no title to borrow. The batch then falls back to
+// creating a Todo — and an untitled Todo in somebody's list is worse than a
+// failed record that retries.
+func TestServiceRefusesToFileAnUntitledTodoWhenAnAppendTargetIsGone(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	if err := workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
+		transaction.Todos().Items = []store.Todo{{ID: "t9", Title: "已经完成的任务", Priority: "P1",
+			Status: store.TodoStatusDone, Project: "atm", Created: store.Today()}}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed Todo: %v", err)
+	}
+	fetcher := &fakeFetcher{messages: []Message{{ID: "m2", ConversationID: source.ExternalID,
+		Sender: "测试用户", CreatedAt: 11_000, Content: "那个已经完成的事还有个后续"}}, newest: 11_000}
+	extractor := &fakeExtractor{decision: Decision{Action: "append", Title: "",
+		Summary: "还有个后续", ItemType: "follow_up", Project: "atm", Priority: "P1",
+		RelatedTodoID: "t9", Reason: "自称与 t9 有关", Confidence: 0.9}}
+	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	// The source's run fails, which is how the checkpoint stays put and the batch
+	// comes back next time.
+	report, err := service.Run(context.Background(), source.ID)
+	if err == nil || !strings.Contains(err.Error(), "without a title") {
+		t.Fatalf("untitled create was not refused: err=%v", err)
+	}
+	if report.Runs[0].CreatedCount != 0 || report.Runs[0].FailedCount != 1 {
+		t.Fatalf("run counters=%+v", report.Runs[0])
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 {
+		t.Fatalf("an untitled Todo reached the list: %+v", todos.Items)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 || items[0].Status != "failed" || !strings.Contains(items[0].Error, "without a title") {
+		t.Fatalf("record does not explain the refusal: %+v", items)
 	}
 }
 
@@ -519,12 +780,18 @@ func TestObservationSourceKeepsInsightAndNeverWritesTodo(t *testing.T) {
 
 // A window holding one thing worth keeping and one joke has to be able to answer
 // differently about each, which is why observation sources are grouped by topic
-// rather than collapsed into a single batch per run.
+// rather than collapsed into a single batch per run. What the person then reads is
+// a different question — see TestRunCollapsesItsInsightsIntoOneRecord.
 func TestObservationSourceDecidesPerTopic(t *testing.T) {
 	withCollectorStore(t)
 	source := observationSource(t)
-	extractor := &fakeExtractor{decision: Decision{Action: "insight", Title: "记一笔",
-		Summary: "值得留下的内容", ItemType: "insight", Confidence: 0.8}}
+	extractor := &fakeExtractor{decide: func(batch MessageBatch) Decision {
+		if strings.Contains(batch.RawContext, "午饭") {
+			return Decision{Action: "ignore", Reason: "闲聊", Confidence: 0.9}
+		}
+		return Decision{Action: "insight", Title: "记一笔", Summary: "值得留下的内容",
+			ItemType: "insight", Confidence: 0.8}
+	}}
 	// 33 minutes apart: past the 15-minute gap that separates one topic from the next.
 	service := Service{Fetcher: &fakeFetcher{messages: []Message{
 		{ID: "m-topic-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
@@ -537,11 +804,217 @@ func TestObservationSourceDecidesPerTopic(t *testing.T) {
 	if err != nil || report.Runs[0].AnalyzedCount != 2 || extractor.calls != 2 {
 		t.Fatalf("observation run=%+v calls=%d err=%v", report, extractor.calls, err)
 	}
+	if report.Runs[0].InsightCount != 1 || report.Runs[0].IgnoredCount != 1 {
+		t.Fatalf("the two topics did not answer differently: %+v", report.Runs[0])
+	}
 	db, _ := store.Open()
 	items, _ := store.ListCollectionItems(db, source.ID, 10)
 	db.Close()
 	if len(items) != 2 {
 		t.Fatalf("expected one item per topic, got %+v", items)
+	}
+}
+
+// Topics are how a run has to think; they are not how a person reads the result.
+// Six cards from one collection bury each other, so the round's insights become
+// the one record it leaves behind — and the count follows the cards.
+func TestRunCollapsesItsInsightsIntoOneRecord(t *testing.T) {
+	withCollectorStore(t)
+	source := observationSource(t)
+	extractor := &fakeExtractor{decide: func(batch MessageBatch) Decision {
+		if strings.Contains(batch.RawContext, "午饭") {
+			return Decision{Action: "ignore", Reason: "闲聊", Confidence: 1}
+		}
+		if strings.Contains(batch.RawContext, "--since") {
+			return Decision{Action: "insight", Title: "增量拉取用 --since",
+				Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}
+		}
+		return Decision{Action: "insight", Title: "白名单只采集显式来源",
+			Summary: "来源要显式添加才会被采集", ItemType: "insight", Confidence: 0.6}
+	}}
+	summarizer := &fakeSummarizer{content: DigestContent{Title: "采集机制两则",
+		Body: "- 增量拉取用 --since\n- 白名单只采集显式来源"}}
+	// Three topics, each past the 15-minute gap from the last.
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "m-merge-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
+			Content: "connector 的增量拉取用 --since"},
+		{ID: "m-merge-2", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 12_000,
+			Content: "午饭去哪里吃？"},
+		{ID: "m-merge-3", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 14_000,
+			Content: "来源走白名单，只采集显式添加的"},
+	},
+		newest: 14_000}, Extractor: extractor, Summarizer: summarizer, Now: tickingClock()}
+
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	run := report.Runs[0]
+	// Analyzed still counts the topics — it is what the run spent — while the
+	// insight count is what the person will see.
+	if run.AnalyzedCount != 3 || run.InsightCount != 1 || run.IgnoredCount != 1 {
+		t.Fatalf("run counts should follow cards, not topics: %+v", run)
+	}
+	if summarizer.calls != 1 || summarizer.inputs[0].Scope != DigestScopeRun ||
+		len(summarizer.inputs[0].Items) != 2 {
+		t.Fatalf("merge asked for the wrong summary: calls=%d inputs=%+v", summarizer.calls, summarizer.inputs)
+	}
+	db, _ := store.Open()
+	defer db.Close()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	insights := []store.CollectionItem{}
+	for _, item := range items {
+		if item.Action == "insight" {
+			insights = append(insights, item)
+		}
+	}
+	if len(items) != 2 || len(insights) != 1 {
+		t.Fatalf("the two insight topics did not collapse into one record: %+v", items)
+	}
+	merged := insights[0]
+	if merged.Title != "采集机制两则" || merged.Summary != "- 增量拉取用 --since\n- 白名单只采集显式来源" {
+		t.Fatalf("merged record did not take the summary it asked for: %+v", merged)
+	}
+	if merged.Status != "processed" || merged.ReadAt != 0 || merged.TodoID != "" {
+		t.Fatalf("merged record is not an unread, processed insight: %+v", merged)
+	}
+	// The union is what marks those messages handled now that their own rows are
+	// gone, and the raw context is what keeps the chat readable on the card.
+	if !slices.Contains(merged.MessageIDs, "m-merge-1") || !slices.Contains(merged.MessageIDs, "m-merge-3") ||
+		slices.Contains(merged.MessageIDs, "m-merge-2") {
+		t.Fatalf("merged record owns the wrong messages: %+v", merged.MessageIDs)
+	}
+	if !strings.Contains(merged.RawContext, "--since") || !strings.Contains(merged.RawContext, "白名单") {
+		t.Fatalf("merged record lost the chat behind it: %q", merged.RawContext)
+	}
+	// Deleting the per-topic rows must not release their messages: the next run
+	// reads a twenty-minute overlap and would collect them all over again.
+	second, err := service.Run(context.Background(), source.ID)
+	if err != nil || second.Runs[0].AnalyzedCount != 0 || extractor.calls != 3 {
+		t.Fatalf("merged messages came back: run=%+v calls=%d err=%v", second.Runs[0], extractor.calls, err)
+	}
+	items, _ = store.ListCollectionItems(db, source.ID, 10)
+	if len(items) != 2 {
+		t.Fatalf("second run filed something new: %+v", items)
+	}
+}
+
+// One insight is already the one record. Rewriting it would spend a model call to
+// replace text that is fine.
+func TestASingleInsightIsNotMerged(t *testing.T) {
+	withCollectorStore(t)
+	source := observationSource(t)
+	summarizer := &fakeSummarizer{content: DigestContent{Title: "不该被调用", Body: "不该被调用"}}
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "m-single-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
+			Content: "connector 的增量拉取用 --since"},
+	}, newest: 10_000},
+		Extractor: &fakeExtractor{decision: Decision{Action: "insight", Title: "增量拉取用 --since",
+			Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}},
+		Summarizer: summarizer, Now: tickingClock()}
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].InsightCount != 1 || summarizer.calls != 0 {
+		t.Fatalf("single insight run=%+v calls=%d err=%v", report.Runs[0], summarizer.calls, err)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 || items[0].Title != "增量拉取用 --since" {
+		t.Fatalf("single insight was rewritten: %+v", items)
+	}
+}
+
+// One round leaving one record must not depend on the endpoint being up. Joining
+// text an earlier model call already wrote claims nothing new, and the per-topic
+// rows are deleted either way — so the fallback keeps their content verbatim and
+// says in reason that this is what happened.
+func TestInsightMergeFallsBackToTheirOwnTextWhenTheModelIsUnavailable(t *testing.T) {
+	withCollectorStore(t)
+	source := observationSource(t)
+	extractor := &fakeExtractor{decide: func(batch MessageBatch) Decision {
+		if strings.Contains(batch.RawContext, "--since") {
+			return Decision{Action: "insight", Title: "增量拉取用 --since",
+				Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}
+		}
+		return Decision{Action: "insight", Title: "白名单只采集显式来源",
+			Summary: "来源要显式添加才会被采集", ItemType: "insight", Confidence: 0.6}
+	}}
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "m-fallback-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
+			Content: "connector 的增量拉取用 --since"},
+		{ID: "m-fallback-2", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 12_000,
+			Content: "来源走白名单，只采集显式添加的"},
+	}, newest: 12_000}, Extractor: extractor,
+		Summarizer: &fakeSummarizer{err: errors.New("model unavailable")}, Now: tickingClock()}
+
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].Status != "succeeded" || report.Runs[0].InsightCount != 1 {
+		t.Fatalf("fallback run=%+v err=%v", report.Runs[0], err)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 1 {
+		t.Fatalf("fallback did not collapse the round: %+v", items)
+	}
+	merged := items[0]
+	for _, kept := range []string{"增量拉取用 --since", "connector 靠 --since 增量拉取",
+		"白名单只采集显式来源", "来源要显式添加才会被采集"} {
+		if !strings.Contains(merged.Summary, kept) {
+			t.Fatalf("fallback lost %q: %q", kept, merged.Summary)
+		}
+	}
+	if !strings.Contains(merged.Reason, "内置模型不可用") || !strings.Contains(merged.Title, "本轮 2 条结论") {
+		t.Fatalf("fallback did not say what happened: title=%q reason=%q", merged.Title, merged.Reason)
+	}
+}
+
+// Merging is about what a person reads, not about what got written out. A piece of
+// work is still one item, with its own Todo behind it.
+func TestMergingInsightsLeavesTodoRecordsAlone(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	extractor := &fakeExtractor{decide: func(batch MessageBatch) Decision {
+		if strings.Contains(batch.RawContext, "报错") {
+			return Decision{Action: "create", Title: "排查采集报错", Summary: "收集时报错",
+				ItemType: "bug", Project: "atm", Priority: "P1", Confidence: 0.9}
+		}
+		if strings.Contains(batch.RawContext, "--since") {
+			return Decision{Action: "insight", Title: "增量拉取用 --since",
+				Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}
+		}
+		return Decision{Action: "insight", Title: "白名单只采集显式来源",
+			Summary: "来源要显式添加才会被采集", ItemType: "insight", Confidence: 0.6}
+	}}
+	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+		{ID: "m-mixed-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
+			Content: "收集的时候报错了"},
+		{ID: "m-mixed-2", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 12_000,
+			Content: "connector 的增量拉取用 --since"},
+		{ID: "m-mixed-3", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 14_000,
+			Content: "来源走白名单，只采集显式添加的"},
+	}, newest: 14_000}, Extractor: extractor,
+		Summarizer: &fakeSummarizer{content: DigestContent{Title: "采集机制两则",
+			Body: "- 增量拉取用 --since\n- 白名单只采集显式来源"}}, Now: tickingClock()}
+
+	report, err := service.Run(context.Background(), source.ID)
+	if err != nil || report.Runs[0].CreatedCount != 1 || report.Runs[0].InsightCount != 1 {
+		t.Fatalf("mixed run=%+v err=%v", report.Runs[0], err)
+	}
+	db, _ := store.Open()
+	items, _ := store.ListCollectionItems(db, source.ID, 10)
+	db.Close()
+	if len(items) != 2 {
+		t.Fatalf("expected the create plus one merged insight: %+v", items)
+	}
+	todos, _ := store.LoadTodosReadOnly()
+	if len(todos.Items) != 1 || todos.Items[0].Title != "排查采集报错" {
+		t.Fatalf("merging touched the Todo list: %+v", todos.Items)
+	}
+	for _, item := range items {
+		if item.Action == "create" && item.TodoID != todos.Items[0].ID {
+			t.Fatalf("create record lost its Todo: %+v", item)
+		}
 	}
 }
 
@@ -568,10 +1041,11 @@ func TestPromoteTurnsObservationInsightIntoTodo(t *testing.T) {
 	if len(items) != 1 || items[0].Action != "insight" {
 		t.Fatalf("expected one insight item, got %+v", items)
 	}
-	promoted, err := service.Promote(items[0].ID, ItemCorrection{})
+	promoteResult, err := service.Promote(context.Background(), itemTestCall(), PromoteInput{ItemID: items[0].ID})
 	if err != nil {
 		t.Fatalf("promote insight: %v", err)
 	}
+	promoted := promoteResult.Item
 	if promoted.Action != "create" || promoted.TodoID == "" {
 		t.Fatalf("promoted item=%+v", promoted)
 	}
@@ -873,10 +1347,11 @@ func TestReprocessRestoresTheAutomaticRetryBudget(t *testing.T) {
 
 	service.Extractor = &fakeExtractor{decision: Decision{Action: "create", Title: "修好连接器后重试",
 		Summary: "重新解析", ItemType: "bug", Priority: "P1", Confidence: 0.9}}
-	item, err := service.Reprocess(context.Background(), items[0].ID)
+	reprocessResult, err := service.Reprocess(context.Background(), itemTestCall(), ReprocessInput{ItemID: items[0].ID})
 	if err != nil {
 		t.Fatalf("reprocess after retirement: %v", err)
 	}
+	item := reprocessResult.Item
 	if item.Action != "create" || item.TodoID == "" {
 		t.Fatalf("reprocess did not carry out the decision: %+v", item)
 	}
@@ -973,10 +1448,11 @@ func TestPromoteCarriesOutAProposedAppend(t *testing.T) {
 		}
 	}
 
-	promoted, err := service.Promote(proposal.ID, ItemCorrection{})
+	promoteResult, err := service.Promote(context.Background(), itemTestCall(), PromoteInput{ItemID: proposal.ID})
 	if err != nil {
 		t.Fatalf("promote proposed append: %v", err)
 	}
+	promoted := promoteResult.Item
 	if promoted.Action != "append" || promoted.TodoID != "t9" || promoted.ProposedAction != "" {
 		t.Fatalf("promoted item=%+v", promoted)
 	}
@@ -1029,14 +1505,19 @@ func TestItemPromotionCorrectionAndRevert(t *testing.T) {
 		t.Fatalf("missing ignored audit item: %+v", items)
 	}
 	title := "评估需求自动收集方案"
-	promoted, err := service.Promote(items[0].ID, ItemCorrection{Title: &title})
+	promoteResult, err := service.Promote(context.Background(), itemTestCall(), PromoteInput{
+		ItemID: items[0].ID, Correction: ItemCorrection{Title: &title},
+	})
+	promoted := promoteResult.Item
 	if err != nil || promoted.Action != "create" || promoted.TodoID == "" {
 		t.Fatalf("promote item=%+v err=%v", promoted, err)
 	}
 	correctedTitle, project, priority := "实现需求自动收集方案", "platform", "P0"
-	corrected, err := service.Correct(promoted.ID, ItemCorrection{
-		Title: &correctedTitle, Project: &project, Priority: &priority,
+	correctResult, err := service.Correct(context.Background(), itemTestCall(), CorrectInput{
+		ItemID:     promoted.ID,
+		Correction: ItemCorrection{Title: &correctedTitle, Project: &project, Priority: &priority},
 	})
+	corrected := correctResult.Item
 	if err != nil || corrected.Title != correctedTitle || corrected.Project != project || corrected.Priority != priority {
 		t.Fatalf("correct item=%+v err=%v", corrected, err)
 	}
@@ -1045,23 +1526,26 @@ func TestItemPromotionCorrectionAndRevert(t *testing.T) {
 		todos.Items[0].Project != project || todos.Items[0].Priority != priority {
 		t.Fatalf("Todo correction did not stay in sync: %+v", todos.Items)
 	}
-	reverted, err := service.Revert(corrected.ID)
+	revertResult, err := service.Revert(context.Background(), itemTestCall(), RevertInput{ItemID: corrected.ID, Confirmed: true})
+	reverted := revertResult.Item
 	if err != nil || reverted.Action != "reverted" {
 		t.Fatalf("revert item=%+v err=%v", reverted, err)
 	}
 	todos, _ = store.LoadTodosReadOnly()
-	if len(todos.Items) != 1 || todos.Items[0].Status != store.TodoStatusDropped || todos.Items[0].ClosedReason == nil {
-		t.Fatalf("created Todo was not safely dropped: %+v", todos.Items)
+	archived, archiveErr := store.LoadArchivedTodos()
+	if archiveErr != nil || len(todos.Items) != 0 || len(archived) != 1 || archived[0].Status != store.TodoStatusOpen {
+		t.Fatalf("created Todo was not safely archived: live=%+v archived=%+v err=%v", todos.Items, archived, archiveErr)
 	}
-	oldTodoID := todos.Items[0].ID
+	oldTodoID := archived[0].ID
 	service.Extractor = &fakeExtractor{decision: Decision{Action: "create", Title: "重新判断后的事项",
 		Summary: "用户撤销后要求重新处理", ItemType: "follow_up", Priority: "P1", Confidence: 0.9}}
-	reprocessed, err := service.Reprocess(context.Background(), reverted.ID)
+	reprocessResult, err := service.Reprocess(context.Background(), itemTestCall(), ReprocessInput{ItemID: reverted.ID})
+	reprocessed := reprocessResult.Item
 	if err != nil || reprocessed.Action != "create" || reprocessed.TodoID == oldTodoID {
 		t.Fatalf("reprocess reverted item=%+v err=%v", reprocessed, err)
 	}
 	todos, _ = store.LoadTodosReadOnly()
-	if len(todos.Items) != 2 || todos.Items[1].Status != store.TodoStatusOpen {
+	if len(todos.Items) != 1 || todos.Items[0].Status != store.TodoStatusOpen {
 		t.Fatalf("reprocess should create a new active Todo: %+v", todos.Items)
 	}
 }
@@ -1148,6 +1632,10 @@ func TestCollectionPromptOffersAppendAndMarksThisChatsOwnTodos(t *testing.T) {
 	if strings.Contains(prompt, "t70") {
 		t.Fatalf("closed Todo offered as a candidate:\n%s", prompt)
 	}
+	if !strings.Contains(prompt, "a line later in time may prove") ||
+		!strings.Contains(prompt, "A terminal context line earlier than a later new follow-up does not cancel") {
+		t.Fatalf("prompt does not let later terminal context veto stale work safely:\n%s", prompt)
+	}
 }
 
 // An append whose target or payload is missing writes nothing, and the batch would
@@ -1157,6 +1645,20 @@ func TestValidateDecisionRequiresAnAppendTargetAndPayload(t *testing.T) {
 		RelatedTodoID: "t210"}
 	if err := validateDecision(complete); err != nil {
 		t.Fatalf("complete append rejected: %v", err)
+	}
+	// An append writes its summary into a card that already has a title, so the
+	// model leaving one out is not a reason to lose the batch.
+	noTitle := complete
+	noTitle.Title = " "
+	if err := validateDecision(noTitle); err != nil {
+		t.Fatalf("titleless append rejected: %v", err)
+	}
+	// A create and an insight are read later by their title alone.
+	for _, action := range []string{"create", "insight"} {
+		untitled := Decision{Action: action, Summary: "有内容但没标题", RelatedTodoID: "t210"}
+		if err := validateDecision(untitled); err == nil {
+			t.Fatalf("untitled %s accepted", action)
+		}
 	}
 	noTarget := complete
 	noTarget.RelatedTodoID = ""
@@ -1185,66 +1687,123 @@ func TestObservationSourceClampsAppendToInsight(t *testing.T) {
 	}
 }
 
-func TestAutomaticExtractorFailsClosedUnlessRuleModeIsExplicit(t *testing.T) {
-	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
-		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
-	if _, err := (AutomaticExtractor{ModelCommand: filepath.Join(t.TempDir(), "missing")}).Extract(context.Background(), batch, nil); err == nil {
-		t.Fatal("missing model command silently fell back")
-	}
-	decision, err := (AutomaticExtractor{ModelCommand: "rule"}).Extract(context.Background(), batch, nil)
-	if err != nil || decision.Action != "create" || decision.Project != "atm" || decision.Priority != "P2" {
-		t.Fatalf("explicit rule decision=%+v err=%v", decision, err)
-	}
-}
-
-// A rate-limited primary model is the whole reason the chain exists: the run
-// must continue on the next CLI instead of failing the source.
-func TestAutomaticExtractorFallsBackToTheNextModelInTheChain(t *testing.T) {
-	rateLimited := writeFakeModel(t, "rate-limited", "echo 'usage limit reached' >&2\nexit 1\n")
-	working := writeFakeModel(t, "working",
-		`printf '%s' '{"action":"create","title":"实现自动收集","summary":"从聊天创建 Todo","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"明确需求","confidence":0.9}'`)
-	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
-		RawContext: "2026-07-31 [测试发送人] 想做自动收集"}
-	decision, err := (AutomaticExtractor{ModelCommand: rateLimited + "," + working, Timeout: 5 * time.Second}).
-		Extract(context.Background(), batch, nil)
-	if err != nil || decision.Action != "create" || decision.Priority != "P1" {
-		t.Fatalf("chain decision=%+v err=%v", decision, err)
-	}
-}
-
-func TestAutomaticExtractorDegradesToRulesOnlyAtTheEndOfTheChain(t *testing.T) {
-	rateLimited := writeFakeModel(t, "rate-limited", "echo 'usage limit reached' >&2\nexit 1\n")
-	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
-		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
-	if _, err := (AutomaticExtractor{ModelCommand: rateLimited, Timeout: 5 * time.Second}).
-		Extract(context.Background(), batch, nil); err == nil {
-		t.Fatal("a chain without rule must fail closed when the model fails")
-	}
-	decision, err := (AutomaticExtractor{ModelCommand: rateLimited + ",rule", Timeout: 5 * time.Second}).
-		Extract(context.Background(), batch, nil)
-	if err != nil || decision.Action != "create" {
-		t.Fatalf("rule fallback decision=%+v err=%v", decision, err)
-	}
-	if !strings.Contains(decision.Reason, "降级") || !strings.Contains(decision.Reason, "usage limit reached") {
-		t.Fatalf("degraded decision should say why: %q", decision.Reason)
+// stubTextModel replaces ATM's built-in text service for one test, so
+// classification and digest tests never need a credential or a network.
+func stubTextModel(t *testing.T, answer func(task, prompt string) (string, error)) {
+	t.Helper()
+	old := runTextModel
+	t.Cleanup(func() { runTextModel = old })
+	runTextModel = func(_ context.Context, task string, _ time.Duration, _, prompt string) ([]byte, error) {
+		text, err := answer(task, prompt)
+		if err != nil {
+			return nil, err
+		}
+		return []byte(text), nil
 	}
 }
 
 func TestAutomaticExtractorAcceptsSchemaConstrainedModelDecision(t *testing.T) {
-	script := filepath.Join(t.TempDir(), "fake-codex")
-	body := `#!/bin/sh
-printf '%s\n' '{"action":"create","title":"实现自动收集","summary":"从聊天创建 Todo","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"明确需求","confidence":0.98}'
-`
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatalf("write model command: %v", err)
-	}
+	capturedTask, capturedPrompt := "", ""
+	stubTextModel(t, func(task, prompt string) (string, error) {
+		capturedTask, capturedPrompt = task, prompt
+		return `{"action":"create","title":"实现自动收集","summary":"从聊天创建 Todo","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"明确需求","confidence":0.98}`, nil
+	})
 	batch := MessageBatch{Source: store.CollectionSource{Name: "产品群", Project: "atm", Priority: "P2"},
 		RawContext: "2026-07-31 [测试发送人] 想做自动收集并添加 Todo"}
-	decision, err := (AutomaticExtractor{ModelCommand: script, Timeout: 5 * time.Second}).Extract(
-		context.Background(), batch, nil,
-	)
+	decision, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, nil)
 	if err != nil || decision.Action != "create" || decision.Title != "实现自动收集" || decision.Priority != "P1" {
 		t.Fatalf("model decision=%+v err=%v", decision, err)
+	}
+	if capturedTask != textmodel.TaskDecision || !strings.Contains(capturedPrompt, "想做自动收集") {
+		t.Fatalf("task=%q prompt=%q", capturedTask, capturedPrompt)
+	}
+}
+
+// Classification writes to somebody's Todo list, so an unavailable model must
+// leave the batch undecided. The run then holds its checkpoint and retries the
+// same messages instead of filing a guess nobody can trace.
+func TestAutomaticExtractorFailsClosedWhenTheModelIsUnavailable(t *testing.T) {
+	stubTextModel(t, func(string, string) (string, error) {
+		return "", fmt.Errorf("built-in DeepSeek text model is unavailable")
+	})
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
+	decision, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, nil)
+	if err == nil {
+		t.Fatalf("unavailable model produced a decision: %+v", decision)
+	}
+	if decision.Action != "" {
+		t.Fatalf("failed classification still returned an action: %+v", decision)
+	}
+}
+
+// The endpoint enforces JSON, not this schema, so a loose answer reaches
+// validateDecision rather than being rejected by the transport. Nothing may be
+// normalized into a supported action on the way through.
+func TestAutomaticExtractorRejectsAnswersOutsideTheSchema(t *testing.T) {
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-07-31 [测试发送人] 我想实现自动需求收集"}
+	for name, answer := range map[string]string{
+		"unsupported action":      `{"action":"assign","title":"实现自动收集","summary":"x","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"","confidence":0.9}`,
+		"append without id":       `{"action":"append","title":"实现自动收集","summary":"x","item_type":"requirement","project":"atm","priority":"P1","related_todo_id":"","reason":"","confidence":0.9}`,
+		"insight without summary": `{"action":"insight","title":"实现自动收集","summary":"","item_type":"insight","project":"atm","priority":"P1","related_todo_id":"","reason":"","confidence":0.9}`,
+		"not an object":           "sorry, I cannot do that",
+	} {
+		stubTextModel(t, func(string, string) (string, error) { return answer, nil })
+		if _, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, nil); err == nil {
+			t.Fatalf("%s was accepted", name)
+		}
+	}
+}
+
+// The first real DeepSeek classification produced exactly this: a correct append
+// with an empty title, which the old CLI schema would also have allowed —
+// `required` accepts "". The target's own title is the answer, and it is already
+// in the candidate list the classifier was given.
+func TestAutomaticExtractorBorrowsTheTargetTitleForATitlelessAppend(t *testing.T) {
+	stubTextModel(t, func(string, string) (string, error) {
+		return `{"action":"append","title":"","summary":"重跑后通过了","item_type":"follow_up","project":"atm","priority":"P1","related_todo_id":"t9","reason":"同一件事的新进展","confidence":0.9}`, nil
+	})
+	batch := MessageBatch{Source: store.CollectionSource{Project: "atm", Priority: "P2"},
+		RawContext: "2026-08-14 [测试发送人] 那个发布检查重跑后过了"}
+	candidates := []store.Todo{{ID: "t9", Title: "修复发布检查失败", Status: store.TodoStatusOpen}}
+	decision, err := (AutomaticExtractor{Timeout: 5 * time.Second}).Extract(context.Background(), batch, candidates)
+	if err != nil {
+		t.Fatalf("titleless append failed: %v", err)
+	}
+	if decision.Action != "append" || decision.Title != "修复发布检查失败" || decision.RelatedTodoID != "t9" {
+		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+func TestAutomaticSummarizerAsksForADigest(t *testing.T) {
+	capturedTask := ""
+	stubTextModel(t, func(task, _ string) (string, error) {
+		capturedTask = task
+		return `{"title":"产品群 2026-07-31 动态","body":"## 发布\n- 检查变绿"}`, nil
+	})
+	content, err := (AutomaticSummarizer{Timeout: 5 * time.Second}).Summarize(context.Background(), DigestInput{
+		Source: store.CollectionSource{Name: "产品群"}, Date: "2026-07-31",
+		Items: []store.CollectionItem{{Title: "发布检查变绿", Summary: "重跑后通过"}},
+	})
+	if err != nil || content.Title != "产品群 2026-07-31 动态" || !strings.Contains(content.Body, "检查变绿") {
+		t.Fatalf("digest content=%+v err=%v", content, err)
+	}
+	if capturedTask != textmodel.TaskDigest {
+		t.Fatalf("task=%q", capturedTask)
+	}
+}
+
+func TestAutomaticSummarizerFailsClosedWhenTheModelIsUnavailable(t *testing.T) {
+	stubTextModel(t, func(string, string) (string, error) {
+		return "", fmt.Errorf("built-in DeepSeek text model is unavailable")
+	})
+	_, err := (AutomaticSummarizer{Timeout: 5 * time.Second}).Summarize(context.Background(), DigestInput{
+		Source: store.CollectionSource{Name: "产品群"}, Date: "2026-07-31",
+		Items: []store.CollectionItem{{Title: "发布检查变绿", Summary: "重跑后通过"}},
+	})
+	if err == nil {
+		t.Fatal("unavailable model produced a digest")
 	}
 }
 
@@ -1412,5 +1971,66 @@ func TestDigestHonorsSourceKnowledgeCollection(t *testing.T) {
 		DigestOptions{Date: digestDayFor(occurred)})
 	if err != nil || report.Results[0].Collection != "atm" {
 		t.Fatalf("digest collection=%+v err=%v", report, err)
+	}
+}
+
+func TestSaveConclusionWritesKnowledgeOnlyAfterExplicitAction(t *testing.T) {
+	withCollectorStore(t)
+	source := observationSource(t)
+	occurred := time.Now().In(config.Loc).Add(-time.Hour).Unix()
+	insightItem(t, source, "m-save-1", "先看结论再保存", occurred)
+	itemID := store.CollectionItemID(source.Connector, "fp-m-save-1")
+
+	documents, err := knowledge.List(config.AtmDir, nil)
+	if err != nil || len(documents) != 0 {
+		t.Fatalf("classification must not write knowledge: docs=%+v err=%v", documents, err)
+	}
+	service := Service{}
+	saveResult, err := service.SaveConclusion(context.Background(), itemTestCall(), SaveConclusionInput{ItemID: itemID})
+	if err != nil {
+		t.Fatalf("save conclusion: %v", err)
+	}
+	saved := saveResult.Item
+	if saved.KnowledgeDocumentID == "" || saved.KnowledgeCollection != config.CollectionDigestCollection {
+		t.Fatalf("saved item=%+v", saved)
+	}
+	document, err := knowledge.Get(config.AtmDir, saved.KnowledgeDocumentID)
+	if err != nil || !strings.Contains(document.Content, "先看结论再保存 的细节") ||
+		!strings.Contains(document.Content, itemID) {
+		t.Fatalf("saved document=%+v err=%v", document, err)
+	}
+
+	// A repeated click opens the same result; it never files a duplicate.
+	againResult, err := service.SaveConclusion(context.Background(), itemTestCall(), SaveConclusionInput{
+		ItemID: itemID, Collection: "another-library",
+	})
+	again := againResult.Item
+	if err != nil || again.KnowledgeDocumentID != saved.KnowledgeDocumentID {
+		t.Fatalf("repeated save=%+v err=%v", again, err)
+	}
+	documents, _ = knowledge.List(config.AtmDir, nil)
+	if len(documents) != 1 {
+		t.Fatalf("repeated save created duplicates: %+v", documents)
+	}
+}
+
+func TestSaveConclusionRejectsTodoDecision(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _, err := store.PutCollectionItem(db, store.CollectionItem{
+		SourceID: source.ID, Connector: source.Connector, Fingerprint: "todo-conclusion",
+		MessageIDs: []string{"m1"}, Action: "create", Status: "processed",
+		Title: "一个任务", Summary: "任务结论",
+	})
+	db.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (Service{}).SaveConclusion(context.Background(), itemTestCall(), SaveConclusionInput{ItemID: item.ID}); err == nil {
+		t.Fatal("todo decision was accepted as a saveable insight")
 	}
 }

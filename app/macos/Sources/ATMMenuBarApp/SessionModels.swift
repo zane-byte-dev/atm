@@ -56,6 +56,11 @@ struct ATMLiveSession: Decodable, Identifiable, Equatable {
     let tool: String
     let sessionID: String
     let resumeID: String?
+    let parentSessionID: String?
+    let rootSessionID: String?
+    let agentPath: String?
+    let agentNickname: String?
+    let subagentDepth: Int
     let project: String
     let client: String?
     let cwd: String?
@@ -92,6 +97,11 @@ struct ATMLiveSession: Decodable, Identifiable, Equatable {
         tool: String,
         sessionID: String,
         resumeID: String? = nil,
+        parentSessionID: String? = nil,
+        rootSessionID: String? = nil,
+        agentPath: String? = nil,
+        agentNickname: String? = nil,
+        subagentDepth: Int = 0,
         project: String,
         client: String? = nil,
         cwd: String? = nil,
@@ -116,6 +126,11 @@ struct ATMLiveSession: Decodable, Identifiable, Equatable {
         self.tool = tool
         self.sessionID = sessionID
         self.resumeID = resumeID
+        self.parentSessionID = parentSessionID
+        self.rootSessionID = rootSessionID
+        self.agentPath = agentPath
+        self.agentNickname = agentNickname
+        self.subagentDepth = subagentDepth
         self.project = project
         self.client = client
         self.cwd = cwd
@@ -143,6 +158,11 @@ struct ATMLiveSession: Decodable, Identifiable, Equatable {
         case recentTools = "tools"
         case sessionID = "session_id"
         case resumeID = "resume_id"
+        case parentSessionID = "parent_session_id"
+        case rootSessionID = "root_session_id"
+        case agentPath = "agent_path"
+        case agentNickname = "agent_nickname"
+        case subagentDepth = "subagent_depth"
         case terminalApp = "terminal_app"
         case ageSeconds = "age_seconds"
         case activityState = "activity_state"
@@ -158,6 +178,11 @@ struct ATMLiveSession: Decodable, Identifiable, Equatable {
         tool = try values.decode(String.self, forKey: .tool)
         sessionID = try values.decode(String.self, forKey: .sessionID)
         resumeID = try values.decodeIfPresent(String.self, forKey: .resumeID)
+        parentSessionID = try values.decodeIfPresent(String.self, forKey: .parentSessionID)
+        rootSessionID = try values.decodeIfPresent(String.self, forKey: .rootSessionID)
+        agentPath = try values.decodeIfPresent(String.self, forKey: .agentPath)
+        agentNickname = try values.decodeIfPresent(String.self, forKey: .agentNickname)
+        subagentDepth = try values.decodeIfPresent(Int.self, forKey: .subagentDepth) ?? 0
         project = try values.decode(String.self, forKey: .project)
         client = try values.decodeIfPresent(String.self, forKey: .client)
         cwd = try values.decodeIfPresent(String.self, forKey: .cwd)
@@ -285,6 +310,10 @@ extension ATMLiveSession {
     /// diffs that value to tell one turn from the next, and it has to keep seeing
     /// the input even on the cards that decline to draw it.
     var latestUserInputBelowTitle: String? {
+        // A Codex subagent inherits the parent's transcript context. Its last
+        // user message therefore describes the parent task, not the delegated
+        // branch represented by this row.
+        guard !isSubagent else { return nil }
         guard let input = latestUserInputText else { return nil }
         guard let question = lastQuestion?.trimmingCharacters(in: .whitespacesAndNewlines),
               let titleSource = preferredTitleText(summary, lastQuestion, firstQuestion, lastAnswer),
@@ -374,18 +403,17 @@ extension ATMLiveSession {
         return nil
     }
 
-    /// ATM dispatch prompts are implementation machinery, not conversation
-    /// titles. Prefer the durable Todo title when a binding is available; for
-    /// the short window before the Agent binds, recover the title from the full
-    /// prompt instead of displaying its repeated controller preamble.
+    /// Prefer the durable Todo title when a binding is available, falling back
+    /// to the conversation's own first message.
+    ///
+    /// This used to also un-mangle a dispatch preamble out of the prompt, because
+    /// ATM wrote the opening turn itself and every unattended run started with
+    /// the same paragraph. Nothing generates that text now: the handoff pointer
+    /// is written by a person's Codex session, so the raw candidate is already
+    /// the conversation.
     private func preferredTitleText(_ candidates: String?...) -> String? {
         if let title = todo?.title.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             return title
-        }
-        for candidate in candidates {
-            if let title = Self.atmTaskRunTitle(from: candidate) {
-                return title
-            }
         }
         for candidate in candidates {
             guard let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -396,47 +424,18 @@ extension ATMLiveSession {
         return nil
     }
 
-    private static func atmTaskRunTitle(from value: String?) -> String? {
-        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
-            return nil
-        }
-        let firstLine = value.split(whereSeparator: { $0.isNewline }).first.map(String.init) ?? value
-        let normalized = firstLine.lowercased()
-        if let marker = firstLine.range(of: " (ATM Todo ", options: .caseInsensitive),
-           normalized.hasSuffix(")") {
-            let title = firstLine[..<marker.lowerBound]
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !title.isEmpty {
-                return title
-            }
-        }
-        let legacyPrefixes = [
-            "you are the unattended agent run for atm todo ",
-            "continue the existing codex work for atm todo ",
-        ]
-        guard legacyPrefixes.contains(where: { normalized.hasPrefix($0) }),
-              let separator = firstLine.firstIndex(of: ":") else {
-            return nil
-        }
-        let title = firstLine[firstLine.index(after: separator)...]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
-        return title.isEmpty ? nil : title
-    }
-
+    /// Recognizes an opening turn that is harness plumbing rather than something
+    /// a person said, so it is not shown as the conversation's title.
+    ///
+    /// The ATM dispatch preambles this also used to match are gone with the
+    /// background runs that wrote them; what is left is text other tools inject.
     private static func looksLikeInjectedInstructions(_ value: String) -> Bool {
         let prefix = value.prefix(240).lowercased()
-        let isCurrentATMRunPrompt = prefix.contains("(atm todo ")
-            && (prefix.contains("this is an unattended codex task run managed by atm")
-                || prefix.contains("continue the existing codex work for this task"))
         return prefix.contains("agents.md instructions")
             || prefix.contains("<instructions>")
             || prefix.contains("system-reminder")
             || prefix.contains("some conversation entries were omitted")
             || prefix.contains("no retained transcript delta entries")
-            || prefix.hasPrefix("you are the unattended agent run for atm todo ")
-            || prefix.hasPrefix("continue the existing codex work for atm todo ")
-            || isCurrentATMRunPrompt
     }
 
     private static func comparableText(_ value: String) -> String {
@@ -448,7 +447,7 @@ extension ATMLiveSession {
 
 }
 
-struct ATMLiveStatus: Decodable {
+struct ATMLiveStatus: Decodable, Equatable {
     let sessions: [ATMLiveSession]
     let bindings: [ATMLiveBindingContext]
     let time: String
@@ -506,27 +505,246 @@ enum ATMAgentPresenceState: String, CaseIterable, Identifiable {
     }
 }
 
+enum ATMAgentPresenceAge {
+    static func label(seconds: Int) -> String {
+        let seconds = max(seconds, 0)
+        if seconds < 60 { return "\(seconds) 秒" }
+        return NumberFormat.age(seconds)
+    }
+}
+
 enum ATMAgentPresenceOrdering {
+    private struct LineageKey {
+        let rootID: String
+        let path: String
+        let depth: Int
+    }
+
     static func sorted(_ sessions: [ATMLiveSession]) -> [ATMLiveSession] {
-        sessions.sorted { lhs, rhs in
-            let lhsState = lhs.presenceState
-            let rhsState = rhs.presenceState
+        // Presence can inspect and normalise the latest answer. Cache it before
+        // sorting instead of repeating that text scan from the comparator.
+        let states = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.presenceState) })
+        let lookup = identifierLookup(sessions)
+        let parentIDs = Set(sessions.compactMap { normalizedIdentifier($0.parentSessionID) })
+        let keys = Dictionary(uniqueKeysWithValues: sessions.map { session in
+            (session.id, lineageKey(for: session, lookup: lookup, parentIDs: parentIDs))
+        })
+        var groupAges: [String: Int] = [:]
+        for session in sessions {
+            guard let key = keys[session.id] else { continue }
+            let state = states[session.id] ?? .recent
+            let group = groupKey(state: state, rootID: key.rootID)
+            groupAges[group] = min(groupAges[group] ?? session.ageSeconds, session.ageSeconds)
+        }
+
+        return sessions.sorted { lhs, rhs in
+            let lhsState = states[lhs.id] ?? .recent
+            let rhsState = states[rhs.id] ?? .recent
             if lhsState != rhsState {
                 return rank(lhsState) < rank(rhsState)
             }
 
-            // An Agent resetting its activity age is a content update, not a
-            // reason to move its row. Keep the active section anchored to the
-            // session identity so polling and new output cannot reshuffle it.
-            if lhsState == .active {
-                return lhs.id < rhs.id
+            let lhsKey = keys[lhs.id] ?? fallbackKey(for: lhs)
+            let rhsKey = keys[rhs.id] ?? fallbackKey(for: rhs)
+            if lhsKey.rootID != rhsKey.rootID {
+                // Preserve the old age ordering for attention/recent rows while
+                // treating a lineage as one unit. Active groups remain anchored
+                // to identity so polling cannot reshuffle them.
+                if lhsState != .active {
+                    let lhsAge = groupAges[groupKey(state: lhsState, rootID: lhsKey.rootID)]
+                        ?? lhs.ageSeconds
+                    let rhsAge = groupAges[groupKey(state: rhsState, rootID: rhsKey.rootID)]
+                        ?? rhs.ageSeconds
+                    if lhsAge != rhsAge { return lhsAge < rhsAge }
+                }
+                return lhsKey.rootID < rhsKey.rootID
             }
 
-            if lhs.ageSeconds != rhs.ageSeconds {
-                return lhs.ageSeconds < rhs.ageSeconds
-            }
+            // Lexicographic agent paths naturally put `/root/a` before
+            // `/root/a/deeper`, keeping descendants immediately after parents.
+            if lhsKey.path != rhsKey.path { return lhsKey.path < rhsKey.path }
+            if lhsKey.depth != rhsKey.depth { return lhsKey.depth < rhsKey.depth }
             return lhs.id < rhs.id
         }
+    }
+
+    /// Indent only through a contiguous chain of ancestors visible in the same
+    /// presence section. If a parent has moved from active to recent, its child
+    /// keeps the branch mark but does not appear as a deep, orphaned branch.
+    static func visibleDepth(
+        for session: ATMLiveSession,
+        among visibleSessions: [ATMLiveSession]
+    ) -> Int {
+        visibleDepth(for: session, lookup: identifierLookup(visibleSessions))
+    }
+
+    /// Computes indentation for the whole list in one pass. The UI used to
+    /// filter the complete session array and rebuild this lookup from every row,
+    /// turning one refresh into quadratic work as collaboration branches grew.
+    static func visibleDepths(for sessions: [ATMLiveSession]) -> [String: Int] {
+        visibleDepths(in: Dictionary(grouping: sessions, by: \.presenceState))
+    }
+
+    /// Variant for callers that already grouped the list for presentation.
+    /// Reusing those buckets avoids a second state evaluation for every row.
+    static func visibleDepths(
+        in sections: [ATMAgentPresenceState: [ATMLiveSession]]
+    ) -> [String: Int] {
+        var result: [String: Int] = [:]
+        result.reserveCapacity(sections.values.reduce(0) { $0 + $1.count })
+        for sessions in sections.values {
+            let lookup = identifierLookup(sessions)
+            for session in sessions {
+                result[session.id] = visibleDepth(for: session, lookup: lookup)
+            }
+        }
+        return result
+    }
+
+    /// Collapse child rollouts only when their root is visible in the same
+    /// presence section. A child whose root already aged into another section
+    /// remains visible instead of becoming an unreachable orphan.
+    static func visibleSessions(
+        _ sessions: [ATMLiveSession],
+        expandedLineages: Set<String>,
+        selectedID: String? = nil
+    ) -> [ATMLiveSession] {
+        let roots = Set(
+            sessions
+                .filter { !$0.isSubagent }
+                .map(lineageID)
+        )
+        return sessions.filter { session in
+            guard session.isSubagent else { return true }
+            let lineage = lineageID(session)
+            guard roots.contains(lineage) else { return true }
+            return expandedLineages.contains(lineage) || session.id == selectedID
+        }
+    }
+
+    /// Root-row badges are keyed by the root session's UI identity rather than
+    /// by the wire UUID. This keeps the view code independent of whether a
+    /// source supplied `resume_id`, `session_id`, or both.
+    static func childCounts(_ sessions: [ATMLiveSession]) -> [String: Int] {
+        var roots: [String: String] = [:]
+        for session in sessions where !session.isSubagent {
+            // Duplicate source identifiers are malformed but should never crash
+            // the navigator. The stable list order chooses the first root.
+            if roots[lineageID(session)] == nil {
+                roots[lineageID(session)] = session.id
+            }
+        }
+        var counts: [String: Int] = [:]
+        for session in sessions where session.isSubagent {
+            guard let rootID = roots[lineageID(session)] else { continue }
+            counts[rootID, default: 0] += 1
+        }
+        return counts
+    }
+
+    static func lineageID(_ session: ATMLiveSession) -> String {
+        let identifier = normalizedIdentifier(session.rootSessionID)
+            ?? (session.isSubagent ? normalizedIdentifier(session.parentSessionID) : nil)
+            ?? normalizedIdentifier(session.resumeID)
+            ?? normalizedIdentifier(session.sessionID)
+            ?? session.id.lowercased()
+        return "\(session.tool.lowercased()):\(identifier)"
+    }
+
+    private static func visibleDepth(
+        for session: ATMLiveSession,
+        lookup: [String: ATMLiveSession]
+    ) -> Int {
+        guard session.isSubagent else { return 0 }
+        var current = session
+        var depth = 1
+        var visited = Set<String>()
+        while depth < 3,
+              let parentID = normalizedIdentifier(current.parentSessionID),
+              visited.insert(parentID).inserted,
+              let parent = lookup[parentID],
+              parent.isSubagent {
+            depth += 1
+            current = parent
+        }
+        return depth
+    }
+
+    private static func identifierLookup(_ sessions: [ATMLiveSession]) -> [String: ATMLiveSession] {
+        var result: [String: ATMLiveSession] = [:]
+        for session in sessions {
+            for identifier in [session.resumeID, session.sessionID].compactMap(normalizedIdentifier) {
+                result[identifier] = session
+            }
+        }
+        return result
+    }
+
+    private static func lineageKey(
+        for session: ATMLiveSession,
+        lookup: [String: ATMLiveSession],
+        parentIDs: Set<String>
+    ) -> LineageKey {
+        let ownsChildren = [session.resumeID, session.sessionID]
+            .compactMap(normalizedIdentifier)
+            .contains(where: parentIDs.contains)
+        guard session.isSubagent || ownsChildren else { return fallbackKey(for: session) }
+
+        var current = session
+        var visited = Set<String>()
+        var missingParent: String?
+        while let parentID = normalizedIdentifier(current.parentSessionID),
+              visited.insert(parentID).inserted {
+            guard let parent = lookup[parentID] else {
+                missingParent = parentID
+                break
+            }
+            current = parent
+        }
+
+        let rootIdentifier = normalizedIdentifier(session.rootSessionID)
+            ?? missingParent
+            ?? normalizedIdentifier(current.resumeID)
+            ?? normalizedIdentifier(current.sessionID)
+            ?? current.id.lowercased()
+        return LineageKey(
+            rootID: "\(session.tool.lowercased()):\(rootIdentifier)",
+            path: lineagePath(for: session),
+            depth: session.subagentDisplayDepth
+        )
+    }
+
+    private static func fallbackKey(for session: ATMLiveSession) -> LineageKey {
+        LineageKey(
+            rootID: session.id.lowercased(),
+            path: lineagePath(for: session),
+            depth: session.subagentDisplayDepth
+        )
+    }
+
+    private static func lineagePath(for session: ATMLiveSession) -> String {
+        if let path = session.agentPath?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty {
+            return path
+                .split(separator: "/", omittingEmptySubsequences: true)
+                .map { $0.lowercased() }
+                .joined(separator: "\u{1F}")
+        }
+        if session.isSubagent {
+            let label = session.agentNickname?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "root\u{1F}\(label?.lowercased() ?? session.id.lowercased())"
+        }
+        return ""
+    }
+
+    private static func normalizedIdentifier(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value.lowercased()
+    }
+
+    private static func groupKey(state: ATMAgentPresenceState, rootID: String) -> String {
+        "\(state.rawValue)\u{0}\(rootID)"
     }
 
     private static func rank(_ state: ATMAgentPresenceState) -> Int {
@@ -539,6 +757,69 @@ enum ATMAgentPresenceOrdering {
 }
 
 extension ATMLiveSession {
+    /// Subagent metadata is additive so older `session status` payloads keep
+    /// decoding. Prefer the explicit relationship, with `agent_path` as a
+    /// compatibility fallback while the new fields roll out together.
+    var isSubagent: Bool {
+        if subagentDepth > 0 { return true }
+        if let parent = parentSessionID?.trimmingCharacters(in: .whitespacesAndNewlines), !parent.isEmpty {
+            return true
+        }
+        return agentPathComponents.count > 1
+    }
+
+    /// Keep deep collaboration trees legible without letting indentation consume
+    /// the narrow navigator column. Depth one gets the branch mark; deeper rows
+    /// add at most two small indentation steps.
+    var subagentDisplayDepth: Int {
+        guard isSubagent else { return 0 }
+        let inferred = max(max(subagentDepth, agentPathComponents.count - 1), 1)
+        return min(inferred, 3)
+    }
+
+    /// A stable, branch-specific title. Codex child rollouts may inherit the
+    /// parent's generated thread title and user prompt, so neither is a valid
+    /// identity for a child row.
+    var subagentTitle: String? {
+        guard isSubagent else { return nil }
+        if let leaf = agentPathComponents.last {
+            let readable = leaf
+                .replacingOccurrences(of: "_", with: " ")
+                .replacingOccurrences(of: "-", with: " ")
+                .split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ")
+            if !readable.isEmpty {
+                return String(readable.prefix(1)).uppercased() + String(readable.dropFirst())
+            }
+        }
+        if let nickname = normalizedAgentNickname { return nickname }
+        return "子 Agent"
+    }
+
+    var subagentIdentitySubtitle: String? {
+        guard isSubagent else { return nil }
+        let identity = normalizedAgentNickname ?? String(sessionID.prefix(8))
+        return "子 Agent · \(identity)"
+    }
+
+    /// The compact row's second line. A child shows work produced in its own
+    /// rollout; an ordinary session keeps the existing latest-user-input label.
+    var presenceSubtitle: String? {
+        guard isSubagent else { return latestUserInputBelowTitle }
+        if let update = latestVisibleUpdate {
+            return ATMMarkdown.plainSummary(update, limit: 220)
+        }
+        if let reply = latestResultText {
+            return ATMMarkdown.plainSummary(reply, limit: 220)
+        }
+        if let reply = lastAnswer?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !reply.isEmpty,
+           !Self.looksLikeInjectedInstructions(reply) {
+            return ATMMarkdown.plainSummary(reply, limit: 220)
+        }
+        return subagentIdentitySubtitle
+    }
+
     var isCurrentlyActive: Bool {
         activityState == "active" && ageSeconds < 120
     }
@@ -554,9 +835,23 @@ extension ATMLiveSession {
     /// summary or retained user turn yet. The latest Agent text is only a final
     /// fallback and still goes through the injected-instruction filter.
     var presenceTitle: String {
-        preferredTitleText(summary, lastQuestion, firstQuestion, lastAnswer)
+        if let subagentTitle { return subagentTitle }
+        return preferredTitleText(summary, lastQuestion, firstQuestion, lastAnswer)
             .map { ATMMarkdown.plainSummary($0, limit: 72) }
             ?? "\(ATMAgentDisplay.name(tool)) 会话"
+    }
+
+    private var agentPathComponents: [String] {
+        guard let path = agentPath?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
+            return []
+        }
+        return path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+    }
+
+    private var normalizedAgentNickname: String? {
+        guard let nickname = agentNickname?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !nickname.isEmpty else { return nil }
+        return nickname
     }
 
     /// Whether a hook said outright that this session is blocked on you — the

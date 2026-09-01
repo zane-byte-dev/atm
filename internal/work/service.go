@@ -1,13 +1,18 @@
-// Package work owns application-level Todo lifecycle transactions. CLI and
-// desktop transports should express intent here instead of coordinating Todo
-// and Session binding persistence themselves.
+// Package work owns application-level Todo reads and lifecycle transactions.
+// CLI and desktop transports should express intent here instead of coordinating
+// Todo, document, and Session binding persistence themselves.
 package work
 
 import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
-type Service struct{}
+type Service struct {
+	// RefinementModel is the outbound model port used by Refine. Nil selects
+	// ATM's built-in text-model adapter; tests and alternate compositions can
+	// inject a deterministic implementation without changing the use case.
+	RefinementModel RefinementModel
+}
 
 var Default Service
 
@@ -58,6 +63,14 @@ func (transaction *Transaction) PermanentlyDeleteTodos(ids []string) ([]string, 
 
 func (transaction *Transaction) BindSession(binding store.TodoSessionBinding) (*store.TodoSessionBinding, error) {
 	return transaction.state.BindSession(binding)
+}
+
+func (transaction *Transaction) currentSessionBinding(sessionID string) (*store.TodoSessionBinding, error) {
+	return transaction.state.CurrentSessionBinding(sessionID)
+}
+
+func (transaction *Transaction) latestSessionBinding(sessionID string) (*store.TodoSessionBinding, error) {
+	return transaction.state.LatestSessionBinding(sessionID)
 }
 
 func (transaction *Transaction) UnbindSession(sessionID, reason string) (bool, error) {

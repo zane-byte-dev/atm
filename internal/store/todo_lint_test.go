@@ -34,6 +34,9 @@ func TestValidateTodoLogMessageRefusesTheGeneratedSection(t *testing.T) {
 	if err := ValidateTodoLogMessage("人补充：还要支持并发", "补充"); err != nil {
 		t.Fatalf("append to a user-maintained section rejected: %v", err)
 	}
+	if err := ValidateTodoLogMessage("步骤已完成", todoDocPlanGeneratedSection); err == nil || !strings.Contains(err.Error(), "plan set") {
+		t.Fatalf("append to generated plan section error = %v", err)
+	}
 }
 
 // Referring to finished work is normal, so archived todos count as known even

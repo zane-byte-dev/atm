@@ -2,14 +2,11 @@ package cmd
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
-	"github.com/zane-byte-dev/atm/internal/parser"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -19,6 +16,43 @@ func TestSessionSearchDefaultsBoundJSONOutput(t *testing.T) {
 	}
 	if got := searchCmd.Flags().Lookup("snippet").DefValue; got != "400" {
 		t.Fatalf("search --snippet default = %q, want 400", got)
+	}
+}
+
+func TestSessionListDefaultsToLatestActivityAndBoundPage(t *testing.T) {
+	if got := listCmd.Flags().Lookup("order").DefValue; got != "activity-desc" {
+		t.Fatalf("list --order default = %q, want activity-desc", got)
+	}
+	if got := listCmd.Flags().Lookup("limit").DefValue; got != "200" {
+		t.Fatalf("list --limit default = %q, want 200", got)
+	}
+}
+
+func TestSessionSearchAcceptsQueryAliasAndReportsSchema(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	seedCommandSession(t)
+
+	jsonOutput = true
+	searchQueryFlag = "deployment"
+	out := captureStdout(t, func() {
+		if err := runSearch(searchCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var payload struct {
+		SchemaVersion int    `json:"schema_version"`
+		Keyword       string `json:"keyword"`
+		Returned      int    `json:"returned"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode search alias: %v\n%s", err, out)
+	}
+	if payload.SchemaVersion != sessionCLIOutputSchemaVersion || payload.Keyword != "deployment" || payload.Returned == 0 {
+		t.Fatalf("search alias payload = %#v", payload)
+	}
+	if err := runSearch(searchCmd, []string{"second"}); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("positional plus --query error = %v", err)
 	}
 }
 
@@ -245,22 +279,38 @@ func TestSessionShowJSONAppliesTurnAndCharacterBudgets(t *testing.T) {
 	}
 }
 
-func TestMatchSnippetIsUnicodeSafeAndCentered(t *testing.T) {
-	snippet, truncated := matchSnippet("开头甲乙丙丁关键字戊己庚辛结尾", "关键字", 8)
-	if !truncated || len([]rune(snippet)) > 8 || !strings.Contains(snippet, "关键字") {
-		t.Fatalf("snippet = %q, truncated = %v", snippet, truncated)
-	}
-}
+func TestSessionTimelineAdapterPreservesJSONArrayAndTextRendering(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	seedCommandSession(t)
 
-func TestParseTurnRange(t *testing.T) {
-	start, end, err := parseTurnRange("2-5")
-	if err != nil || start != 2 || end != 5 {
-		t.Fatalf("parseTurnRange = %d-%d, %v", start, end, err)
+	jsonOutput = true
+	var runErr error
+	encoded := captureStdout(t, func() {
+		runErr = runTimeline(timelineCmd, []string{"cmdsess"})
+	})
+	if runErr != nil {
+		t.Fatalf("runTimeline JSON: %v", runErr)
 	}
-	for _, invalid := range []string{"0", "3-2", "x-y", "1-2-3"} {
-		if _, _, err := parseTurnRange(invalid); err == nil {
-			t.Errorf("parseTurnRange(%q) unexpectedly succeeded", invalid)
-		}
+	var events []struct {
+		Kind    string `json:"kind"`
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &events); err != nil {
+		t.Fatalf("decode timeline array: %v\n%s", err, encoded)
+	}
+	if len(events) != 2 || events[0].Kind != "message" || events[0].Role != "user" ||
+		!strings.Contains(events[1].Content, "Deployment keyword answer") {
+		t.Fatalf("timeline events = %#v", events)
+	}
+
+	jsonOutput = false
+	text := captureStdout(t, func() {
+		runErr = runTimeline(timelineCmd, []string{"cmdsess"})
+	})
+	if runErr != nil || !strings.Contains(text, "user") || !strings.Contains(text, "Find deployment keyword") {
+		t.Fatalf("timeline text = %q, err = %v", text, runErr)
 	}
 }
 
@@ -338,48 +388,80 @@ func TestSessionListPagesTheWholeIndexNewestFirst(t *testing.T) {
 	}
 }
 
-// `--thinking` routed on the display name ("Grok Build") while the switch compared
-// stored keys ("grokbuild"), so every transcript fell through to Claude's
-// extractor and no agent ever showed a thinking chain.
-func TestExtractSessionThinkingRoutesOnTheStoredAgentKey(t *testing.T) {
-	dir := t.TempDir()
-	reasoning := filepath.Join(dir, "grok.jsonl")
-	if err := os.WriteFile(reasoning, []byte(
-		`{"type":"reasoning","summary":[{"type":"summary_text","text":"想清楚再动手"}]}`+"\n"+
-			`{"type":"assistant","content":"做完了"}`+"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	for _, agent := range []string{"grokbuild", "codex"} {
-		blocks := extractSessionThinking(agent, reasoning)
-		if len(blocks) != 1 || blocks[0].Thinking != "想清楚再动手" {
-			t.Fatalf("%s blocks = %#v", agent, blocks)
+func TestSessionListEnvelopeKeepsPaginationMetadata(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	seedCommandSession(t)
+
+	jsonOutput = true
+	sessionListAllFlag = true
+	sessionListLimit = 1
+	sessionListEnvelope = true
+	out := captureStdout(t, func() {
+		if err := runList(listCmd, nil); err != nil {
+			t.Fatal(err)
 		}
+	})
+	var payload struct {
+		SchemaVersion int `json:"schema_version"`
+		Total         int `json:"total"`
+		Returned      int `json:"returned"`
+		Sessions      []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
 	}
-	// The display name must not resolve: it would silently pick Claude's shape.
-	if blocks := extractSessionThinking("Grok Build", reasoning); len(blocks) != 0 {
-		t.Fatalf("display name matched a reasoning extractor: %#v", blocks)
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode list envelope: %v\n%s", err, out)
+	}
+	if payload.SchemaVersion != sessionCLIOutputSchemaVersion || payload.Total != 1 ||
+		payload.Returned != 1 || len(payload.Sessions) != 1 {
+		t.Fatalf("list envelope = %#v", payload)
 	}
 }
 
-// Reasoning models emit a block per model response and a turn spans several of
-// them, so one-block-per-turn attributed later turns' thinking to earlier ones.
-func TestCollectTurnThinkingGroupsEveryBlockOfATurn(t *testing.T) {
-	blocks := []parser.ThinkingBlock{
-		{Thinking: "看一下文件", Response: "先读代码"},
-		{Thinking: "改这里", Response: "改完了"},
-		{Thinking: "下一轮", Response: "第二轮答案"},
+func TestSessionExportFiltersPaginatesAndSupportsJSONL(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	seedCommandSession(t)
+
+	exportDaysFlag = 2
+	exportQueryFlag = "deployment"
+	exportLimitFlag = 1
+	exportOffsetFlag = 1
+	exportEnvelopeFlag = true
+	out := captureStdout(t, func() {
+		if err := runExport(exportCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var payload struct {
+		SchemaVersion int               `json:"schema_version"`
+		Total         int               `json:"total"`
+		Returned      int               `json:"returned"`
+		Messages      []store.ExportRow `json:"messages"`
 	}
-	thinking, next := collectTurnThinking(blocks, 0, "改完了")
-	if !strings.Contains(thinking, "看一下文件") || !strings.Contains(thinking, "改这里") ||
-		strings.Contains(thinking, "下一轮") || next != 2 {
-		t.Fatalf("thinking = %q next = %d", thinking, next)
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("decode export envelope: %v\n%s", err, out)
 	}
-	// An answer no block claims must not swallow the rest of the chain.
-	thinking, next = collectTurnThinking(blocks, 2, "无人认领")
-	if thinking != "下一轮" || next != 3 {
-		t.Fatalf("fallback thinking = %q next = %d", thinking, next)
+	if payload.SchemaVersion != sessionCLIOutputSchemaVersion || payload.Total != 2 ||
+		payload.Returned != 1 || len(payload.Messages) != 1 {
+		t.Fatalf("export envelope = %#v", payload)
 	}
-	if thinking, next := collectTurnThinking(blocks, 3, "改完了"); thinking != "" || next != 3 {
-		t.Fatalf("exhausted blocks = %q %d", thinking, next)
+
+	exportFormatFlag = "jsonl"
+	exportEnvelopeFlag = false
+	exportOffsetFlag = 0
+	jsonl := captureStdout(t, func() {
+		if err := runExport(exportCmd, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	lines := strings.Split(strings.TrimSpace(jsonl), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("jsonl lines = %d, want paged 1\n%s", len(lines), jsonl)
+	}
+	var row store.ExportRow
+	if err := json.Unmarshal([]byte(lines[0]), &row); err != nil || !strings.Contains(strings.ToLower(row.Content), "deployment") {
+		t.Fatalf("jsonl row = %#v, err = %v", row, err)
 	}
 }

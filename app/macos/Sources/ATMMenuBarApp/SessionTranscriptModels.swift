@@ -113,6 +113,29 @@ struct ATMSessionTranscript: Decodable, Equatable {
         thinkingSourceMissing = try values.decodeIfPresent(Bool.self, forKey: .thinkingSourceMissing) ?? false
         thinkingAbsent = try values.decodeIfPresent(Bool.self, forKey: .thinkingAbsent) ?? false
     }
+
+    /// Text presentation for the legacy transcript sheet. Its data still comes
+    /// from the typed show read model; this formatter replaces Cobra's terminal
+    /// renderer without recreating a hidden argv dependency.
+    var plainText: String {
+        var lines = ["[\(agent)] \(project)  \(id)", String(repeating: "=", count: 60)]
+        for turn in turns {
+            if let question = turn.question, !question.isEmpty {
+                lines.append("\nQ: \(question)")
+            }
+            if let thinking = turn.thinking, !thinking.isEmpty {
+                lines.append("\n💭 \(thinking)")
+            }
+            if let answer = turn.answer, !answer.isEmpty {
+                lines.append("\nA: \(answer)")
+            }
+        }
+        if !tools.isEmpty {
+            let values = tools.keys.sorted().map { "\($0):\(tools[$0] ?? 0)" }
+            lines.append("\nTools: \(values.joined(separator: ", "))")
+        }
+        return lines.joined(separator: "\n") + "\n"
+    }
 }
 
 /// One entry of `atm session timeline --json`: either a message or a model
@@ -188,19 +211,4 @@ enum ATMSessionReadMode: String, CaseIterable, Identifiable {
     static let briefTurnCount = 4
     static let briefMaxChars = 6000
 
-    func arguments(sessionID: String) -> [String] {
-        switch self {
-        case .brief:
-            return [
-                "session", "show", sessionID,
-                "--last", String(Self.briefTurnCount),
-                "--max-chars", String(Self.briefMaxChars),
-                "--json",
-            ]
-        case .timeline:
-            return ["session", "timeline", sessionID, "--json"]
-        case .full:
-            return ["session", "show", sessionID, "--thinking", "--json"]
-        }
-    }
 }

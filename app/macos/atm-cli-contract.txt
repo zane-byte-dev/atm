@@ -1,0 +1,118 @@
+# app/macos → atm CLI 契约清单
+#
+# 桌面 App 通过 fork/exec 调 atm，耦合方式是散在 Swift 里的 argv 数组。这份清单是那
+# 份耦合的唯一显式声明，由 internal/cmd/app_contract_test.go 校验：
+#
+#   1. [commands] 每条路径必须能被 cobra 解析到，且该行列出的每个 flag 必须存在于
+#      那条命令上（含继承来的全局 flag）。
+#   2. 反向扫 Swift 源码：出现了这里没有的字面量 argv 数组，或者用了这里没记的
+#      --flag，同样会红。
+#   3. [config-keys] 每个键必须仍在 CLI 的可设置键表里。
+#
+# 所以删或改 CLI 时测试会红，而不是等运行时 App 静默失败。改了 Swift 的调用方式，
+# 就要一起改这里。
+#
+# 动态拼装的调用扫不出来，靠这份清单显式记住；各 builder 里按条件追加的 flag
+#（--desc、--image、--bin、--badge、--move-to 等）也在这里，不一定出现在同一个
+# Swift 数组字面量里。
+
+[commands]
+guard approve --by --json
+guard deny --by --json
+guard forget --json
+guard install --bin
+guard rule remove --json
+guard rule set --json
+guard uninstall --json
+session status --json
+stats --agent-session --by --days --json
+sync
+todo handoff --copy --json
+version
+
+# `atm _ipc <verb>` 是 App 专用的隐藏协议：整个面共用 contract.IPCProtocolVersion 一个
+# 版本号，App 认不出的版本直接拒绝，而不是猜着解。verb 是参数不是子命令，所以校验的是
+# 注册过的 handler，不是命令树。
+[ipc-verbs]
+agent.hook.install
+agent.hook.status
+agent.hook.uninstall
+config.credential.delete
+config.credential.save
+config.save
+config.settings
+config.text_model.check
+collect.history
+collect.item.archive
+collect.item.correct
+collect.item.delete
+collect.item.promote
+collect.item.read
+collect.item.reprocess
+collect.item.revert
+collect.item.save_conclusion
+collect.run
+collect.snapshot
+collect.source.delete
+collect.source.enabled
+collect.source.muted
+collect.source.save
+collect.source.search
+day.data.delete
+day.data.export
+day.feedback
+day.privacy.set
+day.show
+day.snapshot
+day.source.delete
+day.source.set
+dashboard.snapshot
+doctor.check
+guard.list
+guard.status
+guard.rule.list
+knowledge.catalog
+knowledge.collection.delete
+knowledge.collection.save
+knowledge.document.delete
+knowledge.document.get
+knowledge.document.import
+knowledge.document.save
+knowledge.feedback
+knowledge.governance
+knowledge.query
+memory.recall
+memory.supersede
+quota.snapshot
+session.list
+session.search
+session.show
+session.timeline
+todo.create
+todo.doc
+todo.list
+todo.refine
+todo.show
+todo.start
+todo.title
+todo.archive
+todo.delete
+todo.done
+todo.restore
+todo.update
+
+# App 读写的配置键。CLI 侧的可设置键表改名会让设置页静默失效，所以一起钉住。
+[config-keys]
+collection_interval_minutes
+grok_live_quota
+owner_name
+text_model_base_url
+text_model_name
+text_model_source
+todo_refine_on_add
+todo_refine_prompt
+
+# Swift 里出现但不是 atm flag 的长参数，反向扫描要放过。
+# --text 是 guard 规则编辑器里给人填的「正文参数」输入框的占位示例，不是 atm 自己的 flag。
+[ignored-flags]
+--text

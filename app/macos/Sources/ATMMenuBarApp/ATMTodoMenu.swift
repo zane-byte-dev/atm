@@ -21,11 +21,11 @@ enum ATMTodoMenu {
     static func entries(
         for todo: ATMTodo,
         store: ATMDataStore,
-        isTrashed: Bool = false,
+        isArchived: Bool = false,
         onEdit: (() -> Void)? = nil,
         onPermanentDelete: (() -> Void)? = nil
     ) -> [ATMMenuEntry] {
-        if isTrashed {
+        if isArchived {
             ATMMenuItem("恢复", systemImage: "arrow.uturn.backward") {
                 store.perform(.restore, on: todo)
             }
@@ -85,8 +85,8 @@ enum ATMTodoMenu {
             copyIDItem(for: todo)
 
             ATMMenuSeparator()
-            ATMMenuItem("移到回收站", systemImage: "trash") {
-                store.perform(.trash, on: todo)
+            ATMMenuItem("归档", systemImage: "archivebox") {
+                store.perform(.archive, on: todo)
             }
         }
     }

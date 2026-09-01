@@ -79,24 +79,20 @@ final class SessionTranscriptModelTests: XCTestCase {
         XCTAssertEqual(entries[1].date.timeIntervalSince1970, 1_786_351_522, accuracy: 1)
     }
 
-    /// Each depth is its own CLI read. The brief read must be a tail rather than a
-    /// prefix — a reader opening a session wants its outcome — and only the full
-    /// read may pay for parsing the raw transcript.
+    /// Each depth is its own typed read. The brief read must be a tail rather than
+    /// a prefix, and only the full read may pay for parsing the raw transcript.
     func testReadModesRequestTheDepthTheyPromise() {
-        let brief = ATMSessionReadMode.brief.arguments(sessionID: "s1")
-        XCTAssertEqual(brief.prefix(3).joined(separator: " "), "session show s1")
-        XCTAssertTrue(brief.contains("--last"))
-        XCTAssertTrue(brief.contains("--json"))
-        XCTAssertFalse(brief.contains("--thinking"))
+        let brief = ATMSessionReadMode.brief.showRequest(sessionID: "s1")
+        XCTAssertEqual(brief?.sessionID, "s1")
+        XCTAssertEqual(brief?.last, ATMSessionReadMode.briefTurnCount)
+        XCTAssertEqual(brief?.maxChars, ATMSessionReadMode.briefMaxChars)
+        XCTAssertFalse(brief?.includeThinking ?? true)
 
-        XCTAssertEqual(
-            ATMSessionReadMode.timeline.arguments(sessionID: "s1"),
-            ["session", "timeline", "s1", "--json"]
-        )
+        XCTAssertNil(ATMSessionReadMode.timeline.showRequest(sessionID: "s1"))
 
-        let full = ATMSessionReadMode.full.arguments(sessionID: "s1")
-        XCTAssertTrue(full.contains("--thinking"))
-        XCTAssertFalse(full.contains("--last"))
+        let full = ATMSessionReadMode.full.showRequest(sessionID: "s1")
+        XCTAssertTrue(full?.includeThinking ?? false)
+        XCTAssertEqual(full?.last, 0)
     }
 
     /// The durable copy of the run outcome. Without it a Todo whose session has

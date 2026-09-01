@@ -215,11 +215,14 @@ final class AgentEventTests: XCTestCase {
         let applied = status.applyingAttentionSignals(["abc": signal()], now: now)
         XCTAssertEqual(applied.sessions.first?.attentionSignal?.reason, "permission_prompt")
         XCTAssertEqual(applied.time, "12:00:00")
+        XCTAssertNotEqual(applied, status)
     }
 
     func testApplyingNoSignalsLeavesTheSnapshotAlone() {
         let status = ATMLiveStatus(sessions: [session(sessionID: "abc")], time: "12:00:00")
-        XCTAssertNil(status.applyingAttentionSignals([:], now: now).sessions.first?.attentionSignal)
+        let applied = status.applyingAttentionSignals([:], now: now)
+        XCTAssertNil(applied.sessions.first?.attentionSignal)
+        XCTAssertEqual(applied, status)
     }
 
     // MARK: - Presence

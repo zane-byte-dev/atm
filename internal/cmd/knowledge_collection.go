@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/output"
 )
@@ -25,12 +24,13 @@ var (
 	collectionEditFlags   collectionFlagValues
 	collectionDeleteForce bool
 	collectionDeleteMove  string
+	collectionDeleteYes   bool
 )
 
 var knowledgeCollectionCmd = &cobra.Command{
 	Use:   "collection",
 	Short: "Manage directory-backed knowledge collections",
-	Args:  cobra.NoArgs,
+	Args:  noSubcommandArgs,
 	RunE:  showHelp,
 }
 
@@ -62,19 +62,13 @@ var knowledgeCollectionDeleteCmd = &cobra.Command{
 	RunE:  runKnowledgeCollectionDelete,
 }
 
-var knowledgeCollectionListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List collections (alias of knowledge catalog)",
-	Args:  cobra.NoArgs,
-	RunE:  runKnowledgeCollectionList,
-}
-
 func init() {
 	bindCollectionFlags(knowledgeCollectionCreateCmd, &collectionCreateFlags)
 	bindCollectionFlags(knowledgeCollectionEditCmd, &collectionEditFlags)
 	knowledgeCollectionDeleteCmd.Flags().BoolVar(&collectionDeleteForce, "force", false, "delete a non-empty collection and its documents")
 	knowledgeCollectionDeleteCmd.Flags().StringVar(&collectionDeleteMove, "move-to", "", "move documents to another collection before deleting")
-	knowledgeCollectionCmd.AddCommand(knowledgeCollectionCreateCmd, knowledgeCollectionEditCmd, knowledgeCollectionRenameCmd, knowledgeCollectionDeleteCmd, knowledgeCollectionListCmd)
+	knowledgeCollectionDeleteCmd.Flags().BoolVarP(&collectionDeleteYes, "yes", "y", false, "skip the permanent deletion confirmation")
+	knowledgeCollectionCmd.AddCommand(knowledgeCollectionCreateCmd, knowledgeCollectionEditCmd, knowledgeCollectionRenameCmd, knowledgeCollectionDeleteCmd)
 	knowledgeCmd.AddCommand(knowledgeCollectionCmd)
 }
 
@@ -115,11 +109,18 @@ func collectionEditInput(command *cobra.Command, values collectionFlagValues) kn
 }
 
 func runKnowledgeCollectionCreate(cmd *cobra.Command, args []string) error {
-	collection, err := knowledge.CreateCollection(config.AtmDir, args[0], collectionEditInput(cmd, collectionCreateFlags))
+	edit := collectionEditInput(cmd, collectionCreateFlags)
+	collection, err := currentKnowledgeService().SaveCollection(cmd.Context(), knowledge.SaveCollectionInput{
+		Create: &knowledge.CreateCollectionInput{
+			ID: args[0], Name: edit.Name, Description: edit.Description, Role: edit.Role,
+			Topics: edit.Topics, UseWhen: edit.UseWhen, AvoidWhen: edit.AvoidWhen,
+			Instructions: edit.Instructions,
+		},
+	})
 	if err != nil {
 		return err
 	}
-	return printCollectionResult(collection, "Created")
+	return printCollectionResult(&collection, "Created")
 }
 
 func runKnowledgeCollectionEdit(cmd *cobra.Command, args []string) error {
@@ -127,26 +128,44 @@ func runKnowledgeCollectionEdit(cmd *cobra.Command, args []string) error {
 	if input.Name == nil && input.Description == nil && input.Role == nil && input.Topics == nil && input.UseWhen == nil && input.AvoidWhen == nil && input.Instructions == nil {
 		return fmt.Errorf("nothing to update; use --name, --description, --role, --topic, --use-when, --avoid-when, or --instruction")
 	}
-	collection, err := knowledge.EditCollection(config.AtmDir, args[0], input)
+	collection, err := currentKnowledgeService().SaveCollection(cmd.Context(), knowledge.SaveCollectionInput{
+		Update: &knowledge.UpdateCollectionInput{
+			ID: args[0], Name: input.Name, Description: input.Description, Role: input.Role,
+			Topics: input.Topics, UseWhen: input.UseWhen, AvoidWhen: input.AvoidWhen,
+			Instructions: input.Instructions,
+		},
+	})
 	if err != nil {
 		return err
 	}
-	return printCollectionResult(collection, "Updated")
+	return printCollectionResult(&collection, "Updated")
 }
 
 func runKnowledgeCollectionRename(cmd *cobra.Command, args []string) error {
-	collection, err := knowledge.RenameCollection(config.AtmDir, args[0], args[1])
+	collection, err := currentKnowledgeService().RenameCollection(cmd.Context(), knowledge.RenameCollectionInput{
+		ID: args[0], NewID: args[1],
+	})
 	if err != nil {
 		return err
 	}
-	return printCollectionResult(collection, "Renamed")
+	return printCollectionResult(&collection, "Renamed")
 }
 
 func runKnowledgeCollectionDelete(cmd *cobra.Command, args []string) error {
 	if collectionDeleteForce && strings.TrimSpace(collectionDeleteMove) != "" {
 		return fmt.Errorf("use either --force or --move-to, not both")
 	}
-	result, err := knowledge.DeleteCollection(config.AtmDir, args[0], knowledge.DeleteCollectionOptions{Force: collectionDeleteForce, MoveTo: collectionDeleteMove})
+	confirmed, err := confirmDestructive(
+		cmd,
+		collectionDeleteYes,
+		fmt.Sprintf("Permanently delete knowledge collection %s?", args[0]),
+	)
+	if err != nil || !confirmed {
+		return err
+	}
+	result, err := currentKnowledgeService().DeleteCollection(cmd.Context(), knowledge.DeleteCollectionInput{
+		ID: args[0], Force: collectionDeleteForce, MoveTo: collectionDeleteMove, Confirmed: true,
+	})
 	if err != nil {
 		return err
 	}
@@ -160,10 +179,6 @@ func runKnowledgeCollectionDelete(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Deleted collection %s\n", result.ID)
 	}
 	return nil
-}
-
-func runKnowledgeCollectionList(cmd *cobra.Command, args []string) error {
-	return printCollectionCatalog(true)
 }
 
 func printCollectionResult(collection *knowledge.CollectionInfo, action string) error {

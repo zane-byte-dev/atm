@@ -12,6 +12,17 @@ enum ATMAgentSessionLaunchRoute: Equatable {
         let tool = normalized(session.tool)
         let client = normalized(session.client)
         let resumeID = nonEmpty(session.resumeID)
+        // A Codex subagent's own rollout is an implementation detail rather than
+        // a user-owned task. Return deep branches to the visible root task; the
+        // direct parent remains the compatibility fallback for older payloads.
+        let codexThreadID: String?
+        if session.isSubagent {
+            codexThreadID = nonEmpty(session.rootSessionID)
+                ?? nonEmpty(session.parentSessionID)
+                ?? resumeID
+        } else {
+            codexThreadID = resumeID
+        }
         let isCodexDesktop = tool.contains("codex")
             && (client.contains("desktop") || client.contains("app") || (client.isEmpty && session.pid == nil))
         let isGrok = tool.contains("grok")
@@ -20,8 +31,8 @@ enum ATMAgentSessionLaunchRoute: Equatable {
             || isGrok
             || tool == "pi"
 
-        if isCodexDesktop, let resumeID {
-            return .codexThread(threadID: resumeID)
+        if isCodexDesktop, let codexThreadID {
+            return .codexThread(threadID: codexThreadID)
         }
 
         if let bundleIdentifier = nonEmpty(session.terminalApp) {
@@ -49,6 +60,17 @@ enum ATMAgentSessionLaunchRoute: Equatable {
                 return .workspace(bundleIdentifier: "com.qoder.work", path: cwd)
             }
             return .application(bundleIdentifier: "com.qoder.work")
+        }
+
+        // Antigravity is a VS Code fork, so it has to be matched before the
+        // VS Code branch below. There is no exact conversation deep link, but the
+        // summary index records the workspace folder, which reopens the window the
+        // conversation belongs to.
+        if tool.contains("antigravity") || client.contains("antigravity") {
+            if let cwd = nonEmpty(session.cwd) {
+                return .workspace(bundleIdentifier: "com.google.antigravity", path: cwd)
+            }
+            return .application(bundleIdentifier: "com.google.antigravity")
         }
 
         if client.contains("vs code") || client.contains("vscode") {
@@ -85,28 +107,6 @@ enum ATMAgentSessionLaunchRoute: Equatable {
             return .codexThread(threadID: session.sessionID)
         }
         return .unavailable(reason: "这个会话已经结束，ATM 只能给你完整对话记录")
-    }
-
-    /// An ATM-dispatched process is intentionally headless, but Codex still
-    /// gives every run a durable thread that its desktop app can open. Handing
-    /// that thread back to Codex keeps interactive controls (interrupt, input,
-    /// approvals, and so on) in the Agent that owns them instead of duplicating
-    /// those controls in ATM. Other CLI agents are only openable when their live
-    /// presence reports an exact host session such as a terminal TTY; opening a
-    /// fresh terminal at the same cwd would not be the delegated session.
-    static func resolve(for run: ATMTaskRun, live session: ATMLiveSession?) -> Self {
-        if normalized(run.agent).contains("codex"),
-           let sessionID = nonEmpty(run.sessionID),
-           isThreadID(sessionID) {
-            return .codexThread(threadID: sessionID)
-        }
-        if let session {
-            let route = resolve(for: session)
-            if route.isExact {
-                return route
-            }
-        }
-        return .unavailable(reason: "这个后台执行还没有可交互的原生 Agent 会话")
     }
 
     private static func isSameSession(_ live: ATMLiveSession, _ bound: ATMBoundSession) -> Bool {
@@ -202,6 +202,7 @@ enum ATMAgentSessionLaunchRoute: Equatable {
             "com.microsoft.VSCodeInsiders",
             "com.todesktop.230313mzl4w4u92",
             "com.qoder.work",
+            "com.google.antigravity",
             "com.apple.Terminal",
         ].contains(bundleIdentifier)
     }
@@ -215,6 +216,7 @@ enum ATMAgentSessionLaunchRoute: Equatable {
         case "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders": return "Visual Studio Code"
         case "com.todesktop.230313mzl4w4u92": return "Cursor"
         case "com.qoder.work": return "Qoder"
+        case "com.google.antigravity": return "Antigravity"
         default: return "来源 App"
         }
     }

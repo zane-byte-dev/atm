@@ -14,6 +14,7 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/store"
+	syncapp "github.com/zane-byte-dev/atm/internal/sync"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
@@ -39,13 +40,29 @@ func captureStdout(t *testing.T, fn func()) string {
 
 func withTempAtmDir(t *testing.T) {
 	t.Helper()
-	oldDir, oldDB := config.AtmDir, config.AtmDB
+	oldDir, oldDB, oldConfig := config.AtmDir, config.AtmDB, config.ConfigPath
+	oldGuard := config.Guard
+	oldIPCServer := ipcServer
 	dir := t.TempDir()
 	config.AtmDir = dir
 	config.AtmDB = filepath.Join(dir, "atm.db")
+	// ConfigPath too, and not only for tidiness: a command that writes config would
+	// otherwise write the *real* one. `atm guard install` records where it put a
+	// shim, so without this a test installing a fake tool in a temp directory
+	// leaves the user's own config pointing at a path that ceases to exist when the
+	// test does — and the gate then reports itself off for a tool it is guarding.
+	config.ConfigPath = filepath.Join(dir, "config.json")
+	config.Guard = config.GuardConfig{}
+	// appipc receives a concrete Knowledge service at composition time, so a
+	// test that changes the data root must rebuild that composition as well.
+	// Otherwise typed Knowledge calls escape into the developer's real ~/.atm.
+	ipcServer = newAppIPCServer()
 	t.Cleanup(func() {
 		config.AtmDir = oldDir
 		config.AtmDB = oldDB
+		config.ConfigPath = oldConfig
+		config.Guard = oldGuard
+		ipcServer = oldIPCServer
 	})
 }
 
@@ -58,15 +75,32 @@ func seedTodos(items ...store.Todo) error {
 	})
 }
 
+// withHumanCLI makes command-adapter authorization tests independent of the
+// Agent process running `go test`. An empty value is equivalent to an unset
+// value for cliAgentFromEnvironment and t.Setenv restores the outer process.
+//
+// The keys come from cliAttributionEnvironment rather than a list maintained
+// here: this suite is normally run from inside an Agent, so a key missing from
+// the reset would make these tests read that Agent's provenance instead of the
+// plain terminal they mean to stand in for.
+func withHumanCLI(t *testing.T) {
+	t.Helper()
+	for _, key := range cliAttributionEnvironment() {
+		t.Setenv(key, "")
+	}
+}
+
 func withIsolatedCommandEnv(t *testing.T) {
 	t.Helper()
-	oldDir, oldDB := config.AtmDir, config.AtmDB
+	oldDir, oldDB, oldConfigPath := config.AtmDir, config.AtmDB, config.ConfigPath
+	oldIPCServer := ipcServer
 	oldClaude, oldCodex, oldCopilot, oldPi := config.ClaudeProjects, config.CodexSessions, config.CopilotWorkspaces, config.PiSessions
 	oldQoder, oldQoderCLI, oldQoderWork := config.QoderDB, config.QoderCLIProjects, config.QoderWorkDB
 	oldGrok := config.GrokSessions
 	dir := t.TempDir()
 	config.AtmDir = filepath.Join(dir, "atm")
 	config.AtmDB = filepath.Join(config.AtmDir, "atm.db")
+	config.ConfigPath = filepath.Join(config.AtmDir, "config.json")
 	config.ClaudeProjects = filepath.Join(dir, "claude-projects")
 	config.CodexSessions = filepath.Join(dir, "codex-sessions")
 	config.CopilotWorkspaces = filepath.Join(dir, "copilot-workspaces")
@@ -75,6 +109,7 @@ func withIsolatedCommandEnv(t *testing.T) {
 	config.QoderCLIProjects = filepath.Join(dir, "qodercli-projects")
 	config.QoderWorkDB = filepath.Join(dir, "qoderwork", "agents.db")
 	config.GrokSessions = filepath.Join(dir, "grok-sessions")
+	ipcServer = newAppIPCServer()
 	for _, p := range []string{config.ClaudeProjects, config.CodexSessions, config.CopilotWorkspaces, config.PiSessions, config.QoderCLIProjects, config.GrokSessions} {
 		if err := os.MkdirAll(p, 0755); err != nil {
 			t.Fatalf("mkdir %s: %v", p, err)
@@ -83,12 +118,14 @@ func withIsolatedCommandEnv(t *testing.T) {
 	t.Cleanup(func() {
 		config.AtmDir = oldDir
 		config.AtmDB = oldDB
+		config.ConfigPath = oldConfigPath
 		config.ClaudeProjects = oldClaude
 		config.CodexSessions = oldCodex
 		config.CopilotWorkspaces = oldCopilot
 		config.PiSessions = oldPi
 		config.QoderDB, config.QoderCLIProjects, config.QoderWorkDB = oldQoder, oldQoderCLI, oldQoderWork
 		config.GrokSessions = oldGrok
+		ipcServer = oldIPCServer
 	})
 }
 
@@ -156,18 +193,29 @@ func withCommandFlags(t *testing.T) {
 	oldSince, oldReview := sessionSinceFlag, sessionReviewFlag
 	oldSearchLimit, oldSearchProject := searchLimitFlag, searchProjectFlag
 	oldSearchSince, oldSearchDays := searchSinceFlag, searchDaysFlag
-	oldSearchRole, oldSearchSnippet := searchRoleFlag, searchSnippetFlag
+	oldSearchRole, oldSearchSnippet, oldSearchQuery := searchRoleFlag, searchSnippetFlag, searchQueryFlag
 	oldStatsDays, oldStatsBy := statsDaysFlag, statsByFlag
 	oldExportDays, oldExportFormat := exportDaysFlag, exportFormatFlag
+	oldExportSince, oldExportUntil := exportSinceFlag, exportUntilFlag
+	oldExportProject, oldExportRole, oldExportQuery := exportProjectFlag, exportRoleFlag, exportQueryFlag
+	oldExportLimit, oldExportOffset, oldExportEnvelope := exportLimitFlag, exportOffsetFlag, exportEnvelopeFlag
 	oldThinking, oldShowTurns := showThinking, showTurnsFlag
 	oldShowLast, oldShowMaxChars := showLastFlag, showMaxCharsFlag
 	oldListAll, oldListOrder := sessionListAllFlag, sessionListOrder
-	oldListLimit, oldListOffset := sessionListLimit, sessionListOffset
+	oldListLimit, oldListOffset, oldListEnvelope := sessionListLimit, sessionListOffset, sessionListEnvelope
+	oldToolsFailed, oldToolsDays, oldToolsSince := sessionToolsFailed, sessionToolsDays, sessionToolsSince
+	oldToolsLimit, oldToolsOffset := sessionToolsLimit, sessionToolsOffset
 	t.Cleanup(func() {
 		sessionListAllFlag = oldListAll
 		sessionListOrder = oldListOrder
 		sessionListLimit = oldListLimit
 		sessionListOffset = oldListOffset
+		sessionListEnvelope = oldListEnvelope
+		sessionToolsFailed = oldToolsFailed
+		sessionToolsDays = oldToolsDays
+		sessionToolsSince = oldToolsSince
+		sessionToolsLimit = oldToolsLimit
+		sessionToolsOffset = oldToolsOffset
 		agentFlag = oldAgent
 		jsonOutput = oldJSON
 		syncBeforeRead = oldSync
@@ -181,10 +229,19 @@ func withCommandFlags(t *testing.T) {
 		searchDaysFlag = oldSearchDays
 		searchRoleFlag = oldSearchRole
 		searchSnippetFlag = oldSearchSnippet
+		searchQueryFlag = oldSearchQuery
 		statsDaysFlag = oldStatsDays
 		statsByFlag = oldStatsBy
 		exportDaysFlag = oldExportDays
 		exportFormatFlag = oldExportFormat
+		exportSinceFlag = oldExportSince
+		exportUntilFlag = oldExportUntil
+		exportProjectFlag = oldExportProject
+		exportRoleFlag = oldExportRole
+		exportQueryFlag = oldExportQuery
+		exportLimitFlag = oldExportLimit
+		exportOffsetFlag = oldExportOffset
+		exportEnvelopeFlag = oldExportEnvelope
 		showThinking = oldThinking
 		showTurnsFlag = oldShowTurns
 		showLastFlag = oldShowLast
@@ -203,10 +260,29 @@ func withCommandFlags(t *testing.T) {
 	searchDaysFlag = 0
 	searchRoleFlag = ""
 	searchSnippetFlag = defaultSearchSnippet
+	searchQueryFlag = ""
 	statsDaysFlag = 1
 	statsByFlag = ""
 	exportDaysFlag = 7
 	exportFormatFlag = "json"
+	exportSinceFlag = ""
+	exportUntilFlag = ""
+	exportProjectFlag = ""
+	exportRoleFlag = ""
+	exportQueryFlag = ""
+	exportLimitFlag = 0
+	exportOffsetFlag = 0
+	exportEnvelopeFlag = false
+	sessionListAllFlag = false
+	sessionListOrder = "activity-desc"
+	sessionListLimit = defaultSessionListLimit
+	sessionListOffset = 0
+	sessionListEnvelope = false
+	sessionToolsFailed = false
+	sessionToolsDays = 7
+	sessionToolsSince = ""
+	sessionToolsLimit = 100
+	sessionToolsOffset = 0
 	showThinking = false
 	showTurnsFlag = ""
 	showLastFlag = 0
@@ -284,9 +360,10 @@ func TestStatsBySpeedReportsRatesWaitsAndWhatWasLeftOut(t *testing.T) {
 }
 
 func TestVersionCommandUsesConfiguredVersion(t *testing.T) {
-	oldVersion := rootCmd.Version
+	oldVersion, oldJSON := rootCmd.Version, jsonOutput
 	t.Cleanup(func() {
 		rootCmd.Version = oldVersion
+		jsonOutput = oldJSON
 	})
 
 	SetVersion("9.9.9-test")
@@ -295,6 +372,22 @@ func TestVersionCommandUsesConfiguredVersion(t *testing.T) {
 	})
 	if out != "atm 9.9.9-test\n" {
 		t.Fatalf("version output = %q", out)
+	}
+
+	jsonOutput = true
+	out = captureStdout(t, func() {
+		versionCmd.Run(versionCmd, nil)
+	})
+	var payload struct {
+		SchemaVersion int    `json:"schema_version"`
+		Name          string `json:"name"`
+		Version       string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("version --json is not JSON: %v\n%s", err, out)
+	}
+	if payload.SchemaVersion != 1 || payload.Name != "atm" || payload.Version != "9.9.9-test" {
+		t.Fatalf("version payload = %#v", payload)
 	}
 }
 
@@ -575,9 +668,6 @@ func TestFormattingHelpers(t *testing.T) {
 	if got := cleanMsg("# Files mentioned by the user:\nattachment.png\n## My request for Codex:\n修复启动选择"); got != "修复启动选择" {
 		t.Fatalf("cleanMsg attachment request = %q", got)
 	}
-	if got := meaningfulInputs([]string{"# AGENTS.md instructions\ninternal", "真实问题"}); len(got) != 1 || got[0] != "真实问题" {
-		t.Fatalf("meaningfulInputs = %#v", got)
-	}
 	if got := formatTools(map[string]int{"Write": 1, "Read": 2}); got != "Read:2, Write:1" {
 		t.Fatalf("formatTools = %q", got)
 	}
@@ -667,6 +757,57 @@ func TestRunTodoAddPersistsTodo(t *testing.T) {
 	}
 }
 
+func TestRunTodoAddImportsImagesAndPermanentDeleteCleansFiles(t *testing.T) {
+	withTempAtmDir(t)
+	if err := seedTodos(); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(t.TempDir(), "screenshot.png")
+	if err := os.WriteFile(source, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 0}, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldJSON := jsonOutput
+	oldPriority, oldProject := todoAddPriorityFlag, todoAddProjectFlag
+	oldSource, oldDesc, oldDescFile := todoSourceFlag, todoDescFlag, todoDescFileFlag
+	oldImages, oldYes := todoAddImageFlags, todoDeleteYesFlag
+	t.Cleanup(func() {
+		jsonOutput = oldJSON
+		todoAddPriorityFlag, todoAddProjectFlag = oldPriority, oldProject
+		todoSourceFlag, todoDescFlag, todoDescFileFlag = oldSource, oldDesc, oldDescFile
+		todoAddImageFlags, todoDeleteYesFlag = oldImages, oldYes
+		todoAddCmd.SetErr(os.Stderr)
+	})
+	jsonOutput = false
+	todoAddPriorityFlag, todoAddProjectFlag = "P1", "atm"
+	todoSourceFlag, todoDescFlag, todoDescFileFlag = "test-suite", "", ""
+	todoAddImageFlags = []string{source}
+	todoAddCmd.SetErr(io.Discard)
+
+	var runErr error
+	captureStdout(t, func() { runErr = runTodoAdd(todoAddCmd, []string{"Task", "with", "image"}) })
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil || len(todos.Items) != 1 || len(todos.Items[0].Images) != 1 {
+		t.Fatalf("todos=%#v err=%v", todos, err)
+	}
+	managedPath := todos.Items[0].Images[0].Path
+	if _, err := os.Stat(managedPath); err != nil {
+		t.Fatalf("managed image missing: %v", err)
+	}
+
+	todoDeleteYesFlag = true
+	captureStdout(t, func() { runErr = runTodoDelete(todoDeleteCmd, []string{"t1"}) })
+	if runErr != nil {
+		t.Fatal(runErr)
+	}
+	if _, err := os.Stat(managedPath); !os.IsNotExist(err) {
+		t.Fatalf("managed image remains after permanent delete: %v", err)
+	}
+}
+
 func TestRunTodoAddReadsDescriptionFromFileOrStdin(t *testing.T) {
 	withTempAtmDir(t)
 	if err := seedTodos(); err != nil {
@@ -730,6 +871,23 @@ const bodyWithShellMetacharacters = "## 问题\n\n" +
 	"`lookupPricing` 未命中时返回 `defaultPricing = {15.0, 75.0}`，即 $15/$75。\n" +
 	"环境变量 $HOME 与 ${PATH} 不该被展开，$(date) 与 `date` 不该被执行。\n" +
 	"引号：\"double\" 'single' —— 反斜杠 \\ 与感叹号 ! 也要原样保留。\n"
+
+func TestValidateInlineTodoDescriptionRejectsEscapedMarkdownNewlines(t *testing.T) {
+	err := validateInlineTodoDescription(`目标：支持收集提醒。\n范围：\n- 新结果默认未读。\n- 打开后变为已读。`)
+	if err == nil || !strings.Contains(err.Error(), "--desc-file") {
+		t.Fatalf("escaped multiline description error = %v", err)
+	}
+
+	for _, description := range []string{
+		"目标：支持收集提醒。\n范围：\n- 新结果默认未读。",
+		`代码中的单个 \n 应保持原样`,
+		`JSON 示例会把换行编码为 \n，也可能再次写作 \n。`,
+	} {
+		if err := validateInlineTodoDescription(description); err != nil {
+			t.Errorf("rejected legal inline description %q: %v", description, err)
+		}
+	}
+}
 
 func TestRunTodoEditReadsDescriptionFromFileOrStdin(t *testing.T) {
 	withTempAtmDir(t)
@@ -922,7 +1080,7 @@ func TestRunTodoTrashRestoreAndPermanentDelete(t *testing.T) {
 			t.Fatalf("trash: %v", err)
 		}
 	})
-	if trashOut != "Trashed t1\n" {
+	if trashOut != "Archived t1\n" {
 		t.Fatalf("trash output = %q", trashOut)
 	}
 	archived, err := store.LoadArchivedTodos()
@@ -962,7 +1120,7 @@ func TestTodoHelpIncludesBatchAndDependencyExamples(t *testing.T) {
 	if !strings.Contains(todoAddCmd.Example, "atm todo add --batch") || !strings.Contains(todoAddCmd.Example, "--desc-file -") {
 		t.Fatalf("todo add examples = %q", todoAddCmd.Example)
 	}
-	if !strings.Contains(todoDependAddCmd.Example, "t77 t76") || !strings.Contains(todoDependAddCmd.Example, "t77 waits") {
+	if !strings.Contains(todoDependAddCmd.Example, "t77 t76") || !strings.Contains(todoDependAddCmd.Example, "t77 depends") {
 		t.Fatalf("todo depend add example = %q", todoDependAddCmd.Example)
 	}
 }
@@ -1114,11 +1272,12 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 	withTempAtmDir(t)
 	oldJSON := jsonOutput
 	oldWaitWake, oldWaitReview := todoWaitWakeFlag, todoWaitReviewAtFlag
-	oldMaintainLimit := todoMaintainLimitFlag
+	oldMaintenanceLimit := todoEditMaintenanceLimitFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		todoWaitWakeFlag, todoWaitReviewAtFlag = oldWaitWake, oldWaitReview
-		todoMaintainLimitFlag = oldMaintainLimit
+		todoEditMaintenanceLimitFlag = oldMaintenanceLimit
+		todoEditCmd.Flags().Lookup("maintenance-limit").Changed = false
 	})
 
 	todos := []store.Todo{
@@ -1132,9 +1291,9 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 
 	jsonOutput = true
 	var commandErr error
-	captureStdout(t, func() { commandErr = runTodoFocus(todoFocusCmd, []string{"t1"}) })
+	captureStdout(t, func() { commandErr = runTodoStart(todoStartCmd, []string{"t1"}) })
 	if commandErr != nil {
-		t.Fatalf("focus: %v", commandErr)
+		t.Fatalf("start: %v", commandErr)
 	}
 
 	todoWaitWakeFlag = "new business input"
@@ -1144,10 +1303,11 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 		t.Fatalf("wait: %v", commandErr)
 	}
 
-	todoMaintainLimitFlag = 2
-	captureStdout(t, func() { commandErr = runTodoMaintain(todoMaintainCmd, []string{"t3"}) })
+	todoEditMaintenanceLimitFlag = 2
+	todoEditCmd.Flags().Lookup("maintenance-limit").Changed = true
+	captureStdout(t, func() { commandErr = runTodoEdit(todoEditCmd, []string{"t3"}) })
 	if commandErr != nil {
-		t.Fatalf("maintain: %v", commandErr)
+		t.Fatalf("edit --maintenance-limit: %v", commandErr)
 	}
 
 	var runErr error
@@ -1161,7 +1321,7 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 	if err := json.Unmarshal([]byte(nowOut), &view); err != nil {
 		t.Fatalf("unmarshal now: %v\n%s", err, nowOut)
 	}
-	if len(view.Working) != 1 || view.Working[0].ID != "t1" {
+	if len(view.Working) != 2 || view.Working[0].ID != "t1" || view.Working[1].ID != "t2" {
 		t.Fatalf("working = %#v", view.Working)
 	}
 	if len(view.Waiting) != 1 || view.Waiting[0].ID != "t2" || view.Waiting[0].WakeCondition != "new business input" {
@@ -1223,7 +1383,7 @@ func TestSyncStatusReportsMissingIndexWithoutCreatingIt(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("sync status: %v", runErr)
 	}
-	var report syncStatusReport
+	var report syncapp.StatusReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal sync status: %v\n%s", err, out)
 	}
@@ -1250,7 +1410,7 @@ func TestSyncStatusReportsSuccessfulExplicitSync(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("sync status: %v", runErr)
 	}
-	var report syncStatusReport
+	var report syncapp.StatusReport
 	if err := json.Unmarshal([]byte(out), &report); err != nil {
 		t.Fatalf("unmarshal sync status: %v\n%s", err, out)
 	}
@@ -1377,25 +1537,30 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 	oldKnowledgeLimit := knowledgeLimit
 	oldAddFile, oldAddProducer := knowledgeAddFile, knowledgeAddProducer
 	oldUpdateFile := knowledgeUpdateFile
+	oldDeleteYes := knowledgeDeleteYes
 	oldAddCollection := knowledgeAddCollection
 	oldRecallScope, oldWriteScope, oldMemoryLimit := memoryRecallScope, memoryWriteScope, memoryLimit
-	oldMemorySource := memorySource
-	oldArtifactFile, oldProducer, oldRunID := artifactFile, artifactProducer, artifactRunID
+	oldMemorySource, oldMemoryWriteFile := memorySource, memoryWriteFile
+	oldMemoryTags := append([]string(nil), memoryTags...)
+	oldArtifactFile, oldProducer := artifactFile, artifactProducer
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		knowledgeLimit = oldKnowledgeLimit
 		knowledgeAddFile, knowledgeAddProducer = oldAddFile, oldAddProducer
 		knowledgeUpdateFile = oldUpdateFile
+		knowledgeDeleteYes = oldDeleteYes
 		knowledgeAddCollection = oldAddCollection
 		memoryRecallScope, memoryWriteScope, memoryLimit = oldRecallScope, oldWriteScope, oldMemoryLimit
-		memorySource = oldMemorySource
-		artifactFile, artifactProducer, artifactRunID = oldArtifactFile, oldProducer, oldRunID
+		memorySource, memoryWriteFile = oldMemorySource, oldMemoryWriteFile
+		memoryTags = oldMemoryTags
+		artifactFile, artifactProducer = oldArtifactFile, oldProducer
 	})
 
 	jsonOutput = true
 	knowledgeLimit = 5
 	knowledgeAddFile, knowledgeAddProducer = "", "test"
 	knowledgeAddCollection = "inbox"
+	knowledgeDeleteYes = true
 
 	var runErr error
 	addOut := captureStdout(t, func() {
@@ -1451,6 +1616,10 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 	if !strings.Contains(rememberOut, `"source": "session:test#turn:1"`) {
 		t.Fatalf("memory remember provenance missing: %q", rememberOut)
 	}
+	var remembered knowledge.MemoryEvent
+	if err := json.Unmarshal([]byte(rememberOut), &remembered); err != nil || remembered.ID == "" {
+		t.Fatalf("decode remembered memory = %q, err = %v", rememberOut, err)
+	}
 	memoryRecallScope = "project:mox"
 	memoryLimit = 5
 	recallOut := captureStdout(t, func() {
@@ -1460,7 +1629,30 @@ func TestKnowledgeMemoryAndArtifactCommands(t *testing.T) {
 		t.Fatalf("memory recall output = %q, err = %v", recallOut, runErr)
 	}
 
-	artifactProducer, artifactRunID, artifactFile = "test", "run-test", ""
+	memoryTags = []string{" replacement ", "Decision", "decision"}
+	memorySource = " session:test#turn:2 "
+	supersedeOut := captureStdout(t, func() {
+		runErr = memorySupersedeCmd.RunE(memorySupersedeCmd, []string{remembered.ID, "superseded command marker"})
+	})
+	if runErr != nil {
+		t.Fatalf("memory supersede output = %q, err = %v", supersedeOut, runErr)
+	}
+	var superseded knowledge.MemoryEvent
+	if err := json.Unmarshal([]byte(supersedeOut), &superseded); err != nil {
+		t.Fatalf("decode superseded memory = %q, err = %v", supersedeOut, err)
+	}
+	if superseded.TargetID != remembered.ID || superseded.Content != "superseded command marker" ||
+		len(superseded.Tags) != 2 || superseded.Metadata["source"] != "session:test#turn:2" {
+		t.Fatalf("superseded memory = %#v", superseded)
+	}
+	recallOut = captureStdout(t, func() {
+		runErr = memoryRecallCmd.RunE(memoryRecallCmd, []string{"superseded command"})
+	})
+	if runErr != nil || !strings.Contains(recallOut, superseded.ID) || strings.Contains(recallOut, remembered.ID) {
+		t.Fatalf("memory recall after supersede output = %q, err = %v", recallOut, runErr)
+	}
+
+	artifactProducer, artifactFile = "test", ""
 	artifactSourceRaw = nil
 	artifactOut := captureStdout(t, func() {
 		runErr = artifactSaveCmd.RunE(artifactSaveCmd, []string{"Command report", "# Report\n\nDone."})
@@ -1518,9 +1710,9 @@ func TestNotifyCopyHumanFacingEvents(t *testing.T) {
 		t.Fatalf("done = %q / %q / %q", title, subtitle, body)
 	}
 
-	title, subtitle, body = notifyCopy(todo, notifyEventDropped)
-	if title != "ATM · atm" || subtitle != "t42 已放弃" || body != "Ship notify" {
-		t.Fatalf("dropped = %q / %q / %q", title, subtitle, body)
+	title, subtitle, body = notifyCopy(todo, notifyEventArchived)
+	if title != "ATM · atm" || subtitle != "t42 已归档" || body != "Ship notify" {
+		t.Fatalf("archived = %q / %q / %q", title, subtitle, body)
 	}
 
 	noProject := &store.Todo{ID: "t1", Title: "Solo"}
@@ -1665,9 +1857,9 @@ func TestSessionForgetOnlyDropsRetainedSessions(t *testing.T) {
 func TestSyncStatusLabelsRetainedSessions(t *testing.T) {
 	withCommandFlags(t)
 	jsonOutput = false
-	report := syncStatusReport{
-		Index: syncStatusIndex{Path: "/tmp/atm.db", Exists: true, IndexedSessions: 660, RetainedSessions: 3},
-		Sync:  syncStatusState{Status: "fresh"},
+	report := syncapp.StatusReport{
+		Index: syncapp.StatusIndex{Path: "/tmp/atm.db", Exists: true, IndexedSessions: 660, RetainedSessions: 3},
+		Sync:  syncapp.StatusState{Status: "fresh"},
 	}
 	out := captureStdout(t, func() {
 		if err := printSyncStatus(report); err != nil {

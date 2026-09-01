@@ -12,6 +12,9 @@ struct ATMRangeData {
 	let skillStats: [ATMSkillStats]
     let projectStats: [ATMProjectStats]
     let speed: ATMSpeedStats
+    /// Coverage and pricing provenance for this exact window. Older CLIs omit
+    /// this additive field, so `nil` means "quality not reported", not 0%.
+    let quality: ATMStatsQuality?
 
     init(
         startDate: String = "",
@@ -20,7 +23,8 @@ struct ATMRangeData {
         sessions: [ATMSessionSummary],
         skillStats: [ATMSkillStats] = [],
         projectStats: [ATMProjectStats] = [],
-        speed: ATMSpeedStats = .empty
+        speed: ATMSpeedStats = .empty,
+        quality: ATMStatsQuality? = nil
     ) {
         self.startDate = startDate
         self.endDate = endDate
@@ -29,6 +33,7 @@ struct ATMRangeData {
         self.skillStats = skillStats
         self.projectStats = projectStats
         self.speed = speed
+        self.quality = quality
     }
 
     /// Whether the CLI sent this window's bounds. Without them `contains` matches
@@ -46,6 +51,106 @@ struct ATMRangeData {
     }
 
     static let empty = ATMRangeData(modelStats: [], sessions: [])
+}
+
+/// Explains how complete a usage window is instead of presenting partial or
+/// estimated values as exact. Percent fields arrive from the CLI on a 0...100
+/// scale; `estimatedCostShare` is a conventional 0...1 ratio.
+struct ATMStatsQuality: Decodable, Equatable {
+    let activeSessions: Int
+    let tokenSessions: Int
+    let sessionCoveragePercent: Double
+    let activeAgents: Int
+    let tokenAgents: Int
+    let agentCoveragePercent: Double
+    let requests: Int
+    let detailedRequests: Int
+    let aggregateRequests: Int
+    let requestCoveragePercent: Double
+    let speedRequests: Int
+    let speedSampledRequests: Int
+    let speedSamplePercent: Double
+    let untimedRequests: Int
+    let outOfWindowRequests: Int
+    let costUSD: Double
+    let estimatedCostUSD: Double
+    let estimatedCostShare: Double
+    let pricingSources: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case activeSessions = "active_sessions"
+        case tokenSessions = "token_sessions"
+        case sessionCoveragePercent = "session_coverage_percent"
+        case activeAgents = "active_agents"
+        case tokenAgents = "token_agents"
+        case agentCoveragePercent = "agent_coverage_percent"
+        case requests
+        case detailedRequests = "detailed_requests"
+        case aggregateRequests = "aggregate_requests"
+        case requestCoveragePercent = "request_coverage_percent"
+        case speedRequests = "speed_requests"
+        case speedSampledRequests = "speed_sampled_requests"
+        case speedSamplePercent = "speed_sample_percent"
+        case untimedRequests = "untimed_requests"
+        case outOfWindowRequests = "out_of_window_requests"
+        case costUSD = "cost_usd"
+        case estimatedCostUSD = "estimated_cost_usd"
+        case estimatedCostShare = "estimated_cost_share"
+        case pricingSources = "pricing_sources"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        activeSessions = try values.decodeIfPresent(Int.self, forKey: .activeSessions) ?? 0
+        tokenSessions = try values.decodeIfPresent(Int.self, forKey: .tokenSessions) ?? 0
+        sessionCoveragePercent = try values.decodeIfPresent(Double.self, forKey: .sessionCoveragePercent) ?? 0
+        activeAgents = try values.decodeIfPresent(Int.self, forKey: .activeAgents) ?? 0
+        tokenAgents = try values.decodeIfPresent(Int.self, forKey: .tokenAgents) ?? 0
+        agentCoveragePercent = try values.decodeIfPresent(Double.self, forKey: .agentCoveragePercent) ?? 0
+        requests = try values.decodeIfPresent(Int.self, forKey: .requests) ?? 0
+        detailedRequests = try values.decodeIfPresent(Int.self, forKey: .detailedRequests) ?? 0
+        aggregateRequests = try values.decodeIfPresent(Int.self, forKey: .aggregateRequests) ?? 0
+        requestCoveragePercent = try values.decodeIfPresent(Double.self, forKey: .requestCoveragePercent) ?? 0
+        speedRequests = try values.decodeIfPresent(Int.self, forKey: .speedRequests) ?? 0
+        speedSampledRequests = try values.decodeIfPresent(Int.self, forKey: .speedSampledRequests) ?? 0
+        speedSamplePercent = try values.decodeIfPresent(Double.self, forKey: .speedSamplePercent) ?? 0
+        untimedRequests = try values.decodeIfPresent(Int.self, forKey: .untimedRequests) ?? 0
+        outOfWindowRequests = try values.decodeIfPresent(Int.self, forKey: .outOfWindowRequests) ?? 0
+        costUSD = try values.decodeIfPresent(Double.self, forKey: .costUSD) ?? 0
+        estimatedCostUSD = try values.decodeIfPresent(Double.self, forKey: .estimatedCostUSD) ?? 0
+        estimatedCostShare = try values.decodeIfPresent(Double.self, forKey: .estimatedCostShare) ?? 0
+        pricingSources = try values.decodeIfPresent([String].self, forKey: .pricingSources) ?? []
+    }
+
+    var limitations: [String] {
+        var values: [String] = []
+        if activeSessions > 0, tokenSessions < activeSessions {
+            values.append("Token 覆盖 \(Self.percent100(sessionCoveragePercent))（\(tokenSessions)/\(activeSessions) 个会话）")
+        }
+        if requests > 0, detailedRequests < requests {
+            values.append("请求明细覆盖 \(Self.percent100(requestCoveragePercent))（\(detailedRequests)/\(requests)）")
+        }
+        if speedRequests > 0, speedSampledRequests < speedRequests {
+            values.append("速度采样覆盖 \(Self.percent100(speedSamplePercent))（\(speedSampledRequests)/\(speedRequests)）")
+        }
+        if estimatedCostUSD > 0 {
+            values.append("费用中 \(NumberFormat.percent(estimatedCostShare)) 为估算")
+        }
+        return values
+    }
+
+    var details: String {
+        var values = limitations
+        if aggregateRequests > 0 { values.append("聚合请求：\(aggregateRequests)") }
+        if untimedRequests > 0 { values.append("无耗时请求：\(untimedRequests)") }
+        if outOfWindowRequests > 0 { values.append("窗口外请求：\(outOfWindowRequests)") }
+        if !pricingSources.isEmpty { values.append("定价来源：\(pricingSources.joined(separator: "、"))") }
+        return values.joined(separator: "\n")
+    }
+
+    private static func percent100(_ value: Double) -> String {
+        String(format: "%.0f%%", value)
+    }
 }
 
 enum ATMDashboardContract {
@@ -87,15 +192,15 @@ struct ATMDashboardSchemaMismatch: LocalizedError, Equatable {
         }
     }
 
+    /// Shared with the `_ipc` protocol check via ATMVersionSkewAdvice: two skew
+    /// messages quoting different install commands would send whichever user hit
+    /// the other one down the wrong path.
     var recoverySuggestion: String? {
         switch direction {
         case .appTooOld:
-            return "下载新版 ATM.app 覆盖安装后重启 App；从源码构建则运行 "
-                + "app/macos/Scripts/build-app.sh。CLI 与 App 必须配套升级。"
+            return ATMVersionSkewAdvice.appTooOld.text
         case .cliTooOld:
-            return "运行 curl -fsSL "
-                + "https://raw.githubusercontent.com/zane-byte-dev/atm/main/install.sh | sh"
-                + " 更新 CLI，然后点刷新。"
+            return ATMVersionSkewAdvice.cliTooOld.text
         }
     }
 
@@ -116,9 +221,10 @@ struct ATMDashboardRangeEnvelope: Decodable {
     let skillStats: [ATMSkillStats]
     let projectStats: [ATMProjectStats]
     let speed: ATMSpeedStats
+    let quality: ATMStatsQuality?
 
     enum CodingKeys: String, CodingKey {
-        case sessions, speed
+        case sessions, speed, quality
         case startDate = "start_date"
         case endDate = "end_date"
         case modelStats = "model_stats"
@@ -135,6 +241,7 @@ struct ATMDashboardRangeEnvelope: Decodable {
         skillStats = try values.decodeIfPresent([ATMSkillStats].self, forKey: .skillStats) ?? []
         projectStats = try values.decodeIfPresent([ATMProjectStats].self, forKey: .projectStats) ?? []
         speed = try values.decodeIfPresent(ATMSpeedStats.self, forKey: .speed) ?? .empty
+        quality = try values.decodeIfPresent(ATMStatsQuality.self, forKey: .quality)
     }
 }
 
@@ -149,6 +256,7 @@ struct ATMDashboardEnvelope: Decodable {
     let modelHourStats: [ATMModelDayStats]
     let projectDayStats: [ATMProjectDayStats]
     let projectHourStats: [ATMProjectDayStats]
+    let todoCompletions: [ATMTodoCompletion]
     let ranges: [String: ATMDashboardRangeEnvelope]
     let liveStatus: ATMLiveStatus
     let currentSession: ATMCurrentSession?
@@ -164,6 +272,7 @@ struct ATMDashboardEnvelope: Decodable {
         case modelHourStats = "model_hour_stats"
         case projectDayStats = "project_day_stats"
         case projectHourStats = "project_hour_stats"
+        case todoCompletions = "todo_completions"
         case liveStatus = "live_status"
         case currentSession = "current_session"
         case indexHealth = "index_health"
@@ -191,6 +300,7 @@ struct ATMDashboardEnvelope: Decodable {
         modelHourStats = try values.decodeIfPresent([ATMModelDayStats].self, forKey: .modelHourStats) ?? []
         projectDayStats = try values.decodeIfPresent([ATMProjectDayStats].self, forKey: .projectDayStats) ?? []
         projectHourStats = try values.decodeIfPresent([ATMProjectDayStats].self, forKey: .projectHourStats) ?? []
+        todoCompletions = try values.decodeIfPresent([ATMTodoCompletion].self, forKey: .todoCompletions) ?? []
         ranges = try values.decodeIfPresent([String: ATMDashboardRangeEnvelope].self, forKey: .ranges) ?? [:]
         liveStatus = try values.decode(ATMLiveStatus.self, forKey: .liveStatus)
         currentSession = try values.decodeIfPresent(ATMCurrentSession.self, forKey: .currentSession)
@@ -207,7 +317,8 @@ struct ATMDashboardEnvelope: Decodable {
                 sessions: value.sessions,
                 skillStats: value.skillStats,
                 projectStats: value.projectStats,
-                speed: value.speed
+                speed: value.speed,
+                quality: value.quality
             )
         }
         return ATMDashboardSnapshot(
@@ -218,6 +329,7 @@ struct ATMDashboardEnvelope: Decodable {
             modelHourStats: modelHourStats,
             projectDayStats: projectDayStats,
             projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions,
             rangeData: Dictionary(
                 uniqueKeysWithValues: ATMMetricsRange.allCases.map { ($0, range($0)) }
             ),
@@ -227,6 +339,32 @@ struct ATMDashboardEnvelope: Decodable {
             refreshedAt: refreshedAt
         )
     }
+}
+
+/// One aggregate request replaces the ordinary `dashboard` argv contract. The
+/// two sections remain independently selectable so cold start can paint work
+/// before the statistics queries finish.
+struct ATMDashboardRequest: Encodable, Equatable {
+    let sections: [String]
+    let sessionID: String?
+
+    enum CodingKeys: String, CodingKey {
+        case sections
+        case sessionID = "session_id"
+    }
+
+    init(sections: [String] = [], sessionID: String? = nil) {
+        self.sections = sections
+        self.sessionID = sessionID?.isEmpty == false ? sessionID : nil
+    }
+}
+
+enum ATMDashboardIPCCommand {
+    static let snapshot = ATMIPCMethod<ATMDashboardRequest, ATMDashboardEnvelope>(
+        "dashboard.snapshot",
+        timeout: 30,
+        responseKeyDecoding: .useDefault
+    )
 }
 
 struct ATMRangeSummary {
@@ -252,6 +390,7 @@ struct ATMDashboardSnapshot {
     let modelHourStats: [ATMModelDayStats]
     let projectDayStats: [ATMProjectDayStats]
     let projectHourStats: [ATMProjectDayStats]
+    let todoCompletions: [ATMTodoCompletion]
     let rangeData: [ATMMetricsRange: ATMRangeData]
     let liveStatus: ATMLiveStatus
     let currentSession: ATMCurrentSession?
@@ -266,6 +405,7 @@ struct ATMDashboardSnapshot {
         modelHourStats: [ATMModelDayStats],
         projectDayStats: [ATMProjectDayStats] = [],
         projectHourStats: [ATMProjectDayStats] = [],
+        todoCompletions: [ATMTodoCompletion] = [],
         rangeData: [ATMMetricsRange: ATMRangeData],
         liveStatus: ATMLiveStatus,
         currentSession: ATMCurrentSession?,
@@ -279,6 +419,7 @@ struct ATMDashboardSnapshot {
         self.modelHourStats = modelHourStats
         self.projectDayStats = projectDayStats
         self.projectHourStats = projectHourStats
+        self.todoCompletions = todoCompletions
         self.rangeData = rangeData
         self.liveStatus = liveStatus
         self.currentSession = currentSession
@@ -308,6 +449,7 @@ struct ATMDashboardSnapshot {
             modelHourStats: modelHourStats,
             projectDayStats: projectDayStats,
             projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions,
             rangeData: rangeData,
             liveStatus: liveStatus,
             currentSession: currentSession,
@@ -325,6 +467,7 @@ struct ATMDashboardSnapshot {
             modelHourStats: modelHourStats,
             projectDayStats: projectDayStats,
             projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions,
             rangeData: rangeData,
             liveStatus: liveStatus,
             currentSession: currentSession,
@@ -342,6 +485,7 @@ struct ATMDashboardSnapshot {
             modelHourStats: modelHourStats,
             projectDayStats: projectDayStats,
             projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions,
             rangeData: rangeData,
             liveStatus: liveStatus,
             currentSession: currentSession,
@@ -351,6 +495,108 @@ struct ATMDashboardSnapshot {
     }
 
     var todayStats: ATMDayStats? { dayStats.last }
+
+    private var requirementCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        calendar.firstWeekday = 2
+        calendar.minimumDaysInFirstWeek = 4
+        return calendar
+    }
+
+    private func requirementDate(_ completion: ATMTodoCompletion) -> Date? {
+        ATMUsageDateAxis.date(from: completion.completedDate)
+    }
+
+    func requirementSummary(project: String = "", now: Date = Date()) -> ATMRequirementSummary {
+        let calendar = requirementCalendar
+        let today = calendar.startOfDay(for: now)
+        let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? now
+        let week = calendar.dateInterval(of: .weekOfYear, for: now)
+        let month = calendar.dateInterval(of: .month, for: now)
+        return ATMRequirementSummary(
+            today: requirementCompletionCount(from: today, to: tomorrow, project: project),
+            thisWeek: week.map { requirementCompletionCount(from: $0.start, to: $0.end, project: project) } ?? 0,
+            thisMonth: month.map { requirementCompletionCount(from: $0.start, to: $0.end, project: project) } ?? 0
+        )
+    }
+
+    func requirementBuckets(
+        granularity: ATMRequirementGranularity,
+        project: String = "",
+        now: Date = Date()
+    ) -> [ATMRequirementBucket] {
+        let calendar = requirementCalendar
+        let component: Calendar.Component
+        let count: Int
+        let currentStart: Date
+        switch granularity {
+        case .day:
+            component = .day
+            count = 14
+            currentStart = calendar.startOfDay(for: now)
+        case .week:
+            component = .weekOfYear
+            count = 12
+            currentStart = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        case .month:
+            component = .month
+            count = 12
+            currentStart = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        }
+        return (0..<count).reversed().compactMap { offset in
+            guard let start = calendar.date(byAdding: component, value: -offset, to: currentStart),
+                  let end = calendar.date(byAdding: component, value: 1, to: start) else {
+                return nil
+            }
+            return ATMRequirementBucket(
+                start: start,
+                end: end,
+                completed: requirementCompletionCount(from: start, to: end, project: project)
+            )
+        }
+    }
+
+    func requirementProjects(
+        granularity: ATMRequirementGranularity,
+        project: String = "",
+        now: Date = Date()
+    ) -> [ATMRequirementProjectRow] {
+        guard let bucket = requirementBuckets(granularity: granularity, project: project, now: now).last else { return [] }
+        let grouped = Dictionary(grouping: todoCompletions.filter { completion in
+            if !project.isEmpty && completion.project != project { return false }
+            guard let date = requirementDate(completion) else { return false }
+            return date >= bucket.start && date < bucket.end
+        }) { completion in
+            completion.project.isEmpty ? "未归类" : completion.project
+        }
+        return grouped.map { project, values in
+            ATMRequirementProjectRow(project: project, completed: values.count)
+        }.sorted {
+            if $0.completed != $1.completed { return $0.completed > $1.completed }
+            return $0.project < $1.project
+        }
+    }
+
+    func requirementProjectOptions() -> [String] {
+        Set(todoCompletions.map(\.project).filter { !$0.isEmpty }).sorted()
+    }
+
+    func recentTodoCompletions(project: String = "", limit: Int = 10) -> [ATMTodoCompletion] {
+        Array(todoCompletions.filter { project.isEmpty || $0.project == project }.sorted {
+            if $0.completedDate != $1.completedDate { return $0.completedDate > $1.completedDate }
+            if $0.completedTS != $1.completedTS { return $0.completedTS > $1.completedTS }
+            return $0.todoID > $1.todoID
+        }.prefix(max(limit, 0)))
+    }
+
+    private func requirementCompletionCount(from start: Date, to end: Date, project: String) -> Int {
+        todoCompletions.reduce(0) { count, completion in
+            if !project.isEmpty && completion.project != project { return count }
+            guard let date = requirementDate(completion), date >= start, date < end else { return count }
+            return count + 1
+        }
+    }
 
     func sortedModelStats(for range: ATMMetricsRange) -> [ATMModelStats] {
         (rangeData[range]?.modelStats ?? [])

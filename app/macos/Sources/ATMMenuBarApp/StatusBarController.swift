@@ -10,6 +10,8 @@ final class StatusBarController {
     private let panel: FloatingPanel
     private var desktopWindow: NSWindow?
     private var agentAttentionNotifier: ATMAgentAttentionNotifier?
+    private var approvalPresenter: ATMApprovalPresenter?
+    private var approvalArrivalCancellable: AnyCancellable?
     private var outsideClickMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
@@ -20,11 +22,29 @@ final class StatusBarController {
         bindAppearance()
         configurePanel()
         bindStore()
-        ATMNotificationManager.shared.start { [weak self] route in
-            Task { @MainActor in self?.handleNotificationRoute(route) }
-        }
+        ATMNotificationManager.shared.start(
+            onOpen: { [weak self] route in
+                Task { @MainActor in self?.handleNotificationRoute(route) }
+            },
+            onGuardDecision: { [weak self] approvalID, approve in
+                // A banner button is the decision itself. Routed to the store rather
+                // than opening anything, so approving from the banner never requires
+                // the window.
+                Task { @MainActor in self?.store.decideApproval(id: approvalID, approve: approve) }
+            },
+            onConnectorLogin: { [weak self] in
+                // The banner's button is the login itself. Routed through the store so
+                // pressing it does the same thing as pressing it in the workspace.
+                Task { @MainActor in self?.store.startConnectorLoginFromNotification() }
+            }
+        )
         store.start()
         agentAttentionNotifier = ATMAgentAttentionNotifier(store: store)
+        approvalPresenter = ATMApprovalPresenter(store: store)
+        approvalArrivalCancellable = store.approvalArrivals
+            .sink { [weak self] arrivals in
+                self?.approvalPresenter?.present(arrived: arrivals.arrived, pending: arrivals.pending)
+            }
         if ProcessInfo.processInfo.environment["ATM_OPEN_PANEL"] == "1" {
             DispatchQueue.main.async { [weak self] in self?.openPanel() }
         }
@@ -65,6 +85,15 @@ final class StatusBarController {
         desktopWindow?.isVisible == true && desktopNavigation.canGoForward
     }
 
+    /// 主菜单「前往 → 任务 / 收集 / …」(⌘1–⌘6)。跟侧栏按钮走同一套副作用，
+    /// 否则用快捷键切到知识页会停在上一次的目录快照上。
+    func selectSection(_ section: ATMDesktopSection) {
+        openDesktop(section: section)
+        if section == .knowledge {
+            store.refreshKnowledgeCatalog()
+        }
+    }
+
     func navigateBack() {
         guard canNavigateBack else { return }
         desktopNavigation.goBack()
@@ -94,6 +123,10 @@ final class StatusBarController {
                 openDesktop: { [weak self] todo in
                     self?.closePanel()
                     self?.openDesktop(todo: todo)
+                },
+                openUsage: { [weak self] in
+                    self?.closePanel()
+                    self?.openDesktop(section: .usage)
                 }
             )
         )
@@ -194,22 +227,34 @@ final class StatusBarController {
                 return
             }
             openDesktop(todo: todo)
+        case .guardApproval:
+            // Clicking the banner opens the window that can actually hold the
+            // decision, not the transient menu-bar panel.
+            approvalPresenter?.openManually()
+        case .collection(let itemID):
+            if let itemID { desktopNavigation.revealCollectionItem(itemID) }
+            openDesktop(section: .collection)
         case .app:
             openDesktop()
         }
     }
 
     private func bindStore() {
-        store.$dashboardState
-            .sink { [weak self] state in
+        Publishers.CombineLatest(store.$dashboardState, store.$collectionOverview)
+            .sink { [weak self] state, collection in
                 guard let button = self?.statusItem.button else { return }
                 let snapshot = state.snapshot
                 let quota = state.quota
                 var title = snapshot.menuBarTitle
+                let unread = collection.summary.unreadCount ?? 0
+                if unread > 0 {
+                    title = "新收集 \(unread)" + (title.isEmpty ? "" : " · \(title)")
+                }
                 if !title.isEmpty, let suffix = quota.menuBarSuffix {
                     title += " · \(suffix)"
                 }
-                let tooltip = [snapshot.menuBarTooltip, quota.tooltipText]
+                let collectionTooltip = unread > 0 ? "\(unread) 条新收集待查看" : nil
+                let tooltip = [collectionTooltip, snapshot.menuBarTooltip, quota.tooltipText]
                     .compactMap { $0 }
                     .joined(separator: " · ")
                 button.title = title.isEmpty ? "" : " \(title)"
@@ -283,8 +328,12 @@ final class StatusBarController {
         store.refresh(sync: true)
         panel.anchor(to: button)
         panel.orderFrontRegardless()
+        // `FloatingPanel` is deliberately a nonactivating panel that can join
+        // every Space. Activating the whole app here also raises ATM's main
+        // window; when that window belongs to another Space, handing focus to
+        // Screenshot can make macOS switch there and back. The panel can become
+        // key and handle its controls without activating its owning app.
         panel.makeKey()
-        NSApp.activate(ignoringOtherApps: true)
         setStatusItemHighlighted(true)
         startOutsideClickMonitor()
     }

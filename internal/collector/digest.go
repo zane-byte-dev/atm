@@ -11,6 +11,7 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/textmodel"
 )
 
 // DigestInput is what a summariser gets: one source's insight decisions for one
@@ -21,7 +22,17 @@ type DigestInput struct {
 	Source store.CollectionSource
 	Date   string
 	Items  []store.CollectionItem
+	// Scope says what this summary is for. Empty or DigestScopeDay writes the
+	// day's knowledge document; DigestScopeRun writes the single record one
+	// collection round leaves behind. Two callers, one model task, but the
+	// wording has to differ — see digestPrompt.
+	Scope string
 }
+
+const (
+	DigestScopeDay = "day"
+	DigestScopeRun = "run"
+)
 
 type DigestContent struct {
 	Title string `json:"title"`
@@ -281,25 +292,18 @@ func defaultDigestTitle(source store.CollectionSource, date string) string {
 	return sourceDisplayName(source) + " " + date + " 动态"
 }
 
-// AutomaticSummarizer distils a day of insights with the same model command and
-// sandbox as classification.
+// AutomaticSummarizer distils a day of insights with the same built-in text
+// service as classification.
 type AutomaticSummarizer struct {
-	ModelCommand string
-	Timeout      time.Duration
+	Timeout time.Duration
 }
 
 func (summarizer AutomaticSummarizer) Summarize(ctx context.Context, input DigestInput) (DigestContent, error) {
 	if len(input.Items) == 0 {
 		return DigestContent{}, fmt.Errorf("digest needs at least one insight")
 	}
-	// A digest is prose, so the keyword classifier has nothing to offer here:
-	// "rule" in the chain is a classification fallback only.
-	models, _ := splitModelCandidates(summarizer.ModelCommand)
-	if len(models) == 0 {
-		return DigestContent{}, fmt.Errorf("collection digest needs a model command; rule mode cannot summarise")
-	}
-	data, err := runCollectionModel(ctx, models, summarizer.Timeout,
-		"digest", digestJSONSchema, digestPrompt(input))
+	data, err := runTextModel(ctx, textmodel.TaskDigest, summarizer.Timeout,
+		digestJSONSchema, digestPrompt(input))
 	if err != nil {
 		return DigestContent{}, err
 	}
@@ -325,6 +329,9 @@ func digestPrompt(input DigestInput) string {
 		})
 	}
 	notesJSON, _ := json.MarshalIndent(notes, "", "  ")
+	if input.Scope == DigestScopeRun {
+		return runDigestPrompt(input, string(notesJSON))
+	}
 	return `You write one day's digest for a chat source that ATM watches. The input is
 already-distilled notes, not raw chat: each one was judged worth remembering.
 Return exactly one JSON object matching the supplied schema. Do not call tools.
@@ -349,6 +356,42 @@ Date: ` + input.Date + `
 
 Notes:
 ` + string(notesJSON)
+}
+
+// runDigestPrompt writes the one record a collection round leaves behind, and
+// differs from the day's digest in three ways that all follow from where the
+// answer lands. It is a collection item's summary, rendered as plain text by the
+// App, so Markdown headings would show up literally. The per-topic rows are
+// deleted once this is written, so nothing may be dropped as chatter — that
+// licence belongs to the day's digest, whose notes stay in the database. And the
+// card already carries the source and the time, so the title is about content.
+func runDigestPrompt(input DigestInput, notesJSON string) string {
+	return `You merge one collection round's notes into the single record ATM keeps for it.
+The input is already-distilled notes, not raw chat: each one was judged worth
+remembering. Return exactly one JSON object matching the supplied schema. Do not
+call tools.
+
+Write body in Chinese as plain text, for someone reading this months from now who
+was not in the chat:
+- One line per piece of content, "- " prefixed. No Markdown headings, no bold, no
+  nesting: this is rendered as plain text.
+- Every note must survive somewhere. Merge notes that say the same thing, but do
+  not drop one for reading as chatter — the per-note records are deleted once
+  this is written, so what you leave out is lost.
+- State facts, decisions and their reasons, and constraints. Keep concrete names,
+  numbers, links and identifiers verbatim — they are why this is worth keeping.
+- One or two sentences per line. No preamble, no restating the title. Do not
+  invent anything that is not in the notes.
+
+title: one specific line of Chinese naming what this round was actually about —
+the most important thing if the notes share no theme. No date, no source name:
+the record already shows both. Not a generic "群聊动态".
+
+Source name: ` + sourceDisplayName(input.Source) + `
+Source project: ` + input.Source.Project + `
+
+Notes:
+` + notesJSON
 }
 
 const digestJSONSchema = `{

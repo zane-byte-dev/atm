@@ -58,6 +58,13 @@
         "type": "object"
       }
     },
+    "todo_completions": {
+      "comment": "Durable completion history for daily, weekly, and monthly Todo delivery statistics, including archived Todos.",
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
     "ranges": {
       "type": "object",
       "additionalProperties": false,

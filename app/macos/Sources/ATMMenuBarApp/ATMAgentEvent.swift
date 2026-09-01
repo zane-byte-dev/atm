@@ -143,6 +143,7 @@ struct ATMAgentHookSource: Decodable, Equatable, Identifiable {
         case "grokbuild": return "Grok Build"
         case "qoder": return "Qoder"
         case "pi": return "Pi"
+        case "antigravity": return "Antigravity"
         default: return source
         }
     }

@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/output"
 )
@@ -40,11 +39,11 @@ func runKnowledgeBulkEdit(cmd *cobra.Command, args []string) error {
 	}
 	ids := uniqueStrings(args)
 	for _, id := range ids {
-		if _, err := knowledge.Get(config.AtmDir, id); err != nil {
+		if _, err := currentKnowledgeService().Get(cmd.Context(), knowledge.GetInput{DocumentID: id}); err != nil {
 			return fmt.Errorf("preflight %s: %w", id, err)
 		}
 	}
-	input := knowledge.EditDocumentInput{}
+	input := knowledge.SetDocumentMetadataInput{}
 	if cmd.Flags().Changed("collection") {
 		input.Collection = &knowledgeBulkCollection
 	}
@@ -53,11 +52,12 @@ func runKnowledgeBulkEdit(cmd *cobra.Command, args []string) error {
 	}
 	updated := make([]knowledge.Document, 0, len(ids))
 	for _, id := range ids {
-		document, err := knowledge.Edit(config.AtmDir, id, input)
+		input.DocumentID = id
+		document, err := currentKnowledgeService().SaveDocument(cmd.Context(), knowledge.SaveDocumentInput{Metadata: &input})
 		if err != nil {
 			return fmt.Errorf("bulk edit %s after %d updates: %w", id, len(updated), err)
 		}
-		updated = append(updated, *document)
+		updated = append(updated, document)
 	}
 	if jsonOutput {
 		output.JSON(updated)

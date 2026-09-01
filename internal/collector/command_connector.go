@@ -128,6 +128,23 @@ func validateConnectorMessages(connectorID, operation string, messages []Message
 			return fmt.Errorf("collection connector %s %s returned invalid message %d: id, conversation_id, and created_at are required",
 				connectorID, operation, index)
 		}
+		for stateIndex, state := range message.ExternalStates {
+			if !collectionConnectorToken(state.Kind) || strings.TrimSpace(state.Reference) == "" ||
+				strings.TrimSpace(state.State) == "" || state.CheckedAt <= 0 {
+				return fmt.Errorf("collection connector %s %s returned invalid external state %d for message %d: kind, reference, state, and checked_at are required",
+					connectorID, operation, stateIndex, index)
+			}
+			switch state.Disposition {
+			case ExternalDispositionActionable, ExternalDispositionSettled, ExternalDispositionUnknown:
+			default:
+				return fmt.Errorf("collection connector %s %s returned invalid external disposition %q for message %d",
+					connectorID, operation, state.Disposition, index)
+			}
+		}
+		if message.ExternalStatesCoverMessage && len(message.ExternalStates) == 0 {
+			return fmt.Errorf("collection connector %s %s returned message %d covered by no external states",
+				connectorID, operation, index)
+		}
 	}
 	return nil
 }

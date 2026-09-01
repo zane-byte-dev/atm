@@ -35,7 +35,8 @@ atm session show <short_id>      # 再看完整 Q/A（加 --thinking 看思考�
 ## 只读 vs 写操作
 
 - **只读**（status/list/search/show/stats/report/now/todo list/show）：默认只读 SQLite，无副作用；用户明确要刷新时加 `--sync`。
-- 当前正在推进任务的 `start/log/edit/wait/done` 属于正常生命周期同步，不需要用户重复提醒。
+- 当前正在推进任务的 `start/log/edit/wait/submit` 属于正常生命周期同步，不需要用户重复提醒；
+  `done` 是人的验收动作，Agent 不代替用户执行。
 - `add` 前先查重并遵守任务数量控制；`drop/delete` 或修改无关任务必须由用户明确要求。
 
 ## 任务生命周期
@@ -45,15 +46,19 @@ atm todo add "<title>" --project X --priority P1   # 新建
 atm session bind <id>                              # 当前会话接手并开始
 atm session current                                # 查看当前绑定
 atm todo log "<关键里程碑>"                         # 已绑定时省略 ID
-atm todo done --reason "<简述>"                    # 完成并自动解绑
+atm todo submit --reason "<结果与证据>"             # Agent 完成实现，进入 review 并自动解绑
 ```
+
+`review` 表示等待人验收；验收通过后由人执行 `atm todo done --reason "<具体验收证据>"`。
+首次 done 不接受“通过 ATM 菜单栏完成”这类只描述入口的原因。
 
 TODO 只保留一套生命周期状态；当前会话焦点由 session 绑定表达：
 
 ```bash
 atm todo start <id>
-atm todo wait <id> --wake "外部状态变化"
-atm todo maintain <id> --limit 3
+atm todo start <id> --reopen-reason "验收后为什么恢复工作"
+atm todo edit <id> --wake "外部状态变化"
+atm todo edit <id> --maintenance-limit 3
 atm now
 ```
 

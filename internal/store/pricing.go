@@ -80,6 +80,10 @@ const (
 	// PricingDefault means nothing matched and the rate is the conservative
 	// Opus-tier upper bound in defaultPricing.
 	PricingDefault PricingSource = "default"
+	// PricingMixed means an aggregate row combines requests resolved through
+	// more than one pricing source. CostEstimated and EstimatedCostUSD carry the
+	// actionable confidence signal for that row.
+	PricingMixed PricingSource = "mixed"
 )
 
 // Estimated reports whether a cost computed from this source is ATM's guess

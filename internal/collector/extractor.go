@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/textmodel"
 )
 
 type MessageBatch struct {
@@ -44,38 +44,19 @@ type Extractor interface {
 }
 
 type AutomaticExtractor struct {
-	ModelCommand string
-	Timeout      time.Duration
+	Timeout time.Duration
 }
 
+// Extract classifies one batch with ATM's built-in text service, and fails
+// closed. Everything this can produce is something a person then owns — a Todo
+// in their list, an append to a card they are working from — so a model that is
+// unavailable, or that answers in a shape ATM cannot read, must leave the batch
+// undecided rather than file a guess. Nothing is lost by that: the run does not
+// advance its checkpoint, so the batch is rebuilt and retried until its retry
+// budget runs out.
 func (extractor AutomaticExtractor) Extract(ctx context.Context, batch MessageBatch, todos []store.Todo) (Decision, error) {
-	models, ruleFallback := splitModelCandidates(extractor.ModelCommand)
-	if len(models) == 0 {
-		if !ruleFallback {
-			return Decision{}, fmt.Errorf("collection model command is empty")
-		}
-		decision := ruleDecision(batch)
-		decision.Reason = "使用显式配置的本地高置信关键词规则"
-		return normalizeDecision(decision, batch.Source), nil
-	}
-	decision, err := extractor.extractWithModel(ctx, models, batch, todos)
-	if err != nil {
-		// Degrading to keywords is only allowed when the chain says so: an
-		// unconfigured source still fails closed rather than filing guesses.
-		if !ruleFallback {
-			return Decision{}, err
-		}
-		decision = ruleDecision(batch)
-		decision.Reason = "模型不可用（" + compactError(err) + "），降级为本地关键词规则"
-		return normalizeDecision(decision, batch.Source), nil
-	}
-	return normalizeDecision(decision, batch.Source), nil
-}
-
-func (extractor AutomaticExtractor) extractWithModel(ctx context.Context, models []string,
-	batch MessageBatch, todos []store.Todo) (Decision, error) {
-	data, err := runCollectionModel(ctx, models, extractor.Timeout,
-		"decision", decisionJSONSchema, collectionPrompt(batch, todos))
+	data, err := runTextModel(ctx, textmodel.TaskDecision, extractor.Timeout,
+		decisionJSONSchema, collectionPrompt(batch, todos))
 	if err != nil {
 		return Decision{}, err
 	}
@@ -83,11 +64,40 @@ func (extractor AutomaticExtractor) extractWithModel(ctx context.Context, models
 	if err := json.Unmarshal(data, &decision); err != nil {
 		return Decision{}, fmt.Errorf("decode collection model decision: %w", err)
 	}
+	// The endpoint constrains the answer to JSON, not to this schema, so
+	// validateDecision is the only thing standing between a loose answer and the
+	// Todo list. It runs before normalizeDecision on purpose: normalizing an
+	// unsupported action into a supported one would hide exactly the answers
+	// worth refusing.
 	if err := validateDecision(decision); err != nil {
 		return Decision{}, err
 	}
-	return decision, nil
+	return normalizeDecision(borrowAppendTitle(decision, todos), batch.Source), nil
 }
+
+// borrowAppendTitle takes the target's own title when the model left an append
+// without one. An append writes only its summary, so the title is needed in two
+// places the model is not thinking about: the record ATM shows for this batch,
+// and the Todo created instead if the target turns out to be gone. Borrowing
+// costs nothing — the candidate list is already here — and beats losing a whole
+// batch over a field this decision barely uses. It is also the honest title:
+// what an append is about is the work it is appending to.
+func borrowAppendTitle(decision Decision, todos []store.Todo) Decision {
+	if decision.Action != "append" || strings.TrimSpace(decision.Title) != "" {
+		return decision
+	}
+	for _, todo := range todos {
+		if todo.ID == strings.TrimSpace(decision.RelatedTodoID) {
+			decision.Title = todo.Title
+			return decision
+		}
+	}
+	return decision
+}
+
+// runTextModel is the one seam collector tests replace, so classification and
+// digest tests never need a live endpoint.
+var runTextModel = textmodel.Run
 
 // todoCandidate is one existing Todo as the classifier sees it. A struct rather
 // than a map so the field order in the prompt is chosen here instead of falling
@@ -137,8 +147,8 @@ Return exactly one JSON object matching the supplied schema.
 
 ` + strategy + `
 
-Use a concise action-oriented Chinese title. Preserve the actual goal in summary. Never invent a repository project; use the source project only when clearly applicable. Confidence is 0..1.
-When markers are present, lines marked [新消息] are the only lines allowed to trigger a decision. Lines marked [上下文] were already processed and exist only to resolve references and preserve continuity. If no markers are present, every chat line is eligible (this is an explicit on-demand analysis).
+Use a concise action-oriented Chinese title for every action except ignore. An append needs one too, naming the work being added to: ATM shows it on this batch's own record, and uses it if the target Todo turns out to be closed. Preserve the actual goal in summary. Never invent a repository project; use the source project only when clearly applicable. Confidence is 0..1.
+When markers are present, lines marked [新消息] are the only lines allowed to trigger a decision. Lines marked [上下文] were already processed and exist only to resolve references and preserve continuity. Context cannot trigger work by itself, but a line later in time may prove that the same external item from [新消息] was already handled, approved, merged, closed or resolved; in that case choose ignore. A terminal context line earlier than a later new follow-up does not cancel that follow-up. If no markers are present, every chat line is eligible (this is an explicit on-demand analysis).
 
 Source name: ` + batch.Source.Name + `
 Source project: ` + batch.Source.Project + `
@@ -227,7 +237,12 @@ func validateDecision(decision Decision) error {
 	default:
 		return fmt.Errorf("collection model returned unsupported action %q", decision.Action)
 	}
-	if decision.Action != "ignore" && strings.TrimSpace(decision.Title) == "" {
+	// A create or an insight is nothing without a title: one becomes a Todo, the
+	// other a knowledge note, and both are read later by their title alone. An
+	// append is deliberately not held to this — borrowAppendTitle can take the
+	// target's, and only the create fallback in applyDecision genuinely needs one.
+	if (decision.Action == "create" || decision.Action == "insight") &&
+		strings.TrimSpace(decision.Title) == "" {
 		return fmt.Errorf("collection model returned %s without a title", decision.Action)
 	}
 	// A digest is built from titles and summaries alone — it never re-reads the
@@ -262,38 +277,6 @@ func candidateSummary(description string) string {
 }
 
 const candidateSummaryMaxRunes = 200
-
-var actionablePattern = regexp.MustCompile(`(?i)(需求|bug|缺陷|修一下|修复|需要|希望|想做|要做|待办|跟进|优化|支持|实现|搞个|处理一下|排查)`)
-
-func ruleDecision(batch MessageBatch) Decision {
-	context := batch.ActionContext
-	if context == "" {
-		context = batch.RawContext
-	}
-	lines := strings.Split(context, "\n")
-	candidate := ""
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if actionablePattern.MatchString(line) && len([]rune(line)) > len([]rune(candidate)) {
-			candidate = line
-		}
-	}
-	if candidate == "" {
-		return Decision{Action: "ignore", ItemType: "conversation", Confidence: 0.55}
-	}
-	title := candidate
-	if index := strings.Index(title, ":"); index >= 0 && index < 16 {
-		title = strings.TrimSpace(title[index+1:])
-	}
-	title = strings.Trim(title, "，。！？!?：: ")
-	runes := []rune(title)
-	if len(runes) > 60 {
-		title = string(runes[:60])
-	}
-	return Decision{Action: "create", Title: title, Summary: candidate,
-		ItemType: "requirement", Project: batch.Source.Project,
-		Priority: batch.Source.Priority, Confidence: 0.72}
-}
 
 func compactError(err error) string {
 	if err == nil {

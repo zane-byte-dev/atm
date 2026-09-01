@@ -10,12 +10,13 @@ import (
 
 func TestTodoDoneAutomaticallyWakesStructuredDependents(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	oldJSON, oldReason := jsonOutput, todoReasonFlag
 	t.Cleanup(func() { jsonOutput, todoReasonFlag = oldJSON, oldReason })
 	jsonOutput = true
 	todoReasonFlag = "dependency completed"
 	if err := seedTodos(store.Todo{ID: "t1", Title: "Prerequisite", Priority: "P1", Status: "in_progress", Created: store.Today()},
-		store.Todo{ID: "t2", Title: "Dependent", Priority: "P1", Status: store.TodoStatusWaiting, WakeCondition: "waiting", DependsOn: []string{"t1"}, Created: store.Today()}); err != nil {
+		store.Todo{ID: "t2", Title: "Dependent", Priority: "P1", Status: store.TodoStatusInProgress, WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}, Created: store.Today()}); err != nil {
 		t.Fatalf("save todos: %v", err)
 	}
 	var runErr error
@@ -32,15 +33,15 @@ func TestTodoDoneAutomaticallyWakesStructuredDependents(t *testing.T) {
 		t.Fatalf("load todos: %v", err)
 	}
 	dependent := store.FindTodo(tf, "t2")
-	if dependent == nil || dependent.Status != store.TodoStatusOpen || dependent.WakeCondition != "" {
+	if dependent == nil || dependent.Status != store.TodoStatusInProgress || dependent.WakeCondition != "" {
 		t.Fatalf("dependent = %#v", dependent)
 	}
 }
 
-func TestTodoWakeDefaultsToOpen(t *testing.T) {
+func TestTodoWakeKeepsInProgress(t *testing.T) {
 	statusFlag := todoWakeCmd.Flags().Lookup("status")
-	if statusFlag == nil || statusFlag.DefValue != store.TodoStatusOpen {
-		t.Fatalf("wake status default = %#v, want open", statusFlag)
+	if statusFlag == nil || statusFlag.DefValue != store.TodoStatusInProgress {
+		t.Fatalf("wake status default = %#v, want in_progress", statusFlag)
 	}
 }
 
@@ -50,7 +51,7 @@ func TestTodoDependRemoveLastGeneratedWaitWakesTodo(t *testing.T) {
 	t.Cleanup(func() { jsonOutput = oldJSON })
 	jsonOutput = true
 	if err := seedTodos(store.Todo{ID: "t1", Title: "Prerequisite", Priority: "P1", Status: "open", Created: store.Today()},
-		store.Todo{ID: "t2", Title: "Dependent", Priority: "P1", Status: store.TodoStatusWaiting, WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}, Created: store.Today()}); err != nil {
+		store.Todo{ID: "t2", Title: "Dependent", Priority: "P1", Status: store.TodoStatusInProgress, WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}, Created: store.Today()}); err != nil {
 		t.Fatalf("save todos: %v", err)
 	}
 	var runErr error
@@ -63,7 +64,7 @@ func TestTodoDependRemoveLastGeneratedWaitWakesTodo(t *testing.T) {
 		t.Fatal(err)
 	}
 	todo := store.FindTodo(tf, "t2")
-	if todo == nil || todo.Status != store.TodoStatusOpen || todo.WakeCondition != "" || len(todo.DependsOn) != 0 {
+	if todo == nil || todo.Status != store.TodoStatusInProgress || todo.WakeCondition != "" || len(todo.DependsOn) != 0 {
 		t.Fatalf("todo = %#v", todo)
 	}
 }
@@ -100,7 +101,7 @@ func TestTodoDependAddIsIdempotentAndRefreshesDerivedWakeCondition(t *testing.T)
 	if got, want := todo.DependsOn, []string{"t1", "t2"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("depends_on = %#v, want %#v", got, want)
 	}
-	if got, want := todo.WakeCondition, "waiting for todos: t1, t2"; got != want {
+	if got, want := todo.WakeCondition, ""; got != want {
 		t.Fatalf("wake_condition = %q, want %q", got, want)
 	}
 }

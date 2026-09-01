@@ -105,6 +105,126 @@ func TestMigrateRejectsUnsupportedSchemaVersions(t *testing.T) {
 	}
 }
 
+func TestFreshSchemaIncludesWorkEffectOutbox(t *testing.T) {
+	db := openTempDB(t)
+	var version, tables, columns int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='work_effect_outbox'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('work_effect_outbox')`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || tables != 1 || columns != 10 {
+		t.Fatalf("fresh outbox: version=%d tables=%d columns=%d", version, tables, columns)
+	}
+}
+
+func TestMigrateV48ToV49AddsWorkEffectOutbox(t *testing.T) {
+	db := openTempDB(t)
+	for _, statement := range []string{
+		`DROP TABLE work_effect_outbox`,
+		`UPDATE schema_version SET version = 48`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("prepare v48 (%s): %v", statement, err)
+		}
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate v48→v49: %v", err)
+	}
+	var version, tables int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='work_effect_outbox'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || tables != 1 {
+		t.Fatalf("migrated outbox: version=%d tables=%d", version, tables)
+	}
+}
+
+func TestFreshSchemaAndV49MigrationIncludeTodoPlanRevisions(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare bool
+	}{
+		{name: "fresh"},
+		{name: "migrate v49", prepare: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := openTempDB(t)
+			if test.prepare {
+				for _, statement := range []string{
+					`DROP TABLE todo_plan_revisions`,
+					`UPDATE schema_version SET version = 49`,
+				} {
+					if _, err := db.Exec(statement); err != nil {
+						t.Fatalf("prepare v49 (%s): %v", statement, err)
+					}
+				}
+				if err := migrate(db); err != nil {
+					t.Fatalf("migrate v49→v50: %v", err)
+				}
+			}
+			var version, tables, columns int
+			if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+				WHERE type='table' AND name='todo_plan_revisions'`).Scan(&tables); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('todo_plan_revisions')`).Scan(&columns); err != nil {
+				t.Fatal(err)
+			}
+			// 12, not 13: v52 dropped run_id along with the dispatch subsystem.
+			if version != SchemaVersion || tables != 1 || columns != 12 {
+				t.Fatalf("plan schema: version=%d tables=%d columns=%d", version, tables, columns)
+			}
+		})
+	}
+}
+
+func TestWorkEffectOutboxTracksFailureAndAcknowledgement(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "Durable effect"))
+	effect := WorkEffectRecord{
+		ID: "we_test", RequestID: "request-1", TodoID: "t1", Kind: "todo_waiting",
+		PayloadJSON: `{"todo":{"id":"t1"}}`, CreatedAt: 1,
+	}
+	if err := UpdateWorkState(func(state *WorkStateTx) error {
+		return state.EnqueueWorkEffect(effect)
+	}); err != nil {
+		t.Fatalf("enqueue effect: %v", err)
+	}
+	if err := FailWorkEffect(effect.ID, "injected projection failure"); err != nil {
+		t.Fatalf("FailWorkEffect: %v", err)
+	}
+	pending, err := ListPendingWorkEffects("t1")
+	if err != nil || len(pending) != 1 || pending[0].AttemptCount != 1 ||
+		pending[0].LastAttemptAt == nil || pending[0].LastError != "injected projection failure" {
+		t.Fatalf("pending after failure = %+v, err=%v", pending, err)
+	}
+	if err := CompleteWorkEffect(effect.ID); err != nil {
+		t.Fatalf("CompleteWorkEffect: %v", err)
+	}
+	if err := CompleteWorkEffect(effect.ID); err != nil {
+		t.Fatalf("idempotent CompleteWorkEffect: %v", err)
+	}
+	if pending, err = ListPendingWorkEffects("t1"); err != nil || len(pending) != 0 {
+		t.Fatalf("pending after acknowledgement = %+v, err=%v", pending, err)
+	}
+	if err := CompleteWorkEffect("we_missing"); !errors.Is(err, ErrWorkEffectNotFound) {
+		t.Fatalf("unknown CompleteWorkEffect error = %v", err)
+	}
+}
+
 func TestMigrateV21ToV22AddsUsageEventDuration(t *testing.T) {
 	db := openTempDB(t)
 	// Simulate a v21 database: drop the v22 column and pin the version.
@@ -386,11 +506,11 @@ func TestArchiveRemovesFromWorkingSetButKeepsTheRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(todos.Items) != 2 || FindTodo(todos, "t2") == nil {
-		t.Fatalf("working set after unarchive = %#v", todos.Items)
+		t.Fatalf("working set after restore = %#v", todos.Items)
 	}
 }
 
-func TestArchiveRejectsActiveTodos(t *testing.T) {
+func TestArchiveAcceptsActiveTodos(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t, openTodo("t1", "Still open"))
 
@@ -398,7 +518,7 @@ func TestArchiveRejectsActiveTodos(t *testing.T) {
 		_, err := state.ArchiveTodos([]string{"t1"})
 		return err
 	})
-	if err == nil || !strings.Contains(err.Error(), "finish or drop it first") {
+	if err != nil {
 		t.Fatalf("archiving an open todo = %v", err)
 	}
 }
@@ -429,7 +549,7 @@ func TestTrashAndRestorePreserveActiveTodoAndCloseBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(bindings) != 1 || bindings[0].UnboundAt == nil || bindings[0].Reason != "todo moved to trash" {
+	if len(bindings) != 1 || bindings[0].UnboundAt == nil || bindings[0].Reason != "todo archived" {
 		t.Fatalf("binding after trash = %#v", bindings)
 	}
 	archived, err := LoadArchivedTodos()
@@ -557,8 +677,8 @@ func TestArchivedDependencyStaysSatisfied(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t,
 		Todo{ID: "t1", Title: "Prerequisite", Priority: "P1", Status: TodoStatusDone, Created: Today()},
-		Todo{ID: "t2", Title: "Waiting on it", Priority: "P1", Status: TodoStatusWaiting,
-			Created: Today(), DependsOn: []string{"t1"}},
+		Todo{ID: "t2", Title: "Waiting on it", Priority: "P1", Status: TodoStatusInProgress,
+			Created: Today(), WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}},
 	)
 	if err := UpdateWorkState(func(state *WorkStateTx) error {
 		_, err := state.ArchiveTodos([]string{"t1"})
@@ -582,11 +702,11 @@ func TestArchivedDependencyStaysSatisfied(t *testing.T) {
 		t.Fatalf("wake events = %#v", events)
 	}
 
-	// A dropped dependency still blocks, archived or not.
+	// An archived open dependency still blocks.
 	withTempStore(t)
 	seedTodos(t,
-		Todo{ID: "t1", Title: "Abandoned", Priority: "P1", Status: TodoStatusDropped, Created: Today()},
-		Todo{ID: "t2", Title: "Waiting on it", Priority: "P1", Status: TodoStatusWaiting,
+		Todo{ID: "t1", Title: "Archived backlog", Priority: "P1", Status: TodoStatusOpen, Created: Today()},
+		Todo{ID: "t2", Title: "Waiting on it", Priority: "P1", Status: TodoStatusInProgress,
 			Created: Today(), DependsOn: []string{"t1"}},
 	)
 	if err := UpdateWorkState(func(state *WorkStateTx) error {
@@ -600,15 +720,11 @@ func TestArchivedDependencyStaysSatisfied(t *testing.T) {
 		t.Fatal(err)
 	}
 	if unmet := UnmetTodoDependencies(todos, *FindTodo(todos, "t2")); len(unmet) != 1 {
-		t.Fatalf("dropped dependency should still block: %#v", unmet)
-	}
-	issues := AuditTodoDependencies(todos)
-	if len(issues) != 1 || issues[0].Code != "dependency_dropped" {
-		t.Fatalf("audit issues = %#v", issues)
+		t.Fatalf("archived open dependency should still block: %#v", unmet)
 	}
 }
 
-func TestErrorForArchivedTodoPointsAtUnarchive(t *testing.T) {
+func TestErrorForArchivedTodoPointsAtRestore(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t, Todo{ID: "t1", Title: "Finished", Priority: "P1", Status: TodoStatusDone, Created: Today()})
 	if err := UpdateWorkState(func(state *WorkStateTx) error {
@@ -622,7 +738,7 @@ func TestErrorForArchivedTodoPointsAtUnarchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := TodoNotFoundError(todos, "t1"); !strings.Contains(err.Error(), "archived (done)") ||
-		!strings.Contains(err.Error(), "atm todo unarchive t1") {
+		!strings.Contains(err.Error(), "atm todo restore t1") {
 		t.Fatalf("archived todo error = %v", err)
 	}
 	if err := TodoNotFoundError(todos, "t404"); err.Error() != "todo not found: t404" {
@@ -865,71 +981,134 @@ func TestMigrateV34ToV35DropsLaneAndFeaturePath(t *testing.T) {
 	}
 }
 
-func TestMigrateV36ToV37AddsAutomaticDispatchAudit(t *testing.T) {
+func TestMigrateV50ToV51CollapsesLifecycleAndArchivesDropped(t *testing.T) {
 	db := openTempDB(t)
 	for _, statement := range []string{
-		`ALTER TABLE collection_sources DROP COLUMN auto_dispatch`,
-		`ALTER TABLE collection_items DROP COLUMN dispatch_status`,
-		`ALTER TABLE collection_items DROP COLUMN dispatch_error`,
-		`UPDATE schema_version SET version = 36`,
+		`INSERT INTO todos (id,position,title,priority,status,created,wake_condition,review_at)
+			VALUES ('t1',0,'External wait','P1','waiting','2026-08-20','release ships','2026-09-01')`,
+		`INSERT INTO todos (id,position,title,priority,status,created,wake_condition)
+			VALUES ('t2',1,'Parked','P1','waiting','2026-08-20','暂不处理')`,
+		`INSERT INTO todos (id,position,title,priority,status,created,wake_condition)
+			VALUES ('t3',2,'Blocked','P1','blocked','2026-08-20','needs access')`,
+		`INSERT INTO todos (id,position,title,priority,status,created,closed,closed_reason,done_ts)
+			VALUES ('t4',3,'Discarded','P1','dropped','2026-08-20','2026-08-20','obsolete',1)`,
+		`UPDATE schema_version SET version=50`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
+			t.Fatalf("simulate v50 (%s): %v", statement, err)
 		}
 	}
 	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v36→v37: %v", err)
+		t.Fatalf("migrate v50→v51: %v", err)
 	}
-	var version, itemColumns int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+	todos, err := LoadTodosReadOnly()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_items')
-		WHERE name IN ('dispatch_status','dispatch_error')`).Scan(&itemColumns); err != nil {
-		t.Fatal(err)
+	if todo := FindTodo(todos, "t1"); todo == nil || todo.Status != TodoStatusInProgress || todo.WakeCondition != "release ships" {
+		t.Fatalf("external wait = %+v", todo)
 	}
-	var sourceColumns int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_sources')
-		WHERE name='auto_dispatch'`).Scan(&sourceColumns); err != nil {
-		t.Fatal(err)
+	if todo := FindTodo(todos, "t2"); todo == nil || todo.Status != TodoStatusOpen || todo.WakeCondition != "" {
+		t.Fatalf("parked wait = %+v", todo)
 	}
-	if version != SchemaVersion || itemColumns != 2 || sourceColumns != 1 {
-		t.Fatalf("version=%d item columns=%d source columns=%d", version, itemColumns, sourceColumns)
+	if todo := FindTodo(todos, "t3"); todo == nil || todo.Status != TodoStatusInProgress || todo.WakeCondition != "needs access" {
+		t.Fatalf("blocked = %+v", todo)
+	}
+	if status, archived := ArchivedStatus(todos, "t4"); !archived || status != TodoStatusOpen {
+		t.Fatalf("dropped archive = status %q archived %v", status, archived)
 	}
 }
 
-func TestMigrateV37ToV38AllowsInterruptedTaskRuns(t *testing.T) {
+// v52 removes the background-dispatch subsystem. The two migrations this
+// replaces asserted that v37 added the dispatch columns and that v38 let a run
+// record an interrupted outcome; both described a feature that no longer exists,
+// and their end-state assertions became false the moment v52 dropped it. What is
+// still worth pinning is the property every destructive migration has to have:
+// the columns and the table go, and the records they hung off survive.
+func TestMigrateV51ToV52DropsBackgroundDispatch(t *testing.T) {
 	db := openTempDB(t)
-	if _, err := db.Exec(`INSERT INTO todos (id,position,title,priority,status,created)
-		VALUES ('t1',0,'Interrupt migration','P1','in_progress','2026-08-10')`); err != nil {
-		t.Fatal(err)
+	// Simulate v51: put the dispatch columns and task_runs back, then fill them
+	// the way a database that had actually dispatched an Agent would be.
+	statements := []string{
+		`ALTER TABLE collection_sources
+			ADD COLUMN auto_dispatch INTEGER NOT NULL DEFAULT 0 CHECK (auto_dispatch IN (0,1))`,
+		`ALTER TABLE collection_items
+			ADD COLUMN dispatch_status TEXT NOT NULL DEFAULT ''
+			CHECK (dispatch_status IN ('','pending','dispatched','failed'))`,
+		`ALTER TABLE collection_items ADD COLUMN dispatch_error TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE todo_plan_revisions ADD COLUMN run_id TEXT NOT NULL DEFAULT ''`,
+		`CREATE TABLE task_runs (
+			id         TEXT PRIMARY KEY,
+			todo_id    TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			agent      TEXT NOT NULL,
+			project    TEXT NOT NULL DEFAULT '',
+			work_dir   TEXT NOT NULL,
+			prompt     TEXT NOT NULL DEFAULT '',
+			policy     TEXT NOT NULL CHECK (policy IN ('guarded','trusted')),
+			log_path   TEXT NOT NULL,
+			status     TEXT NOT NULL CHECK (status IN ('starting','running','completed','failed','interrupted')),
+			pid        INTEGER NOT NULL DEFAULT 0,
+			start_ts   INTEGER NOT NULL,
+			end_ts     INTEGER,
+			exit_code  INTEGER,
+			message    TEXT NOT NULL DEFAULT '',
+			session_id TEXT,
+			resume_session_id TEXT
+		)`,
+		`INSERT INTO todos (id,position,title,priority,status,created)
+			VALUES ('t1',0,'Dispatched while runs existed','P1','in_progress','2026-08-10')`,
+		`INSERT INTO task_runs (id,todo_id,agent,work_dir,policy,log_path,status,start_ts)
+			VALUES ('run-1','t1','codex','/tmp','guarded','/tmp/run.log','running',1)`,
+		`UPDATE schema_version SET version = 51`,
 	}
-	if _, err := db.Exec(`INSERT INTO task_runs
-		(id,todo_id,agent,work_dir,policy,log_path,status,start_ts)
-		VALUES ('run-1','t1','codex','/tmp','guarded','/tmp/run.log','running',1)`); err != nil {
-		t.Fatal(err)
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("simulate v51 (%s): %v", statement, err)
+		}
 	}
-	if _, err := db.Exec(`UPDATE schema_version SET version = 37`); err != nil {
-		t.Fatal(err)
-	}
+
 	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v37→v38: %v", err)
-	}
-	if err := InterruptTaskRun(db, "run-1", 2, "interrupted by user"); err != nil {
-		t.Fatalf("record interrupted outcome: %v", err)
+		t.Fatalf("migrate v51→v52: %v", err)
 	}
 	var version int
-	var status, title string
 	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT status FROM task_runs WHERE id='run-1'`).Scan(&status); err != nil {
+	if version != SchemaVersion {
+		t.Fatalf("version = %d, want %d", version, SchemaVersion)
+	}
+	var tables int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
+		WHERE type='table' AND name='task_runs'`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT title FROM todos WHERE id='t1'`).Scan(&title); err != nil {
-		t.Fatal(err)
+	if tables != 0 {
+		t.Fatal("task_runs survived the migration")
 	}
-	if version != SchemaVersion || status != TaskRunInterrupted || title != "Interrupt migration" {
-		t.Fatalf("version=%d status=%q title=%q", version, status, title)
+	for _, column := range []struct{ table, name string }{
+		{"collection_sources", "auto_dispatch"},
+		{"collection_items", "dispatch_status"},
+		{"collection_items", "dispatch_error"},
+		{"todo_plan_revisions", "run_id"},
+	} {
+		var remaining int
+		if err := db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM pragma_table_info('%s')
+			WHERE name='%s'`, column.table, column.name)).Scan(&remaining); err != nil {
+			t.Fatal(err)
+		}
+		if remaining != 0 {
+			t.Fatalf("%s.%s is still there", column.table, column.name)
+		}
+	}
+	// Dropping the run must not cost the Todo it ran against: run rows were
+	// execution evidence beside the lifecycle, never the record of the work.
+	todos, err := LoadTodosReadOnly()
+	if err != nil {
+		t.Fatalf("load todos after migration: %v", err)
+	}
+	if todo := FindTodo(todos, "t1"); todo == nil ||
+		todo.Title != "Dispatched while runs existed" ||
+		todo.Status != TodoStatusInProgress {
+		t.Fatalf("migrated todo = %+v", todo)
 	}
 }

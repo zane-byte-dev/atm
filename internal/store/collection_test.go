@@ -29,9 +29,6 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 	if source.Strategy != CollectionStrategyTasks || source.IntervalMinutes != 5 {
 		t.Fatalf("unexpected default source strategy: %+v", source)
 	}
-	if source.AutoDispatch {
-		t.Fatalf("automatic dispatch must be opt-in: %+v", source)
-	}
 	updated, err := UpsertCollectionSource(db, CollectionSource{
 		Connector: "test", Kind: "group", ExternalID: "cid-demo",
 		Name: "新产品群", Priority: "P2", Enabled: false,
@@ -82,8 +79,297 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 		t.Fatalf("load overview: %v", err)
 	}
 	if overview.Summary.Sources != 1 || overview.Summary.Enabled != 0 || overview.Summary.Fetched != 2 ||
-		overview.Summary.Created != 1 || len(overview.Items) != 1 || len(overview.Runs) != 1 {
+		overview.Summary.Created != 1 || overview.Summary.Unread != 1 ||
+		len(overview.Items) != 1 || len(overview.Runs) != 1 {
 		t.Fatalf("unexpected overview: %+v", overview)
+	}
+}
+
+func TestCollectionReadStateCountsOnlyActionableResults(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "read-state", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []CollectionItem{
+		{SourceID: source.ID, Connector: "test", Fingerprint: "create", Action: "create", Status: "processed"},
+		{SourceID: source.ID, Connector: "test", Fingerprint: "append", Action: "append", Status: "processed"},
+		{SourceID: source.ID, Connector: "test", Fingerprint: "insight", Action: "insight", Status: "processed"},
+		{SourceID: source.ID, Connector: "test", Fingerprint: "ignore", Action: "ignore", Status: "processed"},
+	}
+	stored := map[string]CollectionItem{}
+	for _, item := range items {
+		item.MessageIDs = []string{"m-" + item.Fingerprint}
+		created, _, err := PutCollectionItem(db, item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stored[item.Fingerprint] = created
+	}
+	overview, err := LoadCollectionOverview(db, 20)
+	if err != nil || overview.Summary.Unread != 3 {
+		t.Fatalf("initial unread=%d err=%v", overview.Summary.Unread, err)
+	}
+	changed, err := SetCollectionItemsRead(db,
+		[]string{stored["create"].ID, stored["append"].ID}, true)
+	if err != nil || len(changed) != 2 || changed[0].ReadAt == 0 || changed[1].ReadAt == 0 {
+		t.Fatalf("mark read = %+v err=%v", changed, err)
+	}
+	overview, _ = LoadCollectionOverview(db, 20)
+	if overview.Summary.Unread != 1 {
+		t.Fatalf("unread after read = %d", overview.Summary.Unread)
+	}
+	if _, err := SetCollectionItemsRead(db, []string{stored["create"].ID}, false); err != nil {
+		t.Fatal(err)
+	}
+	overview, _ = LoadCollectionOverview(db, 20)
+	if overview.Summary.Unread != 2 {
+		t.Fatalf("unread after reopening = %d", overview.Summary.Unread)
+	}
+	count, err := MarkAllCollectionItemsRead(db)
+	if err != nil || count != 2 {
+		t.Fatalf("mark all count=%d err=%v", count, err)
+	}
+	overview, _ = LoadCollectionOverview(db, 20)
+	if overview.Summary.Unread != 0 {
+		t.Fatalf("unread after mark all = %d", overview.Summary.Unread)
+	}
+	if _, err := SetCollectionItemsRead(db, []string{"missing"}, true); err == nil {
+		t.Fatal("missing item should make the read update fail")
+	}
+}
+
+func TestCollectionItemsCanBeArchivedAndReopenedWithoutBeingRecollected(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "archive-item", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := []CollectionItem{}
+	for _, fingerprint := range []string{"main", "supplement", "retryable-failure"} {
+		action, status := "create", "processed"
+		if fingerprint == "retryable-failure" {
+			action, status = "failed", "failed"
+		}
+		item, _, err := PutCollectionItem(db, CollectionItem{
+			SourceID: source.ID, Connector: "test", Fingerprint: fingerprint,
+			MessageIDs: []string{"m-" + fingerprint}, Action: action, Status: status, Attempts: 1,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		items = append(items, item)
+	}
+	ids := []string{items[0].ID, items[1].ID, items[2].ID}
+	archived, err := SetCollectionItemsArchived(db, ids, true)
+	if err != nil || len(archived) != 3 || archived[0].ArchivedAt == 0 || archived[0].ReadAt == 0 || archived[2].ArchivedAt == 0 {
+		t.Fatalf("archive = %+v err=%v", archived, err)
+	}
+	overview, err := LoadCollectionOverview(db, 20)
+	if err != nil || overview.Summary.Unread != 0 {
+		t.Fatalf("overview after archive = %+v err=%v", overview.Summary, err)
+	}
+	handled, err := HandledCollectionMessageIDs(db, source.ID)
+	if err != nil || len(handled) != 3 {
+		t.Fatalf("archiving released handled messages: %v err=%v", handled, err)
+	}
+	if _, err := SetCollectionItemsArchived(db, []string{items[0].ID, "missing"}, false); err == nil {
+		t.Fatal("stale id should make the archive update fail atomically")
+	}
+	stillArchived, err := GetCollectionItem(db, items[0].ID)
+	if err != nil || stillArchived.ArchivedAt == 0 {
+		t.Fatalf("failed batch partially reopened item: %+v err=%v", stillArchived, err)
+	}
+	reopened, err := SetCollectionItemsArchived(db, ids, false)
+	if err != nil || reopened[0].ArchivedAt != 0 || reopened[2].ArchivedAt != 0 || reopened[0].ReadAt == 0 {
+		t.Fatalf("reopen = %+v err=%v", reopened, err)
+	}
+}
+
+func TestRecentlyArchivedCollectionItemRemainsInLimitedOverview(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "archive-window", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oldest CollectionItem
+	for index := 0; index < 201; index++ {
+		item, _, err := PutCollectionItem(db, CollectionItem{
+			SourceID: source.ID, Connector: "test", Fingerprint: fmt.Sprintf("item-%03d", index),
+			MessageIDs: []string{fmt.Sprintf("message-%03d", index)}, Action: "create", Status: "processed",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			oldest = item
+		}
+	}
+	if _, err := db.Exec(`UPDATE collection_items SET updated_at=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SetCollectionItemsArchived(db, []string{oldest.ID}, true); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ListCollectionItems(db, "", 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range items {
+		if item.ID == oldest.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("the newly archived item fell outside the limited overview, so the UI cannot reopen it")
+	}
+}
+
+func TestMigrateV46AddsCollectionItemArchiveState(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX idx_collection_items_archived`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE collection_items DROP COLUMN archived_at`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE schema_version SET version=46`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db, err = Open()
+	if err != nil {
+		t.Fatalf("migrate v46: %v", err)
+	}
+	defer db.Close()
+	var version, columns int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_items') WHERE name='archived_at'`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || columns != 1 {
+		t.Fatalf("version=%d archived_at columns=%d", version, columns)
+	}
+}
+
+func TestMigrateV43MarksHistoricalCollectionItemsRead(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "read-migration", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _, err := PutCollectionItem(db, CollectionItem{
+		SourceID: source.ID, Connector: "test", Fingerprint: "historical",
+		MessageIDs: []string{"m1"}, Action: "insight", Status: "processed",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP INDEX idx_collection_items_unread`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`ALTER TABLE collection_items DROP COLUMN read_at`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE schema_version SET version=43`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	db, err = Open()
+	if err != nil {
+		t.Fatalf("migrate v43: %v", err)
+	}
+	defer db.Close()
+	migrated, err := GetCollectionItem(db, item.ID)
+	if err != nil || migrated.ReadAt == 0 {
+		t.Fatalf("historical item was not marked read: %+v err=%v", migrated, err)
+	}
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != SchemaVersion {
+		t.Fatalf("version=%d err=%v", version, err)
+	}
+}
+
+func TestMigrateV42AddsExplicitKnowledgeSaveLink(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "migration", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _, err := PutCollectionItem(db, CollectionItem{
+		SourceID: source.ID, Connector: "test", Fingerprint: "migration-item",
+		MessageIDs: []string{"m1"}, Action: "insight", Status: "processed", Summary: "保留的结论",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE collection_items DROP COLUMN knowledge_document_id`,
+		`ALTER TABLE collection_items DROP COLUMN knowledge_collection`,
+		`UPDATE schema_version SET version=42`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatalf("prepare v42: %v", err)
+		}
+	}
+	db.Close()
+
+	db, err = Open()
+	if err != nil {
+		t.Fatalf("migrate v42: %v", err)
+	}
+	defer db.Close()
+	var version int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := GetCollectionItem(db, item.ID)
+	if err != nil || version != SchemaVersion || migrated.Summary != "保留的结论" ||
+		migrated.KnowledgeDocumentID != "" || migrated.KnowledgeCollection != "" {
+		t.Fatalf("version=%d item=%+v err=%v", version, migrated, err)
 	}
 }
 
@@ -144,41 +430,6 @@ func TestCollectionOverviewKeepsLatestRunForEverySource(t *testing.T) {
 			(previous.StartedAt == current.StartedAt && previous.ID < current.ID) {
 			t.Fatalf("runs are not newest-first at %d: %+v", index, overview.Runs)
 		}
-	}
-}
-
-func TestObserveCollectionSourceCannotAutoDispatch(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	source, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-observe-only",
-		Strategy: CollectionStrategyObserve, AutoDispatch: true, Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if source.AutoDispatch {
-		t.Fatalf("observe source retained automatic dispatch: %+v", source)
-	}
-}
-
-func TestAutomaticDispatchRequiresProject(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-no-project",
-		AutoDispatch: true, Enabled: true,
-	})
-	if err == nil {
-		t.Fatal("automatic dispatch without a project was accepted")
 	}
 }
 
@@ -443,5 +694,112 @@ func TestCollectionSourceDueUsesOwnSuccessfulCadence(t *testing.T) {
 	due, err = CollectionSourceDue(db, source, now.Add(31*time.Minute))
 	if err != nil || !due {
 		t.Fatalf("elapsed observation source due=%v err=%v", due, err)
+	}
+}
+
+// The merged record has to arrive as the members leave, in one transaction: the
+// members' message IDs are what marks that chat handled, so a half-applied merge
+// would hand those messages back to the next run.
+func TestMergeCollectionInsightsSwapsMembersForOneRecord(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-merge",
+		Strategy: CollectionStrategyObserve, IntervalMinutes: 60, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	member := func(fingerprint string, messageIDs ...string) CollectionItem {
+		item, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+			ConversationID: source.ExternalID, Fingerprint: fingerprint, MessageIDs: messageIDs,
+			OccurredAt: 1234, Action: "insight", Status: "processed",
+			Title: "结论 " + fingerprint, Summary: "细节 " + fingerprint, ItemType: "insight"})
+		if err != nil {
+			t.Fatalf("store member %s: %v", fingerprint, err)
+		}
+		return item
+	}
+	first, second := member("fp-1", "m1"), member("fp-2", "m2", "m3")
+
+	// The caller names the union it built; a member ID it left out is still taken
+	// on, because the handled bookkeeping is what this invariant protects.
+	merged, err := MergeCollectionInsights(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		ConversationID: source.ExternalID, Fingerprint: "fp-merged", MessageIDs: []string{"m1"},
+		OccurredAt: 1234, Action: "insight", Status: "processed", Title: "本轮 2 条结论",
+		Summary: "- 结论 fp-1\n- 结论 fp-2", ItemType: "insight"},
+		[]string{first.ID, second.ID})
+	if err != nil {
+		t.Fatalf("merge insights: %v", err)
+	}
+	if len(merged.MessageIDs) != 3 {
+		t.Fatalf("merged record does not own every message: %+v", merged.MessageIDs)
+	}
+	items, err := ListCollectionItems(db, source.ID, 10)
+	if err != nil || len(items) != 1 || items[0].ID != merged.ID {
+		t.Fatalf("members outlived the merge: %+v, %v", items, err)
+	}
+	handled, err := HandledCollectionMessageIDs(db, source.ID)
+	if err != nil || len(handled) != 3 {
+		t.Fatalf("merge released handled messages: %v, %v", handled, err)
+	}
+}
+
+// Nothing a fresh run just produced can already have written itself out, which is
+// exactly why a member that did must stop the merge instead of being deleted.
+func TestMergeCollectionInsightsRefusesMembersThatWroteSomethingOut(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	source, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "test", Kind: "group", ExternalID: "cid-refuse", Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	saved, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		Fingerprint: "fp-saved", MessageIDs: []string{"m1"}, Action: "insight", Status: "processed",
+		Title: "已保存的结论", Summary: "已经进了知识库", ItemType: "insight",
+		KnowledgeDocumentID: "kd-1"})
+	if err != nil {
+		t.Fatalf("store saved insight: %v", err)
+	}
+	plain, _, err := PutCollectionItem(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		Fingerprint: "fp-plain", MessageIDs: []string{"m2"}, Action: "insight", Status: "processed",
+		Title: "普通结论", Summary: "还没保存", ItemType: "insight"})
+	if err != nil {
+		t.Fatalf("store plain insight: %v", err)
+	}
+	if _, err := MergeCollectionInsights(db, CollectionItem{SourceID: source.ID, Connector: "test",
+		Fingerprint: "fp-merged", MessageIDs: []string{"m1", "m2"}, Action: "insight",
+		Status: "processed", Title: "本轮 2 条结论", Summary: "拼起来", ItemType: "insight"},
+		[]string{saved.ID, plain.ID}); err == nil {
+		t.Fatal("a member that already wrote something out was merged away")
+	}
+	items, err := ListCollectionItems(db, source.ID, 10)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("refused merge still changed the records: %+v, %v", items, err)
+	}
+}
+
+// One insight is already the one record, and two callers must not disagree about
+// that: the store refuses a degenerate merge rather than filing a copy.
+func TestMergeCollectionInsightsNeedsTwoRecords(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer db.Close()
+	if _, err := MergeCollectionInsights(db, CollectionItem{SourceID: "cs-1", Connector: "test",
+		Fingerprint: "fp-merged", Action: "insight", Status: "processed"}, []string{"ci-1"}); err == nil {
+		t.Fatal("merging a single record was accepted")
 	}
 }

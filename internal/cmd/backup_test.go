@@ -29,15 +29,21 @@ func seedBackupSource(t *testing.T) {
 		VALUES ('t1',1,'irreplaceable','P1','open','2026-08-05')`); err != nil {
 		t.Fatalf("seed todo: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO todo_images
+		(todo_id,position,stored_name,original_name,media_type,size_bytes)
+		VALUES ('t1',0,'01-screen.png','screen.png','image/png',13)`); err != nil {
+		t.Fatalf("seed todo image: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO sessions (id,short_id,agent,project,file_path,created_ts,last_ts)
 		VALUES ('s-1','s1','claude','atm','/tmp/s-1.jsonl',100,200)`); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
 
 	for path, content := range map[string]string{
-		filepath.Join("knowledge", "ops", "runbook.md"): "# runbook\n",
-		filepath.Join("todos", "t1.md"):                 "# irreplaceable\n",
-		"config.json":                                   "{}\n",
+		filepath.Join("knowledge", "ops", "runbook.md"):         "# runbook\n",
+		filepath.Join("todos", "t1.md"):                         "# irreplaceable\n",
+		filepath.Join("todos", "assets", "t1", "01-screen.png"): "managed image",
+		"config.json": "{}\n",
 	} {
 		full := filepath.Join(config.AtmDir, path)
 		if err := os.MkdirAll(filepath.Dir(full), 0700); err != nil {
@@ -96,6 +102,10 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	if title != "irreplaceable" {
 		t.Fatalf("title = %q, want %q", title, "irreplaceable")
 	}
+	var imageRows int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM todo_images WHERE todo_id='t1'`).Scan(&imageRows); err != nil || imageRows != 1 {
+		t.Fatalf("todo image metadata did not survive: rows=%d err=%v", imageRows, err)
+	}
 
 	// The session mirror is derived, so it must come back empty rather than
 	// missing — a missing table would break the first command that reads it.
@@ -110,6 +120,7 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	for _, path := range []string{
 		filepath.Join("knowledge", "ops", "runbook.md"),
 		filepath.Join("todos", "t1.md"),
+		filepath.Join("todos", "assets", "t1", "01-screen.png"),
 		"config.json",
 	} {
 		if _, err := os.Stat(filepath.Join(fresh, path)); err != nil {

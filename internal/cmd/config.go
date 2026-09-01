@@ -5,17 +5,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/refine"
+	"github.com/zane-byte-dev/atm/internal/textmodel"
 
 	"github.com/spf13/cobra"
 )
@@ -57,23 +55,22 @@ Settable keys:
   collection_lookback_minutes N Initial source lookback (default 60)
   collection_message_retention_days N  Days of synced chat to keep
                                 (default 90; 0 keeps it forever)
-  collection_model_command CMD  Structured classifier command (default codex).
-                                Accepts a comma-separated chain tried in order,
-                                e.g. "grok,codex" or "grok,codex,rule"; the next
-                                one runs when the previous is rate limited,
-                                times out or is not installed. codex and grok
-                                have built-in profiles; any other CLI needs a
-                                collection_model_runners entry in config.json
-                                (see docs/collection-model-runner.md)
   text_model_base_url URL         DeepSeek/OpenAI-compatible endpoint used by
                                   ATM's built-in text service
   text_model_name MODEL           Model used by the built-in text service
                                   (default deepseek-v4-flash)
+  text_model_source LABEL         Short provenance shown on refined Todos
+                                  (default deepseek, rendered as "from LABEL")
+  todo_refine_prompt TEXT         Editable refinement policy appended to ATM's
+                                  fixed safety and JSON-shape prompt. The default
+                                  keeps one feature's implementation phases in a
+                                  single Todo; pass an empty string to restore it
   todo_refine_on_add true|false After a human files a todo in the App, run one
                                 model pass to polish the card and split complex
-                                work (default true). CLI todo add is never
-                                implicit; use todo add --refine or
-                                todo refine <id>. The saved API Key lives in
+                                work (default false — 优化 is an action on the
+                                Todo, not something that happens on add). CLI
+                                todo add is never implicit; use
+                                todo add --refine or todo refine <id>. The saved API Key lives in
                                 ~/.atm/credentials.json (mode 0600); CLI users
                                 can temporarily override it with DEEPSEEK_API_KEY`,
 	// Only `init` is a valid positional arg; anything else errors instead of
@@ -83,79 +80,13 @@ Settable keys:
 	RunE:      runConfig,
 }
 
-// settableConfigKeys maps `atm config set` keys to a value parser. Kept
-// deliberately small: path-style settings should be edited in config.json
-// where the surrounding context is visible.
-var settableConfigKeys = map[string]func(string) (any, error){
-	"owner_name":                  parseNonEmptyStringValue,
-	"grok_live_quota":             parseBoolValue,
-	"collection_enabled":          parseBoolValue,
-	"collection_interval_minutes": parsePositiveIntValue,
-	"collection_lookback_minutes": parsePositiveIntValue,
-	// 0 is a real setting here: keep synced chat forever.
-	"collection_message_retention_days": parseNonNegativeIntValue,
-	"collection_model_command":          parseNonEmptyStringValue,
-	"text_model_base_url":               parseHTTPURLValue,
-	"text_model_name":                   parseNonEmptyStringValue,
-	"todo_refine_on_add":                parseBoolValue,
-}
-
-func parseHTTPURLValue(s string) (any, error) {
-	value := strings.TrimRight(strings.TrimSpace(s), "/")
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return nil, fmt.Errorf("expected an http or https URL, got %q", s)
-	}
-	return value, nil
-}
-
-func parseBoolValue(s string) (any, error) {
-	switch strings.ToLower(s) {
-	case "true", "1", "on", "yes":
-		return true, nil
-	case "false", "0", "off", "no":
-		return false, nil
-	}
-	return nil, fmt.Errorf("expected true or false, got %q", s)
-}
-
-func parsePositiveIntValue(s string) (any, error) {
-	value, err := strconv.Atoi(s)
-	if err != nil || value < 1 {
-		return nil, fmt.Errorf("expected a positive integer, got %q", s)
-	}
-	return value, nil
-}
-
-func parseNonNegativeIntValue(s string) (any, error) {
-	value, err := strconv.Atoi(s)
-	if err != nil || value < 0 {
-		return nil, fmt.Errorf("expected zero or a positive integer, got %q", s)
-	}
-	return value, nil
-}
-
-func parseNonEmptyStringValue(s string) (any, error) {
-	if strings.TrimSpace(s) == "" {
-		return nil, fmt.Errorf("value must not be empty")
-	}
-	return s, nil
-}
-
 var configSetCmd = &cobra.Command{
 	Use:   "set <key> <value>",
 	Short: "Write one setting to ~/.atm/config.json",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		parse, ok := settableConfigKeys[args[0]]
-		if !ok {
-			return fmt.Errorf("unknown or non-settable key: %s (settable: %s)", args[0], strings.Join(settableKeyNames(), ", "))
-		}
-		value, err := parse(args[1])
+		value, err := config.Default.Set(args[0], args[1])
 		if err != nil {
-			return fmt.Errorf("invalid value for %s: %w", args[0], err)
-		}
-		if err := config.SetConfigValue(args[0], value); err != nil {
 			return err
 		}
 		if jsonOutput {
@@ -172,30 +103,9 @@ var configGetCmd = &cobra.Command{
 	Short: "Read one setting (effective value, including env overrides)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		var value any
-		switch args[0] {
-		case "owner_name":
-			value = config.OwnerName
-		case "grok_live_quota":
-			value = config.GrokLiveQuota
-		case "collection_enabled":
-			value = config.CollectionEnabled
-		case "collection_interval_minutes":
-			value = config.CollectionIntervalMinutes
-		case "collection_lookback_minutes":
-			value = config.CollectionLookbackMinutes
-		case "collection_message_retention_days":
-			value = config.CollectionMessageRetentionDays
-		case "collection_model_command":
-			value = config.CollectionModelCommand
-		case "text_model_base_url":
-			value = config.TextModelBaseURL
-		case "text_model_name":
-			value = config.TextModelName
-		case "todo_refine_on_add":
-			value = config.TodoRefineOnAdd
-		default:
-			return fmt.Errorf("unknown key: %s (readable: %s)", args[0], strings.Join(settableKeyNames(), ", "))
+		value, err := config.Default.Get(args[0])
+		if err != nil {
+			return err
 		}
 		if jsonOutput {
 			output.JSON(map[string]any{"key": args[0], "value": value})
@@ -211,7 +121,7 @@ var configTestTextModelCmd = &cobra.Command{
 	Short: "Test the built-in text service without changing a Todo",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		result, err := refine.CheckBuiltinTextModel(cmd.Context(), 45*time.Second)
+		result, err := textmodel.Check(cmd.Context(), 45*time.Second)
 		if err != nil {
 			return err
 		}
@@ -227,7 +137,7 @@ var configTestTextModelCmd = &cobra.Command{
 var configCredentialCmd = &cobra.Command{
 	Use:   "credential",
 	Short: "Manage the local DeepSeek credential",
-	Args:  cobra.NoArgs,
+	Args:  noSubcommandArgs,
 	RunE:  showHelp,
 }
 
@@ -236,15 +146,15 @@ var configCredentialStatusCmd = &cobra.Command{
 	Short: "Report whether the DeepSeek credential is configured",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		configured, err := config.TextModelAPIKeyConfigured()
+		status, err := config.Default.CredentialStatus()
 		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			output.JSON(map[string]any{"configured": configured})
+			output.JSON(status)
 			return nil
 		}
-		if configured {
+		if status.Configured {
 			fmt.Println("DeepSeek API Key is configured")
 		} else {
 			fmt.Println("DeepSeek API Key is not configured")
@@ -258,19 +168,16 @@ var configCredentialSetCmd = &cobra.Command{
 	Short: "Read the DeepSeek API Key from stdin and save it privately",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		const maxCredentialBytes = 64 << 10
-		data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), maxCredentialBytes+1))
+		data, err := io.ReadAll(io.LimitReader(cmd.InOrStdin(), config.MaxCredentialBytes+1))
 		if err != nil {
 			return fmt.Errorf("read DeepSeek API Key from stdin: %w", err)
 		}
-		if len(data) > maxCredentialBytes {
-			return fmt.Errorf("DeepSeek API Key exceeds %d bytes", maxCredentialBytes)
-		}
-		if err := config.SaveTextModelAPIKey(string(data)); err != nil {
+		status, err := config.Default.SaveCredential(config.CredentialSaveInput{APIKey: string(data)})
+		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			output.JSON(map[string]any{"configured": true})
+			output.JSON(status)
 			return nil
 		}
 		fmt.Printf("Saved DeepSeek API Key to %s\n", config.CredentialsPath())
@@ -283,11 +190,12 @@ var configCredentialDeleteCmd = &cobra.Command{
 	Short: "Delete the locally saved DeepSeek credential",
 	Args:  cobra.NoArgs,
 	RunE: func(_ *cobra.Command, _ []string) error {
-		if err := config.DeleteTextModelAPIKey(); err != nil {
+		status, err := config.Default.DeleteCredential()
+		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			output.JSON(map[string]any{"configured": false})
+			output.JSON(status)
 			return nil
 		}
 		fmt.Println("Deleted DeepSeek API Key")
@@ -295,18 +203,10 @@ var configCredentialDeleteCmd = &cobra.Command{
 	},
 }
 
-func settableKeyNames() []string {
-	names := make([]string, 0, len(settableConfigKeys))
-	for name := range settableConfigKeys {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
 var updatePricingCmd = &cobra.Command{
 	Use:   "update-pricing",
 	Short: "Fetch latest model pricing from OpenRouter",
+	Args:  cobra.NoArgs,
 	RunE:  runUpdatePricing,
 }
 

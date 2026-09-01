@@ -16,9 +16,30 @@ enum ATMTheme {
         dark: rgb(27, 29, 34)
     )
     static let listPane = Color(nsColor: listPaneNSColor)
-    /// Raised rows and reading cards use the text background: in light mode it
-    /// reads as a crisp sheet over listPane; in dark mode it stays system-aware.
+    /// Reading cards use the text background: in light mode it reads as a crisp
+    /// sheet over listPane; in dark mode it stays system-aware. Selected list
+    /// rows need a guaranteed step over listPane instead — see rowSelected.
     static let elevated = Color(nsColor: .textBackgroundColor)
+    /// 中栏选中行的实底。选中态不描边也不投影（见 `ATMRowSurface`），能不能看清全靠
+    /// 这一层与 `listPane` 的明度差：浅色下 `textBackgroundColor` 是纯白，压在
+    /// rgb(247,249,252) 上够读；深色下它是 rgb(30,30,30)，跟 rgb(27,29,34) 的 listPane
+    /// 几乎同色——只靠系统色，去掉描边后深色模式就没有选中态了，所以自己抬一档。
+    static let rowSelectedNSColor = adaptiveNSColor(
+        light: .textBackgroundColor,
+        dark: rgb(46, 50, 58)
+    )
+    static let rowSelected = Color(nsColor: rowSelectedNSColor)
+    /// 分段控件的底板（`ATMCapsuleTabs` / `ATMCompactSegmentedTabs`）。
+    ///
+    /// 不能用 `controlFill`：浅色下 `.controlBackgroundColor` 和选中块的 `.textBackgroundColor`
+    /// 都是纯白，底板与选中块同色，整条控件糊成一块白压在右栏 canvas 上——选中态只剩一层
+    /// 10% 阴影在撑。底板要比两侧的面（listPane / canvas）沉一档，白色选中块才浮得起来；
+    /// 深色下反过来，底板压到比 canvas 更暗，选中块用 `rowSelected` 抬一档。
+    static let segmentTrackNSColor = adaptiveNSColor(
+        light: rgb(232, 235, 241),
+        dark: rgb(22, 24, 29)
+    )
+    static let segmentTrack = Color(nsColor: segmentTrackNSColor)
     static let sidebar = Color(nsColor: .windowBackgroundColor)
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let border = Color(nsColor: .separatorColor).opacity(0.65)
@@ -102,6 +123,10 @@ enum ATMTheme {
         switch status {
         case "ready": return success
         case "auth_required", "permission_required", "error": return warning
+        // Not warning-coloured: a connector that hiccups and recovers needs nothing
+        // from anyone, and colouring it like a problem is what taught people to stop
+        // reading these.
+        case "flaky": return secondary
         default: return secondary
         }
     }
@@ -184,6 +209,51 @@ private struct ATMAnimatedSwapModifier: ViewModifier {
     }
 }
 
+enum ATMWorkspaceCardPresentation {
+    case raised
+    case embeddedSection
+}
+
+private struct ATMWorkspaceCardPresentationKey: EnvironmentKey {
+    static let defaultValue: ATMWorkspaceCardPresentation = .raised
+}
+
+extension EnvironmentValues {
+    var atmWorkspaceCardPresentation: ATMWorkspaceCardPresentation {
+        get { self[ATMWorkspaceCardPresentationKey.self] }
+        set { self[ATMWorkspaceCardPresentationKey.self] = newValue }
+    }
+}
+
+private struct ATMWorkspaceCardModifier: ViewModifier {
+    @Environment(\.atmWorkspaceCardPresentation) private var presentation
+    let cornerRadius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        switch presentation {
+        case .raised:
+            content
+                .background(
+                    ATMTheme.elevated,
+                    in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                        .stroke(ATMTheme.border, lineWidth: 1)
+                }
+                .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+        case .embeddedSection:
+            content
+                .overlay(alignment: .bottom) {
+                    Rectangle()
+                        .fill(ATMTheme.border.opacity(0.72))
+                        .frame(height: 1)
+                }
+        }
+    }
+}
+
 extension View {
     /// ATM keeps its scroll bars out of sight. The panes are dense — nested cards,
     /// list columns, Markdown descriptions — and an overlay scroller drew a grey
@@ -201,17 +271,11 @@ extension View {
 
     /// Shared raised surface for the desktop workspaces. Keeping this in one
     /// place prevents Collection, Agent, Knowledge and Settings from drifting
-    /// into four subtly different card styles.
-    func atmWorkspaceCard(cornerRadius: CGFloat = 12) -> some View {
-        background(
-            ATMTheme.elevated,
-            in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .stroke(ATMTheme.border, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.035), radius: 8, y: 2)
+    /// into four subtly different card styles. Inside the right-hand detail
+    /// surface this becomes a simple divided section, avoiding cards nested in
+    /// cards while preserving each section's existing spacing and content.
+    func atmWorkspaceCard(cornerRadius: CGFloat = ATMRadius.panel) -> some View {
+        modifier(ATMWorkspaceCardModifier(cornerRadius: cornerRadius))
     }
 
     /// Animate an identity-backed replacement (workspace, tab body or detail)

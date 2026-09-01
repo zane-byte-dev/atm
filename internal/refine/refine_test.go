@@ -6,7 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -130,6 +132,7 @@ func TestNormalizeChildrenRemapsDependenciesAfterDrops(t *testing.T) {
 func TestFormatAnalysisNamesCreatedChildren(t *testing.T) {
 	note := FormatAnalysis(Prepared{
 		Complexity: ComplexityComplex,
+		Source:     "deepseek",
 		Reason:     "三块独立工作",
 		Plan:       "按依赖顺序做。",
 		Children: []Child{
@@ -138,15 +141,24 @@ func TestFormatAnalysisNamesCreatedChildren(t *testing.T) {
 		},
 		Split: true,
 	}, []store.Todo{{ID: "t2", Title: "写分类器契约"}, {ID: "t3", Title: "实现落地路径"}})
-	if !strings.Contains(note, "t2") || !strings.Contains(note, "t3") || !strings.Contains(note, "依赖 t2") {
+	if !strings.Contains(note, "from deepseek") || !strings.Contains(note, "t2") ||
+		!strings.Contains(note, "t3") || !strings.Contains(note, "依赖 t2") {
 		t.Fatalf("analysis = %q", note)
 	}
 }
 
 func TestAnalyzeDecodesStubbedModelJSON(t *testing.T) {
 	old := runModel
-	t.Cleanup(func() { runModel = old })
-	runModel = func(_ context.Context, _ string, _ time.Duration, _, _, _ string) ([]byte, error) {
+	oldSource, oldPrompt := config.TextModelSource, config.TodoRefinePrompt
+	t.Cleanup(func() {
+		runModel = old
+		config.TextModelSource, config.TodoRefinePrompt = oldSource, oldPrompt
+	})
+	config.TextModelSource = "company gateway"
+	config.TodoRefinePrompt = "验收条件优先写成可观察行为。"
+	capturedPrompt := ""
+	runModel = func(_ context.Context, _ string, _ time.Duration, _, prompt string) ([]byte, error) {
+		capturedPrompt = prompt
 		return json.Marshal(Proposal{
 			Title:       "修复发布检查失败",
 			Description: "目标：检查变绿。",
@@ -161,7 +173,8 @@ func TestAnalyzeDecodesStubbedModelJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !prepared.TitleChanged || prepared.Title != "修复发布检查失败" || prepared.Split {
+	if !prepared.TitleChanged || prepared.Title != "修复发布检查失败" || prepared.Split ||
+		prepared.Source != "company gateway" || !strings.Contains(capturedPrompt, config.TodoRefinePrompt) {
 		t.Fatalf("prepared = %+v", prepared)
 	}
 }
@@ -185,10 +198,68 @@ func TestChildSourceRoundTrip(t *testing.T) {
 
 func TestPromptIncludesTitleAndForbidsInvention(t *testing.T) {
 	prompt := Prompt(store.Todo{ID: "t9", Title: "修一下那个红的", Project: "atm", Status: "open", Priority: "P1"}, "# 修一下那个红的")
-	for _, want := range []string{"t9", "修一下那个红的", "Do not invent", "atm"} {
+	for _, want := range []string{"t9", "修一下那个红的", "Do not invent", "atm", "默认将任务判定为 simple"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestPromptAppendsConfiguredGuidanceAfterFixedRules(t *testing.T) {
+	prompt := PromptWithInstructions(
+		store.Todo{ID: "t9", Title: "修一下那个红的", Status: "open"},
+		"# 修一下那个红的",
+		"验收条件优先写成可观察行为。",
+		"",
+	)
+	for _, want := range []string{"Do not invent", "todo_refine_guidance", "验收条件优先写成可观察行为。"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Index(prompt, "todo_refine_guidance") > strings.Index(prompt, "<atm_todo_card>") {
+		t.Fatalf("configured policy must precede untrusted Todo data:\n%s", prompt)
+	}
+}
+
+// A second refine is only useful if the hint reaches the model, and it has to
+// land after the configured policy (it outranks it) but still above the
+// untrusted Todo data.
+func TestPromptCarriesOneShotHintAfterPolicy(t *testing.T) {
+	prompt := PromptWithInstructions(
+		store.Todo{ID: "t9", Title: "修一下那个红的", Status: "open"},
+		"# 修一下那个红的",
+		"验收条件优先写成可观察行为。",
+		"拆细一点，每个子任务能独立验收。",
+	)
+	for _, want := range []string{"todo_refine_request", "拆细一点，每个子任务能独立验收。"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	policy := strings.Index(prompt, "todo_refine_guidance")
+	hint := strings.Index(prompt, "todo_refine_request")
+	card := strings.Index(prompt, "<atm_todo_card>")
+	if !(policy < hint && hint < card) {
+		t.Fatalf("hint must sit between configured policy and untrusted data:\n%s", prompt)
+	}
+}
+
+func TestPromptOmitsHintSectionWhenAbsent(t *testing.T) {
+	prompt := PromptWithInstructions(store.Todo{ID: "t9", Title: "修一下那个红的", Status: "open"}, "", "", "")
+	if strings.Contains(prompt, "todo_refine_request") {
+		t.Fatalf("empty hint must not open a request block:\n%s", prompt)
+	}
+}
+
+func TestNormalizeOptionsTrimsAndCapsHint(t *testing.T) {
+	opts := NormalizeOptions(Options{Hint: "  拆细一点  "})
+	if opts.Hint != "拆细一点" {
+		t.Fatalf("hint not trimmed: %q", opts.Hint)
+	}
+	long := NormalizeOptions(Options{Hint: strings.Repeat("细", maxHintRunes+50)})
+	if utf8.RuneCountInString(long.Hint) != maxHintRunes {
+		t.Fatalf("hint not capped: %d runes", utf8.RuneCountInString(long.Hint))
 	}
 }
 

@@ -4,3 +4,4 @@ bin/
 skills/*-workspace/
 .playwright-cli/
 .DS_Store
+.gz

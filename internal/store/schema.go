@@ -42,15 +42,48 @@ import (
 // durable claim, process record and outcome for one manual Todo dispatch. v37
 // lets each task-producing collection source explicitly opt into dispatching a
 // newly created Todo, and records that handoff separately from classification.
-// Keep
-// min at 21 while
-// those upgrade steps exist; after the live database has been upgraded,
-// raise this to SchemaVersion and delete the steps. Note what a hard
+// v40 adds the derived AI Day feature and result tables. They deliberately hold
+// only daily aggregates and selected concept metadata: transcripts remain in the
+// existing session mirror and are never copied into this product surface. v41
+// completes that projection with content-free normalized events, session
+// aggregates, badge history/progress, feedback, source permissions and settings.
+// v43 stops treating an insight as an automatic knowledge write: each collection
+// item records the knowledge document created only after the user explicitly
+// saves its conclusion. v44 adds collection_items.read_at so newly collected
+// Todos, supplements and conclusions remain visibly pending until the user has
+// actually opened or acknowledged them. v45 adds approvals, the outbound action
+// gate's ledger: one row per attempt by an agent to run a command that reaches
+// someone else, plus what the user decided about it. Nothing is backfilled —
+// before v45 nothing was gated, so there are no historical decisions to invent.
+// v46 adds collection_sources.muted so one noisy source can be taken out of the
+// desktop notifications without being taken out of collection: unread counts and
+// badges are untouched, only the banner is. Nothing is backfilled — 0 is the
+// behaviour every source had before. v47 adds collection_items.archived_at so a
+// person can settle a collected result without deleting its audit trail or
+// releasing its messages for collection again. v48 adds todo_images, the
+// normalized metadata for locally managed Todo image files. v49 adds the Work
+// effect outbox: lifecycle transitions and their filesystem/UI effects are
+// committed together, so a process crash cannot make a successful transition
+// permanently lose its follow-up work. v50 adds append-only Todo plan revisions.
+// A plan is execution state, not Todo lifecycle: completing every item never
+// submits or closes the Todo. v52 removes the background-dispatch subsystem:
+// task_runs, the collection dispatch columns and todo_plan_revisions.run_id all
+// go, because ATM no longer starts an Agent and nothing can write them. v53
+// persists session lineage, parser/content quality, structured result state and
+// message provenance so a copied subagent history is no longer presented or
+// counted as the child's own conversation. v54 adds a content-free CLI
+// invocation ledger: command paths and stable outcome classes are observable,
+// while arguments, error messages, working directories and user content are not
+// representable in the schema.
+//
+// Keep the minimum at 21 while those upgrade steps exist; after the live database
+// has been upgraded, raise this to SchemaVersion and delete the steps. Note what a
+// hard
 // reject costs: session tables rebuild from agent logs on the next `atm sync`,
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 39
+	SchemaVersion        = 54
 	minUpgradableVersion = 21
 )
 
@@ -81,27 +114,46 @@ func createSchema(tx *sql.Tx) error {
 			last_synced_files INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE sessions (
-			id         TEXT PRIMARY KEY,
-			short_id   TEXT NOT NULL,
-			agent      TEXT NOT NULL,
-			project    TEXT NOT NULL DEFAULT '',
-			file_path  TEXT NOT NULL,
-			created_at TEXT NOT NULL DEFAULT '',
-			created_ts INTEGER NOT NULL DEFAULT 0,
-			summary    TEXT NOT NULL DEFAULT '',
-			last_ts    INTEGER NOT NULL DEFAULT 0
+			id                TEXT PRIMARY KEY,
+			short_id          TEXT NOT NULL,
+			agent             TEXT NOT NULL,
+			project           TEXT NOT NULL DEFAULT '',
+			file_path         TEXT NOT NULL,
+			created_at        TEXT NOT NULL DEFAULT '',
+			created_ts        INTEGER NOT NULL DEFAULT 0,
+			summary           TEXT NOT NULL DEFAULT '',
+			last_ts           INTEGER NOT NULL DEFAULT 0,
+			resume_id         TEXT NOT NULL DEFAULT '',
+			root_session_id   TEXT NOT NULL DEFAULT '',
+			parent_session_id TEXT NOT NULL DEFAULT '',
+			agent_path        TEXT NOT NULL DEFAULT '',
+			agent_nickname    TEXT NOT NULL DEFAULT '',
+			subagent_depth    INTEGER NOT NULL DEFAULT 0,
+			is_subagent       INTEGER NOT NULL DEFAULT 0,
+			is_internal       INTEGER NOT NULL DEFAULT 0,
+			parser_version    INTEGER NOT NULL DEFAULT 0,
+			content_state     TEXT NOT NULL DEFAULT 'empty',
+			result_status     TEXT NOT NULL DEFAULT 'unknown',
+			latest_progress   TEXT NOT NULL DEFAULT '',
+			final_result      TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX idx_sessions_agent ON sessions(agent)`,
 		`CREATE INDEX idx_sessions_created_ts ON sessions(created_ts)`,
 		`CREATE INDEX idx_sessions_short_id ON sessions(short_id)`,
 		`CREATE INDEX idx_sessions_last_ts ON sessions(last_ts)`,
+		`CREATE INDEX idx_sessions_resume_id ON sessions(resume_id)`,
+		`CREATE INDEX idx_sessions_root_session ON sessions(root_session_id)`,
+		`CREATE INDEX idx_sessions_parent_session ON sessions(parent_session_id)`,
 		`CREATE TABLE messages (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
 			seq        INTEGER NOT NULL,
 			role       TEXT NOT NULL,
 			content    TEXT NOT NULL,
-			ts         INTEGER NOT NULL DEFAULT 0
+			ts         INTEGER NOT NULL DEFAULT 0,
+			scope      TEXT NOT NULL DEFAULT 'local',
+			kind       TEXT NOT NULL DEFAULT 'conversation',
+			phase      TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE INDEX idx_messages_session ON messages(session_id)`,
 		// seq is dense per session: a full re-sync deletes the session and starts
@@ -161,6 +213,153 @@ func createSchema(tx *sql.Tx) error {
 		`CREATE INDEX idx_usage_events_model ON usage_events(model)`,
 		`CREATE UNIQUE INDEX idx_usage_events_fingerprint
 			ON usage_events(fingerprint) WHERE fingerprint <> ''`,
+		// ATM's own CLI invocation telemetry is intentionally independent of the
+		// rebuildable session mirror. A session sync or forget must not erase the
+		// success denominator used to diagnose command-contract failures.
+		`CREATE TABLE cli_invocations (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			occurred_at  INTEGER NOT NULL,
+			session_id  TEXT NOT NULL DEFAULT '',
+			agent        TEXT NOT NULL DEFAULT '',
+			version      TEXT NOT NULL DEFAULT '',
+			command_path TEXT NOT NULL CHECK (command_path <> ''),
+			exit_code    INTEGER NOT NULL,
+			error_code   TEXT NOT NULL DEFAULT '',
+			cause_class  TEXT NOT NULL DEFAULT '',
+			retryable    INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0,1)),
+			duration_ms  INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+			success      INTEGER NOT NULL CHECK (success IN (0,1)),
+			CHECK (success = 0 OR exit_code = 0)
+		)`,
+		`CREATE INDEX idx_cli_invocations_time ON cli_invocations(occurred_at DESC)`,
+		`CREATE INDEX idx_cli_invocations_session_time ON cli_invocations(session_id,occurred_at DESC)`,
+		`CREATE INDEX idx_cli_invocations_failure_time ON cli_invocations(success,occurred_at DESC)`,
+		// --- AI Day: rebuildable daily projections ---
+		// These tables are derived from the session mirror. A rebuild replaces
+		// one row per local calendar day, making the operation idempotent and the
+		// selected concept reproducible without retaining another copy of messages.
+		`CREATE TABLE ai_day_features (
+			day                 TEXT PRIMARY KEY CHECK (day GLOB '` + datePattern + `'),
+			timezone            TEXT NOT NULL,
+			session_count       INTEGER NOT NULL DEFAULT 0,
+			turn_count          INTEGER NOT NULL DEFAULT 0,
+			tool_calls          INTEGER NOT NULL DEFAULT 0,
+			source_count        INTEGER NOT NULL DEFAULT 0,
+			input_tokens        INTEGER NOT NULL DEFAULT 0,
+			output_tokens       INTEGER NOT NULL DEFAULT 0,
+			cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+			generation_seconds  INTEGER NOT NULL DEFAULT 0,
+			built_at            INTEGER NOT NULL,
+			feature_version     INTEGER NOT NULL
+		)`,
+		`CREATE TABLE ai_day_results (
+			day            TEXT PRIMARY KEY REFERENCES ai_day_features(day) ON DELETE CASCADE,
+			state          TEXT NOT NULL CHECK (state IN ('ready','empty')),
+			concept_id     TEXT NOT NULL DEFAULT '',
+			title          TEXT NOT NULL DEFAULT '',
+			explanation    TEXT NOT NULL DEFAULT '',
+			tags_json      TEXT NOT NULL DEFAULT '[]',
+			evidence_json  TEXT NOT NULL DEFAULT '[]',
+			-- How much to trust this conclusion: baseline length, evidence
+			-- strength and source coverage combined. Never raised by feedback.
+			confidence     REAL NOT NULL DEFAULT 0,
+			-- The selected badge's own normalized signal, kept separate so a
+			-- weak-evidence day is distinguishable from a short-history one.
+			evidence_strength REAL NOT NULL DEFAULT 0,
+			-- 'computed' or 'user_corrected'.
+			origin         TEXT NOT NULL DEFAULT 'computed',
+			-- What the engine chose before a correction, so its own answer is
+			-- preserved rather than overwritten by the user's.
+			computed_badge_id TEXT NOT NULL DEFAULT '',
+			baseline_days  INTEGER NOT NULL DEFAULT 0,
+			generated_at   INTEGER NOT NULL,
+			engine_version INTEGER NOT NULL
+		)`,
+		`CREATE TABLE ai_day_events (
+			event_id             TEXT PRIMARY KEY,
+			occurred_at          INTEGER NOT NULL,
+			source               TEXT NOT NULL,
+			session_hash         TEXT NOT NULL,
+			event_type           TEXT NOT NULL,
+			quantity             INTEGER NOT NULL DEFAULT 1,
+			modality             TEXT NOT NULL DEFAULT 'general',
+			execution_mode       TEXT NOT NULL DEFAULT 'interactive',
+			input_tokens         INTEGER NOT NULL DEFAULT 0,
+			output_tokens        INTEGER NOT NULL DEFAULT 0,
+			cache_create_tokens  INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens    INTEGER NOT NULL DEFAULT 0,
+			duration_ms          INTEGER NOT NULL DEFAULT 0,
+			semantic_labels_json TEXT NOT NULL DEFAULT '[]',
+			semantic_confidence  REAL NOT NULL DEFAULT 0,
+			raw_content_retained INTEGER NOT NULL DEFAULT 0 CHECK (raw_content_retained = 0),
+			schema_version       INTEGER NOT NULL,
+			ingested_at          INTEGER NOT NULL
+		)`,
+		`CREATE INDEX idx_ai_day_events_time ON ai_day_events(occurred_at)`,
+		`CREATE INDEX idx_ai_day_events_source_time ON ai_day_events(source, occurred_at)`,
+		`CREATE INDEX idx_ai_day_events_session_time ON ai_day_events(session_hash, occurred_at)`,
+		`CREATE TABLE ai_day_session_features (
+			day                  TEXT NOT NULL CHECK (day GLOB '` + datePattern + `'),
+			session_hash         TEXT NOT NULL,
+			source               TEXT NOT NULL,
+			modality             TEXT NOT NULL DEFAULT 'general',
+			execution_mode       TEXT NOT NULL DEFAULT 'interactive',
+			event_count          INTEGER NOT NULL DEFAULT 0,
+			turn_count           INTEGER NOT NULL DEFAULT 0,
+			tool_calls           INTEGER NOT NULL DEFAULT 0,
+			active_seconds       INTEGER NOT NULL DEFAULT 0,
+			semantic_counts_json TEXT NOT NULL DEFAULT '{}',
+			built_at             INTEGER NOT NULL,
+			feature_version      INTEGER NOT NULL,
+			PRIMARY KEY (day, session_hash)
+		)`,
+		`CREATE TABLE ai_day_feature_details (
+			day                  TEXT PRIMARY KEY REFERENCES ai_day_features(day) ON DELETE CASCADE,
+			event_count          INTEGER NOT NULL DEFAULT 0,
+			active_seconds       INTEGER NOT NULL DEFAULT 0,
+			foreground_seconds   INTEGER NOT NULL DEFAULT 0,
+			background_seconds   INTEGER NOT NULL DEFAULT 0,
+			semantic_counts_json TEXT NOT NULL DEFAULT '{}',
+			modality_counts_json TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE TABLE ai_day_badge_days (
+			day           TEXT NOT NULL REFERENCES ai_day_features(day) ON DELETE CASCADE,
+			badge_id      TEXT NOT NULL,
+			qualified     INTEGER NOT NULL DEFAULT 0,
+			selected      INTEGER NOT NULL DEFAULT 0,
+			level         INTEGER NOT NULL DEFAULT 0,
+			score         REAL NOT NULL DEFAULT 0,
+			evidence_json TEXT NOT NULL DEFAULT '[]',
+			PRIMARY KEY (day, badge_id)
+		)`,
+		`CREATE TABLE ai_day_badge_progress (
+			badge_id         TEXT PRIMARY KEY,
+			level            INTEGER NOT NULL DEFAULT 0,
+			qualified_days   INTEGER NOT NULL DEFAULT 0,
+			last_qualified   TEXT NOT NULL DEFAULT '',
+			cooldown_until   TEXT NOT NULL DEFAULT '',
+			first_unlocked   TEXT NOT NULL DEFAULT '',
+			updated_at       INTEGER NOT NULL
+		)`,
+		`CREATE TABLE ai_day_feedback (
+			day                  TEXT PRIMARY KEY,
+			verdict              TEXT NOT NULL CHECK (verdict IN ('accurate','inaccurate','corrected')),
+			corrected_badge_id   TEXT NOT NULL DEFAULT '',
+			semantic_labels_json TEXT NOT NULL DEFAULT '[]',
+			updated_at           INTEGER NOT NULL
+		)`,
+		`CREATE TABLE ai_day_sources (
+			source           TEXT PRIMARY KEY,
+			enabled          INTEGER NOT NULL DEFAULT 1,
+			semantic_enabled INTEGER NOT NULL DEFAULT 1,
+			updated_at       INTEGER NOT NULL
+		)`,
+		`CREATE TABLE ai_day_settings (
+			key        TEXT PRIMARY KEY,
+			value      TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		)`,
 		// Samples of an agent's rate-limit windows over time. A quota source only
 		// ever reports "now", and a bare percentage cannot be acted on: 89% that
 		// has not moved in an hour and 89% that climbed thirty points in one are
@@ -255,6 +454,16 @@ func createSchema(tx *sql.Tx) error {
 			relation TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (todo_id, url)
 		)`,
+		`CREATE TABLE todo_images (
+			todo_id       TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			position      INTEGER NOT NULL,
+			stored_name   TEXT NOT NULL,
+			original_name TEXT NOT NULL,
+			media_type    TEXT NOT NULL,
+			size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+			PRIMARY KEY (todo_id, stored_name)
+		)`,
+		`CREATE INDEX idx_todo_images_todo_position ON todo_images(todo_id, position)`,
 		`CREATE TABLE todo_session_bindings (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_id TEXT NOT NULL,
@@ -272,41 +481,108 @@ func createSchema(tx *sql.Tx) error {
 		// every caller remembering to close the previous one.
 		`CREATE UNIQUE INDEX idx_todo_bindings_active_session
 			ON todo_session_bindings(session_id) WHERE unbound_at IS NULL`,
-		// One row per explicit Agent dispatch. Todo lifecycle remains separate:
-		// a completed run may submit a Todo to review, but never marks it done.
-		`CREATE TABLE task_runs (
-			id         TEXT PRIMARY KEY,
-			todo_id    TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
-			agent      TEXT NOT NULL,
-			project    TEXT NOT NULL DEFAULT '',
-			work_dir   TEXT NOT NULL,
-			prompt     TEXT NOT NULL DEFAULT '',
-			policy     TEXT NOT NULL CHECK (policy IN ('guarded','trusted')),
-			log_path   TEXT NOT NULL,
-			status     TEXT NOT NULL CHECK (status IN ('starting','running','completed','failed','interrupted')),
-			pid        INTEGER NOT NULL DEFAULT 0,
-			start_ts   INTEGER NOT NULL,
-			end_ts     INTEGER,
-			exit_code  INTEGER,
-			message    TEXT NOT NULL DEFAULT '',
-			session_id TEXT,
-			-- The thread this run was told to continue, as opposed to session_id,
-			-- which is the session this run turned out to be. Keeping intent in
-			-- its own column is what lets the controller decide between a fresh
-			-- dispatch and an agent resume without reading display text.
-			resume_session_id TEXT
-		)`,
-		`CREATE INDEX idx_task_runs_todo_started ON task_runs(todo_id, start_ts DESC)`,
-		// Creating the starting row is the claim. Two App/CLI callers racing to
-		// dispatch the same Todo cannot both launch an Agent.
-		`CREATE UNIQUE INDEX idx_task_runs_active_todo ON task_runs(todo_id)
-			WHERE status IN ('starting','running')`,
 		// work_state_meta holds the cross-process write lock row. See
 		// acquireWorkWriteLock.
 		`CREATE TABLE work_state_meta (
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL
 		)`,
+		// Lifecycle state is authoritative in SQLite, while Todo documents and UI
+		// notifications live outside it. Each row is a durable request to bring
+		// those projections up to date after the surrounding WorkStateTx commits.
+		// Delivery is at-least-once: completed_at is written only after the adapter
+		// successfully applies the whole effect.
+		`CREATE TABLE work_effect_outbox (
+			id              TEXT PRIMARY KEY,
+			request_id      TEXT NOT NULL,
+			todo_id         TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			kind            TEXT NOT NULL,
+			payload_json    TEXT NOT NULL,
+			created_at      INTEGER NOT NULL,
+			completed_at    INTEGER,
+			attempt_count   INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+			last_attempt_at INTEGER,
+			last_error      TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX idx_work_effect_outbox_pending
+			ON work_effect_outbox(todo_id, created_at, id) WHERE completed_at IS NULL`,
+		// Plans are immutable snapshots. The composite primary key gives each Todo
+		// its own monotonic revision stream; snapshot_hash makes retry idempotency
+		// cheap without normalizing short-lived steps into permanent Todo rows.
+		`CREATE TABLE todo_plan_revisions (
+			todo_id       TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+			revision      INTEGER NOT NULL CHECK (revision >= 1),
+			base_revision INTEGER NOT NULL CHECK (base_revision >= 0),
+			snapshot_json TEXT NOT NULL,
+			snapshot_hash TEXT NOT NULL,
+			request_id    TEXT NOT NULL,
+			actor_kind    TEXT NOT NULL,
+			origin        TEXT NOT NULL,
+			session_id    TEXT NOT NULL DEFAULT '',
+			binding_id    INTEGER,
+			agent         TEXT NOT NULL DEFAULT '',
+			created_at    INTEGER NOT NULL,
+			PRIMARY KEY (todo_id, revision)
+		)`,
+		`CREATE INDEX idx_todo_plan_latest ON todo_plan_revisions(todo_id, revision DESC)`,
+
+		// --- outbound action gate: what an agent tried to send, and what you decided ---
+		// One row per gated command attempt. This table is the only place in the
+		// database whose contents are later handed to exec(), so `atm guard approve`
+		// refuses any real_bin that is not a currently installed shim's real binary.
+		`CREATE TABLE approvals (
+			id           TEXT PRIMARY KEY,
+			-- dedup_key identifies the command; id identifies the request. They are
+			-- deliberately separate: making the content hash the primary key would
+			-- force a later approval of a previously denied command to overwrite the
+			-- denial, erasing the one record this feature exists to keep.
+			dedup_key    TEXT NOT NULL,
+			tool         TEXT NOT NULL,
+			rule_id      TEXT NOT NULL DEFAULT '',
+			real_bin     TEXT NOT NULL,
+			argv         TEXT NOT NULL,
+			cwd          TEXT NOT NULL DEFAULT '',
+			-- Best effort only: Qoder and Antigravity set none of the session env
+			-- vars ATM knows, so this is often empty. cwd is the reliable answer to
+			-- "who asked".
+			env_agent    TEXT NOT NULL DEFAULT '',
+			label        TEXT NOT NULL DEFAULT '',
+			preview_target TEXT NOT NULL DEFAULT '',
+			preview_title  TEXT NOT NULL DEFAULT '',
+			preview_body   TEXT NOT NULL DEFAULT '',
+			-- 'running' is terminal for automation. A gate that dies between running
+			-- and done leaves no evidence of whether the message went out, and no
+			-- lock can recover information that does not exist, so nothing ever
+			-- retries such a row.
+			status       TEXT NOT NULL CHECK (status IN ('pending','approved','running','done','denied','expired')),
+			-- Deferred execution is refused when the body arrived on a pipe, because
+			-- stdin cannot be reproduced and a silent wrong-content send is worse
+			-- than a refusal.
+			stdin_piped  INTEGER NOT NULL DEFAULT 0 CHECK (stdin_piped IN (0,1)),
+			-- gate_pid is diagnostic only. gate_deadline is the ownership boundary:
+			-- the waiting gate owns execution until then, whoever wins the claim
+			-- owns it after. kill(pid,0) is unusable here because the exposure
+			-- window is the request's whole lifetime, long enough for PID reuse.
+			gate_pid      INTEGER NOT NULL DEFAULT 0,
+			gate_deadline INTEGER NOT NULL DEFAULT 0,
+			-- How many times an agent re-ran the identical command. A rising count
+			-- means the wait budget is wrong, not that the user is indecisive.
+			attach_count INTEGER NOT NULL DEFAULT 1,
+			requested_at INTEGER NOT NULL,
+			expires_at   INTEGER NOT NULL,
+			decided_at   INTEGER,
+			decided_by   TEXT NOT NULL DEFAULT '',
+			reason       TEXT NOT NULL DEFAULT '',
+			ran_by       TEXT NOT NULL DEFAULT '',
+			exit_code    INTEGER,
+			output       TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX idx_approvals_status_requested ON approvals(status, requested_at DESC)`,
+		`CREATE INDEX idx_approvals_dedup ON approvals(dedup_key, requested_at DESC)`,
+		// At most one pending request per identical command. A retrying agent
+		// attaches to the existing row instead of raising a second banner.
+		`CREATE UNIQUE INDEX idx_approvals_pending_dedup ON approvals(dedup_key)
+			WHERE status='pending'`,
 
 		// --- automatic collection: connector input, decisions and audit ---
 		// Sources are user-authored configuration. Runs and items are an audit
@@ -325,8 +601,8 @@ func createSchema(tx *sql.Tx) error {
 			-- instruction, unlike the chat itself. exclude_pattern is the blunt
 			-- inverse (drop anything containing these keywords, no model call).
 			instruction     TEXT NOT NULL DEFAULT '',
-			-- Which knowledge collection this source's daily digest is written to.
-			-- Empty falls back to config.CollectionDigestCollection.
+			-- Default knowledge destination for an explicitly saved conclusion and
+			-- for optional manual digests. Empty falls back to the configured default.
 			knowledge_collection TEXT NOT NULL DEFAULT '',
 			-- What this source is allowed to produce. 'tasks' may reach the Todo
 			-- list; 'observe' may not, however concrete the chat looks — the
@@ -347,10 +623,12 @@ func createSchema(tx *sql.Tx) error {
 				CHECK (interval_minutes BETWEEN 1 AND 1440),
 			priority    TEXT NOT NULL DEFAULT 'P2'
 				CHECK (priority IN ('P0','P1','P2','P3')),
-			-- Disabled by default: collecting a requirement and executing code have
-			-- different authority. Observe sources can never dispatch.
-			auto_dispatch INTEGER NOT NULL DEFAULT 0 CHECK (auto_dispatch IN (0,1)),
 			enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
+			-- Whether this source's new results stay out of desktop notifications.
+			-- Only the banner: muted results still collect, still count as unread
+			-- and still raise the sidebar and menubar badges. Deliberately absent
+			-- from the upsert's conflict update so editing a source cannot undo it.
+			muted       INTEGER NOT NULL DEFAULT 0 CHECK (muted IN (0,1)),
 			created_at  INTEGER NOT NULL,
 			updated_at  INTEGER NOT NULL,
 			UNIQUE (connector, kind, external_id)
@@ -389,9 +667,9 @@ func createSchema(tx *sql.Tx) error {
 			sender          TEXT NOT NULL DEFAULT '',
 			occurred_at     INTEGER NOT NULL DEFAULT 0,
 			raw_context     TEXT NOT NULL DEFAULT '',
-			-- Where this batch ended up. 'insight' is the knowledge destination:
-			-- worth remembering, but not work, so it feeds the source's daily
-			-- digest instead of the Todo list. 'ignore' means genuine noise.
+			-- Where this batch ended up. 'insight' is a conclusion worth keeping,
+			-- but not work; it stays here until the user explicitly saves it to
+			-- knowledge. 'ignore' means genuine noise.
 			action          TEXT NOT NULL DEFAULT 'pending'
 				CHECK (action IN ('pending','create','append','insight','ignore','failed','reverted')),
 			-- What an on-demand analysis decided but has not carried out: '' means
@@ -407,9 +685,19 @@ func createSchema(tx *sql.Tx) error {
 			priority        TEXT NOT NULL DEFAULT '',
 			reason          TEXT NOT NULL DEFAULT '',
 			confidence      REAL NOT NULL DEFAULT 0,
+			-- An insight first lives as this record's conclusion. These fields stay
+			-- empty until the user explicitly saves it to central knowledge.
+			knowledge_document_id TEXT NOT NULL DEFAULT '',
+			knowledge_collection  TEXT NOT NULL DEFAULT '',
 			todo_id         TEXT REFERENCES todos(id) ON DELETE SET NULL,
 			status          TEXT NOT NULL DEFAULT 'pending'
 				CHECK (status IN ('pending','processed','failed')),
+			-- Read state belongs to the collection result, not to the Todo it may
+			-- have created. Zero means the result has not been acknowledged.
+			read_at         INTEGER NOT NULL DEFAULT 0,
+			-- A manually settled result stays in the audit ledger and handled-message
+			-- set, but leaves the active collection list. Zero means active.
+			archived_at     INTEGER NOT NULL DEFAULT 0,
 			-- How many times processing this batch has been tried. A failed item
 			-- is deliberately left out of the handled set so the next run picks it
 			-- up again, which is right for a connector that was briefly down and
@@ -419,11 +707,6 @@ func createSchema(tx *sql.Tx) error {
 			-- MaxCollectionAttempts stops the automatic retry and leaves the item
 			-- to an explicit reprocess.
 			attempts        INTEGER NOT NULL DEFAULT 0,
-			-- Agent handoff is a second outcome after classification. Keeping it
-			-- separate makes a created Todo durable even when Codex is unavailable.
-			dispatch_status TEXT NOT NULL DEFAULT ''
-				CHECK (dispatch_status IN ('','pending','dispatched','failed')),
-			dispatch_error  TEXT NOT NULL DEFAULT '',
 			error           TEXT NOT NULL DEFAULT '',
 			created_at      INTEGER NOT NULL,
 			updated_at      INTEGER NOT NULL,
@@ -432,6 +715,8 @@ func createSchema(tx *sql.Tx) error {
 		`CREATE INDEX idx_collection_items_updated ON collection_items(updated_at DESC)`,
 		`CREATE INDEX idx_collection_items_source ON collection_items(source_id,occurred_at DESC)`,
 		`CREATE INDEX idx_collection_items_todo ON collection_items(todo_id)`,
+		`CREATE INDEX idx_collection_items_unread ON collection_items(read_at,updated_at DESC)`,
+		`CREATE INDEX idx_collection_items_archived ON collection_items(archived_at,updated_at DESC)`,
 
 		// One row per source per day: the knowledge document that day's insights
 		// were distilled into. A day's digest is a function of every insight that

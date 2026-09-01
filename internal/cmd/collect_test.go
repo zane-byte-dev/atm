@@ -2,16 +2,20 @@ package cmd
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
 func TestCollectSourceAndStatusCommandsExposeAuditContract(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCollectionCLI(t)
 	oldJSON := jsonOutput
 	oldKind, oldExternalID, oldName := collectSourceKind, collectSourceExternalID, collectSourceName
 	oldProject, oldPriority, oldDisabled := collectSourceProject, collectSourcePriority, collectSourceDisabled
@@ -307,35 +311,6 @@ func TestCollectStatusReportsTheSyncedArchive(t *testing.T) {
 	}
 }
 
-func TestCollectionRetentionIssuesReportAStuckPrune(t *testing.T) {
-	withTempAtmDir(t)
-	oldRetention := config.CollectionMessageRetentionDays
-	t.Cleanup(func() { config.CollectionMessageRetentionDays = oldRetention })
-
-	db, err := store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	ancient := time.Now().In(config.Loc).AddDate(0, 0, -200).Unix()
-	if _, err := store.PutCollectionMessages(db, []store.CollectionMessage{{
-		Connector: "test", ConversationID: "cid-1", MessageID: "m1",
-		CreatedAt: ancient, Content: "两百天前",
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	config.CollectionMessageRetentionDays = 90
-	issues := collectionRetentionIssues(db)
-	if len(issues) != 1 || issues[0].Code != "collection_messages_past_retention" {
-		t.Fatalf("stuck prune was not reported: %+v", issues)
-	}
-	// Keeping chat on purpose is not a problem to report.
-	config.CollectionMessageRetentionDays = 0
-	if issues := collectionRetentionIssues(db); len(issues) != 0 {
-		t.Fatalf("retention 0 reported an issue: %+v", issues)
-	}
-}
-
 func TestCollectionFailureStatusDistinguishesLoginAndPermission(t *testing.T) {
 	if got := collectionFailureStatus("not_authenticated; run connector auth login"); got != "auth_required" {
 		t.Fatalf("auth status = %q", got)
@@ -345,5 +320,250 @@ func TestCollectionFailureStatusDistinguishesLoginAndPermission(t *testing.T) {
 	}
 	if got := collectionFailureStatus("connector timed out"); got != "error" {
 		t.Fatalf("generic status = %q", got)
+	}
+}
+
+// run builds one audit row. Runs are consumed newest-first, which is how the
+// overview supplies them.
+// The whole loop through the real command: a connector whose login expired
+// attempts once, says what it skipped, and on the next background round attempts
+// nothing at all. Before this, one outage wrote five identical failure rows every
+// five minutes for as long as it lasted.
+func TestBackgroundRunStopsAttemptingAConnectorWhoseLoginExpired(t *testing.T) {
+	withTempAtmDir(t)
+	withHumanCollectionCLI(t)
+	connector := filepath.Join(t.TempDir(), "fake-connector")
+	script := "#!/bin/sh\ncat >/dev/null\n" +
+		`echo '{"error":"dws returned an error: 未登录，请先执行 dws auth login"}'` + "\n"
+	if err := os.WriteFile(connector, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldConnectors, oldDue, oldJSON := config.CollectionConnectors, collectRunDue, jsonOutput
+	config.CollectionConnectors = map[string]config.CollectionConnectorConfig{
+		"fake": {Command: connector, LoginCommand: "/opt/fake/bin auth login"},
+	}
+	collectRunDue, jsonOutput = true, false
+	t.Cleanup(func() {
+		config.CollectionConnectors, collectRunDue, jsonOutput = oldConnectors, oldDue, oldJSON
+	})
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, external := range []string{"c1", "c2"} {
+		if _, err := store.UpsertCollectionSource(db, store.CollectionSource{
+			Connector: "fake", Kind: "group", ExternalID: external,
+			Name: external, Priority: "P2", Enabled: true,
+		}); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	first := captureStdout(t, func() {
+		if err := collectRunCmd.RunE(collectRunCmd, nil); err == nil {
+			t.Fatalf("the source that was attempted failed and must be reported")
+		}
+	})
+	if !strings.Contains(first, "跳过 1 个来源") || !strings.Contains(first, "重新登录：/opt/fake/bin auth login") {
+		t.Fatalf("first round output = %q", first)
+	}
+
+	second := captureStdout(t, func() {
+		if err := collectRunCmd.RunE(collectRunCmd, nil); err != nil {
+			t.Fatalf("a skipped round is not a failure: %v", err)
+		}
+	})
+	if !strings.Contains(second, "跳过 2 个来源") || !strings.Contains(second, "后再探测") {
+		t.Fatalf("second round output = %q", second)
+	}
+	if strings.Contains(second, "No enabled collection sources") {
+		t.Fatalf("skipping must not read as nothing to do: %q", second)
+	}
+
+	db, err = store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var rows int
+	if err := db.QueryRow("SELECT COUNT(*) FROM collection_runs").Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("run rows = %d, want the single attempt", rows)
+	}
+}
+
+// The two statuses ATM stops retrying are the two whose line has to carry the
+// thing that ends them.
+func TestTheLineForAStuckLoginNamesHowToFixIt(t *testing.T) {
+	health := collectionConnectorHealth{
+		Connector: "dingtalk", Status: "auth_required", Error: "未登录",
+		ConsecutiveFailures: 1, LoginCommand: "/Users/x/bin/dws auth login",
+	}
+	line := collectionHealthLine(health)
+	if !strings.Contains(line, "重新登录：/Users/x/bin/dws auth login") {
+		t.Fatalf("line = %q", line)
+	}
+	// A flaky connector is retrying on its own; offering a login there would be
+	// advice for a problem it does not have.
+	health.Status = "flaky"
+	health.RecentRuns, health.RecentFailures = 20, 1
+	if line := collectionHealthLine(health); strings.Contains(line, "重新登录") {
+		t.Fatalf("flaky line = %q", line)
+	}
+}
+
+// Sources that were deliberately left alone write no run row, so silence here
+// used to read as "nothing was due" — the opposite of what happened.
+func TestTheBlockedLineSaysWhatWasSkippedAndWhenItResumes(t *testing.T) {
+	retryAt := time.Date(2026, 8, 25, 15, 39, 0, 0, config.Loc)
+	line := collectionBlockedLine(collector.BlockedConnector{
+		Connector: "dingtalk", Status: "auth_required", Error: "未登录",
+		SkippedSources: 5, RetryAt: retryAt.Unix(), LoginCommand: "~/bin/dws auth login",
+	})
+	for _, want := range []string{"登录失效", "跳过 5 个来源", "15:39 后再探测", "重新登录：~/bin/dws auth login"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("line = %q, want %q in it", line, want)
+		}
+	}
+}
+
+// A missing permission has been per-source in practice — one group this account
+// cannot read — so it must not hold the connector's healthy siblings back, and it
+// must not be answered with advice to log in again.
+func TestAPermissionFailureNeitherBlocksTheConnectorNorAsksForALogin(t *testing.T) {
+	health := collectionConnectorHealth{
+		Connector: "dingtalk", Status: "permission_required", Error: "Permission denied",
+		ConsecutiveFailures: 1, LoginCommand: "/Users/x/bin/dws auth login",
+	}
+	if line := collectionHealthLine(health); strings.Contains(line, "重新登录") {
+		t.Fatalf("line = %q", line)
+	}
+}
+
+func healthRun(connector, status, errorText string, finishedAt int64) store.CollectionRun {
+	return store.CollectionRun{
+		Connector: connector, Status: status, Error: errorText, FinishedAt: finishedAt,
+	}
+}
+
+// The whole point of judging by a streak: these connectors return the occasional
+// business error, and one of those between successes is noise that fixes itself at
+// the next interval. Reporting it as `error` made a working connector look broken,
+// and the workspace showed a card you had to dismiss by hand.
+func TestOneFailureBetweenSuccessesIsFlakyNotBroken(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "failed", "business error: success=false", 300),
+		healthRun("dingtalk", "succeeded", "", 200),
+		healthRun("dingtalk", "succeeded", "", 100),
+	}}
+	health := collectionHealth(overview)
+	if len(health) != 1 {
+		t.Fatalf("health = %+v", health)
+	}
+	got := health[0]
+	if got.Status != "flaky" {
+		t.Fatalf("status = %q, want flaky", got.Status)
+	}
+	if got.ConsecutiveFailures != 1 || got.RecentRuns != 3 || got.RecentFailures != 1 {
+		t.Fatalf("counts = %+v", got)
+	}
+	// The rate is what tells a human whether to care; the latest message alone does not.
+	line := collectionHealthLine(got)
+	if !strings.Contains(line, "最近 3 次里失败 1 次") {
+		t.Fatalf("line = %q", line)
+	}
+}
+
+func TestASucceedingConnectorIsReadyAndCarriesNoStaleError(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "succeeded", "", 300),
+		healthRun("dingtalk", "failed", "business error", 200),
+	}}
+	got := collectionHealth(overview)[0]
+	if got.Status != "ready" {
+		t.Fatalf("status = %q", got.Status)
+	}
+	// A stale message beside "ready" is what made one hiccup read as a breakage.
+	if got.Error != "" {
+		t.Fatalf("error = %q, want empty once it is working again", got.Error)
+	}
+	if line := collectionHealthLine(got); !strings.Contains(line, "已恢复") {
+		t.Fatalf("line = %q, want the recovery noted rather than hidden", line)
+	}
+}
+
+func TestRepeatedFailuresAreReportedAsBroken(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "failed", "business error", 400),
+		healthRun("dingtalk", "failed", "business error", 300),
+		healthRun("dingtalk", "succeeded", "", 200),
+	}}
+	got := collectionHealth(overview)[0]
+	if got.Status != "error" {
+		t.Fatalf("status = %q, want error once it stops recovering", got.Status)
+	}
+	if got.ConsecutiveFailures != 2 {
+		t.Fatalf("streak = %d", got.ConsecutiveFailures)
+	}
+	if line := collectionHealthLine(got); !strings.Contains(line, "连续失败 2 次") {
+		t.Fatalf("line = %q", line)
+	}
+}
+
+// A login that expired will not fix itself, so waiting for a second sample only
+// delays telling the user by one interval.
+func TestAClassifiedFailureIsReportedOnTheFirstOccurrence(t *testing.T) {
+	for _, test := range []struct {
+		message string
+		want    string
+	}{
+		{"dws: not_authenticated, run auth login", "auth_required"},
+		{"forbidden: 没有权限", "permission_required"},
+	} {
+		overview := store.CollectionOverview{Runs: []store.CollectionRun{
+			healthRun("dingtalk", "failed", test.message, 300),
+			healthRun("dingtalk", "succeeded", "", 200),
+		}}
+		got := collectionHealth(overview)[0]
+		if got.Status != test.want {
+			t.Errorf("%q → %q, want %q", test.message, got.Status, test.want)
+		}
+	}
+}
+
+// A single failure with nothing behind it has no recovery to point at, so it is
+// not called flaky — there is no evidence it recovers.
+func TestTheVeryFirstRunFailingIsNotCalledFlaky(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "failed", "business error", 100),
+	}}
+	got := collectionHealth(overview)[0]
+	if got.Status != "error" {
+		t.Fatalf("status = %q, want error", got.Status)
+	}
+}
+
+// One source hiccupping must not condemn a connector that other sources are using
+// successfully, and a running attempt is not evidence either way.
+func TestRunningAttemptsAreIgnoredAndConnectorsStaySeparate(t *testing.T) {
+	overview := store.CollectionOverview{Runs: []store.CollectionRun{
+		healthRun("dingtalk", "running", "", 0),
+		healthRun("dingtalk", "succeeded", "", 300),
+		healthRun("slack", "failed", "business error", 290),
+		healthRun("slack", "failed", "business error", 280),
+	}}
+	byConnector := map[string]collectionConnectorHealth{}
+	for _, health := range collectionHealth(overview) {
+		byConnector[health.Connector] = health
+	}
+	if byConnector["dingtalk"].Status != "ready" {
+		t.Fatalf("dingtalk = %+v", byConnector["dingtalk"])
+	}
+	if byConnector["slack"].Status != "error" {
+		t.Fatalf("slack = %+v", byConnector["slack"])
 	}
 }

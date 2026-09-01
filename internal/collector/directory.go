@@ -22,6 +22,7 @@ type Directory interface {
 const (
 	DirectoryKindGroup = "group"
 	DirectoryKindUser  = "user"
+	DirectoryKindBot   = "bot"
 	DirectoryKindAll   = "all"
 )
 

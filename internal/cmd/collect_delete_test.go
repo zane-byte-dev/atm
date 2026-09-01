@@ -28,6 +28,7 @@ func decodeCollectionDeletion(payload string) (collectionDeletion, error) {
 // which is the complaint this command answers.
 func TestCollectItemDeleteRemovesTheRecordAndKeepsItsTodo(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCollectionCLI(t)
 	oldJSON, oldYes := jsonOutput, collectYes
 	t.Cleanup(func() { jsonOutput, collectYes = oldJSON, oldYes })
 	if err := seedTodos(store.Todo{ID: "t1", Title: "修部署脚本", Priority: "P1",
@@ -86,6 +87,7 @@ func TestCollectItemDeleteRemovesTheRecordAndKeepsItsTodo(t *testing.T) {
 // that was never cleared.
 func TestCollectItemDeleteClearsAGroupInOneTransaction(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCollectionCLI(t)
 	oldJSON, oldYes := jsonOutput, collectYes
 	t.Cleanup(func() { jsonOutput, collectYes = oldJSON, oldYes })
 

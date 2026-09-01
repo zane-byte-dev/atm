@@ -7,6 +7,26 @@ final class ATMDesktopLayoutTests: XCTestCase {
         XCTAssertEqual(ATMDesktopLayout.collapsedSidebarWidth, 58)
     }
 
+    func testDetailHeaderTabsAndContentShareTheSameLeadingEdge() {
+        XCTAssertEqual(ATMDetailLayout.surfaceHorizontalInset, ATMDetailLayout.horizontalPadding)
+        XCTAssertEqual(ATMDetailLayout.surfaceVerticalInset, ATMSpacing.medium)
+        XCTAssertEqual(ATMDetailLayout.tabsHorizontalPadding, ATMDetailLayout.horizontalPadding)
+        XCTAssertEqual(ATMDetailLayout.contentMaxWidth, 880)
+    }
+
+    func testCollectionSourceSheetKeepsACompactViewport() {
+        XCTAssertEqual(CollectionSourceEditorLayout.sheetWidth, 560)
+        XCTAssertEqual(CollectionSourceEditorLayout.sheetHeight(isNewSource: true), 560)
+        XCTAssertEqual(CollectionSourceEditorLayout.sheetHeight(isNewSource: false), 520)
+        XCTAssertGreaterThanOrEqual(CollectionSourceEditorLayout.advancedTriggerMinimumHeight, 44)
+        XCTAssertGreaterThanOrEqual(CollectionSourceEditorLayout.choiceCardMinimumHeight, 44)
+    }
+
+    func testQuotaCardsKeepAStableWidthAcrossWindowResizes() {
+        XCTAssertEqual(ATMUsageQuotaLayout.cardWidth, 360)
+        XCTAssertEqual(ATMUsageQuotaLayout.cardMinimumHeight, 210)
+    }
+
     @MainActor
     func testNavigationHistoryRestoresSectionAndDetailSelection() {
         let navigation = ATMDesktopNavigation()
@@ -36,6 +56,19 @@ final class ATMDesktopLayoutTests: XCTestCase {
     }
 
     @MainActor
+    func testNavigationHistoryRestoresTaskListMode() {
+        let navigation = ATMDesktopNavigation()
+        navigation.taskListMode = .archive
+        navigation.selectedTodoID = "t-deleted"
+        navigation.section = .collection
+
+        navigation.goBack()
+        XCTAssertEqual(navigation.section, .tasks)
+        XCTAssertEqual(navigation.taskListMode, .archive)
+        XCTAssertEqual(navigation.selectedTodoID, "t-deleted")
+    }
+
+    @MainActor
     func testNewNavigationClearsForwardHistory() {
         let navigation = ATMDesktopNavigation()
         navigation.section = .usage
@@ -50,5 +83,17 @@ final class ATMDesktopLayoutTests: XCTestCase {
 
         navigation.goBack()
         XCTAssertEqual(navigation.section, .usage)
+    }
+
+    @MainActor
+    func testCollectionNotificationRevealRepeatsForTheSameRecord() {
+        let navigation = ATMDesktopNavigation()
+
+        navigation.revealCollectionItem("ci1")
+        XCTAssertEqual(navigation.selectedCollectionItemID, "ci1")
+        XCTAssertEqual(navigation.collectionItemRevealRequest, 1)
+
+        navigation.revealCollectionItem("ci1")
+        XCTAssertEqual(navigation.collectionItemRevealRequest, 2)
     }
 }

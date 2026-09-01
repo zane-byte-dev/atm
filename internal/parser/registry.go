@@ -50,6 +50,7 @@ func init() {
 	register(qoderCLIAgent{})
 	register(qoderWorkAgent{})
 	register(grokBuildAgent{})
+	register(antigravityAgent{})
 }
 
 type claudeAgent struct{}
@@ -129,8 +130,8 @@ func (grokBuildAgent) Name() string { return "grokbuild" }
 // ParseAppend is unsupported: token usage lives in sibling updates.jsonl and is
 // aggregated per turn, so a chat_history-only tail parse would under-count.
 func (grokBuildAgent) ParseAppend(string, int64) *ParsedFile { return nil }
-func (grokBuildAgent) Discover() []string                   { return DiscoverGrok() }
-func (grokBuildAgent) ParseFile(p string) *ParsedFile       { return GrokParseFile(p) }
+func (grokBuildAgent) Discover() []string                    { return DiscoverGrok() }
+func (grokBuildAgent) ParseFile(p string) *ParsedFile        { return GrokParseFile(p) }
 func (grokBuildAgent) LiveSessions(d time.Duration) []Session {
 	return GrokLiveSessions(d)
 }
@@ -139,4 +140,21 @@ func (grokBuildAgent) LiveSessions(d time.Duration) []Session {
 // turn_completed write still triggers a full re-parse.
 func (grokBuildAgent) SourceVersion(path string) (mtime, size int64, ok bool) {
 	return GrokSourceVersion(path)
+}
+
+type antigravityAgent struct{}
+
+func (antigravityAgent) Name() string                   { return "antigravity" }
+func (antigravityAgent) Discover() []string             { return DiscoverAntigravity() }
+func (antigravityAgent) ParseFile(p string) *ParsedFile { return AntigravityParseFile(p) }
+
+// ParseAppend is unsupported: the transcript is a SQLite database, not an
+// append-only log, so there is no offset a tail parse could resume from.
+func (antigravityAgent) ParseAppend(string, int64) *ParsedFile  { return nil }
+func (antigravityAgent) LiveSessions(d time.Duration) []Session { return AntigravityLiveSessions(d) }
+
+// SourceVersion folds in the sibling WAL files; see AntigravitySourceVersion for
+// why reading the database alone would strand new calls.
+func (antigravityAgent) SourceVersion(path string) (mtime, size int64, ok bool) {
+	return AntigravitySourceVersion(path)
 }

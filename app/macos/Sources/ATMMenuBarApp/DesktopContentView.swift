@@ -1,7 +1,9 @@
 import AppKit
 import Charts
 import Combine
+import QuickLook
 import SwiftUI
+import UniformTypeIdentifiers
 
 enum ATMDesktopSection: String, CaseIterable, Identifiable {
     case tasks
@@ -9,6 +11,7 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
     case agents
     case knowledge
     case usage
+    case aiDay
     case settings
 
     var id: String { rawValue }
@@ -18,7 +21,8 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
         case .collection: return "收集"
         case .agents: return "Agent"
         case .knowledge: return "知识"
-        case .usage: return "用量"
+        case .usage: return "统计"
+        case .aiDay: return "AI Day"
         case .settings: return "设置"
         }
     }
@@ -29,6 +33,7 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
         case .agents: return "cpu"
         case .knowledge: return "books.vertical"
         case .usage: return "chart.xyaxis.line"
+        case .aiDay: return "sparkles"
         case .settings: return "gearshape"
         }
     }
@@ -38,45 +43,57 @@ enum ATMDesktopSection: String, CaseIterable, Identifiable {
 /// section makes history useful for detail-to-detail links, not just for moving
 /// between the six sidebar tabs.
 enum ATMDesktopLocation: Equatable {
-    case tasks(todoID: String?)
+    case tasks(todoID: String?, listMode: ATMTaskListMode)
     case collection(sourceID: String?, itemID: String?)
     case agents(sessionID: String?, runTodoID: String?)
     case knowledge(libraryID: String?, documentID: String?)
     case usage
+    case aiDay
     case settings
+}
+
+enum ATMTaskListMode: Equatable {
+    case active
+    case archive
+}
+
+private enum ATMTaskDrawerTab: String {
+	case tasks
+	case groups
 }
 
 /// Status color / icon / label used by the task list and detail header.
 enum ATMTodoStatusStyle {
-    /// Parked by the human via “暂不处理”. Stored as waiting with this wake string
-    /// so we do not need a new CLI status.
-    static var deferredWake: String { ATMTodoDeferred.wakeCondition }
-
-    static func isDeferred(_ todo: ATMTodo) -> Bool {
-        ATMTodoStatusActions.isDeferred(todo)
+    /// Waiting is presentation only: an in-progress Todo with either a wake
+    /// condition or review date stays in the same lifecycle group.
+    static func isWaiting(_ todo: ATMTodo) -> Bool {
+        guard todo.status == "in_progress" else { return false }
+        return !(todo.wakeCondition ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || !(todo.reviewAt ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// Waiting deliberately has no label of its own. It is not a lifecycle state,
+    /// and giving it one put a fifth word in a four-state vocabulary — a Todo read
+    /// as 等待中 in the list and 进行中 everywhere else. The orange clock in
+    /// `color(for:)` and `icon(for:)` is how waiting shows, alongside the wake
+    /// condition and review date the detail view already prints.
     static func label(for todo: ATMTodo) -> String {
-        if isDeferred(todo) { return "暂不处理" }
-        return label(forStatus: todo.status)
+        label(forStatus: todo.status)
     }
 
     static func label(forStatus status: String) -> String {
         switch status {
-        case "open": return "待开始"
-        case "in_progress": return "工作中"
-        case "waiting": return "等待中"
+        case "open": return "待办"
+        case "in_progress": return "进行中"
         case "review": return "待验收"
-        case "blocked": return "阻塞"
         case "done": return "已完成"
-        case "dropped": return "已放弃"
         default: return status
         }
     }
 
     static func color(for todo: ATMTodo) -> Color {
-        if isDeferred(todo) {
-            return Color(red: 117 / 255, green: 128 / 255, blue: 145 / 255)
+        if isWaiting(todo) {
+            return Color(red: 230 / 255, green: 139 / 255, blue: 24 / 255)
         }
         return color(forStatus: todo.status)
     }
@@ -87,23 +104,17 @@ enum ATMTodoStatusStyle {
             return Color(red: 117 / 255, green: 128 / 255, blue: 145 / 255)
         case "in_progress":
             return Color(red: 52 / 255, green: 112 / 255, blue: 246 / 255)
-        case "waiting":
-            return Color(red: 230 / 255, green: 139 / 255, blue: 24 / 255)
         case "review":
             return Color(red: 137 / 255, green: 87 / 255, blue: 229 / 255)
-        case "blocked":
-            return Color(red: 220 / 255, green: 50 / 255, blue: 67 / 255)
         case "done":
             return Color(red: 31 / 255, green: 157 / 255, blue: 104 / 255)
-        case "dropped":
-            return Color(red: 117 / 255, green: 128 / 255, blue: 145 / 255).opacity(0.55)
         default:
             return ATMTheme.secondary
         }
     }
 
     static func icon(for todo: ATMTodo) -> String {
-        if isDeferred(todo) { return "moon.zzz.fill" }
+        if isWaiting(todo) { return "clock.fill" }
         return icon(forStatus: todo.status)
     }
 
@@ -112,22 +123,19 @@ enum ATMTodoStatusStyle {
         case "open": return "circle"
         // Fallback SF Symbol when a ProgressView is not practical (menus, a11y).
         case "in_progress": return "circle.dotted"
-        case "waiting": return "clock.fill"
         case "review": return "person.crop.circle.badge.checkmark"
-        case "blocked": return "exclamationmark.octagon.fill"
         case "done": return "checkmark.circle.fill"
-        case "dropped": return "xmark.circle.fill"
         default: return "circle"
         }
     }
 
     /// True when the row should show a spinner instead of a static status glyph.
     static func usesLoadingIcon(for todo: ATMTodo) -> Bool {
-        todo.status == "in_progress" && !isDeferred(todo)
+        todo.status == "in_progress" && !isWaiting(todo)
     }
 
     static func usesStrikethrough(for todo: ATMTodo) -> Bool {
-        todo.status == "dropped"
+        false
     }
 }
 
@@ -156,6 +164,23 @@ enum ATMTodoPriorityStyle {
         case "P3": return "P3 · 低"
         default: return "P2 · 普通"
         }
+    }
+}
+
+/// Project names are the only stable category carried by every task row. Give
+/// each one a deterministic categorical colour so repeated projects become a
+/// visual landmark instead of another piece of grey metadata.
+enum ATMTodoProjectStyle {
+    static func colorIndex(for project: String) -> Int {
+        let categoricalCount = max(ATMTheme.palette.count - 1, 1)
+        let hash = project.unicodeScalars.reduce(UInt64(5381)) { value, scalar in
+            (value &* 33) &+ UInt64(scalar.value)
+        }
+        return Int(hash % UInt64(categoricalCount))
+    }
+
+    static func color(for project: String) -> Color {
+        ATMTheme.palette[colorIndex(for: project)]
     }
 }
 
@@ -188,19 +213,16 @@ enum ATMTaskQuery {
     /// part of a day's work silently showed up under 完成历史.
     static let recentCompletionDays = 7
 
-    /// Status sections in list order. 待验收 is first — it is the human gate.
-    /// 暂不处理 sits near the bottom: parked work, not a current queue.
+    /// Status sections in list order. Waiting-styled work remains in 进行中: the
+    /// orange clock marks it inside that group rather than splitting it out.
     static let groupSpecs: [(id: String, title: String)] = [
         ("review", "待验收"),
-        ("working", "工作中"),
-        ("waiting", "等待中"),
-        ("blocked", "阻塞"),
-        ("open", "待开始"),
-        ("deferred", "暂不处理"),
+        ("working", "进行中"),
+        ("open", "待办"),
         ("done", "最近完成"),
-        ("dropped", "已放弃"),
         ("history", "完成历史"),
     ]
+	static let archiveGroupSpec = (id: "archive", title: "已归档")
 
     private static let completionDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -218,11 +240,6 @@ enum ATMTaskQuery {
             [todo.id, todo.title, todo.description ?? "", todo.project ?? "", todo.source ?? ""]
                 .contains { $0.lowercased().contains(needle) }
         }
-    }
-
-    static func visibleTodos(from todos: [ATMTodo], showsDropped: Bool) -> [ATMTodo] {
-        guard !showsDropped else { return todos }
-        return todos.filter { $0.status != "dropped" }
     }
 
     /// Newest first within a status group. `created` is YYYY-MM-DD; id breaks ties.
@@ -273,9 +290,6 @@ enum ATMTaskQuery {
     ) -> [(id: String, title: String, todos: [ATMTodo])] {
         let review = todos.filter { $0.status == "review" }
         let working = todos.filter { $0.status == "in_progress" }
-        let deferred = todos.filter(ATMTodoStatusStyle.isDeferred)
-        let waiting = todos.filter { $0.status == "waiting" && !ATMTodoStatusStyle.isDeferred($0) }
-        let blocked = todos.filter { $0.status == "blocked" }
         let open = todos.filter { $0.status == "open" }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
@@ -288,19 +302,14 @@ enum ATMTaskQuery {
         let completed = sortedByCompletionDescending(todos.filter { $0.status == "done" })
         let done = completed.filter { completionDay(for: $0) >= cutoffDay }
         let history = completed.filter { completionDay(for: $0) < cutoffDay }
-        let dropped = todos.filter { $0.status == "dropped" }
         let buckets: [String: [ATMTodo]] = [
             "review": review,
             "working": working,
-            "waiting": waiting,
-            "blocked": blocked,
             "open": open,
-            "deferred": deferred,
             "done": done,
-            "dropped": dropped,
             "history": history,
         ]
-        let completionGroups: Set<String> = ["done", "dropped", "history"]
+        let completionGroups: Set<String> = ["done", "history"]
         return groupSpecs.compactMap { spec in
             let items = completionGroups.contains(spec.id)
                 ? sortedByCompletionDescending(buckets[spec.id] ?? [])
@@ -310,19 +319,43 @@ enum ATMTaskQuery {
         }
     }
 
+	/// Archived work is retention, not a fifth lifecycle state. The desktop still
+	/// presents it as the final navigable group so it no longer needs a separate
+	/// list mode or back button.
+	static func groups(
+		from todos: [ATMTodo],
+		includingArchived archived: [ATMTodo],
+		now: Date = Date()
+	) -> [(id: String, title: String, todos: [ATMTodo])] {
+		var result = groups(from: todos, now: now)
+		if !archived.isEmpty {
+			result.append((
+				archiveGroupSpec.id,
+				archiveGroupSpec.title,
+				sortedByCreatedDescending(archived)
+			))
+		}
+		return result
+	}
+
+    /// Flat mode removes only the section chrome. It keeps the grouped view's
+    /// status rank and each section's ordering so changing presentation never
+    /// changes which task is considered first.
+    static func flattened(
+        from todos: [ATMTodo],
+        now: Date = Date()
+    ) -> [ATMTodo] {
+        groups(from: todos, now: now).flatMap(\.todos)
+    }
+
     static func preferredDefault(in todos: [ATMTodo]) -> ATMTodo? {
         // Match list order: human review first, then active work; newest within rank.
-        // Deferred/parked work ranks just above closed.
         let statusRank: (ATMTodo) -> Int = { todo in
-            if ATMTodoStatusStyle.isDeferred(todo) { return 5 }
             switch todo.status {
             case "review": return 0
-            case "blocked": return 1
-            case "in_progress": return 2
-            case "waiting": return 3
-            case "open": return 4
-            case "done": return 6
-            case "dropped": return 7
+            case "in_progress": return 1
+            case "open": return 2
+            case "done": return 3
             default: return 99
             }
         }
@@ -344,6 +377,21 @@ private struct ATMTaskGroup: Identifiable {
     let id: String
     let title: String
     let todos: [ATMTodo]
+
+	var isArchive: Bool { id == ATMTaskQuery.archiveGroupSpec.id }
+}
+
+private struct ATMTaskGroupRetention {
+	let group: ATMTaskGroup
+	let action: ATMTodoAction
+
+	var actionTitle: String { action == .archive ? "归档全部" : "恢复全部" }
+	var dialogTitle: String { "\(actionTitle)「\(group.title)」中的 \(group.todos.count) 个任务？" }
+	var message: String {
+		action == .archive
+			? "任务会移至已归档分组，之后仍可恢复。"
+			: "任务会回到各自的生命周期分组。"
+	}
 }
 
 @MainActor
@@ -354,12 +402,20 @@ final class ATMDesktopNavigation: ObservableObject {
     @Published var selectedTodoID: String? {
         didSet { if section == .tasks { navigationDidChange() } }
     }
+    /// Which task collection owns selectedTodoID. Direct links to archived Todos
+    /// switch this before the task view validates the selection.
+    @Published var taskListMode: ATMTaskListMode = .active {
+        didSet { if section == .tasks { navigationDidChange() } }
+    }
     @Published var selectedCollectionSourceID: String? {
         didSet { if section == .collection { navigationDidChange() } }
     }
     @Published var selectedCollectionItemID: String? {
         didSet { if section == .collection { navigationDidChange() } }
     }
+    /// Bumped even when the destination ID is unchanged, so clicking a collection
+    /// notification always returns an already-open workspace from 来源 to 记录.
+    @Published private(set) var collectionItemRevealRequest = 0
     @Published var selectedAgentID: String? {
         didSet { if section == .agents { navigationDidChange() } }
     }
@@ -397,7 +453,7 @@ final class ATMDesktopNavigation: ObservableObject {
 
     private var backStack: [ATMDesktopLocation] = []
     private var forwardStack: [ATMDesktopLocation] = []
-    private var recordedLocation: ATMDesktopLocation = .tasks(todoID: nil)
+    private var recordedLocation: ATMDesktopLocation = .tasks(todoID: nil, listMode: .active)
     private var isRestoringLocation = false
     private let maximumHistoryCount = 100
 
@@ -414,10 +470,15 @@ final class ATMDesktopNavigation: ObservableObject {
         restore(target)
     }
 
+    func revealCollectionItem(_ itemID: String) {
+        selectedCollectionItemID = itemID
+        collectionItemRevealRequest += 1
+    }
+
     private var currentLocation: ATMDesktopLocation {
         switch section {
         case .tasks:
-            return .tasks(todoID: selectedTodoID)
+            return .tasks(todoID: selectedTodoID, listMode: taskListMode)
         case .collection:
             return .collection(
                 sourceID: selectedCollectionSourceID,
@@ -435,6 +496,8 @@ final class ATMDesktopNavigation: ObservableObject {
             )
         case .usage:
             return .usage
+        case .aiDay:
+            return .aiDay
         case .settings:
             return .settings
         }
@@ -454,8 +517,9 @@ final class ATMDesktopNavigation: ObservableObject {
     private func restore(_ location: ATMDesktopLocation) {
         isRestoringLocation = true
         switch location {
-        case .tasks(let todoID):
+        case .tasks(let todoID, let listMode):
             selectedTodoID = todoID
+            taskListMode = listMode
             section = .tasks
         case .collection(let sourceID, let itemID):
             selectedCollectionSourceID = sourceID
@@ -471,6 +535,8 @@ final class ATMDesktopNavigation: ObservableObject {
             section = .knowledge
         case .usage:
             section = .usage
+        case .aiDay:
+            section = .aiDay
         case .settings:
             section = .settings
         }
@@ -538,6 +604,11 @@ private extension View {
 
 enum ATMDesktopLayout {
     static let titleBarHeight: CGFloat = 38
+    /// 中栏头部的固定高度。四个工作区（任务的标题头、收集 / 知识 / Agent 的段控头）都用
+    /// 它定高，切页时中栏第一行才不会上下跳——此前任务栏靠 18/14 的内边距长到约 56pt，
+    /// 另外三处各自写死 64pt。
+    static let drawerHeaderHeight: CGFloat = ATMGroupedNavigatorMetrics.headerHeight
+    static let drawerHeaderHorizontalPadding: CGFloat = 16
     static let expandedSidebarWidth: CGFloat = 160
     static let collapsedSidebarWidth: CGFloat = 58
     static let railDividerWidth: CGFloat = 1
@@ -742,6 +813,8 @@ struct DesktopContentView: View {
                         .id("knowledge-library")
                 case .usage:
                     DesktopUsageView(store: store)
+                case .aiDay:
+                    DesktopAIDayView()
                 case .settings:
                     DesktopSettingsView(store: store)
                 }
@@ -872,14 +945,19 @@ struct DesktopContentView: View {
                 }
             }
             .padding(.trailing, 8)
+            // Native traffic lights sit slightly above the geometric centre of a
+            // full-size title bar. Nudge this row — which sits right beside them —
+            // onto that same visual baseline. The search field is 76pt away from
+            // the lights and reads against the bar's own top and bottom edges
+            // instead, so it stays centred in the bar and takes no nudge.
+            .padding(.bottom, 4)
         }
-        // Native traffic lights sit slightly above the geometric centre of a
-        // full-size title bar. Nudge our chrome onto that same visual baseline.
-        .padding(.bottom, 4)
         .frame(maxWidth: .infinity)
         .frame(height: ATMDesktopLayout.titleBarHeight)
         .background(.ultraThinMaterial)
-        .shadow(color: .black.opacity(0.04), radius: 3, y: 1)
+        // 一条实线，不是投影：0.04 的软阴影落在三栏各自的底色上几乎看不见，顶栏和工作区
+        // 只剩材质通透度的差别，边界是「大概在这一带」而不是一条线。
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     private var collectionCreateSheet: some View {
@@ -944,7 +1022,12 @@ struct DesktopContentView: View {
     private func deleteCollection(_ target: ATMCollectionRef, force: Bool, moveTo: String?) {
         Task {
             do {
-                try await store.deleteCollection(id: target.id, force: force, moveTo: moveTo)
+                try await store.deleteCollection(
+                    id: target.id,
+                    force: force,
+                    moveTo: moveTo,
+                    confirmed: true
+                )
                 store.refreshKnowledgeCatalog()
                 await MainActor.run {
                     if navigation.selectedKnowledgeLibraryID == target.id {
@@ -979,6 +1062,8 @@ struct DesktopContentView: View {
 
     private func sidebarButton(_ section: ATMDesktopSection) -> some View {
         let selected = navigation.section == section
+        let hasUnreadCollection = section == .collection
+            && (store.collectionOverview.summary.unreadCount ?? 0) > 0
         return Button {
             navigation.section = section
             if section == .knowledge {
@@ -986,10 +1071,28 @@ struct DesktopContentView: View {
             }
         } label: {
             HStack(spacing: 9) {
-                Image(systemName: section.icon).frame(width: 18)
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: section.icon).frame(width: 18)
+                    if sidebarCollapsed, hasUnreadCollection {
+                        Circle()
+                            .fill(ATMTheme.accent)
+                            .frame(width: 6, height: 6)
+                            .offset(x: 3, y: -2)
+                            .accessibilityHidden(true)
+                    }
+                }
                 if !sidebarCollapsed {
                     Text(section.title)
-                    Spacer()
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1)
+                    Spacer(minLength: 4)
+                    if hasUnreadCollection {
+                        Circle()
+                            .fill(ATMTheme.accent)
+                            .frame(width: 7, height: 7)
+                            .accessibilityHidden(true)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: sidebarCollapsed ? .center : .leading)
@@ -997,7 +1100,8 @@ struct DesktopContentView: View {
             .atmDesktopRailSurface(isSelected: selected)
         }
         .buttonStyle(.plain)
-        .help(section.title)
+        .help(hasUnreadCollection ? "\(section.title)，有未读" : section.title)
+        .accessibilityLabel(hasUnreadCollection ? "\(section.title)，有未读" : section.title)
     }
 
     private var sortedKnowledgeCollections: [ATMKnowledgeCollection] {
@@ -1026,21 +1130,26 @@ struct DesktopContentView: View {
 }
 
 private struct DesktopTasksView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
 
     @State private var deleteCandidate: ATMTodo?
-    @State private var showingTrash = false
+	@State private var retentionCandidate: ATMTaskGroupRetention?
+	@State private var selectedGroupID = "review"
+	@State private var drawerTab = ATMTaskDrawerTab.tasks
     @AppStorage("ATMCollapsedTaskGroups")
-    private var collapsedGroupsRaw = "done,deferred,dropped,history"
+    private var collapsedGroupsRaw = "done,history"
     @AppStorage("ATMDidApplyDefaultCollapsedTaskGroups") private var didApplyDefaultCollapsedGroups = false
     @AppStorage("ATMDidApplyClosedTaskGroupsV2") private var didApplyClosedTaskGroupsV2 = false
-    @AppStorage(ATMTodoListPreferences.showDroppedKey)
-    private var showsDropped = ATMTodoListPreferences.defaultShowsDropped
+    @AppStorage(ATMNavigatorPresentationPreferences.tasksKey)
+    private var taskListPresentationRaw = ATMNavigatorPresentationPreferences.defaultValue
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
+    }
+
+    private var taskListPresentation: ATMNavigatorPresentation {
+        ATMNavigatorPresentation.resolve(taskListPresentationRaw)
     }
 
     private func expandedBinding(for group: ATMTaskGroup) -> Binding<Bool> {
@@ -1056,44 +1165,28 @@ private struct DesktopTasksView: View {
 
     @ViewBuilder
     private func groupHeader(_ group: ATMTaskGroup, expanded: Binding<Bool>) -> some View {
-        Button {
-            withAnimation(ATMMotion.resolved(ATMMotion.disclosure, reduceMotion: reduceMotion)) {
-                expanded.wrappedValue.toggle()
-            }
-        } label: {
-            HStack {
-                ATMDrawerDisclosureLabel(
-                    title: group.title,
-                    count: group.todos.count,
-                    tint: groupAccent(group.id),
-                    isExpanded: expanded.wrappedValue
-                )
-                Spacer()
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
+        ATMNavigatorGroupHeader(
+            title: group.title,
+            count: group.todos.count,
+            tint: groupAccent(group.id),
+            isExpanded: expanded
+        ) {
+			groupActionMenu(group)
+		}
     }
 
     private func groupAccent(_ id: String) -> Color {
         switch id {
-        case "trash": return ATMTheme.secondary
+        case "archive": return ATMTheme.secondary
         case "review": return ATMTodoStatusStyle.color(forStatus: "review")
         case "working": return ATMTodoStatusStyle.color(forStatus: "in_progress")
-        case "waiting": return ATMTodoStatusStyle.color(forStatus: "waiting")
-        case "blocked": return ATMTodoStatusStyle.color(forStatus: "blocked")
         case "done", "history": return ATMTodoStatusStyle.color(forStatus: "done")
         default: return ATMTheme.secondary
         }
     }
 
-    private var todos: [ATMTodo] {
-        showingTrash ? store.trashedTodos : store.allTodos
-    }
-
     private var visibleTodos: [ATMTodo] {
-        if showingTrash { return todos }
-        return ATMTaskQuery.visibleTodos(from: todos, showsDropped: showsDropped)
+		store.allTodos + store.archivedTodos
     }
 
     private var selectedTodo: ATMTodo? {
@@ -1102,62 +1195,77 @@ private struct DesktopTasksView: View {
     }
 
     private var groups: [ATMTaskGroup] {
-        if showingTrash {
-            return [ATMTaskGroup(id: "trash", title: "已删除", todos: visibleTodos)]
-        }
-        return ATMTaskQuery.groups(from: visibleTodos).map {
+		ATMTaskQuery.groups(from: store.allTodos, includingArchived: store.archivedTodos).map {
             ATMTaskGroup(id: $0.id, title: $0.title, todos: $0.todos)
         }
     }
 
+	private var managedGroups: [ATMTaskGroup] {
+		let byID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
+		return (ATMTaskQuery.groupSpecs + [ATMTaskQuery.archiveGroupSpec]).map { spec in
+			byID[spec.id] ?? ATMTaskGroup(id: spec.id, title: spec.title, todos: [])
+		}
+	}
+
+    private var flattenedTodos: [ATMTodo] {
+		groups.flatMap(\.todos)
+    }
+
+	private var selectedTodoIsArchived: Bool {
+		guard let id = selectedTodo?.id else { return false }
+		return store.archivedTodos.contains(where: { $0.id == id })
+	}
+
     var body: some View {
         ATMSplitColumn(
             id: "tasks",
-            defaultWidth: 330,
-            minWidth: 260,
-            maxWidth: 420,
-            detailMinWidth: 400
+            defaultWidth: ATMWorkspaceLayout.navigatorDefaultWidth,
+            minWidth: ATMWorkspaceLayout.navigatorMinWidth,
+            maxWidth: ATMWorkspaceLayout.navigatorMaxWidth,
+            detailMinWidth: ATMWorkspaceLayout.objectDetailMinWidth
         ) {
             taskList
         } detail: {
             Group {
-                if let todo = selectedTodo {
+				if drawerTab == .groups {
+					groupManagementDetail
+				} else if let todo = selectedTodo {
                     DesktopTodoDetail(
                         todo: todo,
                         store: store,
                         navigation: navigation,
-                        isTrashed: showingTrash
+						isArchived: selectedTodoIsArchived
                     )
-                        // Identity is the Todo id alone. Folding title / description /
-                        // status into it recreated the view on every background sync
-                        // that touched them, which reset the selected tab and threw
-                        // away an open edit form mid-typing. The form seeds itself
-                        // from `todo` when 编辑 is picked, so it opens on current
-                        // values without needing a fresh identity to do it.
+                            // Identity is the Todo id alone. Folding title / description /
+                            // status into it recreated the view on every background sync
+                            // that touched them, which reset the selected tab and threw
+                            // away an open edit form mid-typing. The form seeds itself
+                            // from `todo` when 编辑 is picked, so it opens on current
+                            // values without needing a fresh identity to do it.
                         .id(todo.id)
                 } else {
-                    VStack(spacing: 10) {
-                        Image(systemName: showingTrash ? "trash" : "checklist")
-                            .font(ATMFont.font(.display, weight: .light))
-                            .foregroundStyle(ATMTheme.secondary)
-                        Text(showingTrash ? "选择一个已删除任务" : "选择一个任务")
-                            .font(ATMFont.font(.title3, weight: .semibold))
-                        Text("从左侧列表查看详情、编辑 Markdown 或执行快捷操作。")
-                            .font(ATMFont.body)
-                            .foregroundStyle(ATMTheme.secondary)
+                    ATMDetailBodySurface {
+                        ATMEmptyState(
+							icon: "checklist",
+							title: "选择一个任务",
+                            detail: "从中栏查看详情、编辑 Markdown 或执行快捷操作。",
+                            size: .inline,
+                            minHeight: 180
+                        )
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(ATMTheme.canvas)
             .atmAnimatedSwap(
-                "todo:\(selectedTodo?.id ?? "empty"):\(showingTrash)",
+				drawerTab == .groups
+					? "task-group:\(selectedGroupID)"
+					: "todo:\(selectedTodo?.id ?? "empty"):\(selectedTodoIsArchived)",
                 style: .detail
             )
         }
         .onAppear {
             applyDefaultCollapsedGroupsIfNeeded()
+            revealSelectedTodoIfFiltered()
             // First paint may pre-select from a notification or keep a prior ID
             // before this view subscribed to selection changes — reveal once.
             selectFirstIfNeeded()
@@ -1166,46 +1274,22 @@ private struct DesktopTasksView: View {
         // Adding/refreshing todos must not re-expand groups the user collapsed
         // (e.g. 已完成). Only pick a default when the current selection is gone;
         // reveal stays on selection change / first appear.
-        .onChange(of: todos.map(\.id)) { _ in selectFirstIfNeeded() }
-        .onChange(of: showsDropped) { _ in selectFirstIfNeeded() }
-        .onChange(of: showingTrash) { _ in selectFirstIfNeeded() }
-        .onChange(of: navigation.selectedTodoID) { _ in revealSelectedGroup() }
+		.onChange(of: visibleTodos.map(\.id)) { _ in selectFirstIfNeeded() }
+        .onChange(of: navigation.selectedTodoID) { _ in
+            revealSelectedTodoIfFiltered()
+            selectFirstIfNeeded()
+            revealSelectedGroup()
+        }
+		.onChange(of: drawerTab) { tab in
+			if tab == .groups { selectManagedGroupIfNeeded() }
+		}
+        .onChange(of: taskListPresentationRaw) { _ in revealSelectedGroup() }
     }
 
     private var taskList: some View {
-        VStack(spacing: 0) {
-            ATMDrawerHeader(title: showingTrash ? "回收站" : "任务", count: visibleTodos.count) {
-                if showingTrash {
-                    Button {
-                        showingTrash = false
-                    } label: {
-                        Label("返回任务", systemImage: "chevron.left")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                } else {
-                    Button {
-                        showingTrash = true
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("回收站")
-
-                    Button {
-                        navigation.showAddTodo = true
-                    } label: {
-                        Label("新建", systemImage: "plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    // ⌘N 归主菜单「文件 → 新建任务」，不挂在这个按钮上：挂在这儿的话
-                    // 快捷键跟着「任务」页一起消失，切到收集或知识就按不动了。
-                    .help("添加任务 (⌘N)")
-                }
-            }
-
+        ATMGroupedNavigator {
+			taskDrawerTabs
+        } content: {
             if let error = store.errorMessage {
                 let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "任务加载失败")
                 ATMInlineNotice(
@@ -1221,72 +1305,143 @@ private struct DesktopTasksView: View {
                 .padding(.bottom, 8)
             }
 
-            List {
-                ForEach(groups) { group in
-                    let expanded = expandedBinding(for: group)
-                    Section {
-                        if expanded.wrappedValue {
-                            ForEach(group.todos) { todo in
-                                Button {
-                                    navigation.selectedTodoID = todo.id
-                                } label: {
-                                    DesktopTodoRow(
-                                        todo: todo,
-                                        isSelected: navigation.selectedTodoID == todo.id
-                                    )
-                                }
-                                    .buttonStyle(.plain)
-                                    .focusable(false)
-                                    .atmContentListRow()
-                                    .atmRightClickMenu { todoMenuEntries(for: todo) }
-                            }
-                        }
-                    } header: {
-                        groupHeader(group, expanded: expanded)
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
-            .overlay {
-                if visibleTodos.isEmpty {
-                    VStack(spacing: 7) {
-                        Image(systemName: "magnifyingglass")
-                            .font(ATMFont.font(.title2, weight: .light))
-                        Text(showingTrash ? "回收站为空" : "没有匹配的任务")
-                            .font(ATMFont.font(.body, weight: .medium))
-                    }
-                    .foregroundStyle(ATMTheme.secondary)
-                    .allowsHitTesting(false)
-                }
-            }
+			Group {
+				if drawerTab == .tasks {
+					taskColumn
+				} else {
+					groupManagementColumn
+				}
+			}
+			.atmAnimatedSwap(drawerTab.rawValue, style: .tab)
         }
-        .background(ATMTheme.listPane)
-        .confirmationDialog(
-            "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
-            isPresented: Binding(
-                get: { deleteCandidate != nil },
-                set: { if !$0 { deleteCandidate = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let todo = deleteCandidate {
-                Button("永久删除", role: .destructive) {
-                    store.perform(.delete, on: todo)
-                    deleteCandidate = nil
-                }
-            }
-            Button("取消", role: .cancel) { deleteCandidate = nil }
-        } message: {
-            Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
+		.confirmationDialog(
+			retentionCandidate?.dialogTitle ?? "",
+			isPresented: Binding(
+				get: { retentionCandidate != nil },
+				set: { if !$0 { retentionCandidate = nil } }
+			),
+			titleVisibility: .visible
+		) {
+			if let candidate = retentionCandidate {
+				Button(candidate.actionTitle, role: candidate.action == .archive ? .destructive : nil) {
+					store.performRetention(candidate.action, on: candidate.group.todos)
+					retentionCandidate = nil
+				}
+			}
+			Button("取消", role: .cancel) { retentionCandidate = nil }
+		} message: {
+			Text(retentionCandidate?.message ?? "")
+		}
+    }
+
+	private var taskDrawerTabs: some View {
+		ATMNavigatorHeader {
+			ATMCompactSegmentedTabs(
+				selection: $drawerTab,
+				items: [(.tasks, "任务"), (.groups, "分组")]
+			)
+		} trailing: {
+			HStack(spacing: ATMSpacing.xSmall) {
+				if drawerTab == .tasks {
+					ATMNavigatorPresentationToggle(storedValue: $taskListPresentationRaw)
+					ATMIconButton(
+						systemImage: "plus",
+						help: "添加任务 (⌘N)",
+						chrome: .chip,
+						side: 30,
+						iconTier: .bodyLarge
+					) {
+						navigation.showAddTodo = true
+					}
+				}
+			}
+		}
+	}
+
+	private var taskColumn: some View {
+		ATMGroupedNavigatorScroll {
+			if taskListPresentation == .grouped {
+				ForEach(groups) { group in
+					let expanded = expandedBinding(for: group)
+					ATMNavigatorGroup {
+						groupHeader(group, expanded: expanded)
+					} content: {
+						if expanded.wrappedValue {
+							ForEach(group.todos) { todo in
+								todoRow(todo, showsStatus: false)
+							}
+						}
+					}
+				}
+			} else {
+				ForEach(flattenedTodos) { todo in
+					todoRow(todo, showsStatus: true)
+				}
+			}
+		}
+		.overlay {
+			if visibleTodos.isEmpty {
+				ATMEmptyState(icon: "checklist", title: "没有任务")
+					.allowsHitTesting(false)
+			}
+		}
+		.confirmationDialog(
+			"永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
+			isPresented: Binding(
+				get: { deleteCandidate != nil },
+				set: { if !$0 { deleteCandidate = nil } }
+			),
+			titleVisibility: .visible
+		) {
+			if let todo = deleteCandidate {
+				Button("永久删除", role: .destructive) {
+					store.perform(.delete, on: todo)
+					deleteCandidate = nil
+				}
+			}
+			Button("取消", role: .cancel) { deleteCandidate = nil }
+		} message: {
+			Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。")
+				.font(ATMFont.body)
+		}
+	}
+
+	private var groupManagementColumn: some View {
+		ScrollView {
+			LazyVStack(spacing: 0) {
+				ForEach(managedGroups) { group in
+					groupManagementRow(group)
+						.atmContentStackRow()
+				}
+			}
+			.padding(.horizontal, ATMGroupedNavigatorMetrics.contentHorizontalInset)
+			.padding(.vertical, ATMGroupedNavigatorMetrics.contentVerticalInset)
+		}
+	}
+
+    private func todoRow(_ todo: ATMTodo, showsStatus: Bool) -> some View {
+		let isArchived = store.archivedTodos.contains(where: { $0.id == todo.id })
+		return Button {
+            navigation.selectedTodoID = todo.id
+        } label: {
+            DesktopTodoRow(
+                todo: todo,
+                isSelected: navigation.selectedTodoID == todo.id,
+				showsStatus: showsStatus,
+				isArchived: isArchived
+            )
         }
+        .buttonStyle(.atmRow)
+        .focusable(false)
+        .atmContentStackRow()
+        .atmRightClickMenu { todoMenuEntries(for: todo) }
     }
 
     private func todoMenuEntries(for todo: ATMTodo) -> [ATMMenuEntry] {
         ATMTodoMenu.entries(
             for: todo,
             store: store,
-            isTrashed: showingTrash,
+			isArchived: store.archivedTodos.contains(where: { $0.id == todo.id }),
             // Editing lives in the detail pane's form, so the row menu selects the
             // todo and asks the detail to open straight into it.
             onEdit: {
@@ -1307,109 +1462,251 @@ private struct DesktopTasksView: View {
         navigation.selectedTodoID = ATMTaskQuery.preferredDefault(in: visibleTodos)?.id
     }
 
+    private func revealSelectedTodoIfFiltered() {
+		// Every retained Todo is visible in the same list; direct links only need
+		// to switch back from the group-management tab.
+		if navigation.selectedTodoID != nil { drawerTab = .tasks }
+    }
+
     private func applyDefaultCollapsedGroupsIfNeeded() {
         var set = collapsedGroups
         if !didApplyDefaultCollapsedGroups {
             set.insert("done")
-            set.insert("deferred")
             didApplyDefaultCollapsedGroups = true
         }
         if !didApplyClosedTaskGroupsV2 {
-            set.insert("dropped")
             set.insert("history")
+			set.insert("archive")
             didApplyClosedTaskGroupsV2 = true
         }
         collapsedGroupsRaw = set.sorted().joined(separator: ",")
     }
 
     private func revealSelectedGroup() {
-        guard let selected = navigation.selectedTodoID,
+        guard taskListPresentation == .grouped,
+              let selected = navigation.selectedTodoID,
               let group = groups.first(where: { group in group.todos.contains(where: { $0.id == selected }) }),
               collapsedGroups.contains(group.id) else { return }
         var set = collapsedGroups
         set.remove(group.id)
         collapsedGroupsRaw = set.sorted().joined(separator: ",")
     }
+
+	private func selectManagedGroupIfNeeded() {
+		guard managedGroups.contains(where: { $0.id == selectedGroupID }) else {
+			selectedGroupID = managedGroups.first?.id ?? "review"
+			return
+		}
+	}
+
+	private func groupManagementRow(_ group: ATMTaskGroup) -> some View {
+		return Button {
+			selectedGroupID = group.id
+		} label: {
+			ATMNavigatorRow(isSelected: selectedGroupID == group.id) {
+				HStack(spacing: 10) {
+					Image(systemName: groupIcon(group.id))
+						.foregroundStyle(groupAccent(group.id))
+						.frame(width: 18)
+					VStack(alignment: .leading, spacing: 3) {
+						Text(group.title).font(ATMFont.font(.body, weight: .semibold))
+						Text(groupDescription(group.id))
+							.font(ATMFont.caption)
+							.foregroundStyle(ATMTheme.secondary)
+							.lineLimit(1)
+					}
+					Spacer()
+					Text("\(group.todos.count)")
+						.font(ATMFont.mono(.caption, .semibold))
+						.foregroundStyle(ATMTheme.secondary)
+				}
+			}
+		}
+		.buttonStyle(.atmRow)
+		.focusable(false)
+		.atmRightClickMenu { groupMenuEntries(group) }
+	}
+
+	@ViewBuilder
+	private var groupManagementDetail: some View {
+		if let group = managedGroups.first(where: { $0.id == selectedGroupID }) {
+			VStack(spacing: 0) {
+				ATMDetailHeader(title: group.title) {
+					Label("任务分组", systemImage: groupIcon(group.id))
+						.font(ATMFont.footnote)
+						.foregroundStyle(groupAccent(group.id))
+				} actions: {
+					HStack(spacing: 6) {
+						Button {
+							drawerTab = .tasks
+							navigation.selectedTodoID = group.todos.first?.id
+						} label: {
+							Label("查看任务", systemImage: "list.bullet")
+						}
+						.buttonStyle(.bordered)
+						.controlSize(.small)
+						.disabled(group.todos.isEmpty)
+						if group.isArchive, !group.todos.isEmpty {
+							Button("恢复全部") { requestRetention(.restore, for: group) }
+								.buttonStyle(.borderedProminent)
+								.controlSize(.small)
+						} else if ["done", "history"].contains(group.id), !group.todos.isEmpty {
+							Button("归档全部") { requestRetention(.archive, for: group) }
+								.buttonStyle(.borderedProminent)
+								.controlSize(.small)
+						}
+					}
+				} meta: {
+					Text("\(group.todos.count) 个任务")
+						.font(ATMFont.caption)
+						.foregroundStyle(ATMTheme.secondary)
+				}
+				Divider()
+				ATMDetailBodySurface {
+					Text(groupDescription(group.id))
+						.font(ATMFont.body)
+						.foregroundStyle(ATMTheme.secondary)
+						.padding(.horizontal, ATMDetailLayout.horizontalPadding)
+						.padding(.vertical, 24)
+						.frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+						.frame(maxWidth: .infinity, alignment: .leading)
+				}
+			}
+		} else {
+			ATMDetailBodySurface {
+				ATMEmptyState(icon: "rectangle.3.group", title: "选择一个分组")
+			}
+		}
+	}
+
+	private func groupActionMenu(_ group: ATMTaskGroup) -> some View {
+		Menu {
+			Button("管理分组…") {
+				selectedGroupID = group.id
+				drawerTab = .groups
+			}
+			if group.isArchive, !group.todos.isEmpty {
+				Divider()
+				Button("恢复全部") { requestRetention(.restore, for: group) }
+			} else if ["done", "history"].contains(group.id), !group.todos.isEmpty {
+				Divider()
+				Button("归档全部…", role: .destructive) { requestRetention(.archive, for: group) }
+			}
+		} label: {
+			Image(systemName: "ellipsis")
+				.font(ATMFont.font(.caption, weight: .semibold))
+				.foregroundStyle(ATMTheme.secondary)
+				.frame(width: 20, height: 20)
+		}
+		.menuStyle(.borderlessButton)
+		.menuIndicator(.hidden)
+		.fixedSize()
+	}
+
+	private func groupMenuEntries(_ group: ATMTaskGroup) -> [ATMMenuEntry] {
+		var entries: [ATMMenuEntry] = []
+		if group.isArchive, !group.todos.isEmpty {
+			entries.append(
+				ATMMenuItem("恢复全部") { requestRetention(.restore, for: group) }.menuEntry
+			)
+		} else if ["done", "history"].contains(group.id), !group.todos.isEmpty {
+			entries.append(
+				ATMMenuItem("归档全部…", destructive: true) {
+					requestRetention(.archive, for: group)
+				}.menuEntry
+			)
+		}
+		return entries
+	}
+
+	private func requestRetention(_ action: ATMTodoAction, for group: ATMTaskGroup) {
+		retentionCandidate = ATMTaskGroupRetention(group: group, action: action)
+	}
+
+	private func groupIcon(_ id: String) -> String {
+		switch id {
+		case "review": return "person.crop.circle.badge.checkmark"
+		case "working": return "circle.dotted"
+		case "open": return "circle"
+		case "done": return "checkmark.circle"
+		case "history": return "clock.arrow.circlepath"
+		case "archive": return "archivebox"
+		default: return "rectangle.3.group"
+		}
+	}
+
+	private func groupDescription(_ id: String) -> String {
+		switch id {
+		case "review": return "Agent 已提交、等待人工验收的任务。"
+		case "working": return "正在推进的任务；带唤醒条件的等待项也留在这里。"
+		case "open": return "尚未开始、可以被会话接手的任务。"
+		case "done": return "最近七天完成的任务。"
+		case "history": return "七天以前完成、仍保留在工作集中的任务。"
+		case "archive": return "已移出工作集但可随时恢复的任务。"
+		default: return "任务分组。"
+		}
+	}
 }
 
 private struct DesktopTodoRow: View {
     let todo: ATMTodo
     let isSelected: Bool
+    var showsStatus = false
+	var isArchived = false
 
     var body: some View {
-        // No status glyph. It sat in a 28pt tile at the head of every row and said
-        // only what the section header the row is filed under already says — every
-        // row in 工作中 carried the same spinner, every row in 等待中 the same clock.
-        // Dropping it gives the title back ~38pt of a 260–420pt column and takes a
-        // line's worth of height off each row, which is the whole point of the list:
-        // scan ids and titles, not re-read the section you are already inside.
-        VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
-            // The id leads the title rather than sitting in the meta line: it
-            // is what you scan the list for and what you type back at the CLI,
-            // and below the title it was the one thing you had to look away to
-            // find. Mono and baseline-aligned so it reads as a label on the
-            // title, not as its first word.
-            //
-            // Its tint is the priority — see ATMTodoPriorityStyle. A closed
-            // todo drops to secondary regardless: a finished P0 is not urgent,
-            // and red on a struck-through row reads as a problem.
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(todo.id.uppercased())
-                    .font(ATMFont.mono(.caption, .medium))
-                    .foregroundStyle(
-                        isClosed
-                            ? ATMTheme.secondary
-                            : ATMTodoPriorityStyle.color(for: todo.priority)
-                    )
-                    // Color alone is not readable — the priority stays
-                    // available by hover and to accessibility. The status rides
-                    // along for the same reason: with the glyph gone it is only on
-                    // the section header, which is a sibling of the row rather than
-                    // an ancestor and so is not read as part of it.
-                    .help(ATMTodoPriorityStyle.label(todo.priority))
-                    .accessibilityLabel(
-                        "\(todo.id.uppercased()) \(ATMTodoPriorityStyle.label(todo.priority)) \(ATMTodoStatusStyle.label(for: todo))"
-                    )
-                Text(todo.title)
-                    // Fixed weight — see ATMRowSurface: selection never changes
-                    // type weight, or the title jumps as glyph widths reflow.
-                    .font(ATMFont.font(.body, weight: .medium))
-                    .foregroundStyle(isClosed ? ATMTheme.secondary : ATMTheme.primary)
-                    .strikethrough(
-                        ATMTodoStatusStyle.usesStrikethrough(for: todo),
-                        color: ATMTheme.secondary
-                    )
-                    .lineLimit(2)
-            }
-            // Priority left this line for the id's tint, so the line can now be
-            // empty — a todo with no project filed before `creator` existed has
-            // nothing to say here. Skip it rather than leave the row padded
-            // around a blank strip.
-            if projectLabel != nil || creatorLabel != nil {
-                HStack(spacing: 6) {
-                    if let project = projectLabel { Text(project) }
-                    // Where the todo came from. The icon carries it — 收集 and
-                    // agent-filed todos are the ones worth spotting, and they
-                    // are spotted by glyph long before the name is read.
-                    if let creator = creatorLabel {
-                        Label {
-                            Text(creator)
-                        } icon: {
-                            if let icon = ATMTodoCreator.icon(todo.creator) {
-                                Image(systemName: icon)
-                            }
-                        }
+        // Grouped rows omit the status glyph because their section already says it.
+        // Flat rows restore a caption-sized glyph: status remains scannable without
+        // bringing back the old 28pt leading tile that cost the title about 38pt.
+        ATMNavigatorRow(isSelected: isSelected) {
+            VStack(alignment: .leading, spacing: ATMContentRowLayout.contentSpacing) {
+                // The id leads the title rather than sitting in the meta line: it
+                // is what you scan the list for and what you type back at the CLI.
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if showsStatus {
+						if isArchived {
+							Image(systemName: "archivebox")
+								.font(ATMFont.font(.caption, weight: .semibold))
+								.foregroundStyle(ATMTheme.secondary)
+								.help("已归档")
+						} else {
+							ATMTodoStatusGlyph(todo: todo, tier: .caption)
+								.help(ATMTodoStatusStyle.label(for: todo))
+						}
+                    }
+                    Text(todo.id.uppercased())
+                        .font(ATMFont.mono(.caption, .medium))
+                        .foregroundStyle(
+                            isClosed
+                                ? ATMTheme.secondary
+                                : ATMTodoPriorityStyle.color(for: todo.priority)
+                        )
+                        .help(ATMTodoPriorityStyle.label(todo.priority))
+                        .accessibilityLabel(
+                            "\(todo.id.uppercased()) \(ATMTodoPriorityStyle.label(todo.priority)) \(ATMTodoStatusStyle.label(for: todo))"
+                        )
+                    Text(todo.title)
+                        .font(ATMFont.font(.body, weight: .medium))
+                        .foregroundStyle(isClosed ? ATMTheme.secondary : ATMTheme.primary)
+                        .strikethrough(
+                            ATMTodoStatusStyle.usesStrikethrough(for: todo),
+                            color: ATMTheme.secondary
+                        )
+                        .lineLimit(2)
+                }
+
+                if projectLabel != nil || creatorLabel != nil {
+                    HStack(spacing: 5) {
+                        if let project = projectLabel { projectBadge(project) }
+                        if let creator = creatorLabel { creatorBadge(creator) }
                     }
                 }
-                .font(ATMFont.mono(.caption, .medium))
-                .foregroundStyle(ATMTheme.secondary)
             }
         }
-        .atmRowSurface(isSelected: isSelected)
     }
 
     private var isClosed: Bool {
-        todo.status == "done" || todo.status == "dropped"
+        todo.status == "done"
     }
 
     private var projectLabel: String? {
@@ -1419,39 +1716,78 @@ private struct DesktopTodoRow: View {
     }
 
     private var creatorLabel: String? { ATMTodoCreator.shortLabel(todo.creator) }
+
+    private func projectBadge(_ project: String) -> some View {
+        let color = ATMTodoProjectStyle.color(for: project)
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(project)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+        .font(ATMFont.mono(.caption, .semibold))
+        .foregroundStyle(isClosed ? ATMTheme.secondary : ATMTheme.primary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(color.opacity(isSelected ? 0.16 : 0.10), in: Capsule())
+        .overlay {
+            Capsule().stroke(color.opacity(0.24), lineWidth: 0.5)
+        }
+        .help("项目：\(project)")
+    }
+
+    private func creatorBadge(_ creator: String) -> some View {
+        HStack(spacing: 3) {
+            if let icon = ATMTodoCreator.icon(todo.creator) {
+                Image(systemName: icon)
+                    .symbolRenderingMode(.monochrome)
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .frame(width: 12, height: 12)
+            }
+            Text(creator).lineLimit(1)
+        }
+        .font(ATMFont.font(.caption, weight: .medium))
+        .foregroundStyle(ATMTheme.secondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(ATMTheme.secondary.opacity(0.07), in: Capsule())
+        .overlay {
+            Capsule().stroke(ATMTheme.border.opacity(0.7), lineWidth: 0.5)
+        }
+        .help("创建者：\(creator)")
+    }
 }
 
 struct DesktopTodoDetail: View {
     private enum DetailTab: String, CaseIterable {
         case detail
         case activity
-        case taskRun
         case sessions
     }
 
     let todo: ATMTodo
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
-    let isTrashed: Bool
+    let isArchived: Bool
 
     @State private var isEditing = false
     @State private var selectedTab: DetailTab = .detail
     @State private var copiedPrompt = false
     @State private var deleteCandidate: ATMTodo?
-    @State private var showingDispatchSheet = false
-    @State private var showingCodexContinuation = false
-    @State private var showingTaskRunInterruptConfirmation = false
-    @State private var taskRunLaunchError: String?
-    @State private var codexContinuationInstructions = ""
+    @State private var showingRefineSheet = false
+    @State private var refineHint = ""
     @State private var isEditingSource = false
     @State private var title = ""
     @State private var description = ""
-    @State private var priority = "P1"
+    @State private var priority = "P2"
     @State private var project = ""
     @State private var status = "open"
     @State private var wakeCondition = ""
     @State private var reviewAt = ""
     @State private var source = ""
+	@State private var previewImageURL: URL?
 
     private static let reviewDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -1465,28 +1801,32 @@ struct DesktopTodoDetail: View {
             if isEditing {
                 editHeader
                 Divider()
-                editContent
+                ATMDetailBodySurface { editContent }
             } else {
-                detailHeader
-                refineNotice
-                detailTabs
-                if selectedTab == .detail {
-                    readContent
-                } else if selectedTab == .activity {
-                    activityContent
-                } else if selectedTab == .taskRun, hasTaskRuns {
-                    taskRunContent
-                } else {
-                    sessionContent
+                ATMDetailScaffold {
+                    detailHeader
+                } notice: {
+                    noticeRegion
+                } tabs: {
+                    ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
+                } content: {
+                    Group {
+                        if selectedTab == .detail {
+                            readContent
+                        } else if selectedTab == .activity {
+                            activityContent
+                        } else {
+                            sessionContent
+                        }
+                    }
                 }
             }
         }
-        .background(ATMTheme.canvas)
+        .background(Color.clear)
         .onAppear {
-            if !isTrashed {
+            if !isArchived {
                 store.loadBoundSessions(for: todo.id)
-                store.loadTaskRuns(for: todo.id)
-                store.loadTaskRunAgents()
+                store.loadProgress(for: todo.id)
             }
             // Selecting another row rebuilds this view (`.id(todo.id)`), so a
             // request aimed at a not-yet-selected todo arrives here rather than in
@@ -1495,33 +1835,11 @@ struct DesktopTodoDetail: View {
         }
         .onChange(of: navigation.editTodoID) { _ in consumeEditRequest() }
         .onChange(of: store.snapshot.refreshedAt) { _ in
-            if !isTrashed {
+            if !isArchived {
                 store.loadBoundSessions(for: todo.id)
-                store.loadTaskRuns(for: todo.id)
             }
         }
-        // Both of these can remove the page that is currently selected: trashing
-        // hides three of them, and 「Agent 执行」 only exists while a run does.
-        .onChange(of: isTrashed) { _ in normalizeSelectedTab() }
-        .onChange(of: hasTaskRuns) { _ in normalizeSelectedTab() }
-        .task(id: taskRunRefreshKey) {
-            guard !isTrashed else { return }
-            store.loadTaskRuns(for: todo.id)
-            if selectedTab == .taskRun {
-                store.refreshLiveStatus()
-            }
-            while latestTaskRun?.isActive == true, !Task.isCancelled {
-                do {
-                    try await Task.sleep(nanoseconds: 2_000_000_000)
-                } catch {
-                    break
-                }
-                store.loadTaskRuns(for: todo.id)
-                if selectedTab == .taskRun {
-                    store.refreshLiveStatus()
-                }
-            }
-        }
+        .onChange(of: isArchived) { _ in normalizeSelectedTab() }
         .confirmationDialog(
             "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
             isPresented: Binding(
@@ -1540,97 +1858,145 @@ struct DesktopTodoDetail: View {
         } message: {
             Text("\(deleteCandidate?.title ?? "")\n此操作无法恢复。").font(ATMFont.body)
         }
-        .confirmationDialog(
-            "中断当前 Codex 执行？",
-            isPresented: $showingTaskRunInterruptConfirmation,
-            titleVisibility: .visible
-        ) {
-            Button("中断执行", role: .destructive) {
-                store.interruptTaskRun(todoID: todo.id)
+        .sheet(isPresented: $showingRefineSheet) {
+            refineSheet
+        }
+    }
+
+    /// 优化 always goes through this sheet, including the first pass: the hint is
+    /// what makes a second pass do anything, and a sheet is also the only place
+    /// to say that up front.
+    private var refineSheet: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("优化任务")
+                    .font(ATMFont.font(.title2, weight: .semibold))
+                Text("一次模型调用，润色标题和需求；复杂工作会写一份计划并拆成子任务。可以留空直接优化。")
+                    .font(ATMFont.footnote)
+                    .foregroundStyle(ATMTheme.secondary)
             }
-            Button("继续执行", role: .cancel) {}
-        } message: {
-            Text("Agent 进程会停止，Todo 保持工作中；之后可以重新执行或继续该会话。")
-        }
-        .sheet(isPresented: $showingCodexContinuation) {
-            codexContinuationSheet
-        }
-        .sheet(isPresented: $showingDispatchSheet) {
-            taskRunDispatchSheet
-        }
-        .alert(
-            "无法打开 Agent 会话",
-            isPresented: Binding(
-                get: { taskRunLaunchError != nil },
-                set: { if !$0 { taskRunLaunchError = nil } }
-            )
-        ) {
-            Button("好") { taskRunLaunchError = nil }
-        } message: {
-            Text(taskRunLaunchError ?? "")
-        }
-    }
 
-    @ViewBuilder
-    private var refineNotice: some View {
-        if store.refiningTodoIDs.contains(todo.id) {
-            ATMInlineNotice(
-                severity: .info,
-                title: "正在整理任务",
-                message: "模型在润色标题和需求；复杂工作会拆成子任务并写一份计划。"
-            )
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-        } else if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty {
-            ATMInlineNotice(
-                severity: .warning,
-                title: "任务整理失败",
-                message: error,
-                actionTitle: "重试",
-                onAction: { store.refineTodo(id: todo.id) },
-                onDismiss: { store.dismissRefineError(for: todo.id) }
-            )
-            .padding(.horizontal, 16)
-            .padding(.top, 10)
-        }
-    }
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $refineHint)
+                    .font(ATMFont.body)
+                    .scrollContentBackground(.hidden)
+                    .padding(7)
+                    .frame(minHeight: 96)
+                    .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ATMTheme.border))
+                if refineHint.isEmpty {
+                    Text("这一遍想改什么？例如：拆细一点，或把验收标准写成可观察行为")
+                        .font(ATMFont.body)
+                        .foregroundStyle(ATMTheme.secondary.opacity(0.72))
+                        .padding(.horizontal, 13)
+                        .padding(.vertical, 15)
+                        .allowsHitTesting(false)
+                }
+            }
 
-    private var detailTabs: some View {
-        HStack {
-            ATMCapsuleTabs(selection: $selectedTab, items: detailTabItems)
-            Spacer(minLength: 0)
+            HStack {
+                Spacer()
+                Button("取消") { showingRefineSheet = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("开始优化") { submitRefine() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(store.refiningTodoIDs.contains(todo.id))
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(22)
+        .frame(width: 520)
         .background(ATMTheme.canvas)
     }
 
-    /// 「Agent 执行」只在真的有执行记录时出现。
+    private func presentRefineSheet() {
+        refineHint = ""
+        store.dismissRefineUnchanged(for: todo.id)
+        store.dismissRefineError(for: todo.id)
+        showingRefineSheet = true
+    }
+
+    private func submitRefine() {
+        let hint = refineHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        showingRefineSheet = false
+        store.refineTodo(id: todo.id, hint: hint)
+    }
+
+    /// 这个 Todo 的消息区，在 tab 与正文之间，是页面上唯一放横幅的地方。
     ///
-    /// 默认的交接路径（`todo handoff` / 「在 Codex 里打开」）不产生 `task_runs`
-    /// ——会话由 Codex 自己拥有，ATM 通过 `session bind` 认识它——所以这个页在
-    /// 默认路径上永远是空的，而它的空态还在指路一个已经不存在的「选择 Agent」
-    /// 动作。有执行记录才显示，跟 Agent 页的「全部日志」是同一条规矩。
-    private var hasTaskRuns: Bool { !store.taskRuns(for: todo.id).isEmpty }
+    /// 以前每条消息都长在写它的那个 tab 里——「下一步」在任务描述的元数据下面，
+    /// 优化状态在正文卡片顶部——所以同一类东西出现在两个高度上，切个 tab 还会
+    /// 消失。现在位置只有一个，跟 tab 同级：谁要说话都排到这里，正文只管内容。
+    ///
+    /// 排序是「要你动手的在前」：优化的进行/失败/无改动是刚发生的事，「下一步」
+    /// 是一直挂着的状态。归档里的任务不说话。
+    @ViewBuilder
+    private var noticeRegion: some View {
+        if !isArchived, hasNotice {
+            VStack(spacing: 8) {
+                if store.refiningTodoIDs.contains(todo.id) {
+                    ATMInlineNotice(
+                        severity: .info,
+                        title: "正在整理任务",
+                        message: "模型在润色标题和需求；复杂工作会拆成子任务并写一份计划。"
+                    )
+                } else if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty {
+                    ATMInlineNotice(
+                        severity: .warning,
+                        title: "任务整理失败",
+                        message: error,
+                        actionTitle: "重试",
+                        onAction: { presentRefineSheet() },
+                        onDismiss: { store.dismissRefineError(for: todo.id) }
+                    )
+                } else if store.refineUnchangedTodoIDs.contains(todo.id) {
+                    // A bare pass on an already-structured card returns the same
+                    // text, so nothing on screen moves. Say so instead of
+                    // looking broken.
+                    ATMInlineNotice(
+                        severity: .info,
+                        title: "这一遍没有改动",
+                        message: "模型认为这张卡已经够清楚了。想换个方向就再优化一次，并写一句具体要求。",
+                        actionTitle: "带要求再优化",
+                        onAction: { presentRefineSheet() },
+                        onDismiss: { store.dismissRefineUnchanged(for: todo.id) }
+                    )
+                }
+                if let nextAction = latestNextAction {
+                    ATMInlineNotice(
+                        severity: .info,
+                        title: "下一步",
+                        message: nextAction
+                    )
+                }
+            }
+            // Aligned with the body card's edges, not the reading column: the
+            // band is a sibling of the card, so it shares its gutters.
+            .padding(.horizontal, ATMDetailLayout.surfaceHorizontalInset)
+            .padding(.top, ATMDetailLayout.surfaceVerticalInset)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The region owns its padding, so it must not render at all when it has
+    /// nothing to say — otherwise an empty band leaves a gap under the tabs.
+    private var hasNotice: Bool {
+        if store.refiningTodoIDs.contains(todo.id) { return true }
+        if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty { return true }
+        if store.refineUnchangedTodoIDs.contains(todo.id) { return true }
+        return latestNextAction != nil
+    }
 
     private var detailTabItems: [(value: DetailTab, title: String)] {
         var items: [(value: DetailTab, title: String)] = [(.detail, "任务描述")]
-        if !isTrashed {
+        if !isArchived {
             items.append((.activity, "动态"))
-            if hasTaskRuns {
-                items.append((.taskRun, "Agent 执行"))
-            }
             items.append((.sessions, sessionTabTitle))
         }
         return items
     }
 
-    /// 选中的页消失时把选择拉回来。
-    ///
-    /// `selectedTab` 是 `@State`，在任务之间切换时不会重置：从一个有执行记录的
-    /// 任务切到没有的，选择会停在一个已经不在胶囊里的值上，于是内容区落到
-    /// 兜底分支、而胶囊一个都不高亮。回收站视图早就有这个问题（它藏掉三个页），
-    /// 只是没人注意。
+    /// 选中的页消失时把选择拉回来。归档会藏掉动态和会话页。
     private func normalizeSelectedTab() {
         if !detailTabItems.contains(where: { $0.value == selectedTab }) {
             selectedTab = .detail
@@ -1643,7 +2009,7 @@ struct DesktopTodoDetail: View {
     }
 
     private var detailHeader: some View {
-        VStack(alignment: .leading, spacing: 15) {
+        ATMDetailHeader(title: todo.title) {
             HStack(spacing: 7) {
                 Label(todo.project ?? "未分项目", systemImage: "folder")
                 Image(systemName: "chevron.right")
@@ -1651,56 +2017,20 @@ struct DesktopTodoDetail: View {
                 Text(todo.id.uppercased())
                     .font(ATMFont.mono(.footnote, .semibold))
                     .foregroundStyle(ATMTheme.accent)
-                Spacer(minLength: 10)
-                detailActions
+                statusBadge
+                if store.isActing { ProgressView().controlSize(.small) }
             }
             .font(ATMFont.footnote)
             .foregroundStyle(ATMTheme.secondary)
-
-            // Status sits on its own line above the title. Beside it, a wrapped
-            // title pushed the badge off the first line's baseline and left a
-            // ragged notch in the text block; stacked, the title gets the full
-            // width and the badge reads as a label for the whole header.
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    statusBadge
-                    if store.isActing { ProgressView().controlSize(.small) }
-                }
-                Text(todo.title)
-                    .font(ATMFont.font(.title1, weight: .semibold))
-                    .foregroundStyle(ATMTheme.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            LazyVGrid(
-                columns: Array(
-                    repeating: GridItem(.flexible(minimum: 84), spacing: 8),
-                    count: 3
-                ),
-                spacing: 8
-            ) {
-                propertyCell("项目", value: todo.project ?? "未分项目", icon: "folder")
-                propertyCell(
-                    "优先级",
-                    value: ATMTodoPriorityStyle.label(todo.priority),
-                    icon: "flag",
-                    valueColor: priorityColor
-                )
-                propertyCell("创建", value: todo.created, icon: "calendar")
-            }
+        } actions: {
+            detailActions
         }
-        .padding(.horizontal, 24)
-        .padding(.top, 17)
-        .padding(.bottom, 18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated)
     }
 
     @ViewBuilder
     private var detailActions: some View {
         HStack(spacing: 3) {
-            if isTrashed {
+            if isArchived {
                 actionButton("arrow.uturn.backward", help: "恢复任务") {
                     store.perform(.restore, on: todo)
                 }
@@ -1714,7 +2044,7 @@ struct DesktopTodoDetail: View {
                     ATMIconMenuLabel(
                         systemImage: "ellipsis",
                         help: "更多操作",
-                        chrome: .chip,
+                        chrome: .bare,
                         isEnabled: !store.isActing,
                         side: 26,
                         iconTier: .body
@@ -1729,23 +2059,16 @@ struct DesktopTodoDetail: View {
                         store.perform(item.action, on: todo)
                     }
                 }
-                if canContinueTaskRun {
-                    actionButton("arrow.trianglehead.clockwise", help: "继续上次 Agent 任务") {
-                        presentCodexContinuation()
-                    }
-                    .disabled(store.isActing)
-                }
                 if ATMTodoStatusActions.showsLaunchPrompt(for: todo) {
                     Button {
-                        presentDispatchSheet()
+                        store.handoffTodo(todo)
                     } label: {
-                        Label(taskRunActionTitle, systemImage: taskRunActionIcon)
+                        Label("Codex", systemImage: "paperplane.fill")
                             .font(ATMFont.font(.footnote, weight: .semibold))
                     }
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
-                    .help(taskRunActionHelp)
-                    .disabled(latestTaskRun?.isActive == true || store.isActing)
+                    .disabled(store.isActing)
                     actionButton(
                         copiedPrompt ? "checkmark" : "doc.on.doc",
                         help: copiedPrompt ? "已复制启动提示" : "复制启动提示"
@@ -1753,30 +2076,15 @@ struct DesktopTodoDetail: View {
                         copyLaunchPrompt(for: todo)
                     }
                 }
+                if !ATMTodoStatusActions.isClosed(todo) {
+                    actionButton("wand.and.stars", help: "优化任务") {
+                        presentRefineSheet()
+                    }
+                    .disabled(store.refiningTodoIDs.contains(todo.id))
+                }
                 overflowMenu(overflow: overflow, todo: todo)
             }
         }
-    }
-
-    private func propertyCell(
-        _ label: String,
-        value: String,
-        icon: String,
-        valueColor: Color = ATMTheme.primary
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label(label, systemImage: icon)
-                .font(ATMFont.caption)
-                .foregroundStyle(ATMTheme.secondary)
-            Text(value)
-                .font(ATMFont.font(.footnote, weight: .semibold))
-                .foregroundStyle(valueColor)
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.listPane, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     /// Edit mode gets its own header rather than reusing the reading one: the read
@@ -1809,567 +2117,130 @@ struct DesktopTodoDetail: View {
     }
 
     private var readContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if let description = nonEmpty(todo.description) {
+        VStack(alignment: .leading, spacing: 14) {
+            taskMetadata
+
+            if let description = nonEmpty(todo.description) {
+                detailCard("任务目标", icon: "scope") {
                     ATMMarkdownContentView(source: description)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            }
 
-                if let links = todo.links, !links.isEmpty {
-                    detailCard("关联链接", icon: "link") {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(Array(links.enumerated()), id: \.offset) { _, link in
-                                if let url = URL(string: link.url) {
-                                    Link(destination: url) {
-                                        Label(link.title ?? link.url, systemImage: "arrow.up.right.square")
-                                            .font(ATMFont.font(.body, weight: .medium))
-                                            .lineLimit(2)
-                                    }
+			if let images = todo.images, !images.isEmpty {
+				detailCard("图片", icon: "photo.on.rectangle.angled") {
+					LazyVGrid(columns: [GridItem(.adaptive(minimum: 124, maximum: 180), spacing: 10)], spacing: 10) {
+						ForEach(images) { image in
+							Button {
+								previewImageURL = URL(fileURLWithPath: image.path)
+							} label: {
+								VStack(alignment: .leading, spacing: 6) {
+									if let thumbnail = NSImage(contentsOfFile: image.path) {
+										Image(nsImage: thumbnail)
+											.resizable()
+											.scaledToFill()
+											.frame(height: 92)
+											.clipped()
+									} else {
+										Image(systemName: "photo.badge.exclamationmark")
+											.frame(maxWidth: .infinity, minHeight: 92)
+											.foregroundStyle(ATMTheme.secondary)
+									}
+									Text(image.name)
+										.font(ATMFont.caption)
+										.lineLimit(1)
+										.truncationMode(.middle)
+								}
+								.padding(7)
+								.background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8))
+							}
+							.buttonStyle(.plain)
+							.help("预览 \(image.name)")
+						}
+					}
+				}
+				.quickLookPreview($previewImageURL)
+			}
+
+            if let links = todo.links, !links.isEmpty {
+                detailCard("关联链接", icon: "link") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(links.enumerated()), id: \.offset) { _, link in
+                            if let url = URL(string: link.url) {
+                                Link(destination: url) {
+                                    Label(link.title ?? link.url, systemImage: "arrow.up.right.square")
+                                        .font(ATMFont.font(.body, weight: .medium))
+                                        .lineLimit(2)
                                 }
                             }
                         }
                     }
                 }
-
-                if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false {
-                    Text("暂无任务描述。")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-
             }
-            .padding(16)
-            .frame(maxWidth: 860, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
-    }
 
-    private var latestTaskRun: ATMTaskRun? {
-        store.taskRuns(for: todo.id).first
-    }
-
-    private var canContinueTaskRun: Bool {
-        guard !isTrashed,
-              let run = latestTaskRun,
-              !run.isActive,
-              run.status == "completed" || run.status == "failed" || run.status == "interrupted" else {
-            return false
-        }
-        // Same test as `atm todo run --continue`: an id Codex cannot resolve to a
-        // thread would quietly start a fresh session, so don't offer the action.
-        return ATMTaskRunSessionRouting.resumableThreadID(run.sessionID) != nil
-    }
-
-    private var taskRunSession: ATMLiveSession? {
-        guard let run = latestTaskRun else { return nil }
-        let visible = store.snapshot.liveStatus.sessions.filter { $0.activityState != "unobserved" }
-        return ATMTaskRunSessionRouting.session(for: run, todoID: todo.id, in: visible)
-    }
-
-    private var taskRunLaunchRoute: ATMAgentSessionLaunchRoute? {
-        guard let run = latestTaskRun else { return nil }
-        return ATMAgentSessionLaunchRoute.resolve(for: run, live: taskRunSession)
-    }
-
-    /// The run's session as the index knows it, used once it has aged out of live
-    /// status. Without this the outcome text disappears from the Todo the moment
-    /// the session goes quiet, even though ATM has it indexed.
-    private var taskRunArchivedSession: ATMBoundSession? {
-        guard let run = latestTaskRun, let sessionID = run.sessionID else { return nil }
-        return store.boundSessions(for: todo.id).first {
-            $0.sessionID == sessionID || $0.indexedID == sessionID
-        }
-    }
-
-    private var taskRunRefreshKey: String {
-        [
-            todo.id,
-            selectedTab.rawValue,
-            latestTaskRun?.id ?? "none",
-            latestTaskRun?.status ?? "none",
-        ].joined(separator: "|")
-    }
-
-    private var taskRunActionHelp: String {
-        switch latestTaskRun?.status {
-        case "starting", "running": return "Agent 正在处理"
-        case "failed", "interrupted": return "重新委派"
-        default: return "委派给 Codex"
-        }
-    }
-
-    private var taskRunActionTitle: String {
-        switch latestTaskRun?.status {
-        case "starting", "running": return "委派中"
-        case "failed": return "重新委派"
-        default: return "委派"
-        }
-    }
-
-    private var taskRunActionIcon: String {
-        switch latestTaskRun?.status {
-        case "starting", "running": return "gearshape.2"
-        case "failed": return "arrow.clockwise"
-        default: return "paperplane.fill"
-        }
-    }
-
-    @ViewBuilder
-    private var taskRunContent: some View {
-        if let run = latestTaskRun {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(taskRunColor(run.status))
-                            .frame(width: 8, height: 8)
-                        Text(taskRunStatusLabel(run.status))
-                            .font(ATMFont.font(.body, weight: .semibold))
-                        if run.isActive { ProgressView().controlSize(.small) }
-                        Spacer(minLength: 12)
-                        if let route = taskRunLaunchRoute, route.isAvailable {
-                            Button {
-                                openTaskRunSession(route)
-                            } label: {
-                                Label(route.actionTitle, systemImage: "arrow.up.forward.app")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
-                            .help("\(route.actionTitle)（\(route.destinationLabel)）；交互控制由原生 Agent 提供")
-                        }
-                        if run.isActive {
-                            Button("中断", role: .destructive) {
-                                showingTaskRunInterruptConfirmation = true
-                            }
-                            .controlSize(.small)
-                            .disabled(store.isActing)
-                        }
-                        if canContinueTaskRun {
-                            Button("继续修改") { presentCodexContinuation() }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                                .disabled(store.isActing)
-                        }
-                        if run.status == "failed" || run.status == "interrupted" {
-                            Button("重新委派") { presentDispatchSheet() }
-                                .controlSize(.small)
-                                .disabled(store.isActing)
-                        }
-                        Button("刷新") {
-                            store.loadTaskRuns(for: todo.id)
-                            store.refreshLiveStatus()
-                        }
-                        .controlSize(.small)
-                    }
-
-                    Text(run.message ?? "run \(run.id)")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                        .textSelection(.enabled)
-                    if let route = taskRunLaunchRoute, route.isAvailable {
-                        Label(
-                            "需要输入、处理授权或使用更多控制时，请在 \(route.destinationLabel) 中继续；ATM 仍会同步状态和日志。",
-                            systemImage: "arrow.up.forward.app"
-                        )
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Label(run.workDir, systemImage: "folder")
-                        .font(ATMFont.mono(.caption))
-                        .foregroundStyle(ATMTheme.secondary)
-                        .lineLimit(1)
-                        .textSelection(.enabled)
-
-                    if let session = taskRunSession {
-                        taskRunAgentPreview(session)
-                    } else if let archived = taskRunArchivedSession {
-                        taskRunArchivedPreview(archived)
-                    } else {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Label(
-                                run.isActive ? "正在建立 Agent 会话" : "未找到关联 Agent 会话",
-                                systemImage: run.isActive ? "arrow.triangle.2.circlepath" : "person.crop.circle.badge.questionmark"
-                            )
-                            .font(ATMFont.font(.body, weight: .semibold))
-                            Text(taskRunMissingSessionMessage(run))
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .atmWorkspaceCard()
-                    }
-                }
-                .padding(18)
-                .frame(maxWidth: 860, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-            }
-        } else {
-            // 这一页已经只在有执行记录时出现，所以这里只可能是加载中的一瞬，或者
-            // 记录刚被清掉。不再摆一个空状态插画和一个「委派任务」按钮：委派入口
-            // 在头部，而一个装着引导的空页会让人以为自己找错了地方。
-            VStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("正在读取执行记录…")
+			if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false, todo.images?.isEmpty != false {
+                Text("暂无任务描述。")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+        .padding(.vertical, 16)
+        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    private func taskRunMissingSessionMessage(_ run: ATMTaskRun) -> String {
-        if taskRunLaunchRoute?.isAvailable == true {
-            return run.isActive
-                ? "原生会话已经可以打开；ATM 活动索引就绪后，这里还会显示执行动态。"
-                : "该执行已超出最近活动窗口，但仍可回到原生 Agent 会话。"
-        }
-        return run.isActive
-            ? "会话进入 Agent 列表后，可在详情中查看执行动态与全部日志。"
-            : "该执行可能已超出 Agent 列表的最近活动窗口。"
-    }
-
-    private func taskRunAgentPreview(_ session: ATMLiveSession) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                ATMAgentMark(agent: session.tool, size: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Agent 详情")
-                        .font(ATMFont.font(.body, weight: .semibold))
-                    Text("\(ATMAgentDisplay.clientName(session)) · \(ATMAgentDisplay.projectName(session))")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer(minLength: 8)
-                Button {
-                    navigation.selectedAgentID = session.id
-                    navigation.selectedAgentRunTodoID = todo.id
-                    navigation.section = .agents
-                } label: {
-                    Label("查看详情", systemImage: "chevron.right")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-
-            Text(session.presenceTitle)
-                .font(ATMFont.font(.bodyLarge, weight: .medium))
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let result = session.latestResultText {
-                Divider()
-                ATMMarkdownContentView(source: result)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if let update = session.visibleUpdates.last {
-                Divider()
-                ATMMarkdownContentView(source: update)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .atmWorkspaceCard()
-    }
-
-    /// 会话已经不在实时窗口里时的执行结果，取自持久索引。
-    ///
-    /// 刻意和实时卡片长得一样但不假装实时：没有状态点、没有「查看详情」跳转（那条路
-    /// 指向的是实时列表，这个会话不在里面），只保留 Agent 自己最后说的那段话——
-    /// 而它正是验收时唯一要读的东西。
-    private func taskRunArchivedPreview(_ session: ATMBoundSession) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 9) {
-                ATMAgentMark(agent: session.agent, size: 18)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Agent 执行结果")
-                        .font(ATMFont.font(.body, weight: .semibold))
-                    Text("\(ATMAgentDisplay.name(session.agent)) · \(session.shortID)")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer(minLength: 8)
-            }
-
-            if let summary = session.summary?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !summary.isEmpty {
-                Text(summary)
-                    .font(ATMFont.font(.bodyLarge, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let result = session.latestResult?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !result.isEmpty {
-                Divider()
-                ATMMarkdownContentView(source: result)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .atmWorkspaceCard()
-    }
-
-    private func openTaskRunSession(_ route: ATMAgentSessionLaunchRoute) {
-        do {
-            try ATMAgentSessionLauncher.open(route)
-        } catch {
-            taskRunLaunchError = error.localizedDescription
-        }
-    }
-
-    private func taskRunStatusLabel(_ status: String) -> String {
-        switch status {
-        case "starting": return "正在启动"
-        case "running": return "正在处理"
-        case "completed": return todo.status == "review" ? "已提交验收" : "Agent 已完成"
-        case "failed": return "执行失败"
-        case "interrupted": return "已中断"
-        default: return status
-        }
-    }
-
-    private func taskRunColor(_ status: String) -> Color {
-        switch status {
-        case "starting", "running": return ATMTheme.accent
-        case "completed": return ATMTheme.success
-        case "failed": return ATMTheme.danger
-        case "interrupted": return ATMTheme.warning
-        default: return ATMTheme.secondary
-        }
-    }
-
-    private var dispatchAgent: ATMTaskRunAgent? { store.taskRunAgents.first }
-
-    /// Confirms one dispatch. Not a picker any more: Codex is the only target, and
-    /// a radio list of one presents a choice that does not exist. What the sheet
-    /// still owes the user is what will run, that it is installed, and that it
-    /// costs model usage.
-    private var taskRunDispatchSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("委派这个任务")
-                    .font(ATMFont.font(.title2, weight: .semibold))
-                Text("两种方式：在 Codex 里打开由你盯着做，或者没人在场时让它在后台跑完。都会产生模型用量。")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-
-            if let agent = dispatchAgent {
-                HStack(alignment: .top, spacing: 12) {
-                    ATMAgentMark(agent: agent.id, size: 22)
-                    VStack(alignment: .leading, spacing: 5) {
-                        HStack(spacing: 7) {
-                            Text(agent.name)
-                                .font(ATMFont.font(.body, weight: .semibold))
-                            Text(agent.available ? "已安装" : "未安装")
-                                .font(ATMFont.caption)
-                                .foregroundStyle(agent.available ? ATMTheme.success : ATMTheme.secondary)
-                        }
-                        Text(agent.costNote)
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if !agent.available {
-                            Label("PATH 里找不到 \(agent.binary)，先安装 Codex CLI 再委派。",
-                                  systemImage: "exclamationmark.shield")
-                                .font(ATMFont.caption)
-                                .foregroundStyle(ATMTheme.warning)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    Spacer(minLength: 8)
-                }
-                .padding(13)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
-                .overlay { RoundedRectangle(cornerRadius: 10).stroke(ATMTheme.border) }
-                .opacity(agent.available ? 1 : 0.58)
-            } else {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("正在检查 Codex 是否已安装…")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 96)
-            }
-
-            // 「在 Codex 里打开」是主动作，不是因为它更常用，而是因为它是可逆的：
-            // 输入框填好但不提交，人还能改、能撤、能换目录。后台跑完是不可逆的那一个。
-            Text("在 Codex 里打开：填好这条任务的指针，等你按回车。后台跑完：无人应答的授权请求会让它失败。")
-                .font(ATMFont.caption)
-                .foregroundStyle(ATMTheme.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack {
-                Spacer()
-                Button("取消") { showingDispatchSheet = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("后台跑完") { dispatchToAgent() }
-                    .disabled(dispatchAgent?.available != true || store.isActing)
-                Button("在 Codex 里打开") { handoffToCodex() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(dispatchAgent?.available != true || store.isActing)
-            }
-        }
-        .padding(22)
-        .frame(width: 520)
-        .background(ATMTheme.canvas)
-    }
-
-    private func presentDispatchSheet() {
-        showingDispatchSheet = true
-        store.loadTaskRunAgents()
-    }
-
-    private func dispatchToAgent() {
-        guard let agent = dispatchAgent, agent.available else { return }
-        showingDispatchSheet = false
-        store.dispatchTodo(todo, agent: agent)
-    }
-
-    private func handoffToCodex() {
-        guard dispatchAgent?.available == true else { return }
-        showingDispatchSheet = false
-        store.handoffTodo(todo)
-    }
-
-    private var codexContinuationSheet: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("继续上次 \(latestTaskRunAgentName) 任务")
-                    .font(ATMFont.font(.title2, weight: .semibold))
-                Text("\(latestTaskRunAgentName) 会保留上次执行的上下文，并把这次修改记录为新的执行轮次和模型用量。")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-            }
-
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $codexContinuationInstructions)
-                    .font(ATMFont.body)
-                    .scrollContentBackground(.hidden)
-                    .padding(7)
-                    .frame(minHeight: 150)
-                    .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(ATMTheme.border))
-                if codexContinuationInstructions.isEmpty {
-                    Text("描述要调整的内容，例如：按钮改成主操作，并补充失败态测试")
-                        .font(ATMFont.body)
-                        .foregroundStyle(ATMTheme.secondary.opacity(0.72))
-                        .padding(.horizontal, 13)
-                        .padding(.vertical, 15)
-                        .allowsHitTesting(false)
-                }
-            }
-
-            HStack {
-                Spacer()
-                Button("取消") { showingCodexContinuation = false }
-                    .keyboardShortcut(.cancelAction)
-                Button("继续修改") { submitCodexContinuation() }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(
-                        codexContinuationInstructions
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                            .isEmpty || store.isActing
-                    )
-            }
-        }
-        .padding(22)
-        .frame(width: 520)
-        .background(ATMTheme.canvas)
-    }
-
-    private func presentCodexContinuation() {
-        codexContinuationInstructions = ""
-        showingCodexContinuation = true
-    }
-
-    private func submitCodexContinuation() {
-        let instructions = codexContinuationInstructions
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !instructions.isEmpty, let run = latestTaskRun else { return }
-        showingCodexContinuation = false
-        store.continueTodo(todo, run: run, instructions: instructions)
-    }
-
-    private var latestTaskRunAgentName: String {
-        guard let id = latestTaskRun?.agent else { return "Agent" }
-        if let name = store.taskRunAgents.first(where: { $0.id == id })?.name { return name }
-        switch id {
-        case "codex": return "Codex"
-        case "grokbuild": return "Grok Build"
-        case "pi": return "Pi"
-        default: return "Agent"
-        }
+    private var taskMetadata: some View {
+        ATMMetadataStrip(items: [
+            ATMMetadataItem(
+                "project",
+                label: "项目",
+                value: todo.project ?? "未分项目",
+                systemImage: "folder"
+            ),
+            ATMMetadataItem(
+                "priority",
+                label: "优先级",
+                value: ATMTodoPriorityStyle.label(todo.priority),
+                systemImage: "flag",
+                valueColor: priorityColor
+            ),
+            ATMMetadataItem(
+                "created",
+                label: "创建",
+                value: todo.created,
+                systemImage: "calendar"
+            ),
+        ])
+        .padding(.bottom, 14)
+        .overlay(alignment: .bottom) { Divider() }
     }
 
     /// Dynamic entries have their own destination, so the timeline no longer sits
-    /// inside a second titled card. The latest next action stays with the timeline
-    /// because it is derived from the same progress log.
+    /// inside a second titled card. The latest next action is not repeated here as
+    /// history — it lives in `noticeRegion`, above every tab, where it can guide
+    /// the work.
     private var activityContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                if let nextAction = latestNextAction {
-                    nextActionBanner(nextAction)
-                }
-                TodoProgressView(todo: todo, store: store)
-            }
-            .padding(16)
-            .frame(maxWidth: 860, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
+        TodoProgressView(todo: todo, store: store)
+        .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+        .padding(.vertical, 16)
+        .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    /// No card, no section title: the tab holds nothing but the binding history and
-    /// already carries its own name, so a titled white box around the only thing on
-    /// the page was framing with nothing to frame against.
+    /// Sessions are independent durable objects, so each one owns a bounded card;
+    /// the page itself stays untitled because the tab already names the collection.
     private var sessionContent: some View {
-        ScrollView {
-            TodoSessionHistoryView(todo: todo, store: store)
-                // 14 + the row surface's own 10 lines the rows up with the tab bar.
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(maxWidth: 860, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-        }
+        TodoSessionHistoryView(todo: todo, store: store)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+            .padding(.vertical, 16)
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     private var latestNextAction: String? {
-        guard todo.status != "done", todo.status != "dropped" else { return nil }
+        guard todo.status != "done" else { return nil }
         return store.progress(for: todo.id).reversed().compactMap(\.nextAction).first
-    }
-
-    /// The header already carries id / priority / status / project / created,
-    /// so the read view opens on the one thing it can't show: what to do next.
-    private func nextActionBanner(_ nextAction: String) -> some View {
-        HStack(alignment: .center, spacing: 11) {
-            Image(systemName: "arrow.up.right")
-                .font(ATMFont.font(.body, weight: .semibold))
-                .frame(width: 32, height: 32)
-                .background(ATMTheme.accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 3) {
-                Text("下一步")
-                    .font(ATMFont.font(.caption, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                Text(nextAction)
-                    .font(ATMFont.font(.body, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .textSelection(.enabled)
-            }
-            Spacer(minLength: 0)
-        }
-        .foregroundStyle(ATMTheme.accent)
-        .padding(13)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.accent.opacity(0.075), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(ATMTheme.accent.opacity(0.16))
-        )
     }
 
     /// Two tiers, because the old flat run of eight identical fields gave 来源 the
@@ -2380,8 +2251,7 @@ struct DesktopTodoDetail: View {
     /// bound on height — below it, every attribute sat under the fold, so setting a
     /// priority meant scrolling past the whole body text to reach it.
     private var editContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 // Titles here are usually a whole sentence — the task is typed as
                 // one line and the description stays empty — so the field wraps and
                 // grows instead of showing a 40-character window of it.
@@ -2412,14 +2282,13 @@ struct DesktopTodoDetail: View {
                         .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                 }
-            }
-            // Capped and left-aligned: stretched across a wide detail pane, the
-            // text fields ran on for hundreds of points.
-            .frame(maxWidth: 620, alignment: .leading)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        // Capped and left-aligned: stretched across a wide detail pane, the
+        // text fields ran on for hundreds of points.
+        .frame(maxWidth: 620, alignment: .leading)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// One label column, one control column — the old layout put each label and its
@@ -2434,7 +2303,7 @@ struct DesktopTodoDetail: View {
             GridRow {
                 gridLabel("状态")
                 Picker("", selection: $status) {
-                    ForEach(["open", "in_progress", "waiting", "review", "blocked"], id: \.self) { value in
+                    ForEach(["open", "in_progress", "review"], id: \.self) { value in
                         Text(ATMTodoStatusStyle.label(forStatus: value)).tag(value)
                     }
                 }
@@ -2449,13 +2318,12 @@ struct DesktopTodoDetail: View {
                     .frame(width: 190)
                     .gridCellColumns(3)
             }
-            GridRow {
-                gridLabel("复查日期")
-                reviewDateControl.gridCellColumns(3)
-            }
-            // 唤醒条件 only means anything while a Todo waits, so it stays out of the
-            // way otherwise — but never hides a value that is already set.
-            if status == "waiting" || !wakeCondition.trimmingCharacters(in: .whitespaces).isEmpty {
+            if status == "in_progress" {
+                GridRow {
+                    gridLabel("复查日期")
+                    reviewDateControl.gridCellColumns(3)
+                }
+                // Waiting metadata styles in-progress work without creating a group.
                 GridRow {
                     gridLabel("唤醒条件")
                     TextField("等待什么条件", text: $wakeCondition)
@@ -2470,7 +2338,7 @@ struct DesktopTodoDetail: View {
         }
     }
 
-    /// `atm todo edit --review-at` takes `YYYY-MM-DD` and clears on empty, which a
+    /// `todo.update` takes `YYYY-MM-DD` and clears on empty, which a
     /// free-text field advertised only through its placeholder. A value that does
     /// not parse falls back to text so an odd existing date is never rewritten
     /// behind the user's back.
@@ -2578,7 +2446,7 @@ struct DesktopTodoDetail: View {
     private func consumeEditRequest() {
         guard navigation.editTodoID == todo.id else { return }
         navigation.editTodoID = nil
-        guard !isTrashed, !isEditing else { return }
+        guard !isArchived, !isEditing else { return }
         beginEditing()
     }
 
@@ -2596,7 +2464,7 @@ struct DesktopTodoDetail: View {
     }
 
     /// What the form was seeded with, so 保存 can stay disabled until something
-    /// actually changed instead of firing a no-op `atm todo edit`.
+    /// actually changed instead of firing a no-op `todo.update`.
     private var savedValue: ATMTodoEdit {
         ATMTodoEdit(
             title: todo.title,
@@ -2618,11 +2486,12 @@ struct DesktopTodoDetail: View {
             content()
                 .foregroundStyle(ATMTheme.primary)
         }
-        .padding(14)
+        // The enclosing detail surface owns the horizontal and top inset. Keep
+        // only space before this section's divider so embedded sections do not
+        // turn into a second, padded card inside the body card.
+        .padding(.bottom, 14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
-        .shadow(color: Color.black.opacity(0.045), radius: 8, y: 2)
+        .atmWorkspaceCard(cornerRadius: 11)
     }
 
     private func actionButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
@@ -2636,7 +2505,7 @@ struct DesktopTodoDetail: View {
         )
     }
 
-    /// 「···」溢出菜单：编辑、剩余 lifecycle（暂不处理/回到待办/放弃等）、删除。
+    /// 「···」溢出菜单：编辑、返回待办与归档。
     /// 形状恒定，内容随状态拼装。与 `actionButton` 同样的 chip 外观。
     @ViewBuilder
     private func overflowMenu(
@@ -2644,14 +2513,6 @@ struct DesktopTodoDetail: View {
         todo: ATMTodo
     ) -> some View {
         Menu {
-            if !ATMTodoStatusActions.isClosed(todo) {
-                Button {
-                    store.refineTodo(id: todo.id)
-                } label: {
-                    Label("优化任务", systemImage: "wand.and.stars")
-                }
-                .disabled(store.refiningTodoIDs.contains(todo.id))
-            }
             Button {
                 beginEditing()
             } label: {
@@ -2666,15 +2527,15 @@ struct DesktopTodoDetail: View {
             }
             Divider()
             Button {
-                store.perform(.trash, on: todo)
+                store.perform(.archive, on: todo)
             } label: {
-                Label("移到回收站", systemImage: "trash")
+                Label("归档", systemImage: "archivebox")
             }
         } label: {
             ATMIconMenuLabel(
                 systemImage: "ellipsis",
                 help: "更多操作",
-                chrome: .chip,
+                chrome: .bare,
                 isEnabled: !store.isActing,
                 side: 26,
                 iconTier: .body
@@ -2695,14 +2556,14 @@ struct DesktopTodoDetail: View {
     }
 
     private var statusBadge: some View {
-        let color = isTrashed ? ATMTheme.secondary : ATMTodoStatusStyle.color(for: todo)
+        let color = isArchived ? ATMTheme.secondary : ATMTodoStatusStyle.color(for: todo)
         return HStack(spacing: 3) {
-            if isTrashed {
-                Image(systemName: "trash")
+            if isArchived {
+                Image(systemName: "archivebox")
             } else {
                 ATMTodoStatusGlyph(todo: todo, tier: .caption)
             }
-            Text(isTrashed ? "已删除" : ATMTodoStatusStyle.label(for: todo))
+            Text(isArchived ? "已归档" : ATMTodoStatusStyle.label(for: todo))
                 .font(ATMFont.mono(.caption, .semibold))
         }
         .foregroundStyle(color)
@@ -2779,6 +2640,12 @@ struct DesktopTodoDetail: View {
 /// One text box plus three recommended fields. The recommendations come from what
 /// was typed and from the existing todos, so the common case is: type the task,
 /// press Return.
+private struct ATMTodoDraftImage: Identifiable, Equatable {
+	let id = UUID()
+	let url: URL
+	let isTemporary: Bool
+}
+
 private struct DesktopAddTodoSheet: View {
     @ObservedObject var store: ATMDataStore
     var onCancel: () -> Void = {}
@@ -2786,6 +2653,10 @@ private struct DesktopAddTodoSheet: View {
     @State private var projectOverride: String?
     @State private var priorityOverride: String?
     @State private var isEditingProject = false
+	@State private var images: [ATMTodoDraftImage] = []
+	@State private var imageError: String?
+	@State private var isImageDropTarget = false
+	@State private var submitted = false
     let onAdd: (ATMTodoDraft) -> Void
 
     private var suggestion: ATMTodoSuggestion {
@@ -2802,6 +2673,8 @@ private struct DesktopAddTodoSheet: View {
             text: text,
             project: projectOverride ?? suggestion.project,
             priority: priorityOverride ?? suggestion.priority,
+			imagePaths: images.map(\.url.path),
+			temporaryImagePaths: images.filter(\.isTemporary).map(\.url.path)
         )
     }
 
@@ -2820,20 +2693,23 @@ private struct DesktopAddTodoSheet: View {
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("添加任务").font(ATMFont.font(.title2, weight: .bold))
-                Text("第一行是标题，换行后写细节；⏎ 添加，⇧⏎ 换行")
+				Text("直接写需求，ATM 会生成简短标题；⏎ 添加，⇧⏎ 换行")
                     .font(ATMFont.mono(.footnote))
                     .foregroundStyle(ATMTheme.secondary)
             }
 
             ATMComposerTextView(
                 text: $text,
-                placeholder: "要完成什么？",
+				placeholder: "描述要完成的事情、背景和验收结果…",
                 autoFocus: true,
-                onSubmit: { submit(draft) }
+				onSubmit: { submit(draft) },
+				onPasteImages: handleImagePaste
             )
                 .frame(height: 150)
                 .background(ATMTheme.white, in: RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
+
+			imagePicker
 
             HStack(spacing: 8) {
                 if isEditingProject {
@@ -2877,7 +2753,19 @@ private struct DesktopAddTodoSheet: View {
             }
         }
         .padding(22)
-        .frame(width: 540)
+		.frame(width: 600)
+		.onDrop(of: [UTType.fileURL.identifier], isTargeted: $isImageDropTarget, perform: handleImageDrop)
+		// The text view catches paste while it owns focus. This sheet-level command
+		// also catches Command-V after the user clicks the picker, a thumbnail, or
+		// the sheet background. Restricting the command to image/file payloads lets
+		// ordinary text paste continue through the current first responder.
+		.onPasteCommand(of: [.image, .fileURL]) { _ in
+			_ = handleImagePaste(NSPasteboard.general)
+		}
+		.background(ATMImagePasteMonitor(onPasteImages: handleImagePaste))
+		.onDisappear {
+			if !submitted { draft.cleanupTemporaryImages() }
+		}
     }
 
     private var isOverridden: Bool {
@@ -2945,19 +2833,178 @@ projectOverride != nil || priorityOverride != nil
 
     private func submit(_ draft: ATMTodoDraft) {
         guard draft.isSubmittable else { return }
+		submitted = true
         onAdd(draft)
     }
+
+	private var imagePicker: some View {
+		VStack(alignment: .leading, spacing: 8) {
+			HStack {
+				Label("图片 \(images.count)/\(ATMTodoImageRules.maximumCount)", systemImage: "photo.on.rectangle.angled")
+					.font(ATMFont.font(.footnote, weight: .semibold))
+					.foregroundStyle(ATMTheme.secondary)
+				Spacer()
+				Button {
+					chooseImages()
+				} label: {
+					Label("选择图片", systemImage: "plus")
+				}
+				.buttonStyle(.borderless)
+				.disabled(images.count >= ATMTodoImageRules.maximumCount)
+			}
+			if images.isEmpty {
+				Text("拖入图片，或在弹窗内按 ⌘V 粘贴截图")
+					.font(ATMFont.footnote)
+					.foregroundStyle(ATMTheme.secondary)
+					.frame(maxWidth: .infinity, minHeight: 56)
+			} else {
+				ScrollView(.horizontal) {
+					HStack(spacing: 8) {
+						ForEach(images) { image in
+							ZStack(alignment: .topTrailing) {
+								if let thumbnail = NSImage(contentsOf: image.url) {
+									Image(nsImage: thumbnail)
+										.resizable()
+										.scaledToFill()
+										.frame(width: 72, height: 56)
+										.clipped()
+								} else {
+									Image(systemName: "photo.badge.exclamationmark")
+										.frame(width: 72, height: 56)
+										.background(ATMTheme.controlFill)
+								}
+								Button {
+									removeImage(image)
+								} label: {
+									Image(systemName: "xmark.circle.fill")
+										.symbolRenderingMode(.palette)
+										.foregroundStyle(.white, Color.black.opacity(0.62))
+								}
+								.buttonStyle(.plain)
+								.padding(3)
+							}
+							.clipShape(RoundedRectangle(cornerRadius: 7))
+							.help(image.url.lastPathComponent)
+						}
+					}
+				}
+				.scrollIndicators(.hidden)
+				.frame(height: 58)
+			}
+			if let imageError {
+				Text(imageError)
+					.font(ATMFont.footnote)
+					.foregroundStyle(ATMTheme.danger)
+			}
+		}
+		.padding(10)
+		.background(isImageDropTarget ? ATMTheme.accentFill : ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 8))
+		.overlay(
+			RoundedRectangle(cornerRadius: 8)
+				.stroke(isImageDropTarget ? ATMTheme.accent : ATMTheme.border, style: StrokeStyle(lineWidth: 1, dash: [5]))
+		)
+	}
+
+	private func chooseImages() {
+		let panel = NSOpenPanel()
+		panel.allowsMultipleSelection = true
+		panel.canChooseDirectories = false
+		panel.allowedContentTypes = [.png, .jpeg, .webP, .gif, .heic]
+		panel.begin { response in
+			guard response == .OK else { return }
+			DispatchQueue.main.async {
+				for url in panel.urls { addImage(url) }
+			}
+		}
+	}
+
+	private func addImage(_ url: URL, temporary: Bool = false) {
+		if images.contains(where: { $0.url.standardizedFileURL == url.standardizedFileURL }) {
+			imageError = "这张图片已经添加。"
+			if temporary { try? FileManager.default.removeItem(at: url) }
+			return
+		}
+		if let error = ATMTodoImageRules.validationError(for: url, currentCount: images.count) {
+			imageError = error
+			if temporary { try? FileManager.default.removeItem(at: url) }
+			return
+		}
+		images.append(ATMTodoDraftImage(url: url, isTemporary: temporary))
+		imageError = nil
+	}
+
+	private func removeImage(_ image: ATMTodoDraftImage) {
+		images.removeAll { $0.id == image.id }
+		if image.isTemporary { try? FileManager.default.removeItem(at: image.url) }
+		imageError = nil
+	}
+
+	private func handleImagePaste(_ pasteboard: NSPasteboard) -> Bool {
+		let fileURLs = (pasteboard.readObjects(
+			forClasses: [NSURL.self],
+			options: [.urlReadingFileURLsOnly: true]
+		) as? [NSURL])?.map { $0 as URL } ?? []
+		if !fileURLs.isEmpty {
+			for url in fileURLs { addImage(url) }
+			return true
+		}
+		guard let pasted = NSImage(pasteboard: pasteboard),
+			  let tiff = pasted.tiffRepresentation,
+			  let bitmap = NSBitmapImageRep(data: tiff),
+			  let png = bitmap.representation(using: .png, properties: [:]) else { return false }
+		let url = FileManager.default.temporaryDirectory
+			.appendingPathComponent("atm-pasted-\(UUID().uuidString).png")
+		do {
+			try png.write(to: url, options: .atomic)
+			try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+			addImage(url, temporary: true)
+			return true
+		} catch {
+			imageError = "无法保存粘贴的图片：\(error.localizedDescription)"
+			try? FileManager.default.removeItem(at: url)
+			return true
+		}
+	}
+
+	private func handleImageDrop(_ providers: [NSItemProvider]) -> Bool {
+		let providers = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+		guard !providers.isEmpty else { return false }
+		for provider in providers {
+			provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, error in
+				DispatchQueue.main.async {
+					if let error {
+						imageError = "无法读取拖入的图片：\(error.localizedDescription)"
+						return
+					}
+					let url: URL?
+					if let value = item as? URL {
+						url = value
+					} else if let value = item as? NSURL {
+						url = value as URL
+					} else if let data = item as? Data, let text = String(data: data, encoding: .utf8) {
+						url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines))
+					} else {
+						url = nil
+					}
+					if let url { addImage(url) }
+				}
+			}
+		}
+		return true
+	}
 }
 
 enum ATMUsagePageTab: String, CaseIterable, Identifiable {
     case overview
+    case requirements
     case todaySessions
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .overview: return "概览"
+        case .overview: return "用量概览"
+        case .requirements: return "需求统计"
         case .todaySessions: return "今日会话"
         }
     }
@@ -3049,6 +3096,11 @@ private struct DesktopUsageView: View {
 
 /// Charts and session rows depend only on usage data. Todo actions, knowledge
 /// loading and other ATMDataStore publications stop at this equality boundary.
+enum ATMUsageQuotaLayout {
+    static let cardWidth: CGFloat = 360
+    static let cardMinimumHeight: CGFloat = 210
+}
+
 private struct DesktopUsageContent: View, Equatable {
     let snapshot: ATMDashboardSnapshot
     let quota: ATMQuotaSnapshot
@@ -3060,6 +3112,8 @@ private struct DesktopUsageContent: View, Equatable {
     let showDataHealth: () -> Void
 
     @State private var pageTab = ATMUsagePageTab.overview
+    @State private var requirementGranularity = ATMRequirementGranularity.day
+    @AppStorage("atmRequirementProject") private var requirementProject = ""
     @State private var range = ATMMetricsRange.today
     /// Three independent cascaded selects — not a dimension tab.
     @AppStorage("atmUsageFilterModel") private var filterModel = ""
@@ -3096,10 +3150,18 @@ private struct DesktopUsageContent: View, Equatable {
     private static let supportingMetricColumns = [
         GridItem(.adaptive(minimum: 145, maximum: .infinity), spacing: 8),
     ]
-    // Wide enough for the per-product legend (● Build 13% ● Imagine 4% …)
-    // on one line without scaling down.
+    // Quota cards are a stable visual unit. An unbounded adaptive maximum made
+    // every resize stretch the cards to a different width; a fixed column width
+    // changes only the number of columns and leaves each card unchanged.
     private static let quotaCardColumns = [
-        GridItem(.adaptive(minimum: 224, maximum: .infinity), spacing: 12),
+        GridItem(
+            .adaptive(
+                minimum: ATMUsageQuotaLayout.cardWidth,
+                maximum: ATMUsageQuotaLayout.cardWidth
+            ),
+            spacing: 12,
+            alignment: .top
+        ),
     ]
     /// Side-by-side breakdown + skill panels need enough room for both lists;
     /// below this, stack them so neither column is pinched.
@@ -3107,32 +3169,58 @@ private struct DesktopUsageContent: View, Equatable {
     private static let todaySessionsPageSize = 10
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 22) {
-                usageModuleChrome
-
-                // Quota is a pinned top-level summary, independent of the
-                // overview / today-sessions tab and usage filters below.
-                if !quota.isEmpty {
-                    quotaModule
+        VStack(spacing: 0) {
+            ATMDetailTabs {
+                HStack(spacing: 16) {
+                    usagePagePicker
+                    Spacer(minLength: 0)
+                    if pageTab != .requirements {
+                        dataHealthButton
+                    }
                 }
-
-                usageModule
+                .frame(maxWidth: .infinity)
             }
-            .padding(.horizontal, 24)
-            .padding(.top, 22)
-            .padding(.bottom, 30)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            ATMDetailBodySurface {
+                LazyVStack(alignment: .leading, spacing: 20) {
+                    if pageTab == .requirements {
+                        requirementToolbar
+                    } else {
+                        usageFilterToolbar
+                    }
+
+                    // Quota belongs to the usage overview. Today sessions and
+                    // requirement statistics each keep their own focused flow.
+                    if pageTab == .overview && !quota.isEmpty {
+                        quotaModule
+                    }
+
+                    usageModule
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 24)
+                .padding(.bottom, 36)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    LinearGradient(
+                        colors: [ATMTheme.accent.opacity(0.025), ATMTheme.elevated, ATMTheme.elevated],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+            }
         }
         .background(ATMTheme.canvas)
         .onAppear {
             normalizeFilters()
+            normalizeRequirementProject()
         }
         .onChange(of: pageTab) { tab in
             normalizeFilters()
             todaySessionsPage = 0
             if tab == .todaySessions {
                 loadTodaySessions()
+            } else if tab == .requirements {
+                normalizeRequirementProject()
             }
         }
         .onChange(of: range) { _ in
@@ -3146,6 +3234,8 @@ private struct DesktopUsageContent: View, Equatable {
         .onChange(of: snapshot.refreshedAt) { _ in
             if pageTab == .overview {
                 normalizeFilters()
+            } else if pageTab == .requirements {
+                normalizeRequirementProject()
             }
         }
         .onChange(of: todaySessionsState.loadedAt) { _ in
@@ -3167,8 +3257,8 @@ private struct DesktopUsageContent: View, Equatable {
                     .foregroundStyle(ATMTheme.secondary)
             }
 
-            LazyVGrid(columns: Self.quotaCardColumns, spacing: 12) {
-                ForEach(quota.cards) { card in
+            LazyVGrid(columns: Self.quotaCardColumns, alignment: .leading, spacing: 12) {
+                ForEach(quota.serviceCards) { card in
                     quotaCard(card)
                 }
                 ForEach(quota.providerCards) { card in
@@ -3199,83 +3289,87 @@ private struct DesktopUsageContent: View, Equatable {
     /// so their right edges stay aligned.
     private var usageModule: some View {
         LazyVStack(alignment: .leading, spacing: 14) {
-            usageFilterToolbar
-
             if pageTab == .overview {
                 let metrics = snapshot.usageMetrics(for: range, filters: filters)
                 let featuredMetrics = metrics.filter(isFeaturedMetric)
                 let supportingMetrics = metrics.filter { !isFeaturedMetric($0) }
+                let trendStats = snapshot.filteredLineTrendStats(for: range, filters: filters)
+                if let quality = snapshot.rangeData[range]?.quality,
+                   !quality.limitations.isEmpty {
+                    ATMInlineNotice(
+                        severity: .warning,
+                        title: "统计口径提示",
+                        message: quality.limitations.joined(separator: "；"),
+                        details: quality.details
+                    )
+                }
                 VStack(alignment: .leading, spacing: 10) {
                     Text("关键指标")
                         .font(ATMFont.font(.title3, weight: .semibold))
                     LazyVGrid(columns: Self.featuredMetricColumns, spacing: 10) {
                         ForEach(Array(featuredMetrics.enumerated()), id: \.offset) { _, metric in
-                            metricCard(metric)
+                            metricCard(metric, trendValues: metricTrendValues(metric, from: trendStats))
                         }
                     }
                     if !supportingMetrics.isEmpty {
-                        LazyVGrid(columns: Self.supportingMetricColumns, spacing: 8) {
-                            ForEach(Array(supportingMetrics.enumerated()), id: \.offset) { _, metric in
-                                metricCard(metric, compact: true)
-                            }
-                        }
+                        supportingMetricsStrip(supportingMetrics)
                     }
                 }
 
                 usageTrendCard
                 dualPanelSection
+            } else if pageTab == .requirements {
+                requirementStatisticsModule
             } else {
                 todaySessionsCard
             }
         }
     }
 
+    /// 右栏的页面分页，跟任务 / Agent / 收集详情共用胶囊分段，不用系统 segmented control：
+    /// 后者在这里是自成一路的第三种 tab 样式，而且定宽 260 会把两个短标签撑得过散。
     private var usagePagePicker: some View {
-        Picker("用量页面", selection: $pageTab) {
-            ForEach(ATMUsagePageTab.allCases) { tab in
-                Text(tab.title).tag(tab)
-            }
-        }
-        .labelsHidden()
-        .pickerStyle(.segmented)
-        .frame(width: 260)
-        .accessibilityLabel("用量页面")
+        ATMCapsuleTabs(
+            selection: $pageTab,
+            items: ATMUsagePageTab.allCases.map { (value: $0, title: $0.title) }
+        )
+        .accessibilityLabel("统计页面")
     }
 
-    /// Wide: title | (time above filters, both trailing).
-    /// Narrow: keep the page switch beside the title and move health below.
-    private var usageModuleChrome: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .bottom, spacing: 14) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("用量")
-                        .font(ATMFont.font(.title1, weight: .semibold))
-                    Text("额度、成本与模型效率")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                Spacer(minLength: 8)
-                usagePagePicker
-                dataHealthButton
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            VStack(alignment: .leading, spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("用量")
-                        .font(ATMFont.font(.title1, weight: .semibold))
-                    Text("额度、成本与模型效率")
-                        .font(ATMFont.footnote)
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-                HStack {
-                    usagePagePicker
-                    Spacer()
-                    dataHealthButton
+    private var requirementToolbar: some View {
+        HStack(spacing: 12) {
+            Text("完成粒度")
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+            ATMCapsuleTabs(
+                selection: $requirementGranularity,
+                items: ATMRequirementGranularity.allCases.map { (value: $0, title: $0.title) }
+            )
+            .frame(width: 190)
+            Divider()
+                .frame(height: 20)
+            Picker("项目", selection: $requirementProject) {
+                Text("全部项目").tag("")
+                if !snapshot.requirementProjectOptions().isEmpty {
+                    Divider()
+                    ForEach(snapshot.requirementProjectOptions(), id: \.self) { project in
+                        Text(project).tag(project)
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .fixedSize(horizontal: true, vertical: false)
+            .help("按项目筛选需求完成统计")
+            Spacer(minLength: 0)
+            Text("按 Todo 完成时间统计，归档后仍保留")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.controlFill.opacity(0.55), in: RoundedRectangle(cornerRadius: ATMRadius.control))
     }
 
     private var dataHealthButton: some View {
@@ -3301,23 +3395,215 @@ private struct DesktopUsageContent: View, Equatable {
                     .frame(height: 20)
                 usageFilterControls
                 Spacer(minLength: 0)
+                Image(systemName: "slider.horizontal.3")
+                    .font(ATMFont.font(.body, weight: .medium))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .help("模型、客户端和项目筛选")
             }
             VStack(alignment: .leading, spacing: 8) {
                 usageRangeOrRefreshControl
                 usageFilterControls
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            ATMTheme.elevated,
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .background(ATMTheme.controlFill.opacity(0.55), in: RoundedRectangle(cornerRadius: ATMRadius.control))
+    }
+
+    private var requirementStatisticsModule: some View {
+        let summary = snapshot.requirementSummary(project: requirementProject)
+        let buckets = snapshot.requirementBuckets(
+            granularity: requirementGranularity,
+            project: requirementProject
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(ATMTheme.border.opacity(0.7))
+        let projects = snapshot.requirementProjects(
+            granularity: requirementGranularity,
+            project: requirementProject
         )
+        let recent = snapshot.recentTodoCompletions(project: requirementProject)
+        return LazyVStack(alignment: .leading, spacing: 18) {
+            LazyVGrid(columns: Self.featuredMetricColumns, spacing: 10) {
+                requirementMetricCard("今日完成", count: summary.today, icon: "checkmark.circle.fill", color: ATMTheme.accent)
+                requirementMetricCard("本周完成", count: summary.thisWeek, icon: "calendar.badge.checkmark", color: ATMTheme.palette[1])
+                requirementMetricCard("本月完成", count: summary.thisMonth, icon: "chart.bar.fill", color: ATMTheme.palette[4])
+            }
+
+            usageCard(requirementGranularity.trendTitle) {
+                if buckets.allSatisfy({ $0.completed == 0 }) {
+                    usageEmptyState("当前范围还没有完成的 Todo", icon: "checkmark.circle")
+                } else {
+                    Chart(buckets) { bucket in
+                        AreaMark(
+                            x: .value("周期", bucket.start),
+                            y: .value("完成 Todo", bucket.completed)
+                        )
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [ATMTheme.accent.opacity(0.24), ATMTheme.accent.opacity(0.02)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                        .interpolationMethod(.monotone)
+                        LineMark(
+                            x: .value("周期", bucket.start),
+                            y: .value("完成 Todo", bucket.completed)
+                        )
+                        .foregroundStyle(ATMTheme.accent)
+                        .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
+                        .interpolationMethod(.monotone)
+                        PointMark(
+                            x: .value("周期", bucket.start),
+                            y: .value("完成 Todo", bucket.completed)
+                        )
+                        .foregroundStyle(ATMTheme.accent)
+                        .symbolSize(bucket.completed > 0 ? 34 : 12)
+                        .annotation(position: .top) {
+                            if bucket.completed > 0 {
+                                Text("\(bucket.completed)")
+                                    .font(ATMFont.mono(.caption, .semibold))
+                                    .foregroundStyle(ATMTheme.secondary)
+                            }
+                        }
+                    }
+                    .chartYAxis {
+                        AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
+                            AxisGridLine().foregroundStyle(ATMTheme.chartGrid)
+                            AxisValueLabel {
+                                if let count = value.as(Int.self) { Text("\(count)") }
+                            }
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: requirementAxisValues(buckets)) { value in
+                            AxisTick().foregroundStyle(ATMTheme.chartGrid)
+                            AxisValueLabel {
+                                if let date = value.as(Date.self) {
+                                    Text(requirementAxisLabel(date))
+                                }
+                            }
+                        }
+                    }
+                    .frame(height: 270)
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 14) {
+                    requirementProjectsCard(projects)
+                    recentCompletionsCard(recent)
+                }
+                VStack(spacing: 14) {
+                    requirementProjectsCard(projects)
+                    recentCompletionsCard(recent)
+                }
+            }
+        }
+    }
+
+    private func requirementMetricCard(
+        _ title: String,
+        count: Int,
+        icon: String,
+        color: Color
+    ) -> some View {
+        ATMDataPanel {
+            Label(title, systemImage: icon)
+                .font(ATMFont.font(.body, weight: .semibold))
+                .foregroundStyle(ATMTheme.secondary)
+        } content: {
+            Text("\(count)")
+                .font(ATMFont.rounded(.display, .bold))
+                .foregroundStyle(color)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func requirementProjectsCard(_ rows: [ATMRequirementProjectRow]) -> some View {
+        usageCard("\(requirementGranularity.currentTitle)项目分布") {
+            if rows.isEmpty {
+                usageEmptyState("暂无项目完成记录", icon: "folder")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.prefix(8).enumerated()), id: \.element.id) { index, row in
+                        HStack {
+                            Text(row.project)
+                                .font(ATMFont.font(.body, weight: .medium))
+                                .lineLimit(1)
+                            Spacer()
+                            Text("\(row.completed)")
+                                .font(ATMFont.mono(.body, .semibold))
+                                .foregroundStyle(ATMTheme.accent)
+                            Text("个")
+                                .font(ATMFont.footnote)
+                                .foregroundStyle(ATMTheme.secondary)
+                        }
+                        .padding(.vertical, 9)
+                        if index < min(rows.count, 8) - 1 { Divider() }
+                    }
+                }
+                .frame(minHeight: 220, alignment: .top)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func recentCompletionsCard(_ rows: [ATMTodoCompletion]) -> some View {
+        usageCard("最近完成") {
+            if rows.isEmpty {
+                usageEmptyState("还没有完成记录", icon: "clock")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(rows.prefix(8).enumerated()), id: \.element.id) { index, row in
+                        HStack(spacing: 10) {
+                            Text(row.todoID)
+                                .font(ATMFont.mono(.footnote, .semibold))
+                                .foregroundStyle(ATMTheme.accent)
+                                .frame(width: 48, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.title)
+                                    .font(ATMFont.font(.body, weight: .medium))
+                                    .lineLimit(1)
+                                Text([row.completedDate, row.project].filter { !$0.isEmpty }.joined(separator: " · "))
+                                    .font(ATMFont.footnote)
+                                    .foregroundStyle(ATMTheme.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(.vertical, 8)
+                        if index < min(rows.count, 8) - 1 { Divider() }
+                    }
+                }
+                .frame(minHeight: 220, alignment: .top)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func requirementAxisValues(_ buckets: [ATMRequirementBucket]) -> [Date] {
+        let maximum = requirementGranularity == .day ? 7 : 6
+        guard buckets.count > maximum else { return buckets.map(\.start) }
+        let stride = max(Int(ceil(Double(buckets.count) / Double(maximum))), 1)
+        return buckets.enumerated().compactMap { index, bucket in
+            index.isMultiple(of: stride) || index == buckets.count - 1 ? bucket.start : nil
+        }
+    }
+
+    private func requirementAxisLabel(_ date: Date) -> String {
+        switch requirementGranularity {
+        case .day, .week:
+            return date.formatted(.dateTime.month(.defaultDigits).day())
+        case .month:
+            return date.formatted(.dateTime.year(.twoDigits).month(.defaultDigits))
+        }
+    }
+
+    private func normalizeRequirementProject() {
+        guard !requirementProject.isEmpty else { return }
+        if !snapshot.requirementProjectOptions().contains(requirementProject) {
+            requirementProject = ""
+        }
     }
 
     private func isFeaturedMetric(_ metric: ATMUsageMetric) -> Bool {
@@ -3445,15 +3731,27 @@ private struct DesktopUsageContent: View, Equatable {
             ? speedStats.map { ATMTrendPoint(from: $0, value: $0.tokensPerSecond ?? 0) }
             : seriesStats.map { ATMTrendPoint(from: $0, value: Double($0.totalTokens)) }
         let bucketDates = points.map(\.date)
+        let peakIDs = Set(
+            points
+                .filter { $0.value > 0 }
+                .sorted { $0.value > $1.value }
+                .prefix(2)
+                .map(\.id)
+        )
         // Hour or day comes from the buckets themselves, not from the window: every
         // single-day window is drawn in hours when the snapshot carries them, and in
         // one day bucket when it does not.
         let hourlyAxis = ATMUsageDateAxis.isHourly(bucketDates)
-        return VStack(alignment: .leading, spacing: 14) {
+        return ATMDataPanel {
             HStack {
-                Text(range.tokenTrendTitle)
-                    .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                    .foregroundStyle(ATMTheme.primary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(range.tokenTrendTitle)
+                        .font(ATMFont.font(.bodyLarge, weight: .semibold))
+                        .foregroundStyle(ATMTheme.primary)
+                    Text(trendMetric == .tokens ? "Token" : "每秒输出 Token")
+                        .font(ATMFont.mono(.caption, .medium))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
                 Spacer(minLength: 12)
                 Picker("", selection: $trendMetric) {
                     ForEach(ATMUsageTrendMetric.allCases) { item in Text(item.title).tag(item) }
@@ -3463,17 +3761,17 @@ private struct DesktopUsageContent: View, Equatable {
                 .frame(width: 154)
                 .help("Token 看用了多少，速度看模型每秒输出多少 token（不含工具执行时间）")
             }
-
+        } content: {
             if points.isEmpty {
                 usageEmptyState(trendMetric.emptyStateTitle, icon: "chart.xyaxis.line")
             } else {
-                let visibleSeries = Set(points.map(\.series))
-                let singleSeriesColor = seriesChartColors(
-                    for: Array(visibleSeries),
+                let dominantSeries = seriesNames.first
+                let dominantSeriesColor = seriesChartColors(
+                    for: dominantSeries.map { [$0] } ?? [],
                     available: availableSeries
                 ).first ?? ATMTheme.accent
                 Chart(points) { point in
-                    if visibleSeries.count == 1 {
+                    if point.series == dominantSeries {
                         AreaMark(
                             x: .value("日期", point.day),
                             y: .value(trendMetric.axisTitle, point.value)
@@ -3481,8 +3779,8 @@ private struct DesktopUsageContent: View, Equatable {
                         .foregroundStyle(
                             LinearGradient(
                                 colors: [
-                                    singleSeriesColor.opacity(0.16),
-                                    singleSeriesColor.opacity(0.01),
+                                    dominantSeriesColor.opacity(0.16),
+                                    dominantSeriesColor.opacity(0.01),
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
@@ -3506,6 +3804,24 @@ private struct DesktopUsageContent: View, Equatable {
                         .foregroundStyle(by: .value(seriesLabel, point.series))
                         .symbol(by: .value(seriesLabel, point.series))
                         .symbolSize(pinSeries ? 34 : 22)
+                    }
+                    if peakIDs.contains(point.id) {
+                        RuleMark(x: .value("峰值日期", point.day))
+                            .foregroundStyle(ATMTheme.secondary.opacity(0.24))
+                            .lineStyle(StrokeStyle(lineWidth: 0.8, dash: [3, 3]))
+                            .annotation(position: .top, spacing: 4) {
+                                VStack(spacing: 1) {
+                                    Text(point.day, format: hourlyAxis
+                                        ? .dateTime.hour().minute()
+                                        : .dateTime.month(.defaultDigits).day())
+                                    Text(trendMetric == .speed
+                                        ? String(format: "%.0f", point.value)
+                                        : NumberFormat.compact(Int(point.value)))
+                                        .fontWeight(.semibold)
+                                }
+                                .font(ATMFont.mono(.micro))
+                                .foregroundStyle(ATMTheme.secondary)
+                            }
                     }
                 }
                 .chartForegroundStyleScale(
@@ -3554,17 +3870,18 @@ private struct DesktopUsageContent: View, Equatable {
                 )
                 .chartPlotStyle { plotArea in
                     plotArea
-                        .background(ATMTheme.chartPlotFill)
+                        .background(
+                            LinearGradient(
+                                colors: [ATMTheme.accent.opacity(0.025), ATMTheme.chartPlotFill],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
-                .frame(height: 240)
+                .frame(height: 270)
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
-        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
     }
 
     private var todaySessionsCard: some View {
@@ -3805,9 +4122,26 @@ private struct DesktopUsageContent: View, Equatable {
             let skills = Array(snapshot.skillStats(for: range).prefix(8))
             let total = max(snapshot.skillCallTotal(for: range), 1)
             if skills.isEmpty {
-                usageEmptyState("所选范围暂无 Skill 调用", icon: "sparkles")
+                VStack(spacing: 9) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(ATMTheme.accent.opacity(0.07))
+                        Image(systemName: "sparkles")
+                            .font(ATMFont.font(.title2, weight: .medium))
+                            .foregroundStyle(ATMTheme.accent)
+                    }
+                    .frame(width: 48, height: 48)
+                    Text("暂无 Skill 调用")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                    Text("在对话或自动化任务中使用 Skill 后，调用分布会显示在这里。")
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 320)
+                }
+                .frame(maxWidth: .infinity, minHeight: 180)
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 9) {
                     ForEach(Array(skills.enumerated()), id: \.element.id) { index, skill in
                         VStack(alignment: .leading, spacing: 5) {
                             HStack {
@@ -3839,7 +4173,7 @@ private struct DesktopUsageContent: View, Equatable {
             if rows.isEmpty {
                 usageEmptyState("所选筛选暂无\(result.dimension.title)用量", icon: "chart.bar")
             } else {
-                VStack(spacing: 12) {
+                VStack(spacing: 9) {
                     ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
                         breakdownRow(row, dimension: result.dimension, index: index, total: total)
                     }
@@ -3873,6 +4207,9 @@ private struct DesktopUsageContent: View, Equatable {
         } label: {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(alignment: .center, spacing: 8) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(ATMTheme.palette[index % ATMTheme.palette.count])
+                        .frame(width: 3, height: 24)
                     if dimension == .client {
                         ATMAgentMark(agent: row.series, size: 16)
                     }
@@ -3936,10 +4273,10 @@ private struct DesktopUsageContent: View, Equatable {
         return text
     }
 
-    private func quotaCard(_ card: ATMQuotaCard) -> some View {
-        let window = card.window
-        let percent = window.displayPercent
-        let color = ATMTheme.quotaColor(ATMQuotaLevel.level(forPercent: percent))
+    private func quotaCard(_ card: ATMQuotaServiceCard) -> some View {
+        let peakPercent = card.windows.map(\.displayPercent).max() ?? 0
+        let level = ATMQuotaLevel.level(forPercent: peakPercent)
+        let color = ATMTheme.quotaColor(level)
         let label = ATMAgentDisplay.name(card.agent)
         return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 5) {
@@ -3947,12 +4284,6 @@ private struct DesktopUsageContent: View, Equatable {
                 Text(label)
                     .font(ATMFont.font(.footnote, weight: .semibold))
                     .lineLimit(1)
-                Text(window.windowLabel)
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(ATMTheme.controlFill, in: Capsule())
-                    .fixedSize()
                 Spacer(minLength: 4)
                 if let plan = card.plan, !plan.isEmpty {
                     Text(plan)
@@ -3974,67 +4305,17 @@ private struct DesktopUsageContent: View, Equatable {
             .frame(height: 20)
             .foregroundStyle(ATMTheme.secondary)
 
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(String(format: "%.0f", percent))
-                    .font(ATMFont.mono(.metric, .bold))
-                    .foregroundStyle(color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-                Text("% 已用")
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .fixedSize()
-                // The rate turns the number into something to act on. Absent until
-                // history exists, so a fresh install shows the percentage alone
-                // rather than an empty trend.
-                if let trend = window.trend {
-                    Spacer(minLength: 4)
-                    HStack(spacing: 2) {
-                        if let arrow = trend.arrow {
-                            Text(arrow)
-                        }
-                        Text(trend.rateText)
-                    }
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .foregroundStyle(trend.fullBeforeReset
-                        ? ATMTheme.quotaColor(.critical)
-                        : ATMTheme.secondary)
-                    .fixedSize()
-                    .help(quotaTrendHelp(trend, window: window))
-                }
+            let orderedWindows = card.windows.sorted { $0.windowMinutes < $1.windowMinutes }
+            if let inner = orderedWindows.first, let outer = orderedWindows.last,
+               orderedWindows.count > 1 {
+                dualWindowQuotaContent(inner: inner, outer: outer)
+            } else if let window = orderedWindows.first {
+                quotaWindowSummary(window)
             }
-
-            // With per-product data the bar itself carries the split: stacked
-            // colored segments of the same pool instead of extra text rows.
-            // Segment widths are clamped so their sum never exceeds the
-            // headline percent — if the API's product split ever drifts from
-            // the total, the bar scales down instead of contradicting the number.
-            GeometryReader { proxy in
-                let productSum = card.products.reduce(0) { $0 + max(0, $1.usedPercent) }
-                let productScale = productSum > percent && productSum > 0 ? percent / productSum : 1
-                ZStack(alignment: .leading) {
-                    Capsule().fill(ATMTheme.controlFill)
-                    if card.products.isEmpty {
-                        Capsule()
-                            .fill(color)
-                            .frame(width: max(0, min(1, percent / 100)) * proxy.size.width)
-                    } else {
-                        HStack(spacing: 0) {
-                            ForEach(Array(card.products.enumerated()), id: \.element.id) { index, product in
-                                Rectangle()
-                                    .fill(Self.quotaProductColor(index))
-                                    .frame(width: max(0, min(1, product.usedPercent * productScale / 100)) * proxy.size.width)
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .clipShape(Capsule())
-                    }
-                }
-            }
-            .frame(height: 5)
 
             if !card.products.isEmpty {
-                // Legend for the stacked segments, one compact line.
+                // Keep product attribution as text; the circle is the only
+                // progress visualization on every quota card.
                 HStack(spacing: 10) {
                     ForEach(Array(card.products.enumerated()), id: \.element.id) { index, product in
                         HStack(spacing: 4) {
@@ -4054,16 +4335,11 @@ private struct DesktopUsageContent: View, Equatable {
                 .minimumScaleFactor(0.8)
             }
 
-            // Pin the footer to the card's bottom edge so cards with and
-            // without a product legend still share one height and baseline.
             Spacer(minLength: 0)
 
-            HStack(spacing: 6) {
-                Label(window.resetText, systemImage: "clock.arrow.circlepath")
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.85)
-                Spacer(minLength: 4)
-                if let sourceLabel = card.sourceLabel {
+            if let sourceLabel = card.sourceLabel {
+                HStack(spacing: 3) {
+                    Spacer(minLength: 0)
                     HStack(spacing: 3) {
                         Circle()
                             .fill(card.source == "live"
@@ -4074,18 +4350,220 @@ private struct DesktopUsageContent: View, Equatable {
                     }
                     .help("额度数据来源：实时 = 账单接口，缓存 = 最近一次实时结果，日志 = 本地会话日志")
                 }
+                .font(ATMFont.mono(.caption))
+                .foregroundStyle(ATMTheme.secondary)
             }
-            .font(ATMFont.mono(.caption))
-            .foregroundStyle(ATMTheme.secondary)
         }
         .padding(16)
         // One fixed height for every card: tall enough for the product-split
         // variant, and the Spacer above absorbs the slack in plain cards.
-        .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
-        .shadow(color: Color.black.opacity(0.04), radius: 7, y: 2)
-        .help("\(label) \(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)")
+        .frame(
+            maxWidth: .infinity,
+            minHeight: ATMUsageQuotaLayout.cardMinimumHeight,
+            alignment: .topLeading
+        )
+        .background(
+            LinearGradient(
+                colors: [color.opacity(0.055), ATMTheme.elevated, ATMTheme.elevated],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
+                .stroke(color.opacity(0.16))
+        )
+        .help(
+            card.windows.map {
+                "\(label) \($0.windowLabel) 窗口：\(String(format: "%.1f", $0.displayPercent))% 已用，\($0.resetText)"
+            }
+            .joined(separator: "；")
+        )
+    }
+
+    private func dualWindowQuotaContent(
+        inner: ATMQuotaWindow,
+        outer: ATMQuotaWindow
+    ) -> some View {
+        let innerColor = quotaRingColor(inner, isInner: true)
+        let outerColor = quotaRingColor(outer, isInner: false)
+        return HStack(alignment: .center, spacing: 18) {
+            concentricQuotaGauge(
+                inner: inner,
+                outer: outer,
+                innerColor: innerColor,
+                outerColor: outerColor
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                quotaWindowLegend(
+                    inner,
+                    ringColor: innerColor,
+                    ringLabel: "内圈"
+                )
+                Divider()
+                quotaWindowLegend(
+                    outer,
+                    ringColor: outerColor,
+                    ringLabel: "外圈"
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func concentricQuotaGauge(
+        inner: ATMQuotaWindow,
+        outer: ATMQuotaWindow,
+        innerColor: Color,
+        outerColor: Color
+    ) -> some View {
+        ZStack {
+            Circle()
+                .stroke(ATMTheme.controlFill, lineWidth: 7)
+                .frame(width: 116, height: 116)
+            Circle()
+                .trim(from: 0, to: quotaProgress(outer.displayPercent))
+                .stroke(outerColor, style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .frame(width: 116, height: 116)
+
+            Circle()
+                .stroke(ATMTheme.controlFill, lineWidth: 6)
+                .frame(width: 82, height: 82)
+            Circle()
+                .trim(from: 0, to: quotaProgress(inner.displayPercent))
+                .stroke(innerColor, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .frame(width: 82, height: 82)
+
+            VStack(spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(String(format: "%.0f", inner.displayPercent))
+                        .font(ATMFont.mono(.title2, .bold))
+                    Text("%")
+                        .font(ATMFont.mono(.micro, .semibold))
+                }
+                Text("\(inner.windowLabel) 已用")
+                    .font(ATMFont.mono(.micro))
+                    .foregroundStyle(ATMTheme.secondary)
+            }
+        }
+        .frame(width: 126, height: 126)
+        .help(
+            "内圈 \(inner.windowLabel) \(String(format: "%.1f", inner.displayPercent))%，"
+                + "外圈 \(outer.windowLabel) \(String(format: "%.1f", outer.displayPercent))%"
+        )
+    }
+
+    private func quotaWindowLegend(
+        _ window: ATMQuotaWindow,
+        ringColor: Color,
+        ringLabel: String
+    ) -> some View {
+        let level = ATMQuotaLevel.level(forPercent: window.displayPercent)
+        return HStack(alignment: .center, spacing: 8) {
+            Circle()
+                .fill(ringColor)
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 5) {
+                    Text(window.windowLabel)
+                        .font(ATMFont.mono(.body, .semibold))
+                    Text("\(ringLabel) · \(String(format: "%.0f", window.displayPercent))% 已用")
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+                HStack(spacing: 5) {
+                    Text(quotaStatusLabel(level))
+                    Text("·")
+                    Text(window.resetText)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                .font(ATMFont.mono(.caption))
+                .foregroundStyle(ATMTheme.secondary)
+                if let trend = window.trend {
+                    Text(trend.rateText)
+                        .font(ATMFont.mono(.caption, .semibold))
+                        .foregroundStyle(trend.fullBeforeReset
+                            ? ATMTheme.quotaColor(.critical)
+                            : ATMTheme.secondary)
+                        .help(quotaTrendHelp(trend, window: window))
+                }
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func quotaRingColor(_ window: ATMQuotaWindow, isInner: Bool) -> Color {
+        let level = ATMQuotaLevel.level(forPercent: window.displayPercent)
+        if level != .healthy { return ATMTheme.quotaColor(level) }
+        return isInner ? ATMTheme.accent : ATMTheme.quotaColor(.healthy)
+    }
+
+    private func quotaProgress(_ percent: Double) -> CGFloat {
+        CGFloat(max(0, min(1, percent / 100)))
+    }
+
+    private func quotaWindowSummary(_ window: ATMQuotaWindow) -> some View {
+        let percent = window.displayPercent
+        let level = ATMQuotaLevel.level(forPercent: percent)
+        let color = ATMTheme.quotaColor(level)
+        return HStack(spacing: 11) {
+            quotaGauge(percent: percent, color: color)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 5) {
+                    Text(window.windowLabel)
+                        .font(ATMFont.mono(.caption, .semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(ATMTheme.controlFill, in: Capsule())
+                    Text("已用")
+                        .font(ATMFont.font(.body, weight: .semibold))
+                }
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(color)
+                        .frame(width: 6, height: 6)
+                    Text(quotaStatusLabel(level))
+                }
+                .font(ATMFont.caption)
+                .foregroundStyle(ATMTheme.secondary)
+
+                if let trend = window.trend {
+                    HStack(spacing: 2) {
+                        if let arrow = trend.arrow {
+                            Text(arrow)
+                        }
+                        Text(trend.rateText)
+                    }
+                    .font(ATMFont.mono(.caption, .semibold))
+                    .foregroundStyle(trend.fullBeforeReset
+                        ? ATMTheme.quotaColor(.critical)
+                        : ATMTheme.secondary)
+                    .fixedSize()
+                    .help(quotaTrendHelp(trend, window: window))
+                }
+                Text(window.resetText)
+                    .font(ATMFont.mono(.caption))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            Spacer(minLength: 0)
+        }
+        .help("\(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)")
+    }
+
+    private func quotaStatusLabel(_ level: ATMQuotaLevel) -> String {
+        switch level {
+        case .healthy: return "额度充足"
+        case .warning: return "注意用量"
+        case .critical: return "接近上限"
+        }
     }
 
     /// A card whose provider named the page behind the reading is a way in to it:
@@ -4106,24 +4584,29 @@ private struct DesktopUsageContent: View, Equatable {
         let payload = card.payload
         let label = ATMAgentDisplay.name(card.agent)
         let linksOut = payload.linkURL != nil
+        let primaryMetric = payload.metrics.first
+        let percent = max(0, primaryMetric?.usedPercent ?? 0)
+        let level = ATMQuotaLevel.level(forPercent: percent)
+        let color = payload.isUnavailable ? ATMTheme.warning : ATMTheme.quotaColor(level)
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 5) {
                 ATMAgentMark(agent: card.agent, size: 15)
                 Text(label)
                     .font(ATMFont.font(.footnote, weight: .semibold))
                     .lineLimit(1)
-                Text(card.providerLabel)
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(ATMTheme.controlFill, in: Capsule())
-                    .fixedSize()
-                Spacer(minLength: 4)
                 if let period = payload.period, !period.isEmpty {
                     Text(period)
-                        .font(ATMFont.mono(.caption))
-                        .foregroundStyle(ATMTheme.secondary)
+                        .font(ATMFont.mono(.caption, .semibold))
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(ATMTheme.controlFill, in: Capsule())
+                        .fixedSize()
                 }
+                Spacer(minLength: 4)
+                Text(card.providerLabel)
+                    .font(ATMFont.mono(.caption))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
                 if linksOut {
                     // Drawn whether or not the pointer is here, so revealing it on
                     // hover cannot shove the period label sideways.
@@ -4136,16 +4619,39 @@ private struct DesktopUsageContent: View, Equatable {
             .frame(height: 20)
             .foregroundStyle(ATMTheme.secondary)
 
-            Text(payload.title)
-                .font(ATMFont.font(.caption, weight: .medium))
-                .foregroundStyle(ATMTheme.secondary)
-                .lineLimit(1)
-
             if payload.isUnavailable {
                 providerQuotaEmptyState(payload)
-            } else {
-                ForEach(payload.metrics) { metric in
-                    providerQuotaMetric(metric)
+            } else if let metric = primaryMetric {
+                HStack(spacing: 14) {
+                    quotaGauge(percent: percent, color: color)
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(payload.title)
+                            .font(ATMFont.font(.body, weight: .semibold))
+                            .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Circle()
+                                .fill(color)
+                                .frame(width: 6, height: 6)
+                            Text(quotaStatusLabel(level))
+                        }
+                        .font(ATMFont.caption)
+                        .foregroundStyle(ATMTheme.secondary)
+                        Text("\(metric.label) \(metric.valueText)")
+                            .font(ATMFont.mono(.caption, .semibold))
+                            .foregroundStyle(ATMTheme.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.72)
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                if payload.metrics.count > 1 {
+                    HStack(spacing: 10) {
+                        ForEach(Array(payload.metrics.dropFirst())) { extraMetric in
+                            providerQuotaMetricSummary(extraMetric)
+                        }
+                    }
                 }
             }
 
@@ -4173,15 +4679,25 @@ private struct DesktopUsageContent: View, Equatable {
             .foregroundStyle(ATMTheme.secondary)
         }
         .padding(16)
-        .frame(maxWidth: .infinity, minHeight: 148, alignment: .topLeading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(isHovered ? ATMTheme.accent : ATMTheme.border)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: ATMUsageQuotaLayout.cardMinimumHeight,
+            alignment: .topLeading
         )
-        .shadow(color: Color.black.opacity(isHovered ? 0.08 : 0.04), radius: 7, y: 2)
+        .background(
+            LinearGradient(
+                colors: [color.opacity(0.055), ATMTheme.elevated, ATMTheme.elevated],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ATMRadius.panel, style: .continuous)
+                .stroke(isHovered ? ATMTheme.accent : color.opacity(0.16))
+        )
         // The card's own padding is part of the hit area, not a dead margin.
-        .contentShape(RoundedRectangle(cornerRadius: 12))
+        .contentShape(RoundedRectangle(cornerRadius: ATMRadius.panel))
         .help(
             "\(label) · \(card.providerLabel) · \(payload.title)："
                 + (payload.isUnavailable
@@ -4207,34 +4723,42 @@ private struct DesktopUsageContent: View, Equatable {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func providerQuotaMetric(_ metric: ATMProviderQuotaMetric) -> some View {
+    private func providerQuotaMetricSummary(_ metric: ATMProviderQuotaMetric) -> some View {
         let percent = max(0, metric.usedPercent)
         let color = ATMTheme.quotaColor(ATMQuotaLevel.level(forPercent: percent))
-        return VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(metric.label)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                Text(metric.valueText)
-                    .font(ATMFont.mono(.body, .semibold))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Spacer(minLength: 2)
-                Text(String(format: "%.1f%%", percent))
-                    .font(ATMFont.mono(.caption, .semibold))
-                    .foregroundStyle(color)
-                    .fixedSize()
-            }
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(ATMTheme.controlFill)
-                    Capsule()
-                        .fill(color)
-                        .frame(width: max(0, min(1, percent / 100)) * proxy.size.width)
-                }
-            }
-            .frame(height: 5)
+        return HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 5, height: 5)
+            Text(metric.label)
+                .font(ATMFont.caption)
+            Text(String(format: "%.0f%%", percent))
+                .font(ATMFont.mono(.caption))
         }
+        .foregroundStyle(ATMTheme.secondary)
+        .lineLimit(1)
+        .minimumScaleFactor(0.8)
+    }
+
+    /// Shared by built-in windows and provider readings so quota cards use one
+    /// progress language: a single circular gauge, never a duplicate bar.
+    private func quotaGauge(percent: Double, color: Color) -> some View {
+        ZStack {
+            Circle()
+                .stroke(ATMTheme.controlFill, lineWidth: 5)
+            Circle()
+                .trim(from: 0, to: max(0, min(1, percent / 100)))
+                .stroke(color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            HStack(alignment: .firstTextBaseline, spacing: 1) {
+                Text(String(format: "%.0f", percent))
+                    .font(ATMFont.mono(.title2, .bold))
+                Text("%")
+                    .font(ATMFont.mono(.micro, .semibold))
+            }
+            .foregroundStyle(ATMTheme.primary)
+        }
+        .frame(width: 62, height: 62)
     }
 
 
@@ -4246,13 +4770,19 @@ private struct DesktopUsageContent: View, Equatable {
     }
 
     @ViewBuilder
-    private func metricCard(_ metric: ATMUsageMetric, compact: Bool = false) -> some View {
+    private func metricCard(
+        _ metric: ATMUsageMetric,
+        trendValues: [Double] = [],
+        compact: Bool = false
+    ) -> some View {
         switch metric {
         case let .seriesCount(count, title):
             metricCard(
                 "\(title)数",
                 .plain("\(count)"),
                 "square.stack.3d.up",
+                valueColor: ATMTheme.palette[2],
+                trendValues: trendValues,
                 compact: compact
             )
         case let .tokens(value):
@@ -4260,19 +4790,26 @@ private struct DesktopUsageContent: View, Equatable {
                 "总 Token",
                 .compact(value),
                 "number.circle.fill",
-                emphasized: true,
                 valueColor: ATMTheme.accent,
+                trendValues: trendValues,
                 compact: compact
             )
         case let .output(value):
-            metricCard("输出", .compact(value), "arrow.up.right.circle", compact: compact)
+            metricCard(
+                "输出",
+                .compact(value),
+                "arrow.up.right.circle",
+                valueColor: ATMTheme.palette[3],
+                trendValues: trendValues,
+                compact: compact
+            )
         case let .cacheHitRate(rate):
             metricCard(
                 "缓存命中率",
                 .percent(rate),
                 "bolt.shield.fill",
-                emphasized: true,
                 valueColor: ATMTheme.cacheHitColor(rate),
+                trendValues: trendValues,
                 compact: compact
             )
         case let .sessions(count):
@@ -4280,24 +4817,47 @@ private struct DesktopUsageContent: View, Equatable {
                 "会话",
                 .plain("\(count)"),
                 "bubble.left.and.bubble.right",
+                valueColor: ATMTheme.palette[1],
+                trendValues: trendValues,
                 compact: compact
             )
         case let .queries(count):
-            metricCard("提问", .plain("\(count)"), "text.bubble", compact: compact)
+            metricCard(
+                "提问",
+                .plain("\(count)"),
+                "text.bubble",
+                valueColor: ATMTheme.palette[4],
+                trendValues: trendValues,
+                compact: compact
+            )
         case let .cost(value):
             metricCard(
                 "估算费用",
                 .plain(NumberFormat.currency(value)),
                 "dollarsign.circle.fill",
-                emphasized: true,
                 valueColor: ATMTheme.accent,
+                trendValues: trendValues,
                 compact: compact
             )
         case let .throughput(value):
-            metricCard("输出速度", .throughput(value), "speedometer", compact: compact)
+            metricCard(
+                "输出速度",
+                .throughput(value),
+                "speedometer",
+                valueColor: ATMTheme.palette[5],
+                trendValues: trendValues,
+                compact: compact
+            )
                 .help("模型自身的生成速度，不含工具执行时间；由日志时间戳推导，只统计可测的请求")
         case let .turnWait(seconds):
-            metricCard("等待中位数", .duration(seconds), "hourglass", compact: compact)
+            metricCard(
+                "等待中位数",
+                .duration(seconds),
+                "hourglass",
+                valueColor: ATMTheme.warning,
+                trendValues: trendValues,
+                compact: compact
+            )
                 .help("从你发出消息到模型给出最后一句回复，含工具执行与该轮内部的每次请求")
         }
     }
@@ -4306,14 +4866,17 @@ private struct DesktopUsageContent: View, Equatable {
         _ title: String,
         _ value: ATMMetricDisplayValue,
         _ icon: String,
-        emphasized: Bool = false,
         valueColor: Color = ATMTheme.primary,
+        trendValues: [Double] = [],
         compact: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: compact ? 6 : 9) {
             HStack(spacing: 6) {
                 Image(systemName: icon)
-                    .foregroundStyle(emphasized ? valueColor : ATMTheme.secondary)
+                    .font(ATMFont.font(.caption, weight: .semibold))
+                    .foregroundStyle(valueColor)
+                    .frame(width: 22, height: 22)
+                    .background(valueColor.opacity(0.11), in: RoundedRectangle(cornerRadius: 6))
                 Text(title)
                     .foregroundStyle(ATMTheme.secondary)
                 Spacer(minLength: 0)
@@ -4321,63 +4884,205 @@ private struct DesktopUsageContent: View, Equatable {
                 .font(ATMFont.font(.footnote, weight: .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.85)
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(value.main)
-                    .font(ATMFont.rounded(.metric, .bold))
-                    .foregroundStyle(valueColor)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                if !value.unit.isEmpty {
-                    Text(value.unit)
-                        .font(ATMFont.rounded(.body, .semibold))
-                        .foregroundStyle(ATMTheme.secondary)
+            HStack(alignment: .bottom, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(value.main)
+                        .font(ATMFont.rounded(.metric, .bold))
+                        .foregroundStyle(valueColor)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                    if !value.unit.isEmpty {
+                        Text(value.unit)
+                            .font(ATMFont.rounded(.body, .semibold))
+                            .foregroundStyle(ATMTheme.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+                if !compact, trendValues.count > 1 {
+                    metricSparkline(trendValues, color: valueColor)
+                        .frame(width: 82, height: 32)
                 }
             }
         }
         .padding(compact ? 12 : 16)
         .frame(maxWidth: .infinity, minHeight: compact ? 72 : 92, alignment: .leading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: compact ? 9 : 11, style: .continuous)
-                .stroke(ATMTheme.border)
+        .background(
+            LinearGradient(
+                colors: [valueColor.opacity(compact ? 0.025 : 0.045), ATMTheme.elevated],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ),
+            in: RoundedRectangle(
+                cornerRadius: compact ? ATMRadius.row : ATMRadius.panel,
+                style: .continuous
+            )
         )
-        .shadow(color: compact ? .clear : Color.black.opacity(0.04), radius: 7, y: 2)
-        .overlay(alignment: .topLeading) {
-            if emphasized {
-                Capsule()
-                    .fill(valueColor)
-                    .frame(width: 28, height: 3)
-                    .padding(.leading, 16)
-                    .padding(.top, 8)
+        .overlay(
+            RoundedRectangle(
+                cornerRadius: compact ? ATMRadius.row : ATMRadius.panel,
+                style: .continuous
+            )
+                .stroke(valueColor.opacity(compact ? 0.09 : 0.13))
+        )
+    }
+
+    private func metricSparkline(_ values: [Double], color: Color) -> some View {
+        Chart(Array(values.enumerated()), id: \.offset) { item in
+            AreaMark(
+                x: .value("序号", item.offset),
+                y: .value("值", item.element)
+            )
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [color.opacity(0.18), color.opacity(0.01)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .interpolationMethod(.catmullRom)
+            LineMark(
+                x: .value("序号", item.offset),
+                y: .value("值", item.element)
+            )
+            .foregroundStyle(color)
+            .lineStyle(StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+            .interpolationMethod(.catmullRom)
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartLegend(.hidden)
+        .accessibilityHidden(true)
+    }
+
+    /// KPI sparklines use the same filtered buckets as the main chart. They are
+    /// not decorative sample curves: each metric chooses an honest aggregate
+    /// that can be derived from the bucket payload.
+    private func metricTrendValues(
+        _ metric: ATMUsageMetric,
+        from points: [ATMUsageSeriesPoint]
+    ) -> [Double] {
+        var dates: [String] = []
+        for point in points where !dates.contains(point.date) {
+            dates.append(point.date)
+        }
+        return dates.compactMap { date in
+            let bucket = points.filter { $0.date == date }
+            switch metric {
+            case .tokens:
+                return Double(bucket.reduce(0) { $0 + $1.totalTokens })
+            case .cacheHitRate:
+                let input = bucket.reduce(0) { $0 + $1.inputTokens }
+                guard input > 0 else { return nil }
+                return min(
+                    Double(bucket.reduce(0) { $0 + $1.cacheReadTokens }) / Double(input),
+                    1
+                )
+            case .cost:
+                return bucket.reduce(0) { $0 + $1.costUSD }
+            case .throughput:
+                let duration = bucket.reduce(0) { $0 + $1.measuredDurationMS }
+                let output = bucket.reduce(0) { $0 + $1.measuredOutputTokens }
+                guard duration > 0, output > 0 else { return nil }
+                return Double(output) / (Double(duration) / 1000)
+            default:
+                return nil
             }
         }
     }
 
+    @ViewBuilder
+    private func supportingMetricsStrip(_ metrics: [ATMUsageMetric]) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 0) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { index, metric in
+                    compactMetricCell(metric)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if index < metrics.count - 1 {
+                        Divider()
+                            .padding(.vertical, 4)
+                    }
+                }
+            }
+            .padding(.vertical, 8)
+
+            LazyVGrid(columns: Self.supportingMetricColumns, spacing: 8) {
+                ForEach(Array(metrics.enumerated()), id: \.offset) { _, metric in
+                    metricCard(metric, compact: true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func compactMetricCell(_ metric: ATMUsageMetric) -> some View {
+        switch metric {
+        case let .seriesCount(count, title):
+            compactMetricCell("\(title)数", .plain("\(count)"), "square.stack.3d.up", ATMTheme.palette[2])
+        case let .tokens(value):
+            compactMetricCell("总 Token", .compact(value), "number.circle.fill", ATMTheme.accent)
+        case let .output(value):
+            compactMetricCell("输出", .compact(value), "arrow.up.right.circle", ATMTheme.palette[3])
+        case let .cacheHitRate(rate):
+            compactMetricCell("缓存命中率", .percent(rate), "bolt.shield.fill", ATMTheme.cacheHitColor(rate))
+        case let .sessions(count):
+            compactMetricCell("会话", .plain("\(count)"), "bubble.left.and.bubble.right", ATMTheme.palette[1])
+        case let .queries(count):
+            compactMetricCell("提问", .plain("\(count)"), "text.bubble", ATMTheme.palette[4])
+        case let .cost(value):
+            compactMetricCell("估算费用", .plain(NumberFormat.currency(value)), "dollarsign.circle.fill", ATMTheme.accent)
+        case let .throughput(value):
+            compactMetricCell("输出速度", .throughput(value), "speedometer", ATMTheme.palette[5])
+        case let .turnWait(seconds):
+            compactMetricCell("等待中位数", .duration(seconds), "hourglass", ATMTheme.warning)
+        }
+    }
+
+    private func compactMetricCell(
+        _ title: String,
+        _ value: ATMMetricDisplayValue,
+        _ icon: String,
+        _ color: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: icon)
+                    .foregroundStyle(color)
+                Text(title)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(ATMFont.font(.caption, weight: .semibold))
+            .foregroundStyle(ATMTheme.secondary)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value.main)
+                    .font(ATMFont.rounded(.title3, .bold))
+                    .foregroundStyle(ATMTheme.primary)
+                if !value.unit.isEmpty {
+                    Text(value.unit)
+                        .font(ATMFont.rounded(.caption, .semibold))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+    }
+
     private func usageCard<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        ATMDataPanel {
             Text(title)
                 .font(ATMFont.font(.bodyLarge, weight: .semibold))
                 .foregroundStyle(ATMTheme.primary)
+        } content: {
             content()
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(ATMTheme.elevated, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(ATMTheme.border))
-        .shadow(color: Color.black.opacity(0.04), radius: 8, y: 2)
     }
 
+    /// 图表卡片里的占位。用量页的空态一律落在卡片内部，所以固定走 `.inline` 那一档，
+    /// 高度跟着图表区，避免卡片在有数据 / 没数据之间抽一下。
     private func usageEmptyState(_ title: String, icon: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(ATMFont.title1)
-                .foregroundStyle(ATMTheme.secondary)
-            Text(title)
-                .font(ATMFont.font(.body, weight: .medium))
-                .foregroundStyle(ATMTheme.secondary)
-        }
-        .frame(maxWidth: .infinity, minHeight: 220)
+        ATMEmptyState(icon: icon, title: title, size: .inline, minHeight: 220)
     }
 
     /// Drop filter values that no longer exist for the current range / cascade,

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -43,6 +44,7 @@ var (
 	knowledgeAddProjects       []string
 	knowledgeAddProducer       string
 	knowledgeUpdateFile        string
+	knowledgeDeleteYes         bool
 	knowledgeEditTitle         string
 	knowledgeEditCollection    string
 	knowledgeEditStatus        string
@@ -62,7 +64,6 @@ var (
 	memoryLimit                int
 	artifactFile               string
 	artifactProducer           string
-	artifactRunID              string
 	artifactSourceRaw          []string
 )
 
@@ -72,7 +73,7 @@ func init() {
 	knowledgeSearchCmd.Flags().StringSliceVar(&knowledgeSearchCollections, "collection", nil, "filter by knowledge collection")
 	knowledgeSearchCmd.Flags().StringSliceVar(&knowledgeSearchDomains, "domain", nil, "filter by knowledge domain")
 	knowledgeSearchCmd.Flags().StringSliceVar(&knowledgeSearchTags, "tag", nil, "filter by tag")
-	knowledgeSearchCmd.Flags().StringSliceVar(&knowledgeSearchProjects, "project", nil, "filter by project metadata")
+	knowledgeSearchCmd.Flags().StringSliceVar(&knowledgeSearchProjects, "project", nil, "filter by project metadata (case-insensitive exact match, repeatable)")
 	knowledgeSearchCmd.Flags().StringSliceVar(&knowledgeSearchStatuses, "status", nil, "filter by document status")
 	knowledgeSearchCmd.Flags().StringVar(&knowledgeSearchSession, "session", "", "session id for recording retrieval feedback")
 	knowledgeListCmd.Flags().StringSliceVar(&knowledgeListCollections, "collection", nil, "filter by knowledge collection")
@@ -95,6 +96,7 @@ func init() {
 	knowledgeAddCmd.Flags().StringSliceVar(&knowledgeAddProjects, "project", nil, "related project metadata")
 	knowledgeAddCmd.Flags().StringVar(&knowledgeAddProducer, "producer", "human", "knowledge producer")
 	knowledgeUpdateCmd.Flags().StringVar(&knowledgeUpdateFile, "file", "", "read Markdown body from file (use - for stdin)")
+	knowledgeDeleteCmd.Flags().BoolVarP(&knowledgeDeleteYes, "yes", "y", false, "skip the permanent deletion confirmation")
 	knowledgeEditCmd.Flags().StringVar(&knowledgeEditTitle, "title", "", "replace document title")
 	knowledgeEditCmd.Flags().StringVar(&knowledgeEditCollection, "collection", "", "move document to collection")
 	knowledgeEditCmd.Flags().StringVar(&knowledgeEditStatus, "status", "", "replace document status")
@@ -124,7 +126,6 @@ func init() {
 
 	artifactSaveCmd.Flags().StringVar(&artifactFile, "file", "", "read Markdown body from file (use - for stdin)")
 	artifactSaveCmd.Flags().StringVar(&artifactProducer, "producer", "atm-cli", "artifact producer")
-	artifactSaveCmd.Flags().StringVar(&artifactRunID, "run-id", "", "related ATM run id")
 	artifactSaveCmd.Flags().StringSliceVar(&artifactSourceRaw, "source", nil, "source as document-id[#start-end]")
 	artifactCmd.AddCommand(artifactSaveCmd)
 
@@ -132,16 +133,31 @@ func init() {
 }
 
 // Args: cobra.NoArgs + RunE: showHelp so unknown subcommands error instead of silently showing help.
-var knowledgeCmd = &cobra.Command{Use: "knowledge", Short: "Manage the central ATM knowledge base", Args: cobra.NoArgs, RunE: showHelp}
-var memoryCmd = &cobra.Command{Use: "memory", Short: "Recall and manage shared ATM memory", Args: cobra.NoArgs, RunE: showHelp}
-var artifactCmd = &cobra.Command{Use: "artifact", Short: "Save versioned ATM artifacts", Args: cobra.NoArgs, RunE: showHelp}
+var knowledgeCmd = &cobra.Command{Use: "knowledge", Short: "Manage the central ATM knowledge base", Args: noSubcommandArgs, RunE: showHelp}
+var memoryCmd = &cobra.Command{Use: "memory", Short: "Recall and manage shared ATM memory", Args: noSubcommandArgs, RunE: showHelp}
+var artifactCmd = &cobra.Command{Use: "artifact", Short: "Save versioned ATM artifacts", Args: noSubcommandArgs, RunE: showHelp}
+
+func currentKnowledgeService() knowledge.Service {
+	return knowledge.NewService(knowledge.ServiceOptions{DataDir: config.AtmDir})
+}
+
+type knowledgeQualitySummaryView struct {
+	Documents  int `json:"documents"`
+	Returned   int `json:"returned"`
+	Offset     int `json:"offset"`
+	Limit      int `json:"limit"`
+	Retrievals int `json:"retrievals"`
+	Adopted    int `json:"adopted"`
+	Corrected  int `json:"corrected"`
+	Rejected   int `json:"rejected"`
+}
 
 var knowledgeListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List knowledge documents without loading their content",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		documents, err := knowledge.List(config.AtmDir, knowledgeListCollections)
+		documents, err := currentKnowledgeService().List(cmd.Context(), knowledge.ListInput{Collections: knowledgeListCollections})
 		if err != nil {
 			return err
 		}
@@ -186,7 +202,7 @@ var knowledgeFeedbackCmd = &cobra.Command{
 	Short: "Record whether recalled knowledge was adopted, corrected, or rejected",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		event, err := knowledge.RecordFeedback(config.AtmDir, knowledge.FeedbackInput{
+		event, err := currentKnowledgeService().Feedback(cmd.Context(), knowledge.FeedbackInput{
 			DocumentID: args[0], SessionID: knowledgeFeedbackSession, Query: knowledgeFeedbackQuery,
 			Outcome: knowledgeFeedbackOutcome, Note: knowledgeFeedbackNote,
 		})
@@ -207,46 +223,28 @@ var knowledgeQualityCmd = &cobra.Command{
 	Short: "Show retrieval feedback and quality scores",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		values, err := knowledge.KnowledgeQualities(config.AtmDir)
+		input := knowledge.QualityInput{IssuesOnly: knowledgeQualityIssuesOnly}
+		if len(args) == 1 {
+			input.DocumentID = args[0]
+		}
+		result, err := currentKnowledgeService().Quality(cmd.Context(), input)
 		if err != nil {
 			return err
 		}
-		if len(args) == 1 {
-			filtered := values[:0]
-			for _, value := range values {
-				if value.DocumentID == args[0] {
-					filtered = append(filtered, value)
-				}
-			}
-			values = filtered
-		}
-		if knowledgeQualityIssuesOnly {
-			filtered := values[:0]
-			for _, value := range values {
-				if value.Corrected > 0 || value.Rejected > 0 || value.Score < 0.5 {
-					filtered = append(filtered, value)
-				}
-			}
-			values = filtered
-		}
-		total := len(values)
-		summaryValues := append([]knowledge.KnowledgeQuality(nil), values...)
+		values := result.Qualities
 		values, err = paginate(values, knowledgeQualityOffset, knowledgeQualityLimit)
 		if err != nil {
 			return err
 		}
 		if knowledgeQualitySummary {
-			summary := map[string]any{"documents": total, "returned": len(values), "offset": knowledgeQualityOffset, "limit": knowledgeQualityLimit, "retrievals": 0, "adopted": 0, "corrected": 0, "rejected": 0}
-			for _, value := range summaryValues {
-				summary["retrievals"] = summary["retrievals"].(int) + value.Retrievals
-				summary["adopted"] = summary["adopted"].(int) + value.Adopted
-				summary["corrected"] = summary["corrected"].(int) + value.Corrected
-				summary["rejected"] = summary["rejected"].(int) + value.Rejected
+			summary := knowledgeQualitySummaryView{
+				Documents: result.Totals.Documents, Returned: len(values), Offset: knowledgeQualityOffset, Limit: knowledgeQualityLimit,
+				Retrievals: result.Totals.Retrievals, Adopted: result.Totals.Adopted, Corrected: result.Totals.Corrected, Rejected: result.Totals.Rejected,
 			}
 			if jsonOutput {
 				output.JSON(summary)
 			} else {
-				fmt.Printf("documents=%d returned=%d retrievals=%d adopted=%d corrected=%d rejected=%d\n", summary["documents"], summary["returned"], summary["retrievals"], summary["adopted"], summary["corrected"], summary["rejected"])
+				fmt.Printf("documents=%d returned=%d retrievals=%d adopted=%d corrected=%d rejected=%d\n", summary.Documents, summary.Returned, summary.Retrievals, summary.Adopted, summary.Corrected, summary.Rejected)
 			}
 			return nil
 		}
@@ -266,16 +264,17 @@ var knowledgeSearchCmd = &cobra.Command{
 	Short: "Search the central knowledge base",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		hits, err := knowledge.Search(config.AtmDir, args[0], knowledge.SearchOptions{
-			Limit: knowledgeLimit, Collections: knowledgeSearchCollections, Domains: knowledgeSearchDomains, Tags: knowledgeSearchTags,
-			Projects: knowledgeSearchProjects, Statuses: knowledgeSearchStatuses,
+		result, err := currentKnowledgeService().Search(cmd.Context(), knowledge.SearchInput{
+			Query: args[0], SessionID: knowledgeSearchSession,
+			Options: knowledge.SearchOptions{
+				Limit: knowledgeLimit, Collections: knowledgeSearchCollections, Domains: knowledgeSearchDomains, Tags: knowledgeSearchTags,
+				Projects: knowledgeSearchProjects, Statuses: knowledgeSearchStatuses,
+			},
 		})
 		if err != nil {
 			return err
 		}
-		if err := knowledge.RecordRetrievals(knowledgeSearchSession, args[0], hits); err != nil {
-			return err
-		}
+		hits := result.Hits
 		if jsonOutput {
 			output.JSON(hits)
 			return nil
@@ -296,16 +295,17 @@ var knowledgeCatalogCmd = &cobra.Command{
 	Short: "List knowledge collections for routing before search",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return printCollectionCatalog(knowledgeCatalogVerbose)
+		return printCollectionCatalog(cmd.Context(), knowledgeCatalogVerbose)
 	},
 }
 
-// printCollectionCatalog backs both `knowledge catalog` and its alias
-// `knowledge collection list`. The alias has no --verbose flag because it is
-// always the long form, so verbosity is an argument rather than a read of the
-// flag variable.
-func printCollectionCatalog(verbose bool) error {
-	catalog, err := knowledge.Catalog(config.AtmDir)
+// printCollectionCatalog takes verbosity as an argument rather than reading the
+// flag, so callers other than `knowledge catalog` can ask for the long form.
+// There used to be one — `knowledge collection list`, which was `catalog
+// --verbose` under a second name — and it was removed rather than kept as a
+// shortcut that had to be discovered separately.
+func printCollectionCatalog(ctx context.Context, verbose bool) error {
+	catalog, err := currentKnowledgeService().Catalog(ctx)
 	if err != nil {
 		return err
 	}
@@ -335,7 +335,7 @@ var knowledgeGetCmd = &cobra.Command{
 	Short: "Read a central knowledge document",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		document, err := knowledge.Get(config.AtmDir, args[0])
+		document, err := currentKnowledgeService().Get(cmd.Context(), knowledge.GetInput{DocumentID: args[0]})
 		if err != nil {
 			return err
 		}
@@ -357,7 +357,9 @@ var knowledgeUpdateCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		document, err := knowledge.Update(config.AtmDir, args[0], body)
+		document, err := currentKnowledgeService().SaveDocument(cmd.Context(), knowledge.SaveDocumentInput{
+			Content: &knowledge.SetDocumentContentInput{DocumentID: args[0], Content: body},
+		})
 		if err != nil {
 			return err
 		}
@@ -370,7 +372,7 @@ var knowledgeEditCmd = &cobra.Command{
 	Short: "Edit knowledge document metadata or archive it",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		input := knowledge.EditDocumentInput{}
+		input := knowledge.SetDocumentMetadataInput{DocumentID: args[0]}
 		if cmd.Flags().Changed("title") {
 			input.Title = &knowledgeEditTitle
 		}
@@ -389,7 +391,7 @@ var knowledgeEditCmd = &cobra.Command{
 		if cmd.Flags().Changed("project") {
 			input.Projects = &knowledgeEditProjects
 		}
-		document, err := knowledge.Edit(config.AtmDir, args[0], input)
+		document, err := currentKnowledgeService().SaveDocument(cmd.Context(), knowledge.SaveDocumentInput{Metadata: &input})
 		if err != nil {
 			return err
 		}
@@ -402,7 +404,17 @@ var knowledgeDeleteCmd = &cobra.Command{
 	Short: "Permanently delete a knowledge document without deleting its external imported source",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		document, err := knowledge.Delete(config.AtmDir, args[0])
+		confirmed, err := confirmDestructive(
+			cmd,
+			knowledgeDeleteYes,
+			fmt.Sprintf("Permanently delete knowledge document %s?", args[0]),
+		)
+		if err != nil || !confirmed {
+			return err
+		}
+		document, err := currentKnowledgeService().DeleteDocument(cmd.Context(), knowledge.DeleteDocumentInput{
+			DocumentID: args[0], Confirmed: true,
+		})
 		if err != nil {
 			return err
 		}
@@ -419,9 +431,11 @@ var knowledgeAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		document, err := knowledge.Add(config.AtmDir, knowledge.AddDocumentInput{
-			Title: args[0], Content: body, Collection: knowledgeAddCollection, Domains: knowledgeAddDomains,
-			Tags: knowledgeAddTags, Projects: knowledgeAddProjects, Producer: knowledgeAddProducer,
+		document, err := currentKnowledgeService().SaveDocument(cmd.Context(), knowledge.SaveDocumentInput{
+			Create: &knowledge.CreateDocumentInput{
+				Title: args[0], Content: body, Collection: knowledgeAddCollection, Domains: knowledgeAddDomains,
+				Tags: knowledgeAddTags, Projects: knowledgeAddProjects, Producer: knowledgeAddProducer,
+			},
 		})
 		if err != nil {
 			return err
@@ -435,7 +449,8 @@ var knowledgeImportCmd = &cobra.Command{
 	Short: "Explicitly import Markdown into the central knowledge base",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		documents, err := knowledge.Import(config.AtmDir, args[0], knowledge.AddDocumentInput{
+		documents, err := currentKnowledgeService().ImportDocument(cmd.Context(), knowledge.ImportDocumentInput{
+			Path:       args[0],
 			Collection: knowledgeImportCollection, Domains: knowledgeImportDomains, Tags: knowledgeImportTags,
 			Projects: knowledgeImportProjects, Producer: knowledgeImportProducer,
 		})
@@ -456,6 +471,7 @@ var knowledgeImportCmd = &cobra.Command{
 var knowledgeDoctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Inspect central knowledge, memory, and artifact storage",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		documents, err := knowledge.Discover(config.AtmDir)
 		if err != nil {
@@ -510,19 +526,23 @@ var memoryRecallCmd = &cobra.Command{
 		if len(args) == 1 {
 			query = args[0]
 		}
-		hits, err := knowledge.Recall(query, memoryRecallScope, memoryLimit)
+		result, err := currentKnowledgeService().RecallMemory(cmd.Context(), knowledge.RecallMemoryInput{
+			Query: query,
+			Scope: memoryRecallScope,
+			Limit: memoryLimit,
+		})
 		if err != nil {
 			return err
 		}
 		if jsonOutput {
-			output.JSON(hits)
+			output.JSON(result.Hits)
 			return nil
 		}
-		if len(hits) == 0 {
+		if len(result.Hits) == 0 {
 			fmt.Println("No matching memories found.")
 			return nil
 		}
-		for _, hit := range hits {
+		for _, hit := range result.Hits {
 			fmt.Printf("%.3f  %s  %s\n  %s\n", hit.Score, hit.ID, hit.Scope, hit.Content)
 		}
 		return nil
@@ -548,8 +568,17 @@ var memorySupersedeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		event, err := knowledge.SupersedeWithMetadata(args[0], memoryWriteScope, content, memoryTags, memoryWriteMetadata())
-		return printMemoryEvent(event, err)
+		result, err := currentKnowledgeService().SupersedeMemory(cmd.Context(), knowledge.SupersedeMemoryInput{
+			TargetID: args[0],
+			Scope:    memoryWriteScope,
+			Content:  content,
+			Tags:     memoryTags,
+			Source:   memorySource,
+		})
+		if err != nil {
+			return err
+		}
+		return printMemoryEvent(&result.Event, nil)
 	},
 }
 
@@ -579,7 +608,7 @@ var artifactSaveCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		artifact, err := knowledge.SaveArtifact(config.AtmDir, args[0], body, artifactProducer, artifactRunID, sources)
+		artifact, err := knowledge.SaveArtifact(config.AtmDir, args[0], body, artifactProducer, sources)
 		if err != nil {
 			return err
 		}

@@ -1,14 +1,12 @@
 package cmd
 
 import (
-	"database/sql"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
-	"github.com/zane-byte-dev/atm/internal/knowledge"
 	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/store"
+	sessionapp "github.com/zane-byte-dev/atm/internal/session"
 )
 
 var (
@@ -31,20 +29,18 @@ var sessionReviewCmd = &cobra.Command{
 }
 
 func runSessionReview(cmd *cobra.Command, args []string) error {
-	return withDB(true, func(db *sql.DB) error {
-		session, err := store.GetSession(db, args[0])
-		if err != nil {
-			return fmt.Errorf("session not found: %s", args[0])
-		}
-		review, err := knowledge.MarkSessionReviewed(session.FullID, sessionReviewOutcome, sessionReviewNote)
-		if err != nil {
-			return err
-		}
-		if jsonOutput {
-			output.JSON(review)
-		} else {
-			fmt.Printf("%s  %s\n", review.SessionID, review.Outcome)
-		}
-		return nil
+	result, err := currentSessionService().Review(cmd.Context(), sessionapp.ReviewInput{
+		SessionID: args[0], Outcome: sessionReviewOutcome, Note: sessionReviewNote,
+		SyncBeforeRead: syncBeforeRead,
 	})
+	if err != nil {
+		return err
+	}
+	renderSessionReadMeta(result.Meta)
+	if jsonOutput {
+		output.JSON(result.Review)
+		return nil
+	}
+	fmt.Printf("%s  %s\n", result.Review.SessionID, result.Review.Outcome)
+	return nil
 }

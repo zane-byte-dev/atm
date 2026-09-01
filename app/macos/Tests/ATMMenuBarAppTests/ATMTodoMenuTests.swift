@@ -35,7 +35,7 @@ final class ATMTodoMenuTests: XCTestCase {
 
     private func menu(
         for todo: ATMTodo,
-        isTrashed: Bool = false,
+        isArchived: Bool = false,
         onEdit: (() -> Void)? = nil,
         onPermanentDelete: (() -> Void)? = nil
     ) -> NSMenu {
@@ -43,7 +43,7 @@ final class ATMTodoMenuTests: XCTestCase {
             ATMTodoMenu.entries(
                 for: todo,
                 store: ATMDataStore(),
-                isTrashed: isTrashed,
+                isArchived: isArchived,
                 onEdit: onEdit,
                 onPermanentDelete: onPermanentDelete
             )
@@ -61,7 +61,7 @@ final class ATMTodoMenuTests: XCTestCase {
     /// icon-less row does not sit flush left — it sits indented next to a hole.
     func testEveryItemCarriesAnIcon() throws {
         let todo = try makeTodo(links: [(title: "MR", url: "https://example.com")])
-        for menu in [menu(for: todo, onEdit: {}), menu(for: todo, isTrashed: true, onPermanentDelete: {})] {
+        for menu in [menu(for: todo, onEdit: {}), menu(for: todo, isArchived: true, onPermanentDelete: {})] {
             for item in menu.items where !item.isSeparatorItem {
                 XCTAssertNotNil(item.image, "「\(item.title)」缺 icon，整个菜单的标题会跟着错开")
                 for child in item.submenu?.items ?? [] {
@@ -85,7 +85,7 @@ final class ATMTodoMenuTests: XCTestCase {
         XCTAssertTrue(titles.contains("编辑任务…"))
         XCTAssertTrue(titles.contains("复制 ID"))
         XCTAssertTrue(titles.contains("用 VS Code 打开项目"))
-        XCTAssertEqual(titles.last, "移到回收站", "破坏性操作留在最后一格")
+		XCTAssertEqual(titles.last, "归档", "归档操作留在最后一格")
     }
 
     /// The quick panel has no edit form, so it passes no callback and must not get
@@ -103,7 +103,7 @@ final class ATMTodoMenuTests: XCTestCase {
     }
 
     func testClosedTodoHidesTheLaunchPrompt() throws {
-        for status in ["done", "dropped"] {
+		for status in ["done"] {
             let titles = menu(for: try makeTodo(status: status)).items.map(\.title)
             XCTAssertFalse(titles.contains("复制启动提示"))
             XCTAssertFalse(titles.contains("优化任务"))
@@ -122,10 +122,10 @@ final class ATMTodoMenuTests: XCTestCase {
         XCTAssertEqual(submenu.items.map(\.title), ["MR", "CR"])
     }
 
-    /// A trashed row has its own two actions; offering 开始 or 移到回收站 there would
+    /// An archived row has its own two actions; offering 开始 or 归档 there would
     /// act on a todo that is already out of the working set.
-    func testTrashedRowOffersRestoreAndPermanentDeleteOnly() throws {
-        let items = menu(for: try makeTodo(), isTrashed: true, onPermanentDelete: {}).items
+    func testArchivedRowOffersRestoreAndPermanentDeleteOnly() throws {
+        let items = menu(for: try makeTodo(), isArchived: true, onPermanentDelete: {}).items
         XCTAssertEqual(
             items.filter { !$0.isSeparatorItem }.map(\.title),
             ["恢复", "复制 ID", "永久删除…"]
@@ -134,7 +134,7 @@ final class ATMTodoMenuTests: XCTestCase {
 
     func testPermanentDeleteIsRedAndCallsBack() throws {
         var deleted = 0
-        let menu = menu(for: try makeTodo(), isTrashed: true, onPermanentDelete: { deleted += 1 })
+        let menu = menu(for: try makeTodo(), isArchived: true, onPermanentDelete: { deleted += 1 })
         let item = try XCTUnwrap(menu.items.first { $0.title == "永久删除…" })
 
         let color = item.attributedTitle?.attribute(

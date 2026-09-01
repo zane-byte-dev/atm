@@ -1,11 +1,13 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/zane-byte-dev/atm/internal/parser"
 	"github.com/zane-byte-dev/atm/internal/store"
+	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
 const (
@@ -40,21 +42,10 @@ func loadSessionBindingContexts(sessions []parser.Session) ([]sessionBindingCont
 // caller needs the same map, and computing it in both places walked every
 // binding against every live session twice per command.
 func buildSessionBindingContexts(bindings []store.TodoSessionBinding, todos *store.TodoFile, sessions []parser.Session, matches map[int]int) []sessionBindingContext {
-	contexts := make([]sessionBindingContext, 0, len(bindings))
-	for bindingIndex, binding := range bindings {
-		context := sessionBindingContext{
-			State:   sessionBindingStateTodoMissing,
-			Binding: binding,
-		}
-		if todo := store.FindTodo(todos, binding.TodoID); todo != nil {
-			value := compactTodo(*todo)
-			context.Todo = &value
-			if todo.Status == store.TodoStatusInProgress {
-				context.State = sessionBindingStateBound
-			} else {
-				context.State = sessionBindingStateTodoNotInProgress
-			}
-		}
+	base := workapp.BuildBindingContexts(bindings, todos)
+	contexts := make([]sessionBindingContext, 0, len(base))
+	for bindingIndex, item := range base {
+		context := sessionBindingContext{State: item.State, Binding: item.Binding, Todo: item.Todo}
 		if sessionIndex, ok := matches[bindingIndex]; ok {
 			context.Observed = true
 			context.ObservedSessionID = sessions[sessionIndex].SessionID
@@ -106,14 +97,16 @@ func sessionIDsShareStableFragment(left, right string) bool {
 }
 
 func currentSessionBindingContext(sessionID string) (*sessionBindingContext, error) {
-	binding, err := store.CurrentTodoBinding(sessionID)
-	if err != nil || binding == nil {
-		return nil, err
-	}
-	todos, err := store.LoadTodosReadOnly()
+	result, err := workapp.Default.Current(
+		context.Background(), sessionBindingCLICall("current-context", sessionID), workapp.CurrentInput{},
+	)
 	if err != nil {
 		return nil, err
 	}
-	contexts := buildSessionBindingContexts([]store.TodoSessionBinding{*binding}, todos, nil, nil)
-	return &contexts[0], nil
+	if result.Context == nil {
+		return nil, nil
+	}
+	return &sessionBindingContext{
+		State: result.Context.State, Binding: result.Context.Binding, Todo: result.Context.Todo,
+	}, nil
 }

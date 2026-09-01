@@ -2,12 +2,10 @@ package cmd
 
 import (
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/store"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
@@ -28,7 +26,7 @@ func init() {
 var todoLinkCmd = &cobra.Command{
 	Use:   "link",
 	Short: "Manage full-URL links attached to a todo",
-	Args:  cobra.NoArgs, // unknown subcommand errors instead of silently showing help
+	Args:  noSubcommandArgs, // unknown subcommand errors instead of silently showing help
 	RunE:  showHelp,
 }
 
@@ -54,76 +52,45 @@ var todoLinkRemoveCmd = &cobra.Command{
 }
 
 func runTodoLinkAdd(cmd *cobra.Command, args []string) error {
-	cleanURL, err := normalizeTodoLinkURL(args[1])
-	if err != nil {
-		return err
-	}
-	link := store.TodoLink{
-		URL:      cleanURL,
+	result, err := workapp.Default.AddLink(cmd.Context(), cliApplicationCall("todo-link-add", ""), workapp.AddLinkInput{
+		TodoID:   args[0],
+		URL:      args[1],
 		Kind:     strings.TrimSpace(todoLinkKindFlag),
 		Title:    strings.TrimSpace(todoLinkTitleFlag),
 		Relation: strings.TrimSpace(todoLinkRelationFlag),
-	}
-	if link.Kind == "" {
-		link.Kind = inferTodoLinkKind(cleanURL)
-	}
-
-	created := true
-	_, t, err := mutateTodo(args[0], func(t *store.Todo, _ *store.TodoFile, _ *workapp.Transaction) error {
-		for i := range t.Links {
-			if t.Links[i].URL != cleanURL {
-				continue
-			}
-			created = false
-			if link.Kind != "" {
-				t.Links[i].Kind = link.Kind
-			}
-			if link.Title != "" {
-				t.Links[i].Title = link.Title
-			}
-			if link.Relation != "" {
-				t.Links[i].Relation = link.Relation
-			}
-			link = t.Links[i]
-			return nil
-		}
-		t.Links = append(t.Links, link)
-		return nil
 	})
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		output.JSON(map[string]any{"todo_id": t.ID, "created": created, "link": link})
+		output.JSON(result)
 		return nil
 	}
 	action := "Updated"
-	if created {
+	if result.Created {
 		action = "Linked"
 	}
-	fmt.Printf("%s %s: %s\n", action, t.ID, link.URL)
+	fmt.Printf("%s %s: %s\n", action, result.TodoID, result.Link.URL)
 	return nil
 }
 
 func runTodoLinkList(cmd *cobra.Command, args []string) error {
-	_, t, err := loadTodoByID(args[0])
+	result, err := workapp.Default.ListLinks(cmd.Context(), cliApplicationCall("todo-link-list", ""), workapp.ListLinksInput{
+		TodoID: args[0],
+	})
 	if err != nil {
 		return err
 	}
-	links := t.Links
-	if links == nil {
-		links = []store.TodoLink{}
-	}
 	if jsonOutput {
-		output.JSON(links)
+		output.JSON(result.Links)
 		return nil
 	}
-	if len(links) == 0 {
+	if len(result.Links) == 0 {
 		fmt.Println("No links found.")
 		return nil
 	}
-	for i, link := range links {
+	for i, link := range result.Links {
 		label := link.Title
 		if label == "" {
 			label = link.URL
@@ -145,93 +112,26 @@ func runTodoLinkList(cmd *cobra.Command, args []string) error {
 }
 
 func runTodoLinkRemove(cmd *cobra.Command, args []string) error {
-	cleanURL, err := normalizeTodoLinkURL(args[1])
-	if err != nil {
-		return err
-	}
-	var removed store.TodoLink
-	_, t, err := mutateTodo(args[0], func(t *store.Todo, _ *store.TodoFile, _ *workapp.Transaction) error {
-		index := -1
-		for i, link := range t.Links {
-			if link.URL == cleanURL {
-				index = i
-				removed = link
-				break
-			}
-		}
-		if index < 0 {
-			return fmt.Errorf("link not found on todo %s", t.ID)
-		}
-		t.Links = append(t.Links[:index], t.Links[index+1:]...)
-		return nil
+	result, err := workapp.Default.RemoveLink(cmd.Context(), cliApplicationCall("todo-link-remove", ""), workapp.RemoveLinkInput{
+		TodoID: args[0],
+		URL:    args[1],
 	})
 	if err != nil {
 		return err
 	}
 
 	if jsonOutput {
-		output.JSON(map[string]any{"todo_id": t.ID, "removed": removed})
+		output.JSON(result)
 		return nil
 	}
-	fmt.Printf("Unlinked %s: %s\n", t.ID, removed.URL)
+	fmt.Printf("Unlinked %s: %s\n", result.TodoID, result.Removed.URL)
 	return nil
 }
 
 func normalizeTodoLinkURL(raw string) (string, error) {
-	parsed, err := url.ParseRequestURI(strings.TrimSpace(raw))
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("link must be a complete http/https URL")
-	}
-	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("unsupported link scheme %q (use http or https)", parsed.Scheme)
-	}
-	if parsed.User != nil {
-		return "", fmt.Errorf("link must not contain embedded credentials")
-	}
-	for key := range parsed.Query() {
-		if sensitiveURLParameter(key) {
-			return "", fmt.Errorf("link contains sensitive query parameter %q", key)
-		}
-	}
-	fragment := strings.ToLower(parsed.Fragment)
-	if index := strings.Index(raw, "#"); index >= 0 {
-		fragment = strings.ToLower(raw[index+1:])
-	}
-	if strings.Contains(fragment, "token=") || strings.Contains(fragment, "password=") || strings.Contains(fragment, "signature=") {
-		return "", fmt.Errorf("link fragment appears to contain credentials")
-	}
-	parsed.Host = strings.ToLower(parsed.Host)
-	parsed.RawQuery = parsed.Query().Encode()
-	return parsed.String(), nil
-}
-
-func sensitiveURLParameter(key string) bool {
-	lower := strings.ToLower(strings.TrimSpace(key))
-	for _, marker := range []string{"token", "secret", "password", "passwd", "signature", "credential", "authorization", "api_key", "apikey", "access_key"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return lower == "auth"
+	return workapp.NormalizeTodoLinkURL(raw)
 }
 
 func inferTodoLinkKind(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return ""
-	}
-	path := strings.ToLower(parsed.Path)
-	switch {
-	case strings.Contains(path, "merge_requests") || strings.Contains(path, "/pull/"):
-		return "mr"
-	case strings.Contains(path, "/cr/") || strings.Contains(path, "change-request"):
-		return "cr"
-	case strings.Contains(path, "pipeline"):
-		return "pipeline"
-	case strings.Contains(path, "workitem") || strings.Contains(path, "/issues/"):
-		return "workitem"
-	default:
-		return ""
-	}
+	return workapp.InferTodoLinkKind(raw)
 }

@@ -4,12 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/agentevent"
-	"github.com/zane-byte-dev/atm/internal/config"
 
 	"github.com/spf13/cobra"
 )
@@ -17,7 +15,7 @@ import (
 var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Wire AI agents into the ATM notch",
-	Args:  cobra.NoArgs,
+	Args:  noSubcommandArgs,
 	RunE:  showHelp,
 }
 
@@ -31,7 +29,9 @@ stdout and always exits 0, so installing it cannot change how the agent behaves:
 if the app is not running the event is simply dropped.
 
   atm agent hook --source claude < payload.json`,
-	Args: cobra.NoArgs,
+	// This one both forwards an event and parents install/status/uninstall, so a
+	// mistyped subcommand has to be rejected rather than forwarded as an event.
+	Args: noSubcommandArgs,
 	RunE: runAgentHook,
 }
 
@@ -76,7 +76,7 @@ Only reporting hooks are installed: none of them can block a tool call or change
 a permission decision, so the agent behaves exactly as before.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return runHookConfig(cmd, hookConfigInstall)
+		return runHookRegistration(cmd, agentevent.ActionInstall)
 	},
 }
 
@@ -85,7 +85,7 @@ var agentHookUninstallCmd = &cobra.Command{
 	Short: "Remove ATM's notch hooks from an agent",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return runHookConfig(cmd, hookConfigUninstall)
+		return runHookRegistration(cmd, agentevent.ActionUninstall)
 	},
 }
 
@@ -94,59 +94,39 @@ var agentHookStatusCmd = &cobra.Command{
 	Short: "Show which notch hooks are registered",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return runHookConfig(cmd, hookConfigStatus)
+		return runHookRegistration(cmd, agentevent.ActionStatus)
 	},
 }
 
-type hookConfigMode int
-
-const (
-	hookConfigInstall hookConfigMode = iota
-	hookConfigUninstall
-	hookConfigStatus
-)
-
-// hookConfigSourceReport is the per-agent result, shaped for --json so the app's
-// settings pane can render installation state without scraping text.
-type hookConfigSourceReport struct {
-	Source    string   `json:"source"`
-	Path      string   `json:"path,omitempty"`
-	Installed []string `json:"installed,omitempty"`
-	Missing   []string `json:"missing,omitempty"`
-	Added     []string `json:"added,omitempty"`
-	Removed   []string `json:"removed,omitempty"`
-	Conflicts []string `json:"conflicts,omitempty"`
-	Manual    string   `json:"manual,omitempty"`
-	Error     string   `json:"error,omitempty"`
+func currentAgentHookService() agentevent.Service {
+	return agentevent.NewService(agentevent.ServiceOptions{})
 }
 
-type hookConfigReport struct {
-	SocketPath string                   `json:"socket_path"`
-	Sources    []hookConfigSourceReport `json:"sources"`
-}
+func runHookRegistration(cmd *cobra.Command, action agentevent.RegistrationAction) error {
+	service := currentAgentHookService()
+	call := cliApplicationCall("agent-hook-"+string(action), "")
+	input := agentevent.RegistrationInput{Source: agentHookSource}
 
-func runHookConfig(cmd *cobra.Command, mode hookConfigMode) error {
-	executable, err := atmExecutablePath()
+	var (
+		report agentevent.RegistrationReport
+		err    error
+	)
+	switch action {
+	case agentevent.ActionInstall:
+		report, err = service.Install(cmd.Context(), call, input)
+	case agentevent.ActionUninstall:
+		report, err = service.Uninstall(cmd.Context(), call, input)
+	default:
+		report, err = service.Status(cmd.Context(), call, input)
+	}
 	if err != nil {
-		return fmt.Errorf("cannot resolve the atm binary path: %w", err)
-	}
-	sources := agentevent.SupportedSources()
-	if agentHookSource != "" {
-		sources = []string{agentHookSource}
-	}
-
-	report := hookConfigReport{SocketPath: agentevent.SocketPath()}
-	for _, source := range sources {
-		report.Sources = append(
-			report.Sources,
-			hookConfigForSource(mode, source, config.Home, executable),
-		)
+		return err
 	}
 
 	if jsonOutput {
 		// Encoded to the command's writer rather than through output.JSON, which
-		// prints straight to os.Stdout: the app reads this to render hook state,
-		// so it needs to be exercisable in tests.
+		// prints straight to os.Stdout: this is what an Agent or a script reads to
+		// see hook state, so it needs to be exercisable in tests.
 		encoded, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
 			return err
@@ -154,57 +134,11 @@ func runHookConfig(cmd *cobra.Command, mode hookConfigMode) error {
 		fmt.Fprintln(cmd.OutOrStdout(), string(encoded))
 		return nil
 	}
-	printHookConfigReport(cmd.OutOrStdout(), mode, report)
+	printHookRegistrationReport(cmd.OutOrStdout(), report)
 	return nil
 }
 
-func hookConfigForSource(
-	mode hookConfigMode,
-	source, home, executable string,
-) hookConfigSourceReport {
-	entry := hookConfigSourceReport{Source: source}
-
-	// Pi has no hooks config file: it loads a TypeScript extension instead, so
-	// point at that rather than reporting a phantom failure.
-	if source == agentevent.SourcePi {
-		entry.Manual = "Pi 走扩展文件：把 integrations/atm-notch.ts 复制到 ~/.pi/agent/extensions/"
-		return entry
-	}
-	if _, err := agentevent.ConfigPath(source, home); err != nil {
-		entry.Error = err.Error()
-		return entry
-	}
-
-	var result agentevent.InstallResult
-	var err error
-	switch mode {
-	case hookConfigInstall:
-		result, err = agentevent.Install(source, home, executable)
-	case hookConfigUninstall:
-		result, err = agentevent.Uninstall(source, home, executable)
-	case hookConfigStatus:
-		result, err = agentevent.Status(source, home, executable)
-	}
-	if err != nil {
-		entry.Error = err.Error()
-		return entry
-	}
-
-	entry.Path = result.Path
-	entry.Installed = result.Kept
-	entry.Conflicts = result.Conflicts
-	switch mode {
-	case hookConfigStatus:
-		// Status borrows Added to mean "not registered yet".
-		entry.Missing = result.Added
-	default:
-		entry.Added = result.Added
-		entry.Removed = result.Removed
-	}
-	return entry
-}
-
-func printHookConfigReport(writer io.Writer, mode hookConfigMode, report hookConfigReport) {
+func printHookRegistrationReport(writer io.Writer, report agentevent.RegistrationReport) {
 	fmt.Fprintf(writer, "notch socket: %s\n", report.SocketPath)
 	for _, entry := range report.Sources {
 		fmt.Fprintf(writer, "\n%s\n", entry.Source)
@@ -217,11 +151,10 @@ func printHookConfigReport(writer io.Writer, mode hookConfigMode, report hookCon
 			continue
 		}
 		fmt.Fprintf(writer, "  config: %s\n", entry.Path)
-		switch mode {
-		case hookConfigStatus:
+		if report.Action == agentevent.ActionStatus {
 			fmt.Fprintf(writer, "  registered: %s\n", listOrDash(entry.Installed))
 			fmt.Fprintf(writer, "  missing:    %s\n", listOrDash(entry.Missing))
-		default:
+		} else {
 			if len(entry.Added) > 0 {
 				fmt.Fprintf(writer, "  added:   %s\n", strings.Join(entry.Added, ", "))
 			}
@@ -315,40 +248,4 @@ func runAgentHook(cmd *cobra.Command, _ []string) error {
 	}
 	note("atm agent hook: delivered %s for session %s", envelope.Event, envelope.SessionID)
 	return nil
-}
-
-// agentHookCommand renders the command line an agent config should invoke.
-// Shared by the installer and `status` so the string they compare is the string
-// they wrote.
-func agentHookCommand(executable, source, reason string) string {
-	command := fmt.Sprintf("%s agent hook --source %s", quoteForHookConfig(executable), source)
-	if reason != "" {
-		command += " --reason " + reason
-	}
-	return command
-}
-
-func quoteForHookConfig(path string) string {
-	if strings.ContainsAny(path, " \t\"'") {
-		return `"` + strings.ReplaceAll(path, `"`, `\"`) + `"`
-	}
-	return path
-}
-
-// atmExecutablePath resolves the absolute path to this binary for baking into
-// agent configs. Hooks run with an unpredictable PATH, so a bare "atm" is not
-// good enough.
-func atmExecutablePath() (string, error) {
-	path, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	resolved, err := os.Readlink(path)
-	if err != nil {
-		return path, nil
-	}
-	if strings.HasPrefix(resolved, "/") {
-		return resolved, nil
-	}
-	return path, nil
 }

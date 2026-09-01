@@ -1,26 +1,74 @@
 import Foundation
 
-/// What the add-task sheet sends to `atm todo add`. The composer is one block of
-/// text: the first non-empty line is the title, everything after it is the
-/// description, so a task and its details are typed in one go.
+/// What the add-task sheet sends to typed `todo.create`. The composer is one block of
+/// requirement text. The complete block becomes the description; `title` is only a
+/// local fallback while the App asks the text model for a concise title.
 struct ATMTodoDraft: Equatable {
     let title: String
     let description: String
     let project: String
     let priority: String
+	let imagePaths: [String]
+	let temporaryImagePaths: [String]
 
-    init(text: String, project: String, priority: String) {
-        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let titleIndex = lines.firstIndex { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        self.title = titleIndex.map { lines[$0].trimmingCharacters(in: .whitespaces) } ?? ""
-        self.description = titleIndex
-            .map { lines[(($0) + 1)...].joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines) }
-            ?? ""
+    init(
+		text: String,
+		project: String,
+		priority: String,
+		imagePaths: [String] = [],
+		temporaryImagePaths: [String] = []
+	) {
+		let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+		self.title = Self.fallbackTitle(from: normalized)
+		self.description = normalized
         self.project = project.trimmingCharacters(in: .whitespacesAndNewlines)
         self.priority = priority
+		self.imagePaths = imagePaths
+		self.temporaryImagePaths = temporaryImagePaths
     }
 
-    var isSubmittable: Bool { !title.isEmpty }
+    var isSubmittable: Bool { !description.isEmpty }
+
+	/// Keep creation available when the configured text model is offline. This is
+	/// intentionally an excerpt, not a second interpretation of the requirement.
+	static func fallbackTitle(from text: String, maximumRunes: Int = 80) -> String {
+		let words = text
+			.split(whereSeparator: { $0.isWhitespace })
+			.map(String.init)
+			.joined(separator: " ")
+		guard !words.isEmpty else { return "" }
+		let runes = Array(words)
+		return runes.count <= maximumRunes ? words : String(runes.prefix(maximumRunes))
+	}
+
+	func cleanupTemporaryImages() {
+		for path in temporaryImagePaths {
+			try? FileManager.default.removeItem(atPath: path)
+		}
+	}
+}
+
+enum ATMTodoImageRules {
+	static let maximumCount = 10
+	static let maximumBytes: Int64 = 10 * 1024 * 1024
+	static let allowedExtensions = Set(["png", "jpg", "jpeg", "webp", "gif", "heic"])
+
+	static func validationError(for url: URL, currentCount: Int) -> String? {
+		guard currentCount < maximumCount else { return "每个任务最多添加 10 张图片。" }
+		let ext = url.pathExtension.lowercased()
+		guard allowedExtensions.contains(ext) else {
+			return "不支持 .\(ext.isEmpty ? "(无扩展名)" : ext)，请选择 PNG、JPEG、WebP、GIF 或 HEIC。"
+		}
+		guard url.isFileURL else { return "只能添加本地图片文件。" }
+		do {
+			let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+			guard values.isRegularFile == true else { return "请选择普通图片文件。" }
+			if Int64(values.fileSize ?? 0) > maximumBytes { return "单张图片不能超过 10 MB。" }
+		} catch {
+			return "无法读取图片：\(error.localizedDescription)"
+		}
+		return nil
+	}
 }
 
 /// Project and priority inferred from what was typed plus what the existing
@@ -36,7 +84,7 @@ struct ATMTodoSuggestion: Equatable {
     static let empty = ATMTodoSuggestion(
         project: "",
         projectReason: "无历史项目可参考",
-        priority: "P1",
+        priority: "P2",
         priorityReason: "默认",
     )
 

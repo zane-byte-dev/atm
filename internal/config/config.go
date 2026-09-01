@@ -22,10 +22,21 @@ var (
 	QoderCLIProjects  = filepath.Join(Home, ".qoder", "projects")
 	QoderWorkDB       = defaultQoderWorkDB()
 	GrokSessions      = filepath.Join(Home, ".grok", "sessions")
-	AtmDir            = filepath.Join(Home, ".atm")
-	AtmDB             = filepath.Join(Home, ".atm", "atm.db")
-	Loc               = time.FixedZone("CST", 8*3600)
-	ConfigPath        = filepath.Join(Home, ".atm", "config.json")
+	// AntigravityDir is the Antigravity IDE's own data directory, which is not
+	// beside its Electron profile: the app stores chrome state under
+	// ~/Library/Application Support/Antigravity but every transcript, summary and
+	// artifact under ~/.gemini/antigravity.
+	//
+	// Only the IDE is covered. ~/.gemini/antigravity-cli holds the CLI's
+	// conversations in the same format, but on a real install it accounts for a
+	// handful of model calls against the IDE's hundreds, and it keeps a live -wal
+	// that the immutable read below cannot see. A second agent for that is more
+	// surface than the numbers justify.
+	AntigravityDir = filepath.Join(Home, ".gemini", "antigravity")
+	AtmDir         = filepath.Join(Home, ".atm")
+	AtmDB          = filepath.Join(Home, ".atm", "atm.db")
+	Loc            = time.FixedZone("CST", 8*3600)
+	ConfigPath     = filepath.Join(Home, ".atm", "config.json")
 )
 
 func defaultCopilotWorkspaces() string {
@@ -49,6 +60,20 @@ func defaultQoderWorkDB() string {
 	return filepath.Join(Home, "Library", "Application Support", "QoderWork", "data", "agents.db")
 }
 
+// AntigravityConversations is where one SQLite database per conversation lives.
+// It is derived rather than stored so that overriding AntigravityDir moves both
+// this and the summary index together.
+func AntigravityConversations() string {
+	return filepath.Join(AntigravityDir, "conversations")
+}
+
+// AntigravitySummaries is the index that maps a conversation id to its title and
+// workspace folder. The conversation databases themselves carry neither, so
+// without this file a session has no name and no project.
+func AntigravitySummaries() string {
+	return filepath.Join(AntigravityDir, "agyhub_summaries_proto.pb")
+}
+
 var (
 	Pricing        map[string][4]float64
 	Subscriptions  map[string]float64
@@ -68,17 +93,12 @@ var (
 	CollectionEnabled         = false
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
-	// A comma-separated candidate chain: the first command that runs wins, and
-	// the next one is tried when the previous exits non-zero, times out or is
-	// not installed. That is what keeps collection alive when one CLI is rate
-	// limited. A single command remains a valid chain of one.
-	CollectionModelCommand = "codex"
 	// Synced chat is kept for this many days; 0 keeps it forever. Reading a
 	// conversation stores it so it can be searched and read offline, and that
 	// archive would otherwise grow for as long as the sources stay enabled.
 	CollectionMessageRetentionDays = 90
-	// Where a source's daily digest is filed when the source names no knowledge
-	// collection of its own.
+	// Default knowledge destination when an explicitly saved collection
+	// conclusion (or optional manual digest) names no collection of its own.
 	CollectionDigestCollection = "inbox"
 	// How long a due digest waits for more insights before spending a model call.
 	// Background callers poll far more often than a day's chat changes, and each
@@ -93,75 +113,69 @@ var (
 	// keep service credentials and private endpoints outside ATM while returning
 	// versioned, provider-neutral cards for the CLI and App.
 	QuotaProviders map[string]QuotaProviderConfig
-	// CollectionModelRunners describes how to drive a CLI that ATM has no
-	// built-in profile for, so a third-party agent CLI can classify chat without
-	// a code change. Keys are the names used in CollectionModelCommand; a key
-	// that matches a built-in profile overrides it.
-	CollectionModelRunners map[string]ModelRunnerConfig
+	// Guard holds the outbound action gate's overrides. The built-in rules apply
+	// with no config at all; this only widens or retunes them.
+	Guard GuardConfig
 	// TextModelBaseURL and TextModelName configure ATM's narrow built-in text
 	// service. Credentials deliberately stay out of config.json: the CLI reads
 	// ~/.atm/credentials.json, with DEEPSEEK_API_KEY as an ephemeral override.
 	TextModelBaseURL = "https://api.deepseek.com"
 	TextModelName    = "deepseek-v4-flash"
-	// TodoRefineOnAdd is the desktop default after a human files a todo: run
-	// one schema-constrained model pass to polish the card and, when the work
-	// is independently trackable, split it. CLI `todo add` never does this
-	// unless `--refine` is passed — agents already write structured cards and
-	// a network model call would break `id=$(atm todo add ...)`. Default on
-	// because that is the whole point of the feature; turn it off to keep
-	// messy capture text as typed.
-	TodoRefineOnAdd = true
+	// TextModelSource is the short, human-facing provenance label persisted
+	// with model-produced Todo analysis. It is explicit rather than inferred
+	// from the endpoint: an OpenAI-compatible gateway URL does not identify the
+	// model that actually answered.
+	TextModelSource = "deepseek"
+	// TodoRefinePrompt is editable policy appended to ATM's fixed safety and
+	// output-shape prompt. The default is deliberately conservative: phases of
+	// one feature stay in one Todo instead of becoming analysis/design/test
+	// checklist children.
+	TodoRefinePrompt = DefaultTodoRefinePrompt
+	// TodoRefineOnAdd runs one schema-constrained pass right after a human
+	// files a todo in the App: polish the card and, when the work is
+	// independently trackable, split it. CLI `todo add` never does this unless
+	// `--refine` is passed — agents already write structured cards and a
+	// network model call would break `id=$(atm todo add ...)`.
+	//
+	// Default off. Refining on add rewrites the card before anyone has looked
+	// at it, and a second pass on an already-structured card returns the same
+	// text — so the automatic one was in practice the only one, and it landed
+	// unasked. 优化 is a detail-page action now; turn this on to get it on
+	// every new todo as well.
+	TodoRefineOnAdd = false
 )
 
-// CollectionModelWorkdirPrefix names the scratch directory every model run gets.
-// It is a shared constant because the parsers key off it: a CLI that persists a
-// session per working directory would otherwise file every classification as a
-// real ATM session in a throwaway project.
+const DefaultTodoRefinePrompt = `任务拆分默认采用保守策略：
+- 默认将任务判定为 simple。
+- 只有至少存在两个可独立交付、独立验收、独立关闭的成果时，才判定为 complex 并创建子任务。
+- “分析、设计、编码、测试、集成、发布”等同一功能的连续实施阶段不是独立成果，不得仅因存在多个步骤就拆成子任务。
+- 如果同一个实现者可以在一次连续工作会话中完成全部验收，保持 simple，把必要步骤写入 plan，不创建子任务。
+- 创建子任务时，reason 必须说明这些成果为何能够分别验收和关闭；无法说明则不要拆分。
+- 信息不足时保留原始事实，并在约束中明确标注待确认内容，不要自行补全。`
+
+// CollectionModelWorkdirPrefix named the scratch directory ATM gave each run
+// back when classification drove an Agent CLI. Classification is now a plain
+// HTTP call that creates no directory and no session, but the sessions those
+// runs left behind are still on disk, so the parsers still have to recognise and
+// skip them: without this they would surface as real ATM sessions in throwaway
+// projects.
 const CollectionModelWorkdirPrefix = "atm-collection-model-"
 
 // IsCollectionModelWorkdir reports whether a path (or a CLI's URL-encoded
-// rendering of one) points inside a classifier scratch directory.
+// rendering of one) points inside one of those leftover scratch directories.
 func IsCollectionModelWorkdir(path string) bool {
 	return strings.Contains(path, CollectionModelWorkdirPrefix)
-}
-
-// CollectionModelCandidates splits the configured command into the ordered
-// chain to try. Candidates are separated by commas; each one keeps its own
-// arguments, which is why a candidate whose arguments contain a comma has to be
-// declared in collection_model_runners instead.
-func CollectionModelCandidates(commandLine string) []string {
-	if strings.TrimSpace(commandLine) == "" {
-		commandLine = CollectionModelCommand
-	}
-	var candidates []string
-	for _, candidate := range strings.Split(commandLine, ",") {
-		if candidate = strings.TrimSpace(candidate); candidate != "" {
-			candidates = append(candidates, candidate)
-		}
-	}
-	return candidates
 }
 
 type CollectionConnectorConfig struct {
 	Command        string   `json:"command"`
 	Args           []string `json:"args,omitempty"`
 	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
-}
-
-// ModelRunnerConfig teaches ATM how to call one CLI in headless,
-// schema-constrained mode. Args are a template: {{schema_path}},
-// {{schema_json}}, {{prompt_path}} and {{workdir}} are substituted per run, and
-// a template without a prompt placeholder gets the prompt on stdin.
-// OutputField unwraps a CLI that answers with an envelope instead of the bare
-// object. A custom runner must carry its own sandbox flags — ATM cannot know
-// how a third-party CLI denies network and filesystem writes.
-type ModelRunnerConfig struct {
-	// Command defaults to the map key, so a key may be either a real binary
-	// name or an alias whose command and flags are defined here.
-	Command        string   `json:"command,omitempty"`
-	Args           []string `json:"args,omitempty"`
-	OutputField    string   `json:"output_field,omitempty"`
-	TimeoutSeconds int      `json:"timeout_seconds,omitempty"`
+	// LoginCommand is the shell command that re-authenticates this connector, for
+	// the one failure ATM cannot retry its way out of. ATM never runs it on its
+	// own: an interactive login belongs to the person, so it is offered as an
+	// action and executed in a terminal they can see.
+	LoginCommand string `json:"login_command,omitempty"`
 }
 
 type QuotaProviderConfig struct {
@@ -171,6 +185,84 @@ type QuotaProviderConfig struct {
 	// VisibleMetrics optionally limits provider cards to the listed metric IDs.
 	// An absent or empty list preserves the provider's complete response.
 	VisibleMetrics []string `json:"visible_metrics,omitempty"`
+}
+
+// GuardJSONArg reads a preview value out of a positional argument that is itself
+// JSON, which is how aone-kit carries a tool's parameters.
+type GuardJSONArg struct {
+	// Index is 1-based over the command's leading non-flag tokens.
+	Index int `json:"index"`
+	// Path is dotted, e.g. "fieldName_0.content".
+	Path string `json:"path"`
+}
+
+// GuardExtractor locates one piece of a gated command's preview — who it reaches,
+// and what it says. Extraction is presentation only: a rule that matches is
+// always gated, whether or not a preview could be built from it.
+type GuardExtractor struct {
+	// Flags are alternatives, tried in order; both --flag value and --flag=value
+	// are read.
+	Flags []string `json:"flags,omitempty"`
+	// Positional is 1-based over the command's leading non-flag tokens.
+	Positional int           `json:"positional,omitempty"`
+	JSONArg    *GuardJSONArg `json:"json_arg,omitempty"`
+}
+
+// GuardRule describes one command shape that must not run unreviewed.
+//
+// Path and ArgvPattern are both evaluated against only the *leading* run of
+// non-flag tokens, never the whole command line. That is what stops a message
+// body from choosing its own rule: an agent sending
+// `--text "ata::message-ding-talk-send-to-webhook"` must not have that text
+// gate — or worse, mis-preview — an unrelated read.
+type GuardRule struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Path must appear as a consecutive run of subcommand tokens, e.g.
+	// ["chat","message","send"].
+	Path []string `json:"path,omitempty"`
+	// ArgvPattern is matched against single tokens and should be anchored, for
+	// commands whose dangerous action is encoded inside one argument.
+	ArgvPattern string         `json:"argv_pattern,omitempty"`
+	Target      GuardExtractor `json:"target,omitzero"`
+	Title       GuardExtractor `json:"title,omitzero"`
+	Body        GuardExtractor `json:"body,omitzero"`
+	// Enabled is a pointer so "absent" (on, the default) is distinct from an
+	// explicit false. Switching a built-in rule off is the only way to stop gating
+	// one action of a tool without giving up the gate on that tool entirely.
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
+// IsEnabled resolves the pointer. A rule with nothing said about it is on: the
+// built-ins exist because those actions are worth stopping.
+func (r GuardRule) IsEnabled() bool { return r.Enabled == nil || *r.Enabled }
+
+// HasMatcher reports whether the rule says which commands it is about. A rule
+// without one is a patch onto a built-in of the same id, not a rule in its own
+// right — that is how "switch this built-in off" is expressed without having to
+// restate its matcher and risk drifting from it.
+func (r GuardRule) HasMatcher() bool {
+	return len(r.Path) > 0 || strings.TrimSpace(r.ArgvPattern) != ""
+}
+
+type GuardToolConfig struct {
+	// Bin is the path the shim was installed at. Empty means exec.LookPath.
+	Bin string `json:"bin,omitempty"`
+	// Rules replace the built-in rules of the same id and add new ones. Setting
+	// this to an empty list does not disable the built-ins; remove the tool or
+	// uninstall its shim for that.
+	Rules []GuardRule `json:"rules,omitempty"`
+}
+
+// GuardConfig configures the outbound action gate. The wait is agent-scale and
+// the expiry is human-scale, deliberately: the wait only has to catch a user who
+// is already at the desk, and a request outliving it is the designed path rather
+// than a failure.
+type GuardConfig struct {
+	WaitSeconds         int                        `json:"wait_seconds,omitempty"`
+	ExpireMinutes       int                        `json:"expire_minutes,omitempty"`
+	DenyCooldownMinutes int                        `json:"deny_cooldown_minutes,omitempty"`
+	Tools               map[string]GuardToolConfig `json:"tools,omitempty"`
 }
 
 type FileConfig struct {
@@ -184,6 +276,7 @@ type FileConfig struct {
 	QoderCLIProjects  string `json:"qodercli_projects,omitempty"`
 	QoderWorkDB       string `json:"qoderwork_db,omitempty"`
 	GrokSessions      string `json:"grok_sessions,omitempty"`
+	AntigravityDir    string `json:"antigravity_dir,omitempty"`
 	// Pointer so "absent" (keep default) is distinct from an explicit false.
 	GrokLiveQuota             *bool `json:"grok_live_quota,omitempty"`
 	CollectionEnabled         *bool `json:"collection_enabled,omitempty"`
@@ -191,10 +284,10 @@ type FileConfig struct {
 	CollectionLookbackMinutes int   `json:"collection_lookback_minutes,omitempty"`
 	// Pointer because 0 is a meaningful setting here: keep chat forever.
 	CollectionMessageRetentionDays *int                                 `json:"collection_message_retention_days,omitempty"`
-	CollectionModelCommand         string                               `json:"collection_model_command,omitempty"`
-	CollectionModelRunners         map[string]ModelRunnerConfig         `json:"collection_model_runners,omitempty"`
 	TextModelBaseURL               string                               `json:"text_model_base_url,omitempty"`
 	TextModelName                  string                               `json:"text_model_name,omitempty"`
+	TextModelSource                string                               `json:"text_model_source,omitempty"`
+	TodoRefinePrompt               string                               `json:"todo_refine_prompt,omitempty"`
 	CollectionConnectors           map[string]CollectionConnectorConfig `json:"collection_connectors,omitempty"`
 	// Pointer so "absent" (keep the on-by-default) is distinct from false.
 	TodoRefineOnAdd *bool                          `json:"todo_refine_on_add,omitempty"`
@@ -203,9 +296,11 @@ type FileConfig struct {
 	Pricing         map[string][4]float64          `json:"pricing,omitempty"`
 	Subscriptions   map[string]float64             `json:"subscriptions,omitempty"`
 	ProjectAliases  map[string]string              `json:"project_aliases,omitempty"`
+	Guard           GuardConfig                    `json:"guard,omitzero"`
 }
 
 func LoadConfig() {
+	TodoRefinePrompt = DefaultTodoRefinePrompt
 	loadConfigFile()
 	applyEnvOverrides()
 }
@@ -252,6 +347,9 @@ func loadConfigFile() {
 	if cfg.GrokSessions != "" {
 		GrokSessions = expandHome(cfg.GrokSessions)
 	}
+	if cfg.AntigravityDir != "" {
+		AntigravityDir = expandHome(cfg.AntigravityDir)
+	}
 	if cfg.GrokLiveQuota != nil {
 		GrokLiveQuota = *cfg.GrokLiveQuota
 	}
@@ -267,21 +365,25 @@ func loadConfigFile() {
 	if cfg.CollectionMessageRetentionDays != nil && *cfg.CollectionMessageRetentionDays >= 0 {
 		CollectionMessageRetentionDays = *cfg.CollectionMessageRetentionDays
 	}
-	if cfg.CollectionModelCommand != "" {
-		CollectionModelCommand = cfg.CollectionModelCommand
-	}
 	if strings.TrimSpace(cfg.TextModelBaseURL) != "" {
 		TextModelBaseURL = strings.TrimRight(strings.TrimSpace(cfg.TextModelBaseURL), "/")
 	}
 	if strings.TrimSpace(cfg.TextModelName) != "" {
 		TextModelName = strings.TrimSpace(cfg.TextModelName)
 	}
+	if strings.TrimSpace(cfg.TextModelSource) != "" {
+		TextModelSource = strings.Join(strings.Fields(cfg.TextModelSource), " ")
+	}
+	TodoRefinePrompt = DefaultTodoRefinePrompt
+	if strings.TrimSpace(cfg.TodoRefinePrompt) != "" {
+		TodoRefinePrompt = strings.TrimSpace(cfg.TodoRefinePrompt)
+	}
 	if cfg.TodoRefineOnAdd != nil {
 		TodoRefineOnAdd = *cfg.TodoRefineOnAdd
 	}
-	CollectionModelRunners = cfg.CollectionModelRunners
 	CollectionConnectors = cfg.CollectionConnectors
 	QuotaProviders = cfg.QuotaProviders
+	Guard = cfg.Guard
 	if cfg.DataDir != "" {
 		AtmDir = expandHome(cfg.DataDir)
 		AtmDB = filepath.Join(AtmDir, "atm.db")
@@ -315,32 +417,178 @@ func applyEnvOverrides() {
 	}
 }
 
-// SetConfigValue rewrites one key in ~/.atm/config.json, preserving every
-// other field (including ones this build does not know about). Used by
-// `atm config set` so GUI toggles have a stable write path.
+// SetConfigValue is the typed compatibility entry point for callers that have
+// not moved to Service.Set or Service.Apply yet. Validation and persistence use
+// the same registry as both transports, and unknown config fields are preserved.
 func SetConfigValue(key string, value any) error {
-	raw := map[string]any{}
-	if data, err := os.ReadFile(ConfigPath); err == nil {
-		if err := json.Unmarshal(data, &raw); err != nil {
-			return fmt.Errorf("config file %s is not valid JSON: %w", ConfigPath, err)
-		}
-	}
-	raw[key] = value
-	if err := os.MkdirAll(AtmDir, 0700); err != nil {
-		return err
-	}
-	if err := os.Chmod(AtmDir, 0700); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(raw, "", "  ")
+	normalized, err := normalizeSettings(map[string]any{key: value})
 	if err != nil {
 		return err
 	}
-	b = append(b, '\n')
-	if err := os.WriteFile(ConfigPath, b, 0600); err != nil {
+	return writeSettings(normalized)
+}
+
+// SaveGuardToolBin records where a tool's gate was installed.
+//
+// Without this the gate loses track of its own installation: a tool that is not
+// on PATH — which is the normal case for one only ever invoked by absolute path —
+// could be gated successfully and then be invisible to `guard status` and
+// `atm doctor`, so the checks for a shim that was overwritten or walked around
+// would never run for it. That is precisely the tool most worth checking.
+//
+// Uninstall deliberately leaves the path recorded: "not enabled, at this path" is
+// a more useful answer than "not found", and it means a reinstall does not need
+// --bin again.
+func SaveGuardToolBin(tool, bin string) error {
+	err := mutateRawConfig(func(raw map[string]any) error {
+		guardRaw, _ := raw["guard"].(map[string]any)
+		if guardRaw == nil {
+			guardRaw = map[string]any{}
+		}
+		toolsRaw, _ := guardRaw["tools"].(map[string]any)
+		if toolsRaw == nil {
+			toolsRaw = map[string]any{}
+		}
+		toolRaw, _ := toolsRaw[tool].(map[string]any)
+		if toolRaw == nil {
+			toolRaw = map[string]any{}
+		}
+		toolRaw["bin"] = bin
+		toolsRaw[tool] = toolRaw
+		guardRaw["tools"] = toolsRaw
+		raw["guard"] = guardRaw
+		return nil
+	})
+	if err != nil {
 		return err
 	}
-	return os.Chmod(ConfigPath, 0600)
+	ReloadGuard()
+	return nil
+}
+
+// SaveGuardRule upserts one rule by id under a tool, creating the tool entry if
+// this is the first thing said about it. Registering a CLI is this plus an
+// install: the rule is what makes the gate mean anything, since a gated tool with
+// no rules passes every invocation straight through.
+func SaveGuardRule(tool string, rule GuardRule) error {
+	tool = strings.TrimSpace(tool)
+	rule.ID = strings.TrimSpace(rule.ID)
+	if tool == "" || rule.ID == "" {
+		return fmt.Errorf("tool and rule id are required")
+	}
+	encoded, err := json.Marshal(rule)
+	if err != nil {
+		return err
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal(encoded, &asMap); err != nil {
+		return err
+	}
+	return mutateGuardTool(tool, func(toolRaw map[string]any) {
+		rules, _ := toolRaw["rules"].([]any)
+		replaced := false
+		for index, existing := range rules {
+			if entry, ok := existing.(map[string]any); ok && entry["id"] == rule.ID {
+				rules[index] = asMap
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			rules = append(rules, asMap)
+		}
+		toolRaw["rules"] = rules
+	})
+}
+
+// RemoveGuardRule drops a user rule. A built-in of the same id comes back, which
+// is the honest outcome: removing an override is not the same as switching the
+// action off, and the latter is what `enabled: false` is for.
+func RemoveGuardRule(tool, ruleID string) error {
+	return mutateGuardTool(tool, func(toolRaw map[string]any) {
+		rules, _ := toolRaw["rules"].([]any)
+		kept := make([]any, 0, len(rules))
+		for _, existing := range rules {
+			if entry, ok := existing.(map[string]any); ok && entry["id"] == ruleID {
+				continue
+			}
+			kept = append(kept, existing)
+		}
+		toolRaw["rules"] = kept
+	})
+}
+
+// RemoveGuardTool forgets a tool entirely: its rules and its recorded install
+// path. It deliberately does not touch the filesystem — a shim has to be removed
+// by `atm guard uninstall`, and silently leaving one in place while forgetting
+// where it is would be the worst of both.
+func RemoveGuardTool(tool string) error {
+	err := mutateRawConfig(func(raw map[string]any) error {
+		guardRaw, _ := raw["guard"].(map[string]any)
+		if guardRaw == nil {
+			return nil
+		}
+		toolsRaw, _ := guardRaw["tools"].(map[string]any)
+		if toolsRaw == nil {
+			return nil
+		}
+		delete(toolsRaw, tool)
+		guardRaw["tools"] = toolsRaw
+		raw["guard"] = guardRaw
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	ReloadGuard()
+	return nil
+}
+
+// mutateGuardTool applies a change to one tool's entry, leaving every other
+// field in the file — including ones this build does not know about — untouched.
+func mutateGuardTool(tool string, apply func(toolRaw map[string]any)) error {
+	err := mutateRawConfig(func(raw map[string]any) error {
+		guardRaw, _ := raw["guard"].(map[string]any)
+		if guardRaw == nil {
+			guardRaw = map[string]any{}
+		}
+		toolsRaw, _ := guardRaw["tools"].(map[string]any)
+		if toolsRaw == nil {
+			toolsRaw = map[string]any{}
+		}
+		toolRaw, _ := toolsRaw[tool].(map[string]any)
+		if toolRaw == nil {
+			toolRaw = map[string]any{}
+		}
+		apply(toolRaw)
+		toolsRaw[tool] = toolRaw
+		guardRaw["tools"] = toolsRaw
+		raw["guard"] = guardRaw
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	ReloadGuard()
+	return nil
+}
+
+// ReloadGuard re-reads the guard section from disk.
+//
+// Called after every guard write so a command that reports what it just changed
+// reports the new state, not the one it started the process with. Narrow on
+// purpose: a full LoadConfig would also re-apply env overrides and reset the
+// refine prompt, none of which a rule edit has any business touching.
+func ReloadGuard() {
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return
+	}
+	var cfg FileConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+	Guard = cfg.Guard
 }
 
 func expandHome(p string) string {
@@ -362,15 +610,16 @@ func ShowConfig() string {
 		QoderCLIProjects:               QoderCLIProjects,
 		QoderWorkDB:                    QoderWorkDB,
 		GrokSessions:                   GrokSessions,
+		AntigravityDir:                 AntigravityDir,
 		GrokLiveQuota:                  &GrokLiveQuota,
 		CollectionEnabled:              &CollectionEnabled,
 		CollectionIntervalMinutes:      CollectionIntervalMinutes,
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
-		CollectionModelCommand:         CollectionModelCommand,
-		CollectionModelRunners:         CollectionModelRunners,
 		TextModelBaseURL:               TextModelBaseURL,
 		TextModelName:                  TextModelName,
+		TextModelSource:                TextModelSource,
+		TodoRefinePrompt:               TodoRefinePrompt,
 		CollectionConnectors:           CollectionConnectors,
 		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		QuotaProviders:                 QuotaProviders,
@@ -378,6 +627,7 @@ func ShowConfig() string {
 		Pricing:                        Pricing,
 		Subscriptions:                  Subscriptions,
 		ProjectAliases:                 ProjectAliases,
+		Guard:                          Guard,
 	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	return string(b)
@@ -403,13 +653,15 @@ func InitConfig() error {
 		QoderCLIProjects:               "~/.qoder/projects",
 		QoderWorkDB:                    shortenHome(defaultQoderWorkDB()),
 		GrokSessions:                   "~/.grok/sessions",
+		AntigravityDir:                 "~/.gemini/antigravity",
 		CollectionEnabled:              &CollectionEnabled,
 		CollectionIntervalMinutes:      CollectionIntervalMinutes,
 		CollectionLookbackMinutes:      CollectionLookbackMinutes,
 		CollectionMessageRetentionDays: &CollectionMessageRetentionDays,
-		CollectionModelCommand:         CollectionModelCommand,
 		TextModelBaseURL:               TextModelBaseURL,
 		TextModelName:                  TextModelName,
+		TextModelSource:                TextModelSource,
+		TodoRefinePrompt:               TodoRefinePrompt,
 		TodoRefineOnAdd:                &TodoRefineOnAdd,
 		DataDir:                        "~/.atm",
 	}
@@ -779,6 +1031,13 @@ func NormalizeAgent(s string) string {
 		return "qoderwork"
 	case "grok", "grokbuild", "grok-build", "grok-cli":
 		return "grokbuild"
+	case "antigravity", "agy", "anti-gravity":
+		return "antigravity"
+	// ATM 自己：它是内置文本模型的 client，用量记在 `store.BuiltinAgent` 名下。这里
+	// 认它是为了 `--agent atm` 能过校验；它没有 parser adapter，所以不参与 sync，
+	// 也不会出现在活跃面板里。
+	case "atm":
+		return "atm"
 	default:
 		return ""
 	}

@@ -107,8 +107,6 @@ func MatchTodosWithOptions(tf *TodoFile, opts TodoMatchOptions) []TodoMatch {
 			score += 20
 		case TodoStatusReview:
 			score += 8
-		case TodoStatusWaiting, TodoStatusBlocked:
-			score -= 10
 		}
 		switch todo.Priority {
 		case "P0":

@@ -23,6 +23,10 @@ type TodoLintIssue struct {
 	Code       string `json:"code"`
 	Detail     string `json:"detail"`
 	Suggestion string `json:"suggestion"`
+	// Details carries stable counters and thresholds for JSON consumers. Detail
+	// remains the human sentence; clients should branch on Code and read these
+	// named values rather than scrape that sentence.
+	Details map[string]any `json:"details,omitempty"`
 }
 
 type todoProgressEntry struct {
@@ -87,6 +91,13 @@ func ValidateTodoLogMessage(message, section string) error {
 				"use `atm todo edit <id> --desc` to change the requirement, "+
 				"or `--section 补充` to add to it",
 			todoDocGeneratedSection,
+		)
+	}
+	if section == todoDocPlanGeneratedSection {
+		return fmt.Errorf(
+			"section %s is generated from the latest plan revision and would be overwritten; "+
+				"use `atm todo plan set [id] --file -` to replace the structured plan",
+			todoDocPlanGeneratedSection,
 		)
 	}
 	if section != "" && section != "进展" {

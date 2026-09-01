@@ -3,8 +3,9 @@
 这里只写**代码里读不出来的东西**：意图、边界和非目标。
 
 不写已实现功能清单、数据模型表或架构图 —— 那些的真相在代码里（schema 见
-[`internal/store/schema.go`](internal/store/schema.go)，命令面见 `atm --help` 和
-[README](README.md)），手抄一份只会腐烂并开始说假话。
+[`internal/store/schema.go`](internal/store/schema.go)，命令面见 `atm <命令> --help`），
+手抄一份只会腐烂并开始说假话。行为细节——状态怎么流转、失败时会发生什么、数据存在哪儿——
+写在 [`docs/internals.md`](docs/internals.md)。
 
 ## 定位
 
@@ -24,8 +25,8 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 - **ATM 数据自有**：ATM 产生和管理的数据全部位于 `~/.atm`，不会静默写入项目目录或探测其他产品的私有目录。
 - **显式导入**：外部知识和历史数据通过 add/import 进入 ATM，不在日常查询路径中做兼容扫描。
 - **旁路而非主路**：普通 coding/chat 由客户端直接连接 Agent；ATM 停止不能阻断普通会话。
-- **不实现 agent loop 或 Agent scheduler**：常驻 App 可定时运行连接器采集；任务来源可显式 opt-in，在新建 Todo 后派发一次 Codex，但失败不会无限重跑，Agent 也不能自行生成下一轮调度。与历史任务有关时只记录关联上下文，不合并事项。
-- **执行必须授权且可追踪**：`todo prompt` 把指针交给可见会话；`todo run` 或来源上的 `auto_dispatch` 才能启动本地 Agent。每次 Run 先持久化 claim 再起进程，默认受限权限，同一 Todo 不并发执行；进程退出只形成执行证据，成功最多提交 `review`，不能替人验收为 `done`。
+- **不实现 agent loop 或 Agent scheduler**：常驻 App 可定时运行连接器采集。ATM 不代为启动 Agent 会话；任务交给 Codex 只用 `todo handoff`（要指针文本就 `--copy`）。与历史任务有关时只记录关联上下文，不合并事项。
+- **执行必须授权且可追踪**：`todo handoff` 在 Codex Desktop 填好指针后停下，回车和审批都归人；`--copy` 只把指针交给人，由人自己开会话。ATM 不在后台启动 Agent。
 - **事实分域**：Todo 保存工作目标与生命周期，Git 保存实现状态，测试/CI 提供验证证据，Session 保存过程追溯；ATM 提供关联视图，不复制或覆盖其他事实源。
 - **状态正交**：live activity 是观测信号，Session binding 是显式关系，Todo status 是工作生命周期；三者独立展示，禁止按项目名或 `in_progress` 猜测绑定。
 - **单用户单库**：只有一个活的数据库，因此不背向后兼容成本；schema 变更的流程写在
@@ -48,13 +49,45 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
   argv 或日志，避免开发构建重签名反复触发钥匙串授权。模型和 endpoint 属于非敏感配置。“测试连接”复用同一客户端，以当前
   草稿配置发送最小 schema 请求但不接触 Todo。`in_progress` 只润色不拆分，
   避免把正在工作的会话解绑。
+- **模块化单体，业务规则归 Application Service**（2026-08-20）：ATM 仍是一个进程和一个 SQLite，
+  不拆 daemon、微服务或独立读库；边界存在于依赖方向。Cobra、typed IPC、Run controller 和 hook 都是
+  adapter，只能调用按领域划分的 application service，再由 service 调用 domain/store 和副作用 port：
+  `adapter → service → domain/store`。adapter 之间禁止互相复用——尤其不能让 IPC 调 Cobra handler，或让
+  service 通过 shell 再执行 `atm`。`internal/cmd` 只保留参数解析、确认交互和人类文本/JSON 渲染；校验、
+  授权、事务、幂等和跨表编排属于 service。Service 按 Work、AI Day、Collector、Knowledge、Guard、Config
+  等 bounded context 划分，不建立一个接受 `string + map` 的万能 God Service。迁移可以逐域完成，
+  `store` 暂时无需先拆 repository 层；当前公共调用身份和错误模型在
+  [`internal/application`](internal/application)，typed IPC router 在 [`internal/ipc`](internal/ipc)，首批
+  纵向样板是 [`config.Service`](internal/config/settings.go) 和
+  [`aiday.Service`](internal/aiday/application.go)。
+- **App 与 Agent 能力面可以分化，同一动作必须共享 service**（2026-08-20）：App 是人的主入口，Agent
+  通过 skill 发现 CLI；二者的任务和授权不同，因此不要求一条 App 能力同时暴露为 Agent 命令。真正的
+  一致性约束是：如果两个入口表达同一业务动作，它们必须映射到同一个 typed use case，不能各自实现规则。
+  App 调用逐步迁到隐藏的 `atm _ipc <method>`；普通 CLI 只保留 Agent、人工恢复或诊断确实需要的 adapter。
+  `_ipc` 仍用 fork/exec + JSON stdin/stdout，保留崩溃隔离和终端可重放性，不为当前不存在的吞吐问题引入
+  常驻协议进程。Method 按数据或原子工作流命名（如 `config.settings`、`day.snapshot`），不按 Swift
+  screen 命名，也不把 100 多条 CLI 一对一镜像成 verbs。统一 envelope 回显 request ID、协议版本和稳定
+  错误码；App 必须先解 error envelope，再按进程退出码处理 transport failure。可重放也意味着 `_ipc`
+  不是 App 身份认证边界；Guard approve/deny 这类只允许人执行的授权动作在有可验证调用方身份前继续走
+  能识别 Agent 环境的 CLI adapter，不能仅凭 `human@ipc` 标签放行。现有 CLI 对 ambient environment 的
+  识别也只是 best-effort 分类，不是抗恶意调用的认证；若 Guard 要成为真正的安全边界，仍需 user-presence
+  或可验证的可信 App channel。
+  尚未迁移的普通 argv 由 [`app/macos/atm-cli-contract.txt`](app/macos/atm-cli-contract.txt) 和
+  [`internal/cmd/app_contract_test.go`](internal/cmd/app_contract_test.go) 钉住，迁完一个领域就从清单移走。
+- **skill 是 Agent 的真实命令面，root help 只是人工导航**（2026-08-20）：命令存在于 Cobra 但没有写进
+  ATM skill，对日常 Agent 等同于不存在。常驻 skill 只放 match/bind/context/log/wait/submit 等核心闭环；
+  Knowledge、Memory、Artifact、收集纠正和历史查询按任务加载扩展说明。root help 分组仍保留，因为它让
+  人工排障更容易，但它不能替代 skill 覆盖。删除或迁移 Cobra adapter 的判据是 IPC 切换后已无 Agent、
+  人工或后台消费者，而不是简单地看 App 是否调用过。
 - **Parser 提取结构，不做业务判断**：应提取一切可用的结构化信息（summary、时间戳、工具调用），
   但不提取 git commit、不生成摘要。
-- **`review` 状态保留，但不是闸门**：它表示「Agent 声称完成、人尚未验收」。`todo done` 不设前置检查 ——
-  人点下完成时验收已经发生。删掉这个状态等于让 Agent 自己宣布完成。
+- **`review` 状态保留，但不是状态前置闸门**：它表示「Agent 声称完成、人尚未验收」。`todo done` 只允许
+  人执行，但不要求 Todo 必须先在 `review`——人点下完成时验收已经发生。Agent 完成实现只能 `submit`；
+  删掉 `review` 等于让 Agent 自己宣布完成。
 - **Session 镜像不主动清理**（2026-08-05 决定）：索引只增不减，没有保留期，没有后台 compaction。
   理由是它的存在意义就是比 Agent 自己的日志活得更久 —— Claude Code 三十天就清 `~/.claude/projects`，
-  而 ATM 承诺 `atm stats --days 90` 的历史不会自己缩水（见 README「数据源」）。任何自动清理都在
+  而 ATM 承诺 `atm stats --days 90` 的历史不会自己缩水（见
+  [`docs/internals.md` 的保留策略](docs/internals.md#保留策略)）。任何自动清理都在
   削弱这个承诺，而且「哪条会话不再需要」只有人知道：一条三个月前的会话可能是某个决定的唯一记录。
   库因此单调增长，这是有意接受的成本 —— 单用户单机的量级下，磁盘比丢失的历史便宜。
   现有的显式手段是 `atm session forget <id>`，一次一条，且源文件还在时会直接拒绝。
@@ -83,8 +116,18 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
   token 字段。两者的提取逻辑保留着，上游一旦开始写入，把
   [`parser.CapabilitiesFor`](internal/parser/capabilities.go) 改回 `Usage: true` 即可恢复统计。
   Qoder 本体（IDE）提供 token，不在此列。
-- Qoder 与 QoderWork 依赖本地 SQLite 表结构，Qoder CLI 依赖 JSONL transcript；若上游客户端变更
-  schema，需要更新 parser
+- Antigravity 只提供用量，不提供会话正文（2026-08-17 核验）：token 记账在 `gen_metadata` 表里，
+  逐次调用都带模型、时间戳和「命中/未命中缓存」拆分，所以 spend、会话和项目归属都是完整的；
+  但对话本身是 `steps` 表里按 step 类型各不相同的 protobuf，schema 不公开，本期没有反解。同一条
+  规矩：[`parser.CapabilitiesFor`](internal/parser/capabilities.go) 里它标的是 `Messages: false`，
+  哪天开始解正文再改回来。只覆盖 IDE（`~/.gemini/antigravity`），CLI 的 `antigravity-cli` 不在内。
+- Antigravity 的额度只有「剩余比例 + 重置时间」，上游不发布绝对配额上限也不给已用绝对值，所以
+  ATM 只能显示百分比，做不到「还剩多少 token」。读数来自本机 language_server 的 loopback
+  Connect-RPC（`RetrieveUserQuotaSummary`），只覆盖 Gemini 模型组：账号的另一组（Claude/GPT）是
+  独立额度池，而 `QuotaInfo` 只有两个带窗口的槽位、`quota_history` 又按 `(agent, window_minutes)`
+  做键，第二组无处安放且会与第一组的周窗口撞键。要完整显示需要一个支持多池的额度模型。
+- Qoder、QoderWork 与 Antigravity 依赖本地 SQLite 表结构，Qoder CLI 依赖 JSONL transcript；若上游
+  客户端变更 schema，需要更新 parser
 
 ## 待办
 

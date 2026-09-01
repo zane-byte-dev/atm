@@ -4,8 +4,10 @@ struct QuickPanelView: View {
     @ObservedObject var store: ATMDataStore
     let close: () -> Void
     let openDesktop: (ATMTodo?) -> Void
+    let openUsage: () -> Void
 
     @State private var metricsRange: ATMMetricsRange = .today
+    @State private var isQuotaExpanded = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,6 +18,12 @@ struct QuickPanelView: View {
                             .padding(.bottom, 8)
                     }
                     indexHealthBanner
+                    // Above everything: it is the only thing here with a deadline,
+                    // and the only one where not looking has an outward effect.
+                    if !pendingApprovals.isEmpty || store.approvalErrorMessage != nil {
+                        approvalsSection
+                        sectionDivider
+                    }
                     usageSection
                     sectionDivider
                     if !store.snapshot.work.needsAction.isEmpty {
@@ -145,14 +153,7 @@ struct QuickPanelView: View {
 
                 if !store.quota.isEmpty {
                     Divider().padding(.vertical, 2)
-                    ForEach(store.quota.cards) { card in
-                        quotaRow(agent: card.agent, window: card.window)
-                    }
-                    ForEach(store.quota.providerCards) { card in
-                        ForEach(card.payload.metrics) { metric in
-                            providerQuotaRow(card: card, metric: metric)
-                        }
-                    }
+                    quotaSummary(ATMQuickQuotaSummary(quota: store.quota))
                 }
             }
         }
@@ -161,59 +162,128 @@ struct QuickPanelView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// One rate-limit window, compact enough for the quick panel: agent, window
-    /// length, a bar, the percentage, and when it resets.
-    private func quotaRow(agent: String, window: ATMQuotaWindow) -> some View {
-        let percent = window.displayPercent
-        let label = ATMAgentDisplay.name(agent)
-        return quotaPercentRow(
-            agent: agent,
-            title: "\(label) \(window.windowLabel)",
-            percent: percent,
-            help: "\(label) \(window.windowLabel) 窗口：\(String(format: "%.1f", percent))% 已用，\(window.resetText)"
-        )
-    }
-
-    private func providerQuotaRow(
-        card: ATMProviderQuotaCard,
-        metric: ATMProviderQuotaMetric
-    ) -> some View {
-        let url = card.payload.linkURL
-        return quotaPercentRow(
-            agent: card.agent,
-            title: "\(card.providerLabel) \(metric.label)",
-            percent: metric.usedPercent,
-            help: "\(ATMAgentDisplay.name(card.agent)) · \(card.providerLabel) · "
-                + "\(card.payload.title)：\(metric.valueText)（\(String(format: "%.1f", metric.usedPercent))%）"
-                + (url == nil ? "" : " · 点击打开"),
-            url: url
-        )
-    }
-
-    /// `url` is the page behind the reading, when the provider named one. Built-in
-    /// rate-limit windows have no such page and stay unclickable.
     @ViewBuilder
+    private func quotaSummary(_ summary: ATMQuickQuotaSummary) -> some View {
+        if !summary.entries.isEmpty {
+            HStack(alignment: .top, spacing: 8) {
+                Group {
+                    if isQuotaExpanded {
+                        VStack(spacing: 8) {
+                            ForEach(summary.entries) { entry in
+                                if let percent = entry.usedPercent {
+                                    quotaPercentRow(
+                                        agent: entry.agent,
+                                        title: entry.title,
+                                        percent: percent,
+                                        help: entry.help
+                                    )
+                                } else {
+                                    unavailableQuotaRow(entry)
+                                }
+                            }
+                        }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                    } else {
+                        compactQuotaSummary(summary)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        isQuotaExpanded.toggle()
+                    }
+                } label: {
+                    Image(systemName: "chevron.down")
+                        .font(ATMFont.font(.micro, weight: .semibold))
+                        .foregroundStyle(ATMTheme.secondary)
+                        .rotationEffect(.degrees(isQuotaExpanded ? 180 : 0))
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(isQuotaExpanded ? "收起模型额度" : "展开全部模型额度")
+            }
+        }
+    }
+
+    private func compactQuotaSummary(_ summary: ATMQuickQuotaSummary) -> some View {
+        HStack(spacing: 5) {
+            ForEach(summary.highlightedEntries) { entry in
+                compactQuotaChip(entry)
+            }
+            if let remainderText = summary.remainderText {
+                Text(remainderText)
+                    .font(ATMFont.mono(.micro, .medium))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .padding(.horizontal, 7)
+                    .frame(height: 22)
+                    .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 6))
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private func compactQuotaChip(_ entry: ATMQuickQuotaEntry) -> some View {
+        let color = entry.usedPercent.map {
+            ATMTheme.quotaColor(ATMQuotaLevel.level(forPercent: $0))
+        } ?? ATMTheme.warning
+        return HStack(spacing: 4) {
+            Text(entry.compactTitle)
+                .foregroundStyle(ATMTheme.secondary)
+            Text(entry.compactValueText)
+                .foregroundStyle(color)
+        }
+        .font(ATMFont.mono(.micro, .semibold))
+        .lineLimit(1)
+        .minimumScaleFactor(0.72)
+        .padding(.horizontal, 7)
+        .frame(height: 22)
+        .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 6))
+        .help(entry.help)
+    }
+
+    private func unavailableQuotaRow(_ entry: ATMQuickQuotaEntry) -> some View {
+        Button {
+            openUsage()
+        } label: {
+            HStack(spacing: 6) {
+                ATMAgentMark(agent: entry.agent, size: 13)
+                Text(entry.title)
+                    .font(ATMFont.mono(.caption, .semibold))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Text(entry.compactValueText)
+                    .font(ATMFont.mono(.footnote, .bold))
+                    .foregroundStyle(ATMTheme.warning)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(entry.help)
+    }
+
+    /// The desktop usage page is the single place that explains quota and usage
+    /// together. Provider-specific links remain available from their full cards
+    /// there instead of making otherwise identical quick-panel rows route
+    /// differently.
     private func quotaPercentRow(
         agent: String,
         title: String,
         percent: Double,
-        help: String,
-        url: URL? = nil
+        help: String
     ) -> some View {
-        if let url {
-            Button {
-                // The panel is transient and the browser is about to take focus,
-                // so it goes away first — same as opening the desktop window.
-                close()
-                NSWorkspace.shared.open(url)
-            } label: {
-                quotaPercentRowBody(agent: agent, title: title, percent: percent, help: help)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        } else {
+        Button {
+            openUsage()
+        } label: {
             quotaPercentRowBody(agent: agent, title: title, percent: percent, help: help)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     private func quotaPercentRowBody(
@@ -252,18 +322,82 @@ struct QuickPanelView: View {
 
     private var workingSection: some View {
         quickCard(
-            "工作中",
+            "进行中",
             indicatorColor: ATMTheme.accent,
             badge: store.snapshot.work.working.isEmpty ? nil : "\(store.snapshot.work.working.count)"
         ) {
             if store.snapshot.work.working.isEmpty {
-                empty("当前没有工作中的任务")
+                empty("当前没有进行中的任务")
             } else {
                 ForEach(store.snapshot.work.working) { todo in
                     quickTodoRow(todo)
                 }
             }
         }
+    }
+
+    /// Requests still awaiting a decision. A request that is executing with an
+    /// unknown outcome is deliberately excluded — nothing can be decided about it.
+    private var pendingApprovals: [ATMGuardApproval] {
+        store.pendingApprovals.filter(\.isPending)
+    }
+
+    private var approvalsSection: some View {
+        quickCard(
+            "待授权外发",
+            indicatorColor: ATMTheme.danger,
+            badge: pendingApprovals.isEmpty ? nil : "\(pendingApprovals.count)"
+        ) {
+            if let error = store.approvalErrorMessage {
+                banner(error, icon: "exclamationmark.triangle.fill", color: ATMTheme.danger)
+            }
+            ForEach(pendingApprovals) { approval in
+                approvalRow(approval)
+            }
+        }
+    }
+
+    private func approvalRow(_ approval: ATMGuardApproval) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(approval.actionLine)
+                .font(ATMFont.font(.caption, weight: .semibold))
+                .foregroundStyle(ATMTheme.primary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+            // The message body, because approving sends it: a row that hides what
+            // goes out is asking for a decision the user cannot actually make.
+            if let body = approval.previewBody?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !body.isEmpty {
+                Text(body)
+                    .font(ATMFont.font(.caption))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 6) {
+                Button("批准并发送") { store.decideApproval(approval, approve: true) }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                Button("拒绝") { store.decideApproval(approval, approve: false) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                Spacer(minLength: 0)
+                if let source = approval.envAgent, !source.isEmpty {
+                    Text(source)
+                        .font(ATMFont.mono(.micro))
+                        .foregroundStyle(ATMTheme.secondary)
+                }
+            }
+            // Per-row, so deciding one request does not freeze the others.
+            .disabled(store.isDecidingApproval(approval.id))
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ATMTheme.dangerFill, in: RoundedRectangle(cornerRadius: 9))
+        .overlay(
+            RoundedRectangle(cornerRadius: 9)
+                .stroke(ATMTheme.danger.opacity(0.20), lineWidth: 0.8)
+        )
     }
 
     private var attentionSection: some View {
@@ -342,11 +476,11 @@ struct QuickPanelView: View {
     }
 
     private func attentionCaption(_ todo: ATMTodo) -> String {
+        // Waiting gets no caption of its own; it is shown by the orange clock on
+        // the row, the same way it is in the task list.
         let status: String
         switch todo.status {
         case "review": status = "待验收"
-        case "blocked": status = "阻塞"
-        case "waiting": status = "到期"
         default: status = "需处理"
         }
         // Status only: quickTodoRow appends the project itself, so returning it
@@ -460,5 +594,130 @@ struct QuickPanelView: View {
             .font(ATMFont.footnote)
             .foregroundStyle(ATMTheme.secondary)
             .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+    }
+}
+
+/// Presentation-ready quota readings for the quick panel. Keeping the compact
+/// classification separate from SwiftUI makes the important semantic explicit:
+/// a displayed 0% is unused capacity, not an exhausted quota.
+struct ATMQuickQuotaEntry: Identifiable, Equatable {
+    let id: String
+    let agent: String
+    let title: String
+    let compactTitle: String
+    /// Nil means the provider card still exists but currently has no reading.
+    /// It must not be presented as 0%: that means a healthy, unused quota.
+    let usedPercent: Double?
+    let help: String
+    let unavailableText: String?
+
+    var roundedPercent: Int? {
+        usedPercent.map { Int(max(0, min(100, $0)).rounded()) }
+    }
+
+    var isUsed: Bool { (roundedPercent ?? 0) > 0 }
+    var isUnavailable: Bool { usedPercent == nil }
+    var compactValueText: String {
+        roundedPercent.map { "已用 \($0)%" } ?? (unavailableText ?? "暂无数据")
+    }
+}
+
+struct ATMQuickQuotaSummary: Equatable {
+    let entries: [ATMQuickQuotaEntry]
+
+    init(entries: [ATMQuickQuotaEntry]) {
+        self.entries = entries
+    }
+
+    init(quota: ATMQuotaSnapshot) {
+        let windowCounts = Dictionary(grouping: quota.cards, by: \.agent).mapValues(\.count)
+        let builtIn = quota.cards.map { card in
+            let label = ATMAgentDisplay.name(card.agent)
+            let percent = card.window.displayPercent
+            return ATMQuickQuotaEntry(
+                id: card.id,
+                agent: card.agent,
+                title: "\(label) \(card.window.windowLabel)",
+                compactTitle: windowCounts[card.agent, default: 0] > 1
+                    ? "\(label) \(card.window.windowLabel)"
+                    : label,
+                usedPercent: percent,
+                help: "\(label) \(card.window.windowLabel) 窗口："
+                    + "\(String(format: "%.1f", percent))% 已用，\(card.window.resetText)",
+                unavailableText: nil
+            )
+        }
+
+        let provided = quota.providerCards.flatMap { card in
+            if card.payload.metrics.isEmpty {
+                return [ATMQuickQuotaEntry(
+                    id: "\(card.id):unavailable",
+                    agent: card.agent,
+                    title: "\(card.providerLabel) \(card.payload.title)",
+                    compactTitle: card.providerLabel,
+                    usedPercent: nil,
+                    help: "\(ATMAgentDisplay.name(card.agent)) · \(card.providerLabel) · "
+                        + "\(card.payload.title)：\(card.payload.unavailableText)"
+                        + " · 上次观察 \(card.payload.observedTimeLabel) · 点击查看额度详情",
+                    unavailableText: card.payload.unavailableText
+                )]
+            }
+            return card.payload.metrics.map { metric in
+                ATMQuickQuotaEntry(
+                    id: "\(card.id):\(metric.id)",
+                    agent: card.agent,
+                    title: "\(card.providerLabel) \(metric.label)",
+                    compactTitle: card.payload.metrics.count > 1
+                        ? "\(card.providerLabel) \(metric.label)"
+                        : card.providerLabel,
+                    usedPercent: metric.usedPercent,
+                    help: "\(ATMAgentDisplay.name(card.agent)) · \(card.providerLabel) · "
+                        + "\(card.payload.title)：\(metric.valueText)"
+                        + "（\(String(format: "%.1f", metric.usedPercent))% 已用）"
+                        + " · 点击查看额度详情",
+                    unavailableText: nil
+                )
+            }
+        }
+        entries = builtIn + provided
+    }
+
+    var usedEntries: [ATMQuickQuotaEntry] { entries.filter(\.isUsed) }
+    var unavailableEntries: [ATMQuickQuotaEntry] { entries.filter(\.isUnavailable) }
+    var usedCount: Int { usedEntries.count }
+    var unusedCount: Int { entries.count - usedCount - unavailableEntries.count }
+    var highlightedEntries: [ATMQuickQuotaEntry] {
+        var candidates = Array(usedEntries.prefix(1))
+        candidates.append(contentsOf: unavailableEntries)
+        candidates.append(contentsOf: usedEntries.dropFirst())
+        return Array(candidates.prefix(2))
+    }
+
+    var statusText: String {
+        var parts: [String] = []
+        if usedCount > 0 { parts.append("\(usedCount) 个使用中") }
+        if unusedCount > 0 { parts.append("\(unusedCount) 个未使用") }
+        if !unavailableEntries.isEmpty { parts.append("\(unavailableEntries.count) 个暂无数据") }
+        return parts.joined(separator: " · ")
+    }
+
+    var remainderText: String? {
+        let highlightedIDs = Set(highlightedEntries.map(\.id))
+        let hidden = entries.filter { !highlightedIDs.contains($0.id) }
+        guard !hidden.isEmpty else { return nil }
+        let hiddenUsedCount = hidden.filter(\.isUsed).count
+        let hiddenUnavailableCount = hidden.filter(\.isUnavailable).count
+        let hiddenUnusedCount = hidden.count - hiddenUsedCount - hiddenUnavailableCount
+        let prefix = highlightedEntries.isEmpty ? "全部" : "其他"
+        if hiddenUsedCount == 0, hiddenUnavailableCount == 0 {
+            return "\(prefix) \(hiddenUnusedCount) 个 未使用"
+        }
+        if hiddenUnusedCount == 0, hiddenUnavailableCount == 0 {
+            return "\(prefix) \(hiddenUsedCount) 个 使用中"
+        }
+        if hiddenUsedCount == 0, hiddenUnusedCount == 0 {
+            return "\(prefix) \(hiddenUnavailableCount) 个 暂无数据"
+        }
+        return "\(prefix) \(hidden.count) 个"
     }
 }
