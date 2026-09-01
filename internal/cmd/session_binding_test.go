@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/store"
+	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
 func TestSessionBindCreatesMissingTodoDoc(t *testing.T) {
@@ -43,113 +44,6 @@ func TestSessionBindCreatesMissingTodoDoc(t *testing.T) {
 	doc, err := store.ReadTodoDoc("t1")
 	if err != nil || !strings.Contains(doc, "GUI created without markdown card") {
 		t.Fatalf("doc = %q, err=%v", doc, err)
-	}
-}
-
-func TestSessionBindAuthoritativelyLinksDispatchedRun(t *testing.T) {
-	withTempAtmDir(t)
-	oldSession, oldJSON := sessionIDFlag, jsonOutput
-	oldAgent, oldProject, oldCWD := sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag
-	t.Cleanup(func() {
-		sessionIDFlag, jsonOutput = oldSession, oldJSON
-		sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag = oldAgent, oldProject, oldCWD
-	})
-	sessionIDFlag = "actual-session"
-	jsonOutput = false
-	sessionBindAgentFlag = "codex"
-	sessionBindProjectFlag = "atm"
-	sessionBindCWDFlag = "/tmp/atm"
-	t.Setenv("ATM_RUN_ID", "run-1")
-	t.Setenv("ATM_TODO_ID", "t1")
-
-	if err := seedTodos(store.Todo{
-		ID: "t1", Title: "Link dispatched run", Priority: "P1",
-		Status: store.TodoStatusInProgress, Project: "atm", Created: store.Today(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	db, err := store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.CreateTaskRun(db, store.TaskRun{
-		ID: "run-1", TodoID: "t1", Agent: "codex", Project: "atm", WorkDir: "/tmp/atm",
-		Policy: "guarded", LogPath: "/tmp/run.log", Status: store.TaskRunRunning, StartTS: 1,
-	}); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE task_runs SET session_id='wrong-session' WHERE id='run-1'`); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	db.Close()
-
-	if err := runSessionBind(sessionBindCmd, []string{"t1"}); err != nil {
-		t.Fatalf("bind: %v", err)
-	}
-	db, err = store.OpenReadOnly()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	run, err := store.GetTaskRun(db, "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if run == nil || run.SessionID == nil || *run.SessionID != sessionIDFlag {
-		t.Fatalf("run = %#v", run)
-	}
-}
-
-// The dispatched Agent is told to run `atm session bind`, so a run row that has
-// been pruned or reconciled must not turn the whole command into a failure the
-// Agent has to react to — especially since the binding itself has already been
-// committed by the time the link is attempted.
-func TestSessionBindSucceedsWhenTheRunLinkCannotBeRecorded(t *testing.T) {
-	withTempAtmDir(t)
-	oldSession, oldJSON := sessionIDFlag, jsonOutput
-	oldAgent, oldProject, oldCWD := sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag
-	t.Cleanup(func() {
-		sessionIDFlag, jsonOutput = oldSession, oldJSON
-		sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag = oldAgent, oldProject, oldCWD
-	})
-	sessionIDFlag = "actual-session"
-	jsonOutput = false
-	sessionBindAgentFlag = "codex"
-	sessionBindProjectFlag = "atm"
-	sessionBindCWDFlag = "/tmp/atm"
-	t.Setenv("ATM_RUN_ID", "run-that-no-longer-exists")
-	t.Setenv("ATM_TODO_ID", "t1")
-
-	if err := seedTodos(store.Todo{
-		ID: "t1", Title: "Bind without a run", Priority: "P1",
-		Status: store.TodoStatusInProgress, Project: "atm", Created: store.Today(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	var warnings strings.Builder
-	sessionBindCmd.SetErr(&warnings)
-	t.Cleanup(func() { sessionBindCmd.SetErr(nil) })
-	if err := runSessionBind(sessionBindCmd, []string{"t1"}); err != nil {
-		t.Fatalf("bind: %v", err)
-	}
-	if !strings.Contains(warnings.String(), "could not link session to task run") {
-		t.Fatalf("stderr = %q", warnings.String())
-	}
-
-	db, err := store.OpenReadOnly()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	bindings, err := store.ListTodoSessionBindings("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(bindings) != 1 || bindings[0].SessionID != sessionIDFlag {
-		t.Fatalf("bindings = %#v", bindings)
 	}
 }
 
@@ -307,5 +201,68 @@ func TestSessionCurrentSurfacesStaleBindingState(t *testing.T) {
 	}
 	if result.Bound || result.State != sessionBindingStateTodoNotInProgress {
 		t.Fatalf("current = %#v", result)
+	}
+}
+
+func TestTodoMatchAdapterPreservesCandidateAndDedupJSON(t *testing.T) {
+	withTempAtmDir(t)
+	oldSession, oldJSON := sessionIDFlag, jsonOutput
+	oldProject, oldLimit := todoMatchProjectFlag, todoMatchLimitFlag
+	oldPrompt, oldDedup, oldMin := todoMatchPromptFlag, todoMatchDedupFlag, todoMatchMinQueryScoreFlag
+	t.Cleanup(func() {
+		sessionIDFlag, jsonOutput = oldSession, oldJSON
+		todoMatchProjectFlag, todoMatchLimitFlag = oldProject, oldLimit
+		todoMatchPromptFlag, todoMatchDedupFlag, todoMatchMinQueryScoreFlag = oldPrompt, oldDedup, oldMin
+	})
+	sessionIDFlag = "match-json-session"
+	jsonOutput = true
+	todoMatchProjectFlag = "atm"
+	todoMatchLimitFlag = 3
+	todoMatchPromptFlag = false
+	todoMatchDedupFlag = false
+	todoMatchMinQueryScoreFlag = workapp.DefaultDedupMinQueryScore
+	if err := seedTodos(store.Todo{
+		ID: "t1", Title: "Typed match candidate", Priority: "P1",
+		Status: store.TodoStatusOpen, Project: "atm", Created: store.Today(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runTodoMatch(todoMatchCmd, []string{"typed", "match"}); err != nil {
+			t.Fatalf("match: %v", err)
+		}
+	})
+	var candidates struct {
+		Project    string                   `json:"project"`
+		Bound      bool                     `json:"bound"`
+		Candidates []workapp.MatchCandidate `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(out), &candidates); err != nil {
+		t.Fatalf("decode candidates: %v\n%s", err, out)
+	}
+	if candidates.Project != "atm" || candidates.Bound || len(candidates.Candidates) != 1 ||
+		candidates.Candidates[0].ID != "t1" {
+		t.Fatalf("candidate payload = %+v", candidates)
+	}
+
+	todoMatchDedupFlag = true
+	dedupOut := captureStdout(t, func() {
+		if err := runTodoMatch(todoMatchCmd, []string{"typed", "match", "candidate"}); err != nil {
+			t.Fatalf("dedup: %v", err)
+		}
+	})
+	var dedup struct {
+		Query         string                   `json:"query"`
+		MinQueryScore int                      `json:"min_query_score"`
+		Duplicate     bool                     `json:"duplicate"`
+		Candidates    []workapp.MatchCandidate `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(dedupOut), &dedup); err != nil {
+		t.Fatalf("decode dedup: %v\n%s", err, dedupOut)
+	}
+	if !dedup.Duplicate || dedup.Query != "typed match candidate" ||
+		dedup.MinQueryScore != workapp.DefaultDedupMinQueryScore || len(dedup.Candidates) != 1 {
+		t.Fatalf("dedup payload = %+v", dedup)
 	}
 }

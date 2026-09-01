@@ -26,6 +26,7 @@ func setCommandFlagForTest(t *testing.T, cmd *cobra.Command, name, value string)
 
 func TestNonWorkingTodoTransitionsUnbindSessions(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	oldJSON := jsonOutput
 	oldEditStatus, oldBulkStatus, oldBulkReason := todoEditStatusFlag, todoBulkStatusFlag, todoBulkReasonFlag
 	t.Cleanup(func() {
@@ -45,7 +46,10 @@ func TestNonWorkingTodoTransitionsUnbindSessions(t *testing.T) {
 		if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "edit-session", TodoID: "t1"}); err != nil {
 			t.Fatal(err)
 		}
-		setCommandFlagForTest(t, todoEditCmd, "status", store.TodoStatusReview)
+		// `edit --status` now only returns work to open; review and done are
+		// reached through submit and done. Returning to open is still a
+		// transition out of in_progress, which is what has to release the session.
+		setCommandFlagForTest(t, todoEditCmd, "status", store.TodoStatusOpen)
 		if err := runTodoEdit(todoEditCmd, []string{"t1"}); err != nil {
 			t.Fatalf("edit: %v", err)
 		}
@@ -63,7 +67,7 @@ func TestNonWorkingTodoTransitionsUnbindSessions(t *testing.T) {
 		if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "bulk-session", TodoID: "t2"}); err != nil {
 			t.Fatal(err)
 		}
-		todoBulkReasonFlag = ""
+		todoBulkReasonFlag = "verified bulk transition output"
 		if err := runTodoBulk(todoBulkCmd, []string{"done", "t2"}); err != nil {
 			t.Fatalf("bulk done: %v", err)
 		}

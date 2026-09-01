@@ -38,6 +38,15 @@ Indexed agent sessions can outlive their upstream transcript files. Use
 has been synchronized. Connector messages are retained for 90 days by default;
 set `collection_message_retention_days` to a shorter period when appropriate.
 
+When the outbound action gate is installed, `approvals` holds the target and the
+body of each message an agent tried to send, whether or not you approved it. That
+is the point of the table — you cannot decide about a message you cannot read, and
+you cannot audit a send you have no record of — but it means outgoing message text
+now lives in the database, and rides into `atm backup` archives with everything
+else that is ATM's own record. Preview values are scanned for credentials first,
+so a webhook URL is stored with its access token masked. `atm diagnose` bundles
+never include message bodies.
+
 Back up, share, and delete the ATM data directory with the same care as the
 underlying transcripts and messaging data.
 
@@ -49,9 +58,10 @@ limited to features the user invokes or enables, including:
 - `atm config update-pricing`, which downloads public model pricing from
   OpenRouter;
 - opt-in live Grok quota lookup, which uses the locally stored Grok credential;
-- `atm todo refine`, which sends one task's fields and a Markdown-card excerpt to
-  the configured DeepSeek endpoint — automatically after a desktop capture unless
-  `todo_refine_on_add` is off — and `atm config test-text-model`, which reaches
+- `atm todo refine`, which sends one task's fields, a Markdown-card excerpt and
+  any request you typed for that pass to the configured DeepSeek endpoint — only
+  when asked for, unless you opt into `todo_refine_on_add` to also run it after a
+  desktop capture — and `atm config test-text-model`, which reaches
   the same endpoint with a fixed prompt and no task content. Neither sends
   anything before a credential is set;
 - explicitly configured message connectors and model commands;

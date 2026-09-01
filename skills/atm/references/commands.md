@@ -7,10 +7,12 @@
 ```bash
 atm now --json
 atm session status --json
-atm session list --days 7 --json
+atm session list --days 7 --json             # latest activity first; default page is 200
+atm session list --days 7 --json --envelope  # schema + total/returned/offset/limit
 atm session list --days 7 --project <repo> --json
 atm session list --since <RFC3339-or-date> --review pending --json
 atm session search <keyword> --json
+atm session search --query <keyword> --json   # flag alias for generated callers
 atm session search <keyword> --limit 20 --project <repo> --role user --days 7 --json
 atm session search <keyword> --snippet 200 --json
 atm session search <keyword> --json --sync
@@ -19,15 +21,25 @@ atm session show <session-id> --last 5 --json
 atm session show <session-id> --turns 1-10 --max-chars 4000 --json
 atm session show <session-id> --thinking --json
 atm session timeline <session-id> --json
+atm session tools --failed --days 7 --json       # ATM CLI failures plus the filtered success denominator
+atm session tools <session-id> --json             # one Agent session's content-free CLI invocations
 atm session export --days 7 --format json
+atm session export --since 2026-08-01 --until 2026-09-01 --project <repo> --role user --query <text> --limit 500 --offset 0 --format jsonl
+atm session export --days 7 --format json --envelope
 atm session review <session-id> --outcome none|memory|knowledge|mixed --note "<result>" --json
 ```
 
-`--agent` 可过滤 `claude`、`codex`、`pi`、`copilot`、`qoder`、`qodercli`、`qoderwork`。
+`--agent` 可过滤 `claude`、`codex`、`pi`、`copilot`、`qoder`、`qodercli`、`qoderwork`、`grokbuild`、`antigravity`。
 `session status` 的 `activity_state`、`binding_state` 和 `todo.status` 分属实时观测、显式关系和
 工作生命周期。顶层 `bindings` 包含没有实时活动的有效或异常 binding；不要用项目名或
 `in_progress` Todo 猜测 Session 绑定。`session current --json` 的 `state` 可能是
 `unbound/bound/todo_missing/todo_not_in_progress`。
+
+`session tools` 只读取 ATM 自己的结构化调用遥测：session/agent/version、命令路径、退出码、
+稳定错误类别、是否可重试和耗时。它不会保存或返回 argv、flag 值、工作目录、错误原文、查询词、
+Todo 标题或凭据；`total/succeeded/failed` 使用同一时间/session/agent 基础过滤，`matched`
+再反映 `--failed`，不能用当前页的 `returned` 代替失败率分母。
+遥测只保留最近 90 天；写入、清理或数据库不可用时均 fail-open，不改变原命令结果。
 
 会话查询默认不带 `--sync`，读取 Menubar/后台同步维护的本地索引；只有明确需要最新数据、索引缺失、预期会话未命中或后台同步不可用时，才把 `--sync` 作为显式刷新覆盖。
 
@@ -51,17 +63,17 @@ atm session current                             # current session binding
 atm todo list --json
 atm todo list --status all --json
 atm todo list --project <repo> --json
-atm todo list --status waiting --json
+atm todo list --status in_progress --json
 atm todo list --creator collect --json        # who filed it: me, collect, or an agent name
 atm todo show <id> --json
 # `bindings` 历史中的 unbound_at/reason 是 Todo 状态迁移的结构化审计证据
 atm todo context [id] --json                  # live, read-only Todo/session/Git context; does not run tests
 atm todo context <id> --cwd <worktree>        # explicitly inspect another worktree
-atm todo review-context [id] --json           # deprecated compatibility alias for todo context
-atm todo prompt <id>              # the pointer line a human pastes into a fresh agent session
-atm todo handoff <id>             # open Codex Desktop in the Todo's directory with that pointer prefilled; ATM starts nothing
+atm todo handoff <id>             # open Codex Desktop in the Todo's directory with the pointer prefilled; ATM starts nothing
+atm todo handoff <id> --copy      # only copy/print that pointer line for a human to paste; opens nothing
 atm todo handoff <id> --print     # print the codex:// deep link instead of opening it
 atm todo doc <id>
+atm todo plan set [id] --file -    # replace the full JSON snapshot; base_revision provides optimistic conflict detection
 atm todo lint <id>                # audit progress verbosity, references, and markdown consistency
 ```
 
@@ -69,48 +81,58 @@ atm todo lint <id>                # audit progress verbosity, references, and ma
 
 ```bash
 atm todo submit [id] --reason "<summary/evidence>" # in_progress -> review; never marks done
-atm todo add "<title>" --project <repo> --priority P1 --status open --desc "<description>"
+atm todo add "<title>" --project <repo> --priority P1 --desc "<description>"
 atm todo add "<title>" --desc-file <path>  # use - to read a multiline description from stdin
+atm todo add "<title>" --image <path>       # repeatable local image: PNG/JPEG/WebP/GIF/HEIC, 10 MB each, 10 total
 atm todo add --batch                       # read YAML/JSON items from stdin; see --help for an example
+# batch 只认 project/source/creator/priority/items 和 item 的 title/desc/priority/project/source/creator；
+# 未知键（含旧的 status/wake）整批报错，不会静默忽略
 atm todo add "<title>" --creator codex     # override the detected creator; default: agent in env, else me
 atm todo add "<title>" --refine            # create, then polish / split with ATM's built-in DeepSeek text model
 atm config test-text-model                 # validate DeepSeek credentials/endpoint/model without touching a Todo
+atm config set text_model_source deepseek  # provenance rendered as "from deepseek" on refine analysis
+atm config set todo_refine_prompt "..."    # append custom guidance; use "" to restore the default
 atm config credential status               # only reports whether ~/.atm/credentials.json has a Key
 atm config credential set                  # read a Key from stdin; never place it in argv
 atm config credential delete               # remove the locally saved Key
 atm todo refine [id]                       # polish title+需求; complex work gets 分析 + child todos
 atm todo refine [id] --dry-run             # print the proposal without writing
 atm todo refine [id] --no-split            # polish only; never create children
-atm todo start <id>                           # done/dropped 会重开并刷新生命周期时间
-atm session bind <id>                           # bind this agent session; also starts todo
+atm todo start <id>                           # open -> in_progress；有未满足依赖时拒绝
+atm todo start <id> --reopen-reason "<why resumed>" # review/done 重开必须给审计原因
+atm session bind <id>                         # bind this agent session; also starts open todo
+atm session bind <id> --reopen-reason "<why resumed>" # 重新绑定 review Todo 必填
 atm session unbind --reason scope-changed
 atm todo log <id> "结果：...；证据：...；下一步：..."  # one paragraph, max 400 Unicode chars
 atm todo log "结果：...；证据：...；下一步：..."       # bound session: ID is optional
 atm todo log <id> "<details>" --section 分析              # route investigation/design detail out of progress
-atm todo done <id> --reason "<result>"
-atm todo wait <id> --wake "<condition>"
-atm todo wait <id> --review-at YYYY-MM-DD
-atm todo maintain <id> --limit 3
-atm todo edit <id> --priority P1 --status <state>
-atm todo move <id> --project <repo>
-atm todo drop <id>
-atm todo trash <id>                         # recoverable removal; no confirmation
-atm todo list --status trashed              # inspect the trash
-atm todo restore <id>                       # restore the original lifecycle state
-atm todo depend add <id> <dependency-id>   # <id> waits for <dependency-id>
+printf '%s' '{"base_revision":0,"explanation":"进入验证","items":[{"step":"实现","status":"completed"},{"step":"回归测试","status":"in_progress"}]}' | atm todo plan set [id] --file -
+atm todo done <id> --reason "<acceptance evidence>" # human only；首次完成必须具体，菜单栏点击文案会被拒绝
+atm todo edit <id> --wake "<condition>" # waiting 仅是 in_progress 的显示样式
+atm todo edit <id> --review-at YYYY-MM-DD
+atm todo edit <id> --maintenance-limit 3    # 范围标签；0 清除
+atm todo edit <id> --priority P1 --status open
+atm todo edit <id> --project <repo>
+atm todo archive <id>...                    # archive any phase; reversible, no confirmation
+atm todo list --status archived --json      # inspect the archive
+atm todo restore <id>...                    # restore the original lifecycle state
+# compatibility aliases: drop/trash -> archive; unarchive -> restore
+atm todo depend add <id> <dependency-id>   # open stays backlog; started work gets waiting style
 atm todo depend remove <id> <dependency-id>
 atm todo depend list <id> --json
-atm todo wake <id> --reason "<observable event>"
+atm todo wake <id> --reason "<observable event>" # compatibility: clear waiting metadata
 atm todo reconcile --json
-atm todo bulk done <id>... --reason "<result>"
+atm todo bulk done <id>... --reason "<acceptance evidence>" # human only；同样拒绝空泛完成原因
 atm todo bulk move <id>... --project <repo>
 ```
 
-会话绑定后，`log/show/doc/lint/done/wait/drop` 都可省略 `<id>`；也可写 `current`。`done`、`drop`、`wait` 会自动解绑并保留绑定历史。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
+会话绑定后，`log/show/doc/lint/submit` 都可省略 `<id>`；人的 `done` 也支持省略或写 `current`。隐藏的兼容别名 `wait/drop` 同样支持省略。`submit`、`done`、`archive` 和设置等待元数据会自动解绑并保留绑定历史。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
 
 `match` 的两种用途不可互换。`--prompt` 服务启动注入，总是返回 `--limit` 条候选（同项目本身加 100 分），所以它答不了「该不该新建」。查重用 `--dedup`：跨项目搜索、要求 `query_score` 达到下限（默认 30，可用 `--min-query-score` 调整）、无匹配时明确输出「可以新建」，且忽略当前会话绑定。`--json` 同时给出 `duplicate` 布尔和每条候选的 `query_score`（query 自身得分，不含项目/状态/优先级加成）。
 
-非 JSON 模式下，单条 `atm todo add` 会把新 ID 单独写到 stdout，并把可读的 `Created <id>: <title>` 提示写到 stderr，脚本可直接使用 `id=$(atm todo add ...)`。`--refine` 是显式的：命令行添加默认不调用模型，避免拖慢 Agent 建卡和 `id=$(...)`。桌面添加在 `todo_refine_on_add`（默认 true）时会自动 `todo refine`。`todo refine` 是一次 ATM 内置 DeepSeek 文本服务的 schema 调用（App 在“设置 → 模型”把 Key 保存到权限为 `0600` 的 `~/.atm/credentials.json`；`DEEPSEEK_API_KEY` 可临时覆盖），不是 Agent 循环，也不回退到 `collection_model_command`；`in_progress` 只润色不拆分。普通删除使用无确认、可恢复的 `atm todo trash`，再用 `atm todo restore` 恢复；`atm todo delete` 是永久删除并要求确认，非交互调用必须显式传 `-y/--yes`。默认不要永久删除。`atm todo prompt` 只输出文本，可以随时调用。
+非 JSON 模式下，单条 `atm todo add` 会把新 ID 单独写到 stdout，并把可读的 `Created <id>: <title>` 提示写到 stderr，脚本可直接使用 `id=$(atm todo add ...)`。`--refine` 是显式的：命令行添加默认不调用模型，避免拖慢 Agent 建卡和 `id=$(...)`。桌面上优化是 Todo 详情页动作栏的按钮，弹窗里可以写一句本次要求（对应 `todo refine --hint`）；只有打开 `todo_refine_on_add`（默认 false）时桌面添加才会自动 `todo refine`。不带 `--hint` 重跑一张已经结构化的卡通常回 `already clear`，`--json` 里 `changed` 为 false。`todo refine` 是一次 ATM 内置 DeepSeek 文本服务的 schema 调用（App 在“设置 → 模型”把 Key 保存到权限为 `0600` 的 `~/.atm/credentials.json`；`DEEPSEEK_API_KEY` 可临时覆盖），不是 Agent 循环；`in_progress` 只润色不拆分。普通移出工作集使用无确认、可恢复的 `atm todo archive`，再用 `atm todo restore` 恢复；`trash/drop` 与 `unarchive` 仅保留为隐藏的兼容别名，不再出现在 `--help` 里。`atm todo delete` 是永久删除并要求确认，非交互调用必须显式传 `-y/--yes`。默认不要永久删除。`atm todo handoff --copy` 只输出并复制那行指针，不打开任何窗口，可以随时调用。创建固定为 `open`：`add` 不接受 `--status`/`--wake`，开始和提交验收走 `todo start` / `todo submit`。
+
+`--image` 会先校验文件扩展名、实际内容、10 MB 单文件上限和 10 张总数，再复制到 `~/.atm/todos/assets/<todo-id>/`；数据库只保存关联元数据和受管文件名。`todo show/list --json` 的 Todo 对象通过 `images` 返回原文件名、绝对读取路径、媒体类型和字节数；桌面 App 从自己的 typed snapshot 读取同一字段。归档保留图片，永久删除 Todo 才删除资源目录。桌面新建任务同时支持文件选择、拖拽和粘贴截图，详情页点击缩略图打开 Quick Look。
 
 `creator` 记录「谁建的」，与自由文本 `source`（为什么/从哪来）正交，取值只有 `me`、`collect` 和 agent 名。创建时自动判定：环境里有 agent session 就记该 agent，否则记 `me`；连接器收集记 `collect`。环境探测不到自己的 agent（例如 CLI 不导出 session ID）时用 `--creator <agent>` 显式声明，不要让它落成 `me`。展示时 `me` 会渲染成 `atm config set owner_name <昵称>` 配置的昵称（未配置为「我」），存储值始终是 `me`。creator 字段是 v33 新增的，之前创建的 todo 保持为空，不做回填。
 
@@ -148,7 +170,7 @@ atm knowledge collection create --help
 atm knowledge collection edit --help
 atm knowledge collection rename --help
 atm knowledge collection delete --help
-atm knowledge collection list --json
+atm knowledge catalog --verbose --json        # collections with descriptions and all routing topics
 atm knowledge bulk-edit --help
 ```
 
@@ -189,11 +211,28 @@ atm collect source add --connector <id> --kind <kind> --id <external-id> --instr
 atm collect source list --json
 atm collect run [--source <source-id>] --json
 atm collect run --due --json                       # 后台按来源独立频率运行
+# 登录过期的连接器：--due 会静默它 30 分钟并在 blocked 里说明，不带 --due 的手工 run 永远照跑
 
-# 把当天沉淀（action=insight）汇总成一篇知识文档，每来源每天一篇，重跑原地重写
+# insight 先留在处理记录的“结论”；确认后再显式保存，重复执行不会产生副本
+atm collect item save <item-id> [--collection <collection-id>] --json
+
+# 新 Todo、补充和未保存结论默认未读；查看或处理后确认，也可重新标回未读
+atm collect item read <item-id> [<item-id> ...] --json
+atm collect item read --all --json
+atm collect item unread <item-id> [<item-id> ...] --json
+atm collect item archive <item-id> [<item-id> ...] --json   # 了结，保留记录、Todo 和已处理消息
+atm collect item unarchive <item-id> [<item-id> ...] --json # 重新打开
+
+# 纠正 ATM 自己的收集判定；这些是条件 Agent 能力，不只属于 App
+atm collect item correct <item-id> [--title T] [--project P] [--priority P1] --json
+atm collect item promote <item-id> [--title T] [--project P] [--priority P1] --json
+atm collect item reprocess <item-id> --json
+atm collect item revert <item-id> --yes --json              # 撤销错误 Todo 写入，保留审计
+
+# 可选的人工批量入口：把当天 insight 汇总成一篇知识文档，每来源每天一篇，重跑原地重写
 atm collect digest [--source <source-id>] [--date 2026-08-03] --json
 atm collect digest --dry-run --json                # 只看摘要正文，不写知识库
-atm collect digest --due --json                    # 后台：距上次沉淀不足 60 分钟就跳过
+atm collect digest --due --json                    # 手动批量时按 60 分钟间隔跳过
 
 # 看来源原文：同时同步进本地库，不产生 Todo
 atm collect history "<source-id>" --limit 50 --json
@@ -212,7 +251,7 @@ atm collect item delete <item-id> <item-id> ... -y --json
 来源 ID 由连接器定义。连接器支持搜索时，先 `source search`，把候选连同 `detail`
 念给人听，让人确认是哪一个，再用 `--connector/--kind/--id` 精确添加；不要自行挑选同名候选。
 
-每段聊天的判定有四个出口：`create`/`append` 落到 Todo，`insight` 落到知识库（当天汇总成一篇文档），
+每段聊天的判定有四个出口：`create`/`append` 落到 Todo，`insight` 先落到收集记录自己的结论，
 `ignore` 是真噪音。`tasks` 来源默认每 5 分钟、四个出口都可用；`observe` 来源默认每 60 分钟，
 **在配置层被限制为只能 `insight`/`ignore`**——模型判成 create/append 也会被降级成 insight，
 所以闲聊群不可能替别人建任务。人显式 `collect item promote` 不受这个限制。
@@ -223,13 +262,52 @@ atm collect item delete <item-id> <item-id> ... -y --json
 这时 `related_todo_id` 只作上下文关联。`append` 只能落在**这个会话自己建过的** Todo 上：
 手写的 Todo 或别的群的 Todo 不会被聊天改写，目标已关闭或不属于本会话时退回新建。
 
-沉淀内容只在 `collect digest` 跑过之后才在知识库里可读；App 常驻时会跟着每次收集调用 `--due`。
+判定按话题一批一条决策，但**一轮收集的 `insight` 会在收尾时合成一条记录**：标题正文由内置模型
+合成（模型不可用时按各条原文拼接，判定原因里会写明），分条删除、消息 ID 并进合成条。所以库里
+一次 run 只有一条结论记录，不要按「一批次一条」去解释数据；`create`/`append`（一件活儿一条）和
+`ignore` 都不参与合并。运行计数里 `analyzed` 是话题数，`insight` 是记录条数。按需的
+`collect analyze` 仍逐话题出提议，不合并。
+
+结论只有在用户运行 `collect item save`（或 App 点击保存）后才进入知识库；`collect digest` 保留为人工
+批量汇总入口（按来源/日期把结论汇成知识文档，跟上面的单轮合并是两层），App 常驻收集不会自动调用它。
 需要完整聊天时仍用 `collect history`；已添加的来源可以直接用它的名字或 source-id，不必再搜一次。
 
 取用顺序：**先 `collect search` 查本地**（不打网络、可离线、能命中历史里没成 Todo 的闲聊），
 没有或要最新再 `collect history`（调用连接器并把结果同步进本地库，默认保留 90 天）。history 的 JSON
 带 `synced`（本次新增几条）和 `stale`——`stale: true` 表示连接器不可用、这批是本地旧记录，
 向人汇报时要说明这一点，不要当成最新状态。
+
+## 外发动作闸门
+
+```bash
+atm guard list --json                 # 待授权的外发动作
+atm guard show <id> --json            # 一条请求的全文与执行结果
+atm guard status --json               # 哪些工具真的被拦住了
+```
+
+**你不要直接调用 `atm guard exec`**——它是装在工具自己路径上的 shim 调的，不是给 Agent 用的入口。
+
+如果你调某个本地 CLI 时拿到了 exit 75 / 77 / 70 和一段中文说明，那说明这个动作被闸门拦下了。按那段
+说明做：**不要重试，也不要换用其他命令或工具绕过**。75 表示请求还在等用户批准，用户批准后 **ATM 会
+自己执行那条命令**，你再跑一次会把同一条消息发两遍。把要发的内容原样交给用户，然后继续本轮剩下的
+工作。
+
+`approve` / `deny` 是人的动作。**批准会真的把命令执行掉**（发出真实消息），所以除非用户明确要求你
+代他批准，不要自己调；`running` 的请求任何情况下都不要重跑——那意味着「不知道发出去没有」。
+
+注册和管理规则（用户要你帮忙配的时候）：
+
+```bash
+atm guard status --json               # 哪些 CLI 真的拦住了；shadowed/clobbered 分开报
+atm guard rule list --json            # 有哪些规则、哪些关着、哪些是内置
+echo '{"id":"doc-write","path":["doc","write"]}' | atm guard rule set <tool>
+echo '{"id":"chat-send","enabled":false}' | atm guard rule set dws   # 关掉内置规则
+```
+
+内置规则**只能关不能删**，关的写法就是上面这种只给 id 加 `enabled: false`——**不要重述它的
+`path`/`argv_pattern`**，重述的副本会跟真的那条漂移，然后某天悄悄不拦了。装闸门用
+`atm guard install <tool> [--bin <绝对路径>]`，装完**一定要跑一次 `atm guard status`**：同名 CLI
+在机器上常有两份，装错那份等于没装却显示成功。
 
 ## Artifact、统计与健康检查
 
@@ -241,9 +319,12 @@ atm stats --session <session-id> --by request --json
 # 速度：上表按模型给 tok/s（模型自身生成，不含工具执行），下表按 agent 给轮次等待
 # grokbuild 用它自己上报的 apiDurationMs；其余 agent 从日志时间戳推导，测不到的会单独列条数
 atm stats --days 7 --by speed --json
-atm quota --json                          # Codex/Grok 配额
+atm quota --json                          # Codex/Grok/Antigravity 配额
 atm quota --agent claude --json
 atm quota --agent grokbuild --json
+# Antigravity 只报「剩余比例 + 重置时间」，上游不发布绝对配额；读数取自本机
+# language_server 的 loopback RPC，只覆盖 Gemini 模型组
+atm quota --agent antigravity --json
 atm doctor --json
 atm sync status --json
 atm report today

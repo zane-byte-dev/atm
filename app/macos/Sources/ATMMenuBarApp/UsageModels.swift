@@ -236,6 +236,58 @@ enum ATMPagination {
     }
 }
 
+enum ATMRequirementGranularity: String, CaseIterable, Identifiable {
+    case day
+    case week
+    case month
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .day: return "日"
+        case .week: return "周"
+        case .month: return "月"
+        }
+    }
+
+    var currentTitle: String {
+        switch self {
+        case .day: return "今日"
+        case .week: return "本周"
+        case .month: return "本月"
+        }
+    }
+
+    var trendTitle: String {
+        switch self {
+        case .day: return "近 14 日完成趋势"
+        case .week: return "近 12 周完成趋势"
+        case .month: return "近 12 月完成趋势"
+        }
+    }
+}
+
+struct ATMRequirementSummary: Equatable {
+    let today: Int
+    let thisWeek: Int
+    let thisMonth: Int
+}
+
+struct ATMRequirementBucket: Identifiable, Equatable {
+    let start: Date
+    let end: Date
+    let completed: Int
+
+    var id: Date { start }
+}
+
+struct ATMRequirementProjectRow: Identifiable, Equatable {
+    let project: String
+    let completed: Int
+
+    var id: String { project }
+}
+
 struct ATMDayStats: Decodable, Identifiable, Equatable {
     let date: String
     let sessions: Int

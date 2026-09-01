@@ -189,6 +189,10 @@ extension ATMAgentDisplay {
             return Color(red: 28 / 255, green: 112 / 255, blue: 226 / 255)
         case "grokbuild":
             return Color(red: 49 / 255, green: 52 / 255, blue: 59 / 255)
+        case "antigravity":
+            // Antigravity's own accent blue, so its tile is not the system accent
+            // colour every unmapped client falls back to.
+            return Color(red: 26 / 255, green: 115 / 255, blue: 232 / 255)
         default:
             return Color(nsColor: .controlAccentColor)
         }

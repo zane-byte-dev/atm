@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -36,6 +37,73 @@ func TestStatusSessionRetentionMatchesPrimaryAgentHistoryWindow(t *testing.T) {
 	}
 }
 
+func TestStatusSessionViewPropagatesSubagentMetadata(t *testing.T) {
+	view := newStatusSessionView(parser.Session{
+		Tool:            "Codex",
+		SessionID:       "child-short",
+		ResumeID:        "child-full",
+		RootSessionID:   "root-full",
+		ParentSessionID: "parent-full",
+		AgentPath:       "/root/recent_todos/status_model",
+		AgentNickname:   "Goodall",
+		SubagentDepth:   2,
+		Project:         "atm",
+		AgeSeconds:      3,
+	}, "")
+	if view.ParentSessionID != "parent-full" || view.AgentPath != "/root/recent_todos/status_model" ||
+		view.AgentNickname != "Goodall" || view.SubagentDepth != 2 {
+		t.Fatalf("subagent metadata = %#v", view)
+	}
+	data, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]any{
+		"root_session_id":   "root-full",
+		"parent_session_id": "parent-full",
+		"agent_path":        "/root/recent_todos/status_model",
+		"agent_nickname":    "Goodall",
+		"subagent_depth":    float64(2),
+	} {
+		if got := payload[key]; got != want {
+			t.Errorf("%s = %#v, want %#v", key, got, want)
+		}
+	}
+}
+
+func TestDashboardLiveStatusPropagatesSubagentLineage(t *testing.T) {
+	view := statusView{
+		GeneratedAt: "2026-08-30T01:02:03Z",
+		Time:        "09:02:03",
+		Sessions: []statusSessionView{{
+			Tool:            "Codex",
+			SessionID:       "child-short",
+			ResumeID:        "child-full",
+			RootSessionID:   "root-full",
+			ParentSessionID: "parent-full",
+			AgentPath:       "/root/session_truth_fix",
+			AgentNickname:   "Goodall",
+			SubagentDepth:   1,
+			Project:         "atm",
+		}},
+	}
+
+	got := dashboardLiveStatusFromView(view)
+	if got.GeneratedAt != view.GeneratedAt || got.Time != view.Time || len(got.Sessions) != 1 {
+		t.Fatalf("live status envelope = %#v", got)
+	}
+	session := got.Sessions[0]
+	if session.ResumeID != "child-full" || session.RootSessionID != "root-full" ||
+		session.ParentSessionID != "parent-full" || session.AgentPath != "/root/session_truth_fix" ||
+		session.AgentNickname != "Goodall" || session.SubagentDepth != 1 {
+		t.Fatalf("live status lineage = %#v", session)
+	}
+}
+
 func TestMatchingAIProcessSkipsDesktopAndUsesClosestTerminal(t *testing.T) {
 	startedAt := time.Date(2026, 8, 2, 15, 8, 19, 0, time.UTC)
 	processes := []aiProcess{
@@ -62,12 +130,12 @@ func TestMatchingAIProcessSkipsDesktopAndUsesClosestTerminal(t *testing.T) {
 
 func TestIsGrokProcessCommand(t *testing.T) {
 	tests := map[string]bool{
-		"grok": true,
+		"grok":                         true,
 		"/Users/tester/.grok/bin/grok": true,
 		"/Users/tester/.grok/downloads/grok-0.2.118-macos-aarch64": true,
-		"rg -i grok": false,
+		"rg -i grok":        false,
 		"echo grok is cool": false,
-		"": false,
+		"":                  false,
 	}
 	for command, want := range tests {
 		if got := isGrokProcessCommand(command); got != want {

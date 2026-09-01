@@ -6,7 +6,7 @@ func TestTodoDependenciesWakeWaitingTodoWhenAllAreDone(t *testing.T) {
 	tf := &TodoFile{Items: []Todo{
 		{ID: "t1", Title: "First prerequisite", Status: "done"},
 		{ID: "t2", Title: "Second prerequisite", Status: "in_progress"},
-		{ID: "t3", Title: "Dependent", Status: TodoStatusWaiting},
+		{ID: "t3", Title: "Dependent", Status: TodoStatusInProgress, WakeCondition: "waiting for todos: t1, t2"},
 	}}
 	if err := AddTodoDependency(tf, "t3", "t1"); err != nil {
 		t.Fatalf("add first dependency: %v", err)
@@ -23,7 +23,7 @@ func TestTodoDependenciesWakeWaitingTodoWhenAllAreDone(t *testing.T) {
 		t.Fatalf("wake events = %#v", events)
 	}
 	dependent := FindTodo(tf, "t3")
-	if dependent.Status != TodoStatusOpen || dependent.WakeCondition != "" {
+	if dependent.Status != TodoStatusInProgress || dependent.WakeCondition != "" {
 		t.Fatalf("dependent after wake = %#v", dependent)
 	}
 }

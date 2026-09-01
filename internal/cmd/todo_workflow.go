@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/output"
 	"github.com/zane-byte-dev/atm/internal/store"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
@@ -16,294 +16,63 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func runTodoFocus(cmd *cobra.Command, args []string) error {
-	tf, t, err := startTodo(args[0])
-	if err != nil {
-		return err
-	}
-	return finishTodoMutation(tf, t, fmt.Sprintf("Started %s: %s", t.ID, t.Title))
-}
-
-func runTodoWait(cmd *cobra.Command, args []string) error {
-	id, err := optionalTodoID(args)
-	if err != nil {
-		return err
-	}
-	tf, t, err := mutateTodo(id, func(t *store.Todo, _ *store.TodoFile, transaction *workapp.Transaction) error {
-		if !store.TodoIsActive(*t) {
-			return fmt.Errorf("cannot wait todo %s with status %s", t.ID, t.Status)
-		}
-		if todoWaitWakeFlag != "" {
-			t.WakeCondition = todoWaitWakeFlag
-		}
-		if todoWaitReviewAtFlag != "" {
-			if err := validateReviewAt(todoWaitReviewAtFlag); err != nil {
-				return err
-			}
-			t.ReviewAt = todoWaitReviewAtFlag
-		}
-		if t.WakeCondition == "" && t.ReviewAt == "" {
-			return fmt.Errorf("wait requires --wake or --review-at")
-		}
-		t.Status = store.TodoStatusWaiting
-		if _, err := transaction.UnbindTodoSessions(t.ID, "waiting"); err != nil {
-			return fmt.Errorf("unbind todo sessions before waiting: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	if err := syncExistingTodoDocs(tf, t.ID); err != nil {
-		return err
-	}
-
-	if jsonOutput {
-		output.JSON(t)
-		return nil
-	}
-	fmt.Printf("Waiting %s: %s\n", t.ID, t.Title)
-	if t.WakeCondition != "" {
-		fmt.Printf("  Wake:   %s\n", t.WakeCondition)
-	}
-	if t.ReviewAt != "" {
-		fmt.Printf("  Review: %s\n", t.ReviewAt)
-	}
-	return nil
-}
-
-func runTodoMaintain(cmd *cobra.Command, args []string) error {
-	if todoMaintainLimitFlag < 1 {
-		return fmt.Errorf("maintenance limit must be at least 1")
-	}
-	tf, t, err := mutateTodo(args[0], func(t *store.Todo, _ *store.TodoFile, _ *workapp.Transaction) error {
-		if !store.TodoIsActive(*t) {
-			return fmt.Errorf("cannot maintain todo %s with status %s", t.ID, t.Status)
-		}
-		store.AddTodoTag(t, store.TodoTagMaintenance)
-		t.MaintenanceLimit = todoMaintainLimitFlag
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	return finishTodoMutation(tf, t, fmt.Sprintf("Maintaining %s (limit %d): %s", t.ID, t.MaintenanceLimit, t.Title))
-}
-
-func runTodoStart(cmd *cobra.Command, args []string) error {
-	tf, t, err := startTodo(args[0])
-	if err != nil {
-		return err
-	}
-	return finishTodoMutation(tf, t, fmt.Sprintf("Started %s: %s", t.ID, t.Title))
-}
-
-// startTodo backs both `todo start` and its deprecated alias `todo focus`. The
-// two differed only in that focus accepted --lane, which no longer exists, so
-// the alias is now the same command under an older name.
-func startTodo(id string) (*store.TodoFile, *store.Todo, error) {
-	return mutateTodo(id, func(t *store.Todo, _ *store.TodoFile, _ *workapp.Transaction) error {
-		// Starting a closed todo is an explicit reopen. Its previous lifecycle
-		// timestamps must not leak into the new run: otherwise session linking
-		// spans the completed attempt and duration can end before the new start.
-		// The todo document keeps the historical completion log when one exists.
-		if !store.TodoIsActive(*t) {
-			now := time.Now().In(config.Loc).Unix()
-			t.StartTS = &now
-			t.DoneTS = nil
-			t.Closed = nil
-			t.ClosedReason = nil
-		} else if t.StartTS == nil {
-			now := time.Now().In(config.Loc).Unix()
-			t.StartTS = &now
-		}
-		t.Status = store.TodoStatusInProgress
-		t.WakeCondition = ""
-		t.ReviewAt = ""
-		return nil
-	})
-}
-
 func runTodoSubmit(cmd *cobra.Command, args []string) error {
-	id, err := optionalTodoID(args)
-	if err != nil {
-		return err
-	}
-	tf, t, alreadyReview, err := submitTodo(id, todoSubmitReasonFlag)
-	if err != nil {
-		return err
-	}
-	if alreadyReview {
-		if jsonOutput {
-			output.JSON(t)
-		} else {
-			fmt.Printf("Submitted %s already review: %s\n", t.ID, t.Title)
-		}
-		return nil
-	}
-	return finishTodoMutation(tf, t, fmt.Sprintf("Submitted %s for confirmation: %s", t.ID, t.Title))
-}
-
-// submitTodo is shared by the foreground command and the detached run
-// controller. It is the only automatic success transition: review is a human
-// gate, so an Agent exit can never call the done path.
-func submitTodo(id, reason string) (*store.TodoFile, *store.Todo, bool, error) {
-	message := "[submit]"
-	if reason != "" {
-		message += " " + reason
-	}
-	var alreadyReview bool
-	tf, t, err := mutateTodo(id, func(t *store.Todo, tf *store.TodoFile, transaction *workapp.Transaction) error {
-		if t.Status == store.TodoStatusReview {
-			alreadyReview = true
-			return nil
-		}
-		if t.Status != store.TodoStatusInProgress {
-			return fmt.Errorf("cannot submit todo %s with status %s", t.ID, t.Status)
-		}
-		if err := store.ValidateTodoLogMessage(message, "进展"); err != nil {
-			return err
-		}
-		if err := validateTodoLogReferences(tf, message); err != nil {
-			return err
-		}
-		t.Status = store.TodoStatusReview
-		t.WakeCondition = ""
-		t.ReviewAt = ""
-		if _, err := transaction.UnbindTodoSessions(t.ID, "submit:review"); err != nil {
-			return fmt.Errorf("unbind todo sessions before submit: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, nil, false, err
-	}
-	if alreadyReview {
-		return tf, t, true, nil
-	}
-	if _, err := store.AppendTodoLog(t, message, ""); err != nil {
-		return nil, nil, false, err
-	}
-	// Submit is the human gate: agent finished, person needs to accept.
-	notifyTodoEvent(t, notifyEventReview)
-	if err := syncExistingTodoDocs(tf, t.ID); err != nil {
-		return nil, nil, false, err
-	}
-	return tf, t, false, nil
-}
-
-func runTodoDone(cmd *cobra.Command, args []string) error {
-	id, err := optionalTodoID(args)
-	if err != nil {
-		return err
-	}
-	return closeTodo(id, "done")
-}
-
-func runTodoDrop(cmd *cobra.Command, args []string) error {
-	id, err := optionalTodoID(args)
-	if err != nil {
-		return err
-	}
-	return closeTodo(id, "dropped")
-}
-
-func closeTodo(id, status string) error {
-	var alreadyClosed bool
-	var awakened []store.TodoWakeEvent
-	tf, t, err := mutateTodo(id, func(t *store.Todo, tf *store.TodoFile, transaction *workapp.Transaction) error {
-		if t.Status == status {
-			alreadyClosed = true
-			return nil
-		}
-		if todoReasonFlag != "" {
-			message := fmt.Sprintf("[%s] %s", status, todoReasonFlag)
-			if err := store.ValidateTodoLogMessage(message, "进展"); err != nil {
-				return err
-			}
-			if err := validateTodoLogReferences(tf, message); err != nil {
-				return err
-			}
-		}
-		t.Status = status
-		today := store.Today()
-		t.Closed = &today
-		now := time.Now().In(config.Loc).Unix()
-		t.DoneTS = &now
-		if todoReasonFlag != "" {
-			t.ClosedReason = &todoReasonFlag
-		}
-		if status == "done" {
-			awakened = store.ReconcileTodoDependencies(tf)
-		}
-		if _, err := transaction.UnbindTodoSessions(t.ID, status); err != nil {
-			return fmt.Errorf("unbind todo sessions before close: %w", err)
-		}
-		return nil
+	call := todoSubmitCLICall()
+	id, sessionID := todoTransitionTarget(args)
+	result, err := workapp.Default.Submit(cmd.Context(), call, workapp.SubmitInput{
+		TodoID:    id,
+		SessionID: sessionID,
+		Reason:    todoSubmitReasonFlag,
 	})
 	if err != nil {
 		return err
 	}
-	if alreadyClosed {
+	// An already-review retry may be the first process alive long enough to
+	// apply an effect committed by an earlier invocation.
+	if err := workapp.Default.DeliverEffects(cmd.Context(), call, result.Effects, localWorkEffectExecutor{}); err != nil {
+		return err
+	}
+	if result.AlreadyReview {
 		if jsonOutput {
-			output.JSON(t)
+			output.JSON(&result.Todo)
 		} else {
-			fmt.Printf("%s %s already %s: %s\n", status, t.ID, status, t.Title)
+			fmt.Printf("Submitted %s already review: %s\n", result.Todo.ID, result.Todo.Title)
 		}
 		return nil
 	}
-	appendTodoWakeLogs(tf, awakened)
-	syncIDs := []string{t.ID}
-	for _, event := range awakened {
-		syncIDs = append(syncIDs, event.TodoID)
-	}
-	if err := syncExistingTodoDocs(tf, syncIDs...); err != nil {
-		return err
-	}
-	if store.TodoDocExists(t.ID) {
-		if todoReasonFlag != "" {
-			if _, err := store.AppendTodoLog(t, fmt.Sprintf("[%s] %s", status, todoReasonFlag), ""); err != nil {
-				return fmt.Errorf("append todo log: %w", err)
-			}
-		}
-	}
-
-	// Notify even under --json: agents close todos with machine output, but the
-	// banner is for the human watching the desk.
-	event := notifyEventDone
-	if status == store.TodoStatusDropped {
-		event = notifyEventDropped
-	}
-	notifyTodoEvent(t, event)
-
-	if t.OnDone != "" && status == "done" {
-		fmt.Fprintf(os.Stderr, "on-done: %s\n", t.OnDone)
-		cmd := exec.Command("sh", "-c", t.OnDone)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Start()
-	}
-
 	if jsonOutput {
-		output.JSON(t)
-		for _, event := range awakened {
-			fmt.Fprintf(os.Stderr, "awakened %s: %s\n", event.TodoID, event.Reason)
-		}
+		output.JSON(&result.Todo)
 		return nil
 	}
-	fmt.Printf("%s %s: %s\n", status, t.ID, t.Title)
-	for _, event := range awakened {
-		fmt.Printf("awakened %s: %s\n", event.TodoID, event.Reason)
-	}
+	fmt.Printf("Submitted %s for confirmation: %s\n", result.Todo.ID, result.Todo.Title)
 	return nil
+}
+
+// todoWorkflowCLICall derives consistent provenance from the process
+// environment. Request flags describe work intent; they cannot self-declare an
+// Agent or controller. See cliApplicationCall for the authentication limit.
+func todoWorkflowCLICall(action string) application.Call {
+	return cliApplicationCall("todo-"+action, "")
+}
+
+func todoSubmitCLICall() application.Call {
+	return todoWorkflowCLICall("submit")
+}
+
+func todoTransitionTarget(args []string) (todoID, sessionID string) {
+	if len(args) > 0 && args[0] != "current" {
+		return args[0], ""
+	}
+	sessionID, _ = resolveSessionID(false)
+	return "", sessionID
 }
 
 // Human-facing lifecycle events. Start/edit/start-work are noise; these are not.
 const (
-	notifyEventCreated = "created"
-	notifyEventReview  = "review"
-	notifyEventDone    = "done"
-	notifyEventDropped = "dropped"
+	notifyEventCreated  = "created"
+	notifyEventReview   = "review"
+	notifyEventDone     = "done"
+	notifyEventArchived = "archived"
 )
 
 // notifyCopy is the pure title/subtitle/body for a human local notification.
@@ -320,8 +89,8 @@ func notifyCopy(t *store.Todo, event string) (title, subtitle, body string) {
 		subtitle = fmt.Sprintf("%s 待验收", t.ID)
 	case notifyEventDone:
 		subtitle = fmt.Sprintf("%s 已完成", t.ID)
-	case notifyEventDropped:
-		subtitle = fmt.Sprintf("%s 已放弃", t.ID)
+	case notifyEventArchived:
+		subtitle = fmt.Sprintf("%s 已归档", t.ID)
 	default:
 		subtitle = fmt.Sprintf("%s %s", t.ID, event)
 	}
@@ -334,23 +103,34 @@ func notifyCopy(t *store.Todo, event string) (title, subtitle, body string) {
 }
 
 func notifyTodoEvent(t *store.Todo, event string) {
+	title, subtitle, msg := notifyCopy(t, event)
+	postLocalBanner(title, subtitle, msg, "todo show "+t.ID)
+}
+
+// postLocalBanner raises one desktop notification, fire and forget.
+//
+// `execute` is the argument string for a click-through back into this same
+// binary, and is only honoured by terminal-notifier — the osascript and
+// notify-send fallbacks have nowhere to put it. Pass "" when there is nothing to
+// open.
+//
+// Every path is .Start() and never waited on: a banner is a courtesy, and a
+// notifier that hangs must not become the caller's problem. In particular the
+// outbound action gate calls this while an agent is blocked on it.
+func postLocalBanner(title, subtitle, msg, execute string) {
 	if skipLocalNotification() {
 		return
 	}
-
-	title, subtitle, msg := notifyCopy(t, event)
-
-	bin, err := os.Executable()
-	if err != nil {
-		bin = "atm"
-	}
 	if path, err := exec.LookPath("terminal-notifier"); err == nil {
-		exec.Command(path,
-			"-title", title,
-			"-subtitle", subtitle,
-			"-message", msg,
-			"-execute", fmt.Sprintf("%s todo show %s", bin, t.ID),
-		).Start()
+		args := []string{"-title", title, "-subtitle", subtitle, "-message", msg}
+		if execute != "" {
+			bin, err := os.Executable()
+			if err != nil {
+				bin = "atm"
+			}
+			args = append(args, "-execute", bin+" "+execute)
+		}
+		exec.Command(path, args...).Start()
 		return
 	}
 	switch runtime.GOOS {

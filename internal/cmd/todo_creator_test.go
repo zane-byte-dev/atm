@@ -10,32 +10,22 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
-// withoutAgentEnvironment makes the creator detection deterministic: whatever
-// agent happens to be running the test suite must not decide what a todo created
-// by these tests records.
-func withoutAgentEnvironment(t *testing.T) {
-	t.Helper()
-	for _, name := range []string{"CODEX_THREAD_ID", "CLAUDE_CODE_SESSION_ID", "PI_SESSION_ID"} {
-		t.Setenv(name, "")
-	}
-}
-
 func withTodoAddFlags(t *testing.T) {
 	t.Helper()
 	oldJSON := jsonOutput
 	oldPriority, oldProject := todoAddPriorityFlag, todoAddProjectFlag
-	oldStatus, oldCreator := todoAddStatusFlag, todoAddCreatorFlag
+	oldCreator := todoAddCreatorFlag
 	oldSource, oldDesc, oldDescFile := todoSourceFlag, todoDescFlag, todoDescFileFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
 		todoAddPriorityFlag, todoAddProjectFlag = oldPriority, oldProject
-		todoAddStatusFlag, todoAddCreatorFlag = oldStatus, oldCreator
+		todoAddCreatorFlag = oldCreator
 		todoSourceFlag, todoDescFlag, todoDescFileFlag = oldSource, oldDesc, oldDescFile
 		todoAddCmd.SetErr(os.Stderr)
 	})
 	jsonOutput = false
 	todoAddPriorityFlag, todoAddProjectFlag = "P1", "atm"
-	todoAddStatusFlag, todoAddCreatorFlag = store.TodoStatusOpen, ""
+	todoAddCreatorFlag = ""
 	todoSourceFlag, todoDescFlag, todoDescFileFlag = "", "", ""
 	todoAddCmd.SetErr(io.Discard)
 }
@@ -60,7 +50,7 @@ func TestRunTodoAddRecordsWhoFiledIt(t *testing.T) {
 		t.Fatalf("seed todos: %v", err)
 	}
 	withTodoAddFlags(t)
-	withoutAgentEnvironment(t)
+	withHumanCLI(t)
 
 	// A plain terminal is the human, and nothing in the environment says
 	// otherwise.
@@ -89,7 +79,7 @@ func TestRunTodoAddRejectsAnUnknownCreator(t *testing.T) {
 		t.Fatalf("seed todos: %v", err)
 	}
 	withTodoAddFlags(t)
-	withoutAgentEnvironment(t)
+	withHumanCLI(t)
 
 	todoAddCreatorFlag = "mystery-agent"
 	err := runTodoAdd(todoAddCmd, []string{"Filed by nobody in particular"})

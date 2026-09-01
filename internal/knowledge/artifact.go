@@ -16,7 +16,6 @@ type ArtifactMetadata struct {
 	Title         string      `json:"title" yaml:"title"`
 	CreatedAt     time.Time   `json:"createdAt" yaml:"createdAt"`
 	Producer      string      `json:"producer" yaml:"producer"`
-	RunID         string      `json:"runId,omitempty" yaml:"runId,omitempty"`
 	Sources       []SourceRef `json:"sources,omitempty" yaml:"sources,omitempty"`
 }
 
@@ -25,7 +24,7 @@ type Artifact struct {
 	Path     string           `json:"path"`
 }
 
-func SaveArtifact(dataDir, title, body, producer, runID string, sources []SourceRef) (*Artifact, error) {
+func SaveArtifact(dataDir, title, body, producer string, sources []SourceRef) (*Artifact, error) {
 	if strings.TrimSpace(title) == "" || strings.TrimSpace(body) == "" {
 		return nil, fmt.Errorf("artifact title and body must not be empty")
 	}
@@ -39,7 +38,6 @@ func SaveArtifact(dataDir, title, body, producer, runID string, sources []Source
 		Title:         strings.TrimSpace(title),
 		CreatedAt:     time.Now().UTC(),
 		Producer:      producer,
-		RunID:         runID,
 		Sources:       sources,
 	}
 	frontmatter, err := yaml.Marshal(metadata)

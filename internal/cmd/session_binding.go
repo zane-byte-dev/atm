@@ -1,41 +1,32 @@
 package cmd
 
 import (
-	"database/sql"
-	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/output"
-	"github.com/zane-byte-dev/atm/internal/store"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
 var (
-	sessionBindAgentFlag   string
-	sessionBindProjectFlag string
-	sessionBindCWDFlag     string
-	sessionBindForceFlag   bool
-	sessionUnbindReason    string
-	todoMatchProjectFlag   string
-	todoMatchLimitFlag     int
-	todoMatchPromptFlag    bool
-	todoMatchDedupFlag     bool
+	sessionBindAgentFlag        string
+	sessionBindProjectFlag      string
+	sessionBindCWDFlag          string
+	sessionBindForceFlag        bool
+	sessionBindReopenReasonFlag string
+	sessionUnbindReason         string
+	todoMatchProjectFlag        string
+	todoMatchLimitFlag          int
+	todoMatchPromptFlag         bool
+	todoMatchDedupFlag          bool
 
 	todoMatchMinQueryScoreFlag int
 )
 
-type compactTodoContext struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Project string `json:"project,omitempty"`
-	Status  string `json:"status"`
-}
+type compactTodoContext = workapp.TodoSummary
 
 var sessionBindCmd = &cobra.Command{
 	Use:   "bind <todo-id>",
@@ -71,50 +62,17 @@ func init() {
 	sessionBindCmd.Flags().StringVar(&sessionBindCWDFlag, "cwd", "", "binding working directory (defaults to cwd)")
 	sessionBindCmd.Flags().BoolVar(&sessionBindForceFlag, "force", false,
 		"bind even when the working directory belongs to a different project than the Todo")
+	sessionBindCmd.Flags().StringVar(&sessionBindReopenReasonFlag, "reopen-reason", "",
+		"why submitted work must resume (required when binding a Todo in review)")
 	sessionUnbindCmd.Flags().StringVar(&sessionUnbindReason, "reason", "manual", "unbind reason")
 	todoMatchCmd.Flags().StringVar(&todoMatchProjectFlag, "project", "", "project to prioritize (defaults from cwd)")
 	todoMatchCmd.Flags().IntVar(&todoMatchLimitFlag, "limit", 3, "maximum compact candidates")
 	todoMatchCmd.Flags().BoolVar(&todoMatchPromptFlag, "prompt", false, "emit a minimal agent startup prompt")
 	todoMatchCmd.Flags().BoolVar(&todoMatchDedupFlag, "dedup", false, "answer whether an existing todo already covers the goal: require real query relevance, search every project, and say so when nothing matches")
-	todoMatchCmd.Flags().IntVar(&todoMatchMinQueryScoreFlag, "min-query-score", store.TodoDedupMinQueryScore, "relevance floor used by --dedup")
+	todoMatchCmd.Flags().IntVar(&todoMatchMinQueryScoreFlag, "min-query-score", workapp.DefaultDedupMinQueryScore, "relevance floor used by --dedup")
 	todoMatchCmd.MarkFlagsMutuallyExclusive("prompt", "dedup")
 	sessionCmd.AddCommand(sessionBindCmd, sessionCurrentCmd, sessionUnbindCmd)
 	todoCmd.AddCommand(todoMatchCmd)
-}
-
-// checkBindingWorkspace refuses to bind a Todo to a session working somewhere
-// else's repository.
-//
-// Nothing upstream can be trusted to get this right. A handoff carries the task
-// text but the human still picks the workspace in the Agent's own UI, and Codex
-// Desktop's deep link silently ignored `cwd` until we found the parameter that
-// works — the observed failure was an `atm` task running a full turn inside
-// `~/work/wanda`, which no later evidence would have explained. The binding is
-// the one place every path converges on, so the check belongs here rather than
-// in whichever entry point happened to start the session.
-//
-// The comparison is by project rather than by path so a `git worktree` still
-// binds: `config.ProjectFromPath` resolves to the git root's origin, which a
-// worktree shares with its parent repository.
-func checkBindingWorkspace(todo *store.Todo, cwd string) error {
-	if sessionBindForceFlag {
-		return nil
-	}
-	expected := config.CanonicalProject(strings.TrimSpace(todo.Project))
-	if expected == "" || strings.TrimSpace(cwd) == "" {
-		// A Todo with no project makes no claim about where it belongs, and a
-		// session with no cwd (a desktop client that reports none) cannot be
-		// checked without guessing.
-		return nil
-	}
-	actual := config.ProjectFromPath(cwd)
-	if actual == "" || actual == expected {
-		return nil
-	}
-	return fmt.Errorf(
-		"todo %s belongs to project %s but this session is working in %s (project %s); "+
-			"open the right directory, or pass --force if this is deliberate",
-		todo.ID, expected, cwd, actual)
 }
 
 func runSessionBind(cmd *cobra.Command, args []string) error {
@@ -131,72 +89,43 @@ func runSessionBind(cmd *cobra.Command, args []string) error {
 	if project == "" && cwd != "" {
 		project = config.ProjectFromPath(cwd)
 	}
-	agent := normalizeBindingAgent(sessionBindAgentFlag)
+	call := cliApplicationCall("session-bind", sessionID)
+	agent := strings.TrimSpace(sessionBindAgentFlag)
+	if agent != "" {
+		agent = config.NormalizeAgent(agent)
+	}
 	if sessionBindAgentFlag != "" && agent == "" {
-		return fmt.Errorf("unknown binding agent: %s (use claude, codex, pi, copilot, qoder, qodercli, qoderwork, or grokbuild)", sessionBindAgentFlag)
+		return fmt.Errorf("unknown binding agent: %s (use claude, codex, pi, copilot, qoder, qodercli, qoderwork, grokbuild, or antigravity)", sessionBindAgentFlag)
+	}
+	if agent == "" {
+		agent = call.Actor.Agent
 	}
 
-	var todo store.Todo
-	var binding *store.TodoSessionBinding
-	err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
-		current, err := transaction.Todo(args[0])
-		if err != nil {
-			return err
-		}
-		if !store.TodoIsActive(*current) {
-			return fmt.Errorf("cannot bind completed todo %s with status %s", current.ID, current.Status)
-		}
-		if err := checkBindingWorkspace(current, cwd); err != nil {
-			return err
-		}
-		current.Status = store.TodoStatusInProgress
-		current.WakeCondition = ""
-		current.ReviewAt = ""
-		if current.StartTS == nil {
-			now := time.Now().In(config.Loc).Unix()
-			current.StartTS = &now
-		}
-		binding, err = transaction.BindSession(store.TodoSessionBinding{
-			SessionID: sessionID, TodoID: current.ID, Agent: agent, Project: project, CWD: cwd,
-		})
-		todo = *current
-		return err
+	result, err := workapp.Default.Bind(cmd.Context(), call, workapp.BindInput{
+		TodoID:           args[0],
+		Agent:            agent,
+		Project:          project,
+		CWD:              cwd,
+		WorkspaceProject: config.ProjectFromPath(cwd),
+		Force:            sessionBindForceFlag,
+		ReopenReason:     sessionBindReopenReasonFlag,
 	})
 	if err != nil {
 		return err
 	}
-	// An unattended task run carries its durable run id in the environment. The
-	// explicit bind is the first point where the child knows its real session id,
-	// and is therefore more reliable than associating concurrent runs by start
-	// time during transcript sync.
-	//
-	// The link is execution evidence, not part of the binding contract, and the
-	// binding above has already been committed. Failing here would report the
-	// whole command as failed after it succeeded — and this command is exactly
-	// what the dispatched Agent is told to run, so it would see a hard error for
-	// a run row that is merely missing or already reconciled. Warn instead.
-	if runID := strings.TrimSpace(os.Getenv("ATM_RUN_ID")); runID != "" &&
-		strings.TrimSpace(os.Getenv("ATM_TODO_ID")) == todo.ID {
-		if err := withDB(false, func(db *sql.DB) error {
-			return store.LinkTaskRunSession(db, runID, todo.ID, sessionID)
-		}); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not link session to task run %s: %v\n", runID, err)
-		}
-	}
-	tf, err := store.LoadTodosReadOnly()
-	if err != nil {
+	if err := workapp.Default.DeliverEffects(cmd.Context(), call, result.Effects, localWorkEffectExecutor{}); err != nil {
 		return err
 	}
-	// Binding succeeds without a markdown card, but the prompt points agents at
-	// `todo doc` first. Ensure the card exists so GUI-created todos hand off.
-	if err := ensureTodoDocs(tf, todo.ID); err != nil {
-		return err
-	}
+	todo, binding := result.Todo, result.Binding
 	if jsonOutput {
-		output.JSON(map[string]any{"binding": binding, "todo": compactTodo(todo)})
+		output.JSON(map[string]any{"binding": &binding, "todo": workapp.CompactTodo(todo), "reopened": result.Reopened})
 		return nil
 	}
-	fmt.Printf("Bound session %s to %s: %s\n", shortSessionID(sessionID), todo.ID, todo.Title)
+	verb := "Bound"
+	if result.Reopened {
+		verb = "Reopened and bound"
+	}
+	fmt.Printf("%s session %s to %s: %s\n", verb, shortSessionID(sessionID), todo.ID, todo.Title)
 	return nil
 }
 
@@ -205,33 +134,36 @@ func runSessionCurrent(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	context, err := currentSessionBindingContext(sessionID)
+	result, err := workapp.Default.Current(
+		cmd.Context(), cliApplicationCall("session-current", sessionID), workapp.CurrentInput{},
+	)
 	if err != nil {
 		return err
 	}
+	bindingContext := result.Context
 	if jsonOutput {
-		if context == nil {
+		if bindingContext == nil {
 			output.JSON(map[string]any{"bound": false, "state": sessionBindingStateUnbound, "session_id": sessionID})
 		} else {
 			output.JSON(map[string]any{
-				"bound":      context.State == sessionBindingStateBound,
-				"state":      context.State,
+				"bound":      result.Bound,
+				"state":      result.State,
 				"session_id": sessionID,
-				"binding":    context.Binding,
-				"todo":       context.Todo,
+				"binding":    bindingContext.Binding,
+				"todo":       bindingContext.Todo,
 			})
 		}
 		return nil
 	}
-	if context == nil {
+	if bindingContext == nil {
 		fmt.Printf("No todo bound to session %s.\n", shortSessionID(sessionID))
 		return nil
 	}
-	if context.State != sessionBindingStateBound {
-		fmt.Printf("Stale binding for session %s: %s -> %s.\n", shortSessionID(sessionID), context.Binding.TodoID, context.State)
+	if bindingContext.State != sessionBindingStateBound {
+		fmt.Printf("Stale binding for session %s: %s -> %s.\n", shortSessionID(sessionID), bindingContext.Binding.TodoID, bindingContext.State)
 		return nil
 	}
-	fmt.Printf("%s  %-12s %s\n", context.Todo.ID, context.Todo.Project, context.Todo.Title)
+	fmt.Printf("%s  %-12s %s\n", bindingContext.Todo.ID, bindingContext.Todo.Project, bindingContext.Todo.Title)
 	return nil
 }
 
@@ -240,20 +172,17 @@ func runSessionUnbind(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	var changed bool
-	err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
-		var err error
-		changed, err = transaction.UnbindSession(sessionID, sessionUnbindReason)
-		return err
-	})
+	result, err := workapp.Default.Unbind(
+		cmd.Context(), cliApplicationCall("session-unbind", sessionID), workapp.UnbindInput{Reason: sessionUnbindReason},
+	)
 	if err != nil {
 		return err
 	}
 	if jsonOutput {
-		output.JSON(map[string]any{"session_id": sessionID, "unbound": changed})
+		output.JSON(map[string]any{"session_id": sessionID, "unbound": result.Unbound})
 		return nil
 	}
-	if !changed {
+	if !result.Unbound {
 		fmt.Printf("No active todo binding for session %s.\n", shortSessionID(sessionID))
 		return nil
 	}
@@ -262,9 +191,6 @@ func runSessionUnbind(cmd *cobra.Command, args []string) error {
 }
 
 func runTodoMatch(cmd *cobra.Command, args []string) error {
-	if todoMatchLimitFlag < 1 || todoMatchLimitFlag > 10 {
-		return fmt.Errorf("--limit must be between 1 and 10")
-	}
 	project := config.CanonicalProject(strings.TrimSpace(todoMatchProjectFlag))
 	if project == "" {
 		if cwd, err := os.Getwd(); err == nil {
@@ -272,39 +198,48 @@ func runTodoMatch(cmd *cobra.Command, args []string) error {
 		}
 	}
 	query := strings.TrimSpace(strings.Join(args, " "))
-
+	sessionID, _ := resolveSessionID(false)
+	minQueryScore := 0
 	if todoMatchDedupFlag {
-		return runTodoMatchDedup(project, query)
+		minQueryScore = todoMatchMinQueryScoreFlag
 	}
-
-	var binding *store.TodoSessionBinding
-	var boundTodo *store.Todo
-	if sessionID, _ := resolveSessionID(false); sessionID != "" {
-		binding, boundTodo, _ = currentBindingAndTodo(sessionID)
-	}
-	if binding != nil && boundTodo != nil {
-		if todoMatchPromptFlag {
-			fmt.Printf("ATM current: %s | %s | %s | %s. Use `atm todo log \"...\"`; done/wait auto-unbind.\n", boundTodo.ID, boundTodo.Project, boundTodo.Status, boundTodo.Title)
-			return nil
-		}
-		outputMatchResult(project, binding, boundTodo, nil)
-		return nil
-	}
-
-	tf, err := store.LoadTodosReadOnly()
+	result, err := workapp.Default.Match(
+		cmd.Context(),
+		cliApplicationCall("todo-match", sessionID),
+		workapp.MatchInput{
+			Project: project, Query: query, Limit: todoMatchLimitFlag,
+			Deduplicate: todoMatchDedupFlag, MinQueryScore: minQueryScore,
+		},
+	)
 	if err != nil {
+		// Keep the established CLI wording for the two flag validation errors;
+		// their enforcement still belongs to the use case above.
+		if todoMatchLimitFlag < 1 || todoMatchLimitFlag > 10 {
+			return fmt.Errorf("--limit must be between 1 and 10")
+		}
+		if todoMatchDedupFlag && query == "" {
+			return fmt.Errorf("--dedup needs a goal to search for")
+		}
 		return err
 	}
-	matches := store.MatchTodos(tf, project, query, todoMatchLimitFlag)
+	if todoMatchDedupFlag {
+		return renderTodoMatchDedup(result)
+	}
 	if todoMatchPromptFlag {
-		printTodoMatchPrompt(project, matches)
+		if result.Bound && result.Todo != nil {
+			fmt.Printf("ATM current: %s | %s | %s | %s. Use `atm todo log \"...\"`; done/wait auto-unbind.\n",
+				result.Todo.ID, result.Todo.Project, result.Todo.Status, result.Todo.Title)
+			return nil
+		}
+		printTodoMatchPrompt(result.Project, result.Candidates)
 		return nil
 	}
-	outputMatchResult(project, nil, nil, matches)
+	outputMatchResult(result)
 	return nil
 }
 
-// runTodoMatchDedup answers a different question from the rest of match: not
+// renderTodoMatchDedup presents the deduplication result, which answers a
+// different question from the rest of match: not
 // "which todo should this session bind to" but "does one already cover this, or
 // should I create one". That needs "nothing matches" to be a possible answer,
 // which the ranking alone cannot express — it returns --limit rows whatever was
@@ -312,49 +247,36 @@ func runTodoMatch(cmd *cobra.Command, args []string) error {
 //
 // It ignores any current session binding on purpose: whether this session is
 // already working on something says nothing about whether the goal is a duplicate.
-func runTodoMatchDedup(project, query string) error {
-	if strings.TrimSpace(query) == "" {
-		return fmt.Errorf("--dedup needs a goal to search for")
-	}
-	tf, err := store.LoadTodosReadOnly()
-	if err != nil {
-		return err
-	}
-	matches := store.MatchTodosWithOptions(tf, store.TodoMatchOptions{
-		Project:       project,
-		Query:         query,
-		Limit:         todoMatchLimitFlag,
-		MinQueryScore: todoMatchMinQueryScoreFlag,
-		AllProjects:   true,
-	})
+func renderTodoMatchDedup(result workapp.MatchResult) error {
 	if jsonOutput {
 		output.JSON(map[string]any{
-			"project":         project,
-			"query":           query,
-			"min_query_score": todoMatchMinQueryScoreFlag,
-			"duplicate":       len(matches) > 0,
-			"candidates":      matches,
+			"project":         result.Project,
+			"query":           result.Query,
+			"min_query_score": result.MinQueryScore,
+			"duplicate":       result.Duplicate,
+			"candidates":      result.Candidates,
 		})
 		return nil
 	}
-	if len(matches) == 0 {
+	if len(result.Candidates) == 0 {
 		fmt.Printf("ATM: no active todo matches %q at or above query score %d; creating a new todo is appropriate.\n",
-			query, todoMatchMinQueryScoreFlag)
+			result.Query, result.MinQueryScore)
 		return nil
 	}
-	fmt.Printf("ATM: %d existing todo(s) may already cover %q; reuse one instead of creating a duplicate.\n", len(matches), query)
-	for _, match := range matches {
+	fmt.Printf("ATM: %d existing todo(s) may already cover %q; reuse one instead of creating a duplicate.\n",
+		len(result.Candidates), result.Query)
+	for _, match := range result.Candidates {
 		fmt.Printf("  %-5s q=%-4d %-12s %-12s %s\n", match.ID, match.QueryScore, emptyAs(match.Project, "-"), match.Status, match.Title)
 	}
 	return nil
 }
 
-func outputMatchResult(project string, binding *store.TodoSessionBinding, todo *store.Todo, matches []store.TodoMatch) {
-	result := map[string]any{"project": project, "candidates": matches}
-	if binding != nil && todo != nil {
+func outputMatchResult(match workapp.MatchResult) {
+	result := map[string]any{"project": match.Project, "candidates": match.Candidates}
+	if match.Bound && match.Binding != nil && match.Todo != nil {
 		result["bound"] = true
-		result["binding"] = binding
-		result["todo"] = compactTodo(*todo)
+		result["binding"] = match.Binding
+		result["todo"] = match.Todo
 	} else {
 		result["bound"] = false
 	}
@@ -362,16 +284,16 @@ func outputMatchResult(project string, binding *store.TodoSessionBinding, todo *
 		output.JSON(result)
 		return
 	}
-	if binding != nil && todo != nil {
-		fmt.Printf("Current %s  %s\n", todo.ID, todo.Title)
+	if match.Bound && match.Todo != nil {
+		fmt.Printf("Current %s  %s\n", match.Todo.ID, match.Todo.Title)
 		return
 	}
-	for _, match := range matches {
-		fmt.Printf("%-5s %-12s %-12s %s\n", match.ID, match.Project, match.Status, match.Title)
+	for _, candidate := range match.Candidates {
+		fmt.Printf("%-5s %-12s %-12s %s\n", candidate.ID, candidate.Project, candidate.Status, candidate.Title)
 	}
 }
 
-func printTodoMatchPrompt(project string, matches []store.TodoMatch) {
+func printTodoMatchPrompt(project string, matches []workapp.MatchCandidate) {
 	if len(matches) == 0 {
 		fmt.Printf("ATM: no active todo matches project %s; stay unbound unless this is cross-session work.\n", emptyAs(project, "unknown"))
 		return
@@ -381,142 +303,4 @@ func printTodoMatchPrompt(project string, matches []store.TodoMatch) {
 		parts = append(parts, fmt.Sprintf("%s[%s] %s", match.ID, match.Status, match.Title))
 	}
 	fmt.Printf("ATM candidates(%s): %s. After reading the user request, bind the best match with `atm session bind <id>`; if none fits, stay unbound.\n", emptyAs(project, "unknown"), strings.Join(parts, "; "))
-}
-
-func currentBindingAndTodo(sessionID string) (*store.TodoSessionBinding, *store.Todo, error) {
-	context, err := currentSessionBindingContext(sessionID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if context == nil || context.State != sessionBindingStateBound || context.Todo == nil {
-		return nil, nil, nil
-	}
-	todo := &store.Todo{
-		ID:      context.Todo.ID,
-		Title:   context.Todo.Title,
-		Project: context.Todo.Project,
-		Status:  context.Todo.Status,
-	}
-	binding := context.Binding
-	return &binding, todo, nil
-}
-
-func resolveSessionID(required bool) (string, error) {
-	for _, value := range []string{
-		sessionIDFlag,
-		os.Getenv("ATM_SESSION_ID"),
-		os.Getenv("CODEX_THREAD_ID"),
-		os.Getenv("CLAUDE_CODE_SESSION_ID"),
-		os.Getenv("PI_SESSION_ID"),
-	} {
-		if value = strings.TrimSpace(value); value != "" {
-			return value, nil
-		}
-	}
-	if required {
-		return "", fmt.Errorf("current session ID unavailable; pass --agent-session or set ATM_SESSION_ID")
-	}
-	return "", nil
-}
-
-func resolveCurrentTodoID() (string, error) {
-	sessionID, err := resolveSessionID(true)
-	if err != nil {
-		return "", err
-	}
-	binding, err := store.CurrentTodoBinding(sessionID)
-	// No database yet means nothing has ever been bound — the same answer as an
-	// empty bindings table, and a more useful one than "run atm sync".
-	if err != nil && !errors.Is(err, store.ErrDatabaseMissing) {
-		return "", err
-	}
-	if binding == nil {
-		return "", fmt.Errorf("no todo bound to current session; run `atm todo match --prompt` then `atm session bind <id>`")
-	}
-	return binding.TodoID, nil
-}
-
-func optionalTodoID(args []string) (string, error) {
-	if len(args) > 0 && args[0] != "current" {
-		return args[0], nil
-	}
-	return resolveCurrentTodoID()
-}
-
-func normalizeBindingAgent(value string) string {
-	if agent := config.NormalizeAgent(strings.TrimSpace(value)); agent != "" {
-		return agent
-	}
-	if os.Getenv("CODEX_THREAD_ID") != "" {
-		return "codex"
-	}
-	if os.Getenv("CLAUDE_CODE_SESSION_ID") != "" {
-		return "claude"
-	}
-	if os.Getenv("PI_SESSION_ID") != "" {
-		return "pi"
-	}
-	return ""
-}
-
-// todoCreatorFromEnvironment answers "who is filing this todo" for the commands
-// that create one. An agent session in the environment means an agent is at the
-// keyboard; anything else is the human, because a plain terminal and the desktop
-// app are both the single person this installation belongs to. An agent whose
-// environment carries no session ID can still say so with --creator.
-func todoCreatorFromEnvironment() string {
-	if agent := normalizeBindingAgent(""); agent != "" {
-		return agent
-	}
-	return store.TodoCreatorMe
-}
-
-// resolveTodoCreator settles the creator of a todo about to be created: an
-// explicit --creator wins, because only the caller knows when the environment is
-// misleading, and otherwise the environment is read.
-func resolveTodoCreator(flag string) (string, error) {
-	if strings.TrimSpace(flag) != "" {
-		return store.NormalizeTodoCreator(flag)
-	}
-	return todoCreatorFromEnvironment(), nil
-}
-
-func compactTodo(todo store.Todo) compactTodoContext {
-	return compactTodoContext{ID: todo.ID, Title: todo.Title, Project: todo.Project, Status: todo.Status}
-}
-
-func shortSessionID(value string) string {
-	if len(value) > 8 {
-		return value[:8]
-	}
-	return value
-}
-
-// todoSourceFromSession labels a todo with the agent session that filed it.
-// Returns "" when no session is in the environment, so a caller can fall back to
-// its own default rather than recording a bare "session:" prefix.
-func todoSourceFromSession() string {
-	sid := os.Getenv("CLAUDE_CODE_SESSION_ID")
-	if sid == "" {
-		return ""
-	}
-	return "session:" + shortSessionID(sid)
-}
-
-func emptyAs(value, fallback string) string {
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func cleanBindingCWD(value string) string {
-	if value == "" {
-		return ""
-	}
-	cleaned, err := filepath.Abs(value)
-	if err != nil {
-		return value
-	}
-	return cleaned
 }

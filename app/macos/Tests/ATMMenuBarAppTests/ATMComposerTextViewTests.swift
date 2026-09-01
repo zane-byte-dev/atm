@@ -84,8 +84,21 @@ final class ATMComposerTextViewTests: XCTestCase {
 
         textView.insertText("标题\n细节", replacementRange: NSRange(location: 0, length: 0))
 
-        // The add sheet splits title from description on the first newline; folding
-        // there would collapse the two into one line.
+		// The add sheet keeps the complete requirement block as the description.
         XCTAssertEqual(textView.string, "标题\n细节")
     }
+
+	func testImageAwareComposerInterceptsPasteBeforeTextStorage() {
+		let textView = makeTextView()
+		var intercepted = false
+		textView.onPasteImages = { pasteboard in
+			intercepted = pasteboard === NSPasteboard.general
+			return true
+		}
+
+		textView.paste(nil)
+
+		XCTAssertTrue(intercepted)
+		XCTAssertTrue(textView.string.isEmpty)
+	}
 }

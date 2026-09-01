@@ -10,9 +10,13 @@ import (
 
 func TestTodoStartReopensClosedTodoWithFreshLifecycle(t *testing.T) {
 	withTempAtmDir(t)
-	oldJSON := jsonOutput
-	t.Cleanup(func() { jsonOutput = oldJSON })
+	oldJSON, oldReopenReason := jsonOutput, todoStartReopenReasonFlag
+	t.Cleanup(func() {
+		jsonOutput = oldJSON
+		todoStartReopenReasonFlag = oldReopenReason
+	})
 	jsonOutput = false
+	todoStartReopenReasonFlag = "acceptance found follow-up work"
 
 	closed := "2026-07-01"
 	reason := "first attempt completed"
@@ -180,7 +184,7 @@ func TestStatusTransitionIgnoresObsoleteJSONWriteObstacles(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	setCommandFlagForTest(t, todoEditCmd, "status", store.TodoStatusReview)
+	setCommandFlagForTest(t, todoEditCmd, "status", store.TodoStatusOpen)
 	if err := runTodoEdit(todoEditCmd, []string{"t1"}); err != nil {
 		t.Fatalf("edit through SQLite: %v", err)
 	}
@@ -196,7 +200,7 @@ func TestStatusTransitionIgnoresObsoleteJSONWriteObstacles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 1 || history[0].UnboundAt == nil || history[0].Reason != "status:review" {
+	if len(history) != 1 || history[0].UnboundAt == nil || history[0].Reason != "status-style:open" {
 		t.Fatalf("structured binding audit = %#v", history)
 	}
 	todos, err := store.LoadTodosReadOnly()
@@ -204,13 +208,14 @@ func TestStatusTransitionIgnoresObsoleteJSONWriteObstacles(t *testing.T) {
 		t.Fatal(err)
 	}
 	todo := store.FindTodo(todos, "t1")
-	if todo == nil || todo.Status != store.TodoStatusReview {
-		t.Fatalf("persisted todo = %#v, want review", todo)
+	if todo == nil || todo.Status != store.TodoStatusOpen {
+		t.Fatalf("persisted todo = %#v, want open", todo)
 	}
 }
 
 func TestClosingTodoInSameStateIsIdempotent(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	oldJSON, oldReason := jsonOutput, todoReasonFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON

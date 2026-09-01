@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -52,17 +53,17 @@ func RememberWithMetadata(scope, content string, tags []string, metadata map[str
 }
 
 func SupersedeWithMetadata(targetID, scope, content string, tags []string, metadata map[string]string) (*MemoryEvent, error) {
-	if err := ValidateScope(scope); err != nil {
+	result, err := NewService(ServiceOptions{}).SupersedeMemory(context.Background(), SupersedeMemoryInput{
+		TargetID: targetID,
+		Scope:    scope,
+		Content:  content,
+		Tags:     tags,
+		Source:   metadata["source"],
+	})
+	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(targetID) == "" || strings.TrimSpace(content) == "" {
-		return nil, fmt.Errorf("target id and content must not be empty")
-	}
-	event := MemoryEvent{SchemaVersion: MemorySchemaVersion, ID: newID("memory"), Op: store.MemoryOpSupersede, Scope: scope, Content: strings.TrimSpace(content), TargetID: targetID, Tags: normalizeValues(tags), CreatedAt: time.Now().UTC(), Metadata: normalizeMetadata(metadata)}
-	if err := appendMemoryMutation(event); err != nil {
-		return nil, err
-	}
-	return &event, nil
+	return &result.Event, nil
 }
 
 func ForgetWithMetadata(targetID, scope string, metadata map[string]string) (*MemoryEvent, error) {
@@ -80,17 +81,18 @@ func ForgetWithMetadata(targetID, scope string, metadata map[string]string) (*Me
 }
 
 func Recall(query, scope string, limit int) ([]MemoryHit, error) {
-	if scope != "" {
-		if err := ValidateScope(scope); err != nil {
-			return nil, err
-		}
-	}
+	result, err := NewService(ServiceOptions{}).RecallMemory(context.Background(), RecallMemoryInput{
+		Query: query,
+		Scope: scope,
+		Limit: limit,
+	})
+	return result.Hits, err
+}
+
+func recallMemoryHits(query, scope string, limit int) ([]MemoryHit, error) {
 	effective, err := store.EffectiveMemories()
 	if err != nil {
 		return nil, err
-	}
-	if limit <= 0 {
-		limit = 10
 	}
 	var hits []MemoryHit
 	for _, row := range effective {

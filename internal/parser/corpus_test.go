@@ -224,10 +224,15 @@ func TestCorpusCoversEveryRegisteredAgentThatCanBeSampled(t *testing.T) {
 	for _, expectation := range corpusExpectations() {
 		sampled[expectation.agent] = true
 	}
-	// copilot, qoder and qoderwork read SQLite databases rather than transcript
-	// files. A committed binary .db cannot be reviewed in a diff, so their
-	// fixtures are built with SQL in qoder_test.go and parser_test.go instead.
-	sqliteBacked := map[string]bool{"copilot": true, "qoder": true, "qoderwork": true}
+	// copilot, qoder, qoderwork and antigravity read SQLite databases rather than
+	// transcript files. A committed binary .db cannot be reviewed in a diff, so
+	// their fixtures are built with SQL in qoder_test.go, parser_test.go and
+	// antigravity_test.go instead. Antigravity's rows are protobuf blobs on top of
+	// that, and those are built field by field from the same constants the parser
+	// reads, which pins the format more tightly than a captured sample would.
+	sqliteBacked := map[string]bool{
+		"copilot": true, "qoder": true, "qoderwork": true, "antigravity": true,
+	}
 	for _, agent := range All() {
 		name := agent.Name()
 		if sampled[name] || sqliteBacked[name] {

@@ -217,6 +217,44 @@ func GetCoverage(db *sql.DB) ([]Coverage, error) {
 	if err != nil {
 		return nil, err
 	}
+	return scanCoverage(rows)
+}
+
+// GetCoverageWindow reports request-detail coverage inside an event-time
+// window. Detailed request events use their own timestamps; aggregate-only
+// legacy usage is attributed to session creation time, matching stats.
+func GetCoverageWindow(db *sql.DB, startTS, endTS int64) ([]Coverage, error) {
+	rows, err := db.Query(`WITH active_sessions AS (
+			SELECT id, agent, resume_id, root_session_id FROM sessions
+			WHERE is_internal = 0 AND created_ts < ?
+				AND CASE WHEN last_ts > 0 THEN last_ts ELSE created_ts END >= ?
+		), usage_rows AS (
+			SELECT e.session_id, max(COALESCE(e.request_count,1),1) AS requests,
+				max(COALESCE(e.request_count,1),1) AS detailed,
+				CASE WHEN e.model = '' THEN max(COALESCE(e.request_count,1),1) ELSE 0 END AS unknown,
+				CASE WHEN e.duration_ms > 0 THEN max(COALESCE(e.request_count,1),1) ELSE 0 END AS timed
+			FROM usage_events e JOIN sessions s ON s.id=e.session_id
+			WHERE s.is_internal = 0 AND e.ts >= ? AND e.ts < ?
+			UNION ALL
+			SELECT u.session_id, max(COALESCE(u.request_count,1),1), 0, 0, 0
+			FROM usage u JOIN sessions s ON s.id=u.session_id
+			WHERE s.is_internal = 0 AND s.created_ts >= ? AND s.created_ts < ?
+				AND NOT EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id=u.session_id)
+		)
+		SELECT a.agent,
+			COUNT(DISTINCT CASE WHEN a.root_session_id <> '' THEN a.root_session_id
+				ELSE COALESCE(NULLIF(a.resume_id, ''), a.id) END),
+			COALESCE(SUM(u.requests),0), COALESCE(SUM(u.detailed),0),
+			COALESCE(SUM(u.unknown),0), COALESCE(SUM(u.timed),0)
+		FROM active_sessions a LEFT JOIN usage_rows u ON u.session_id=a.id
+		GROUP BY a.agent ORDER BY a.agent`, endTS, startTS, startTS, endTS, startTS, endTS)
+	if err != nil {
+		return nil, err
+	}
+	return scanCoverage(rows)
+}
+
+func scanCoverage(rows *sql.Rows) ([]Coverage, error) {
 	defer rows.Close()
 	var out []Coverage
 	for rows.Next() {

@@ -35,8 +35,9 @@ enum ATMShortcutCatalog {
         ATMShortcutGroup(
             id: "navigation",
             title: "浏览与窗口",
-            detail: "页面历史和 macOS 窗口操作。",
+            detail: "分区、页面历史和 macOS 窗口操作。",
             shortcuts: [
+                shortcut("section", "切换分区", "按侧栏顺序：任务、收集、Agent、知识、统计、设置。", "⌘1–⌘6"),
                 shortcut("back", "后退", "返回上一个浏览位置。", "⌘["),
                 shortcut("forward", "前进", "前往下一个浏览位置。", "⌘]"),
                 shortcut("minimize", "最小化窗口", "把当前窗口缩到程序坞。", "⌘M"),

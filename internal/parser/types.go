@@ -2,6 +2,33 @@ package parser
 
 import "time"
 
+// CurrentSessionParserVersion is persisted with every indexed session.  A
+// source whose stored version is older is parsed again even when its transcript
+// mtime and size did not change.  This is deliberately separate from the SQLite
+// schema version: parser semantics can change without changing table shape.
+const CurrentSessionParserVersion = 1
+
+const (
+	MessageScopeLocal     = "local"
+	MessageScopeInherited = "inherited"
+	MessageScopeControl   = "control"
+
+	MessageKindConversation = "conversation"
+	MessageKindProgress     = "progress"
+	MessageKindFinal        = "final"
+	MessageKindControl      = "control"
+
+	ContentStateAvailable   = "available"
+	ContentStateEmpty       = "empty"
+	ContentStateEphemeral   = "ephemeral"
+	ContentStateControlOnly = "control_only"
+	ContentStateRetained    = "retained"
+
+	SessionResultUnknown    = "unknown"
+	SessionResultInProgress = "in_progress"
+	SessionResultCompleted  = "completed"
+)
+
 func truncateText(value string, limit int) string {
 	if limit <= 0 {
 		return ""
@@ -14,23 +41,28 @@ func truncateText(value string, limit int) string {
 }
 
 type Session struct {
-	Tool          string
-	Project       string
-	SessionID     string
-	ResumeID      string
-	Client        string
-	CWD           string
-	StartedAt     time.Time
-	Model         string
-	AgeSeconds    int
-	Summary       string
-	FirstQ        string
-	LastUserMsg   string
-	RecentTools   []string
-	LastAssistant string
-	LatestResult  string
-	RecentUpdates []string
-	Topics        []string
+	Tool            string
+	Project         string
+	SessionID       string
+	ResumeID        string
+	RootSessionID   string
+	ParentSessionID string
+	AgentPath       string
+	AgentNickname   string
+	SubagentDepth   int
+	Client          string
+	CWD             string
+	StartedAt       time.Time
+	Model           string
+	AgeSeconds      int
+	Summary         string
+	FirstQ          string
+	LastUserMsg     string
+	RecentTools     []string
+	LastAssistant   string
+	LatestResult    string
+	RecentUpdates   []string
+	Topics          []string
 }
 
 type Message struct {
@@ -42,6 +74,14 @@ type TranscriptMessage struct {
 	Role    string
 	Content string
 	TS      int64
+	// Scope distinguishes the rollout's own messages from copied history and
+	// harness/control envelopes.  Empty is accepted from older parsers and is
+	// normalized to local at the store boundary.
+	Scope string
+	// Kind is conversation, progress, final, or control.  It lets readers keep
+	// commentary out of the final answer without losing that progress signal.
+	Kind  string
+	Phase string
 }
 
 type UsageEvent struct {
@@ -93,21 +133,34 @@ type Usage struct {
 }
 
 type ParsedFile struct {
-	SessionID   string
-	ShortID     string
-	Agent       string
-	Project     string
-	CreatedAt   string
-	CreatedTS   int64
-	LastTS      int64
-	Summary     string
-	Inputs      []Message
-	Outputs     []Message
-	Messages    []TranscriptMessage
-	Tools       map[string]int
-	Skills      []SkillEvent
-	Usage       Usage
-	UsageEvents []UsageEvent
+	SessionID       string
+	ShortID         string
+	Agent           string
+	Project         string
+	CreatedAt       string
+	CreatedTS       int64
+	LastTS          int64
+	Summary         string
+	ResumeID        string
+	RootSessionID   string
+	ParentSessionID string
+	AgentPath       string
+	AgentNickname   string
+	SubagentDepth   int
+	IsSubagent      bool
+	IsInternal      bool
+	ParserVersion   int
+	ContentState    string
+	ResultStatus    string
+	LatestProgress  string
+	FinalResult     string
+	Inputs          []Message
+	Outputs         []Message
+	Messages        []TranscriptMessage
+	Tools           map[string]int
+	Skills          []SkillEvent
+	Usage           Usage
+	UsageEvents     []UsageEvent
 	// EndOffset is the byte size consumed; stored so subsequent syncs of an
 	// append-only file can resume from here. Append reports only new content.
 	EndOffset int64

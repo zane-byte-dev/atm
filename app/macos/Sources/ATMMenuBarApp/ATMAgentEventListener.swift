@@ -52,13 +52,22 @@ final class ATMAgentEventListener {
     private let path: String
     private let queue = DispatchQueue(label: "com.atm.agent-event-listener")
     private let onEvent: @Sendable (ATMAgentEvent) -> Void
+    private let onGuardRequest: @Sendable (ATMGuardRequest) -> Void
     private var listenDescriptor: Int32 = -1
     private var acceptSource: DispatchSourceRead?
     private var connections: [Int32: ATMAgentEventConnection] = [:]
 
-    init(path: String, onEvent: @escaping @Sendable (ATMAgentEvent) -> Void) {
+    /// `onGuardRequest` defaults to a no-op so a caller that only cares about
+    /// agent events — which is every caller but the one that raises approval
+    /// banners — stays unchanged.
+    init(
+        path: String,
+        onEvent: @escaping @Sendable (ATMAgentEvent) -> Void,
+        onGuardRequest: @escaping @Sendable (ATMGuardRequest) -> Void = { _ in }
+    ) {
         self.path = path
         self.onEvent = onEvent
+        self.onGuardRequest = onGuardRequest
     }
 
     var socketPath: String { path }
@@ -161,6 +170,7 @@ final class ATMAgentEventListener {
                 descriptor: incoming,
                 queue: queue,
                 onEvent: onEvent,
+                onGuardRequest: onGuardRequest,
                 onClose: { [weak self] descriptor in
                     self?.connections.removeValue(forKey: descriptor)
                 }
@@ -191,6 +201,7 @@ private final class ATMAgentEventConnection {
 
     private let descriptor: Int32
     private let onEvent: @Sendable (ATMAgentEvent) -> Void
+    private let onGuardRequest: @Sendable (ATMGuardRequest) -> Void
     private let onClose: (Int32) -> Void
     private let source: DispatchSourceRead
     private var buffer = Data()
@@ -200,10 +211,12 @@ private final class ATMAgentEventConnection {
         descriptor: Int32,
         queue: DispatchQueue,
         onEvent: @escaping @Sendable (ATMAgentEvent) -> Void,
+        onGuardRequest: @escaping @Sendable (ATMGuardRequest) -> Void,
         onClose: @escaping (Int32) -> Void
     ) {
         self.descriptor = descriptor
         self.onEvent = onEvent
+        self.onGuardRequest = onGuardRequest
         self.onClose = onClose
         source = DispatchSource.makeReadSource(fileDescriptor: descriptor, queue: queue)
         source.setEventHandler { [weak self] in self?.readAvailable() }
@@ -241,8 +254,11 @@ private final class ATMAgentEventConnection {
             let line = buffer[buffer.startIndex..<newlineIndex]
             buffer.removeSubrange(buffer.startIndex...newlineIndex)
             guard !line.isEmpty else { continue }
-            guard let event = ATMAgentEventDecoder.decode(Data(line)) else { continue }
-            onEvent(event)
+            switch ATMAgentEventDecoder.decodeMessage(Data(line)) {
+            case .agent(let event): onEvent(event)
+            case .guardRequest(let request): onGuardRequest(request)
+            case nil: continue
+            }
         }
     }
 
@@ -254,7 +270,40 @@ private final class ATMAgentEventConnection {
 
 /// Decoding kept separate from the socket so it can be unit tested without any
 /// file descriptors.
+/// What one line on the notch socket can be.
+///
+/// The socket carries a discriminated union rather than a sixth agent-event kind:
+/// an approval request is not about a session, and a new kind would be read by
+/// everything that consumes agent events — crediting a session with turn-state
+/// reporting, joining a cwd, forcing a status refresh — none of which is true of
+/// it. A line with no `type` is an agent event, so every hook already installed
+/// keeps working byte for byte.
+enum ATMNotchMessage: Equatable {
+    case agent(ATMAgentEvent)
+    case guardRequest(ATMGuardRequest)
+}
+
 enum ATMAgentEventDecoder {
+    /// Peeks the discriminator, then decodes into the matching shape. An unknown
+    /// `type` yields nil, so a newer CLI against an older app drops the line
+    /// rather than misreading it.
+    static func decodeMessage(_ line: Data) -> ATMNotchMessage? {
+        struct Discriminator: Decodable { let type: String? }
+        let kind = (try? JSONDecoder().decode(Discriminator.self, from: line))?.type
+        switch kind {
+        case nil, "":
+            guard let event = decode(line) else { return nil }
+            return .agent(event)
+        case "guard_request":
+            guard let request = try? JSONDecoder().decode(ATMGuardRequest.self, from: line),
+                  request.isSupported
+            else { return nil }
+            return .guardRequest(request)
+        default:
+            return nil
+        }
+    }
+
     static func decode(_ line: Data) -> ATMAgentEvent? {
         guard let event = try? JSONDecoder().decode(ATMAgentEvent.self, from: line) else {
             return nil

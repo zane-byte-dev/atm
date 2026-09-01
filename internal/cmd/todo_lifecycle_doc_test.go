@@ -9,6 +9,7 @@ import (
 
 func TestTodoLifecycleIsMirroredToMarkdownDoc(t *testing.T) {
 	withTempAtmDir(t)
+	withHumanCLI(t)
 	oldReason, oldJSON := todoReasonFlag, jsonOutput
 	t.Cleanup(func() {
 		todoReasonFlag = oldReason

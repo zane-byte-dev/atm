@@ -1,5 +1,42 @@
 import SwiftUI
 
+/// Shared controls for choosing and refreshing one session reading mode. Live
+/// Agent details place this beside their page tabs; standalone indexed-session
+/// details keep it in the transcript's own toolbar.
+struct DesktopSessionReadControls: View {
+    let sessionID: String
+    @ObservedObject var store: ATMDataStore
+    @Binding var mode: ATMSessionReadMode
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("阅读方式")
+                .font(ATMFont.footnote)
+                .foregroundStyle(ATMTheme.secondary)
+            Picker("阅读方式", selection: $mode) {
+                ForEach(ATMSessionReadMode.allCases) { readMode in
+                    Text(readMode.title).tag(readMode)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.menu)
+            .controlSize(.small)
+            .fixedSize(horizontal: true, vertical: false)
+            .help(mode.help)
+            Button {
+                store.loadSessionRead(sessionID, mode: mode, reload: true)
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .disabled(store.isLoadingSessionRead(sessionID, mode: mode))
+            .help("重新读取这一段")
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+}
+
 /// 一个会话的三段式阅读：摘要看结果、时序看它怎么花掉 token、完整看整条链路（含思考）。
 ///
 /// 三段各自是一次独立读取，而不是一份大 payload 前端筛：完整视图要回到 Agent 自己的
@@ -9,57 +46,49 @@ struct DesktopSessionTranscriptView: View {
     /// 会话所属 Agent 的展示名，只用于「这个 Agent 不记录思考」这类说明文案。
     let agentLabel: String
     @ObservedObject var store: ATMDataStore
-
-    @State private var mode: ATMSessionReadMode = .brief
+    @Binding var mode: ATMSessionReadMode
+    var showsReadControls = true
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                ATMCapsuleTabs(
-                    selection: $mode,
-                    items: ATMSessionReadMode.allCases.map { (value: $0, title: $0.title) }
-                )
-                .help(mode.help)
-                Spacer(minLength: 0)
-                Button {
-                    store.loadSessionRead(sessionID, mode: mode, reload: true)
-                } label: {
-                    Image(systemName: "arrow.clockwise")
+            if showsReadControls {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    DesktopSessionReadControls(
+                        sessionID: sessionID,
+                        store: store,
+                        mode: $mode
+                    )
                 }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .disabled(store.isLoadingSessionRead(sessionID, mode: mode))
-                .help("重新读取这一段")
+                .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+                .padding(.vertical, 10)
+
+                Divider()
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
 
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let error = store.sessionReadError(sessionID, mode: mode) {
-                        let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "会话读取失败")
-                        ATMInlineNotice(
-                            severity: .warning,
-                            title: presentation.title,
-                            message: presentation.message,
-                            details: error,
-                            actionTitle: "重试",
-                            onAction: { store.loadSessionRead(sessionID, mode: mode, reload: true) }
-                        )
-                    }
-                    switch mode {
-                    case .brief, .full:
-                        turnsContent
-                    case .timeline:
-                        timelineContent
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                if let error = store.sessionReadError(sessionID, mode: mode) {
+                    let presentation = ATMErrorPresentation.resolve(error, fallbackTitle: "会话读取失败")
+                    ATMInlineNotice(
+                        severity: .warning,
+                        title: presentation.title,
+                        message: presentation.message,
+                        details: error,
+                        actionTitle: "重试",
+                        onAction: { store.loadSessionRead(sessionID, mode: mode, reload: true) }
+                    )
                 }
-                .frame(maxWidth: 820, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(16)
+                switch mode {
+                case .brief, .full:
+                    turnsContent
+                case .timeline:
+                    timelineContent
+                }
             }
+            .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.horizontal, ATMDetailLayout.horizontalPadding)
+            .padding(.vertical, 16)
             .atmAnimatedSwap(mode.rawValue, style: .detail)
         }
         // 切段和换会话都重新取一次；已缓存的组合不会真的落到 CLI。
@@ -77,10 +106,13 @@ struct DesktopSessionTranscriptView: View {
                 if transcript.turns.isEmpty {
                     placeholder("这个会话还没有可读的问答")
                 } else {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 0) {
                         transcriptNotices(transcript)
-                        ForEach(transcript.turns) { turn in
-                            turnCard(turn)
+                        ForEach(Array(transcript.turns.enumerated()), id: \.element.id) { index, turn in
+                            turnBlock(turn)
+                            if index < transcript.turns.count - 1 {
+                                Divider()
+                            }
                         }
                         if transcript.truncated, mode == .brief {
                             // 说清楚这是尾部而不是全部，否则「摘要」会被读成「会话只有这么多」。
@@ -118,7 +150,10 @@ struct DesktopSessionTranscriptView: View {
         }
     }
 
-    private func turnCard(_ turn: ATMSessionTurn) -> some View {
+    /// Conversation is one reading stream, not a dashboard of independent
+    /// objects. Dividers separate turns without lifting every message into its
+    /// own card.
+    private func turnBlock(_ turn: ATMSessionTurn) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Text("第 \(turn.turn) 轮")
@@ -145,9 +180,8 @@ struct DesktopSessionTranscriptView: View {
                 ATMMarkdownContentView(source: answer)
             }
         }
-        .padding(16)
+        .padding(.vertical, 15)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .atmWorkspaceCard()
     }
 
     private func speaker(_ name: String, tint: Color) -> some View {

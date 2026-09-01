@@ -15,7 +15,149 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ## [0.2.0] — unreleased
 
+### Removed
+
+- **不再后台派发 Agent，整条链路连库一起删。** `atm todo run` / `todo interrupt` / `todo tail` /
+  `todo agents` / `todo runs`、收集器 `--auto-dispatch`、以及 App 里的「后台跑完 / 继续修改 /
+  中断执行」都删了。ATM 不替人启动会话：把任务交给 Codex 只用 `todo handoff`——打开并填好指针，
+  等你按回车；只要那段文字就 `todo handoff --copy`。收集器仍然只创建或补充 Todo。
+
+  持久层跟着一起收：v52 删掉 `task_runs` 表、`collection_sources.auto_dispatch`、
+  `collection_items.dispatch_status` / `dispatch_error`，以及 `todo_plan_revisions.run_id`。
+  留着它们没有中间状态可言——派发器一走，这些列谁都写不进去了，只会永远是默认值，却还要让以后
+  每个读这几张表的人绕过去。真库里的 27 行 `task_runs` 全部来自功能存在的那三天，「Agent 执行」
+  页删掉之后就没有任何地方还显示它们；三个 dispatch 列从来没离开过默认值。跑过这些 Run 的 Todo
+  一个不动：生命周期一直在 `todos` 里，Run 只是旁边的执行证据，从来不是「这件事是什么」的记录。
+
+  `ATM_RUN_ID` 那条溯源链也一并拆掉（`Actor.RunID`、`session bind` 的 run 关联及其
+  `BindWarning` 机制、`artifact --run-id`）：设置这个变量的只有已经删掉的 controller。
+
+- **批量创建的未知键现在整批报错，不再静默忽略。** `add --batch` 的 YAML/JSON 只认
+  `project/source/creator/priority/items`，以及 item 的
+  `title/desc/priority/project/source/creator`。写错的键和已经退役的 `status:`/`wake:` 都会带
+  行号报错，整批不写入。之前解码器默认忽略未知键，于是创建固定为 `open` 之后，一份旧的批量文件
+  会安静地建出一堆普通待办、还报告成功——这种失败没有任何迹象。
+
+- **`todo maintain` 的 use case 删掉。** `work.Maintain` 的能力已经并入
+  `todo edit --maintenance-limit`，独立入口没有调用方。它那条「维护只是还在做的活上的范围标签」
+  的规则跟着搬进 `edit`：给已完成的任务设维护上限报冲突，清零（`--maintenance-limit 0`）仍然
+  允许，因为把标签从做完的事上摘掉是另一回事。
+
 ### Added
+
+- **Todo 生命周期改走 typed IPC，App 少了 5 条 fork/exec 契约。** `start`、`done`、`archive`、
+  `restore`、`delete` 从散在 Swift 里的 argv 数组变成 `todo.start` / `todo.done` /
+  `todo.archive` / `todo.restore` / `todo.delete` 五个 typed method，直接调用既有的 Work
+  use case，并交付生命周期提交的 durable effects（否则 Todo 的 Markdown 投影会落后于数据库，
+  直到某条后续命令碰巧刷新它）。`todo.update` 接不了这些：它的 Status 走 `Work.Edit`，而
+  `edit --status` 只把工作退回 open；归档和永久删除也不是元数据补丁。删除请求必须显式带
+  `confirmed`，对应 CLI 的 `--yes`——桌面的确认弹窗是它前面唯一的东西。App 的普通契约由 24 降到 17。
+
+  Guard 的只读面同时迁了两条：`guard.status` 与 `guard.rule.list`，设置面板不再 fork/exec 去
+  读「哪些 CLI 被闸门管着、各自有哪些规则」。CLI 的 `guard status --json` 仍然输出裸数组，
+  `_ipc` 则是服务返回的结果结构，两种形状各有一份跨语言往返测试兜着——解码器要是静默返回空列表，
+  面板会把每个工具显示成没被闸门管。
+
+  Guard 其余 7 条**故意不迁**：`Decide` 和五个管理动作在服务层硬拒绝 `OriginIPC`，因为 `_ipc`
+  可以从终端重放、也不能证明是 ATM.app 而不是 Agent 启动的。把 `human@ipc` 当成 Guard 授权，
+  等于让 Agent 批准自己要发的消息。生命周期迁到 IPC 后仍与 CLI 复用同一个 Work 规则：普通 Agent
+  环境里的 `todo done` 会被拒绝并指向 `todo submit`。不过可重放 IPC 仍不是抗恶意调用的身份认证；
+  这条规则是日常工作流护栏，不是 user-presence 安全边界。
+
+- **`atm todo --help` 分了组，主流程写在最前面。** 21 条子命令以前是一张按字母排的平铺列表，
+  每天都用的那四步和一个月用一次的命令挤在一起。现在分成 Lifecycle / Reading and content /
+  Collaboration and relations / Batch and permanent removal / Diagnostics 五组，帮助正文顶部
+  直接画出主流程：`add → start → submit → done`，`archive ↔ restore` 挂在旁边而不是嵌在里面。
+  流程写成文字而不是靠排列顺序，因为 cobra 会在每组内按字母排序——Lifecycle 会读成
+  add, archive, done, restore, start, submit，六个名字对、顺序不对；关掉排序是包级开关，会让
+  其余各组按 init() 顺序（也就是文件名顺序）输出，对读者毫无意义。分组机制同时推广到了任意父命令，
+  测试会盯着每个声明了分组的父命令：新增子命令忘记归组就红，而不是安静地落进
+  「Additional Commands」。
+
+- **新建任务可以带图片。** macOS 新建任务支持选择、拖拽和直接粘贴截图，创建前显示可移除的缩略图；
+  CLI 对应为可重复的 `atm todo add --image <path>`。支持 PNG、JPEG、WebP、GIF、HEIC，单张不超过
+  10 MB、每个任务最多 10 张。ATM 校验真实文件内容后复制到 `~/.atm/todos/assets/<todo-id>/`，
+  详情页显示缩略图并可用 Quick Look 预览。图片随归档、回收站和 backup 保留，只有永久删除任务时清理。
+
+- **收集结果有了未读/已读，来源可以单独静默。** 收集是后台跑的，结果什么时候到、哪些看过了，
+  以前只能靠记忆——所以新产生的结果（新建 Todo、对已有 Todo 的补充、还没保存的结论、等人确认的提议）
+  现在默认未读，收集页加粗区分，侧栏和菜单栏出未读数，`collect item read/unread` 也能在命令行改。
+  打开即已读；后续追加会让它重新变成未读。历史记录在升级时一次性标为已读，不会变成一墙提醒。
+
+  随之来的问题是提醒太吵：来源的价值差得很远，为一个闲聊群弹窗和为一条线上问题弹窗是一回事。
+  `atm collect source mute <source-id>` 只掐这个来源的桌面通知——它照常采集、结果照常计入未读、
+  徽标照常涨，只是不再弹窗（要停采集才是 `collect source disable`）。静默由 `mute`/`unmute` 独占，
+  编辑来源不会顺手把它改回来；找不到来源的历史 Run 仍然通知，因为「查不到」不等于「已静默」。
+
+- **「全部了结」一次清掉看过的结论。** 收集页会涨，但涨的不是活儿：`create`/`append` 由 Todo
+  关掉时一并了结，`ignore` 从来不是活儿，只有「结论」这一类没有自己的生命周期——一条结论看过之后
+  觉得不值得进知识库，这个决定以前没有任何落点，只能一条一条 `collect item archive`。真实库里
+  因此攒到 58 条已读未保存的结论对 16 条真正欠动作的跟进，主列表四分之三是历史；实际清理方式
+  是删行，审计记录跟着一起没。现在 `atm collect item archive --all` 和 App 记录页的「全部了结」
+  按钮批量了结这一类：已读、且没保存进知识库的结论。记录保留、Todo 不动、消息不会被重新采集，
+  单条仍可「重新打开」。还欠动作的一律扫不到——未读结论、Todo 还开着的跟进、重试用尽的失败都得
+  点名 ID；批量只会关不会开。它也不会顺手把记录标成已读，因为已读是入选前提，写它就等于让这个
+  动作自己制造入选资格。`collect status` 多一行 `Read conclusions to settle: 58`，按钮只在真有
+  可了结记录时出现。
+
+- **外发动作闸门：Agent 用本地 CLI 发消息之前，先问你一句。** 起因是真的发出去过——驱动这些 CLI 的
+  技能文档给出的命令自带 `-y`，把 CLI 自己的二次确认关掉了，于是「发钉钉群消息」和「读群消息」一样
+  安静。`atm guard install <tool>` 把工具的二进制移到 `<name>-atm-real`，原位置放一个 shim；读操作
+  原样直通（不碰数据库、`exec` 替换进程、零残留），命中规则的才变成一条待授权请求，弹通知，
+  你批准后**由 ATM 自己把命令跑完**——等你决定的时候提出请求的 Agent 通常已经走了。默认拦三条：
+  钉钉发消息、催 MR 评审人、ATA 群推送。命令、取舍与拦不到什么见
+  [docs/internals.md](docs/internals.md#外发动作闸门)。
+
+  决定它有两个地方：**通知自带「批准并发送 / 拒绝」两个按钮**（顺带修好了一件事——App 此前从未注册过任何
+  `UNNotificationCategory`，那些设了 `categoryIdentifier` 的通知其实一个按钮都长不出来），以及快速面板
+  顶部的待授权区，带正文和同样两个按钮。没有为它新开桌面工作区：这是扫一眼就做个动作的场合。
+
+  注册和管理走**「设置 → 外发闸门」**：每个 CLI 一张卡片，直说它是否真的拦住了——「被 PATH 绕过」和
+  「被覆盖」是分开报的两种病，因为它们的修法不同，而且两者都不会让任何命令失败，只会让你以为外发在被
+  审核。不在 PATH 上的 CLI 可以填路径或用文件选择器挑。规则有开关和删除，还有个表单加新规则。
+  内置规则可以关不能删（删 override 的效果是它回来，那不是「不想再拦」的意思），关的写法是只给 id 加
+  `enabled: false`，不重述 matcher —— 重述的副本会跟真的那条漂移然后悄悄不拦。
+
+  刻意**没有**做的几件事。没做成某个 Agent 的 permission hook：调这些 CLI 的有三个 Agent，闸门必须
+  与 Agent 无关；而且 ATM 已经承诺过它装的 hook 只上报、不改授权决定。没做新的 daemon 或定时清理：
+  过期用 SQL 现算，任何清理路径都不执行任何东西。没有让 `running` 的请求被重试——闸门在执行途中死掉
+  就是「不知道发出去没有」，这个信息不存在，重试只会重复发消息。
+
+  两个说清楚的局限。**MCP 工具拦不到**：闸门只看命令执行，通过 MCP 完成的外发动作不经过 `execve`；
+  装了闸门之后 `atm doctor` 会在检测到 MCP server 时提醒，因为装了闸门的人会停止盯着外发，这时一个
+  看不见的通道比没装更危险。**铁了心要绕的 Agent 绕得开**：移开的真身就在旁边，同一 uid 的进程挡不住。
+  这是防「不假思索」的护栏，真正起作用的硬化是拒绝时写给模型的那句「不要换用其他命令或工具绕过」。
+
+- **认识本地 Antigravity 了：用量进统计，额度进 `atm quota`。** 它是本机第二活跃的 client，之前
+  `atm stats` / `atm session list` / `atm quota` 里完全看不到。用量来自
+  `~/.gemini/antigravity/conversations/*.db` 的 `gen_metadata`——逐次模型调用，带时间戳、模型、
+  耗时和「命中/未命中缓存」的输入拆分，所以请求级明细和吞吐速度都是完整的；标题与项目归属来自
+  `agyhub_summaries_proto.pb`。会话正文不解：它是 `steps` 表里按 step 类型各异的 protobuf，
+  capabilities 里如实标成 `Messages: false`，和 Qoder 同一种形状。额度走本机 language_server 的
+  loopback Connect-RPC，因为 Antigravity 不把额度写在任何地方——只有「剩余比例 + 重置时间」，
+  没有绝对配额，且只覆盖 Gemini 模型组（原因见 DESIGN.md 的已知限制）。这是唯一一个在 `atm sync`
+  的无人值守路径上发 HTTP 的额度源：对端是本机已在运行的进程、答案来自它自己的缓存，和读另一个
+  客户端的日志同级；不在这条路上采就永远算不出趋势。
+- **收集分类和日报也走内置文本模型了，`grok`/`codex` 的 CLI 调用整条删除。** 分类和 refine 本来就是
+  同一种活儿——一次 schema 约束的纯文本调用，不读代码库、不用工具、不需要 Agent 循环。现在三者共用
+  `internal/textmodel`：同一份 `~/.atm/credentials.json`、同一个 `text_model_name`/`text_model_base_url`，
+  `atm config test-text-model` 一次验证全部。随之删掉的有 `collection_model_command`、
+  `collection_model_runners`、两套内置 CLI profile（`codex --ephemeral …` / `grok --prompt-file …`）、
+  一次性工作目录与它留下的会话清理，以及 `docs/collection-model-runner.md`。
+  `atm collect status --json` 的 `model_command` 字段改名为 `model`，值是模型名而不是 argv。
+  **注意这是三级链换成单点。** 以前 `grok,codex,rule` 里前一个限额就换下一个；现在 DeepSeek 挂了就是挂了。
+  所以分类改成**失败即停**：模型不可用、或答案不符合 decision schema 时，这批消息保持未判定，
+  checkpoint 不推进，下一轮重建后重试，直到该记录的重试预算用完。关键词兜底（`rule`）连同它会
+  「create 一个猜出来的 Todo」的行为一起删掉了——背景静默跑的东西，宁可不产出也不能产出错的。
+  另一处降级是 schema 约束：`--output-schema` 是硬约束，`response_format: json_object` 只保证是 JSON，
+  所以 `validateDecision` 现在是答案和 Todo 列表之间唯一的关卡，它跑在 normalize 之前，
+  免得把一个不支持的 action 规整成一个支持的。`atm doctor` 的 `collection_model_unavailable`
+  从「CLI 没装」改为「采集已启用但没有 Key」，仍然离线判断，不花模型调用。
+  切换后第一天真实跑出的第一个分歧是 append 带空标题——旧的 `--output-schema` 同样管不了它，
+  `required` 接受 `""`，差别只在模型对 prompt 的遵从度。所以：prompt 明确 append 也要标题；
+  校验只对 create/insight 强制标题；append 缺标题时**借目标 Todo 自己的标题**（候选列表里已经有了，
+  零额外读取）。唯一还会硬失败的是「目标在分类时就已经不活跃、因而借不到标题、又要回退成建 Todo」，
+  因为无标题的 Todo 比一次重试更糟。
 
 - **`atm todo handoff <id>` 把任务交给 Codex 桌面端，而不是替你跑。** 它在任务的工作目录里打开
   一个新会话、把 `todo prompt` 那行指针填进输入框，然后停下——**不按回车**。ATM 不启动 Agent、
@@ -31,8 +173,8 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 - **Adding a task can now polish itself.** A messy capture line is not a
   requirement. `atm todo refine [id]` runs one schema-constrained call through
-  ATM's built-in DeepSeek client, without launching an Agent or falling back to
-  `collection_model_command`, and rewrites the title plus the 需求 section.
+  ATM's built-in DeepSeek client, without launching an Agent, and rewrites the
+  title plus the 需求 section.
   The default is `deepseek-v4-flash` in non-thinking JSON mode; it reads
   `DEEPSEEK_API_KEY` from the environment. ATM.app also has a dedicated 模型
   settings tab that stores the key in `~/.atm/credentials.json` with mode 0600;
@@ -41,17 +183,28 @@ a database from a much older version. `atm backup` exists for exactly that case.
   bundles, argv, and logs, without Keychain prompts in re-signed dev builds.
   Model and endpoint overrides live behind Advanced Settings. Its 测试连接
   action uses the current drafts in a minimal schema request without saving or
-  touching a Todo; CLI users can run `atm config test-text-model`. Complex work gets
+  touching a Todo; CLI users can run `atm config test-text-model`. Refine
+  analysis now persists a configurable `from <source>` provenance label, and
+  the same settings page exposes an editable conservative refinement policy:
+  phases of one feature stay together, while independently acceptable outcomes
+  may split. ATM's schema, factuality, and prompt-injection rules stay fixed. Complex work gets
   a plan in 分析; independently trackable pieces become child todos the parent
   waits on.
   This is not an Agent loop and it never dispatches work. `in_progress` cards
   are polished but not split, so an active session is not unbound. Re-running
   refine will not mint a second set of children. CLI `todo add` stays instant
   unless you pass `--refine` — agents already write structured cards, and a
-  90s model call would break `id=$(atm todo add ...)`. The App runs refine
-  automatically after a human files a todo; turn that off with
-  `atm config set todo_refine_on_add false` or 设置 → Todo. The row menu and
-  the detail overflow still offer 优化任务.
+  90s model call would break `id=$(atm todo add ...)`.
+  **优化 is an action you take, not something that happens on add.** The App
+  shows a 优化任务 button in the Todo detail action bar; it opens a sheet where
+  you can add one request for this pass ("拆细一点", "把验收标准写成可观察行为")
+  before it runs — `atm todo refine <id> --hint "…"` on the CLI. That request is
+  what makes a repeat pass do anything: a bare second pass on an
+  already-structured card gets the same text back from the model, which the App
+  now says out loud ("这一遍没有改动") instead of looking broken. Refining on add
+  is opt-in and off by default — it rewrote the card before anyone had looked at
+  it, so the automatic pass was in practice the only one. Turn it on with
+  `atm config set todo_refine_on_add true` or 设置 → Todo.
 
 - **Todo deletion is now recoverable.** The App's 删除 action moves a task
   straight to 回收站 without interrupting with a confirmation dialog. The task
@@ -199,6 +352,39 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Changed
 
+- **一轮收集只留一条结论记录。** 判定仍按话题走——同一会话、间隔 15 分钟内为一批，一批一个决策，
+  一小时里一条值得记的决策和五十句玩笑必须能分别回答。但那是收集器的账，不是你的：一次收集
+  刷出六张结论卡，它们只会互相埋掉。现在一轮收集的 `insight` 在收尾合成一条，标题正文由内置模型
+  写（模型不可用时按各条原文拼接，判定原因里说明是哪种），分条不再保留。运行结果里的「结论 N」
+  跟着卡片数走，「分析」仍是话题数。`create`/`append` 不参与——一件活儿还是一条记录，各自跟着
+  自己的 Todo；`ignore` 也不参与，它本来就折叠在「已保存与已了结」。代价是单个话题不能再单独
+  `promote` 成 Todo 或 `reprocess`，那些动作现在作用于整条。原始消息照旧留在库里，合成条也带着
+  这批聊天原文。按来源/按天的 `collect digest` 是另一层，不受影响。
+
+- **Todo 生命周期收敛为四态，命令和词汇跟着收。** `open / in_progress / review / done` 是唯一
+  生命周期；等待只是在 `in_progress` 上保留唤醒条件或复查日期。`blocked` 随升级并入这种表达，
+  “暂不处理”回到待办。放弃、回收站和冷归档统一为可恢复的归档层，App 只保留“归档 / 恢复 /
+  永久删除”。
+
+  界面上四个状态只有四个词：**待办 / 进行中 / 待验收 / 已完成**。`open` 不再叫“待开始”，
+  `in_progress` 不再一处“工作中”一处“进行中”。等待的任务仍然显示“进行中”，只多一个橙色时钟和
+  它的唤醒条件、复查日期——“等待中”这个标签删了，因为它是四态词汇里的第五个词：同一个任务在列表里
+  读作“等待中”、别处读作“进行中”，看起来像两种状态。Todo 卡片里的 `- **状态**:` 行也用同一批词。
+
+  重复的命令合并掉：`move` → `edit --project`，`maintain` → 普通元数据编辑
+  （`edit --maintenance-limit`），`prompt` → `handoff --copy`，`bulk drop` 删除（`archive`
+  本来就收多个 ID）。创建固定为 `open`：`add --status` / `add --wake` 去掉，开始和提交验收必须走
+  明确的生命周期动作，不能在创建时直接跳状态。兼容入口 `wait/wake/drop/trash/unarchive/reconcile`
+  仍然可用，但从 `atm todo --help` 里隐藏——它们要接住已经写在别处的命令，同时不再向新读者推荐一套
+  界面已经不用的词汇。内部命名一并统一为 archive（`trashedTodos`/`isTrashed` →
+  `archivedTodos`/`isArchived`，`.dropped/已放弃` 通知 → `.archived/已归档`），归档任务的报错也改
+  指 `atm todo restore`。
+
+- **收集结论不再自动进入 inbox。** `insight` 先作为一条“待保存”结论留在收集工作区，用户在
+  结论详情明确点击后，才由 `atm collect item save <item-id>` 写入来源配置的知识库（默认 inbox）；
+  重复保存返回同一文档。App 后台不再跟随每轮收集执行 `collect digest --due`。同一个 Todo 的
+  `append` 记录也不再与 `create` 平铺：中栏保留新建主记录，后续补充按时间收进它的详情；找不到
+  对应新建记录的历史补充仍单独显示，避免旧数据消失。
 - **`~/.atm` 不再对同机其他用户可读。** 目录建为 `0700`，`config.json` 写为 `0600`，旧安装的
   `0755`/`0644` 在下一次写配置时被收紧。这个目录一直放着会话正文、Todo 和记忆，现在还多了一把
   API Key：`credentials.json` 同样是 `0600`，权限比它宽时 ATM 拒绝读取并提示 `chmod`——照用一把
@@ -244,6 +430,18 @@ a database from a much older version. `atm backup` exists for exactly that case.
   destroys every record that has nowhere to rebuild from.
 
 ### Fixed
+
+- **连接器偶发失败不再被当成「坏了」。** 钉钉这类 API 会偶尔返回一次 business error，五分钟后自己就好
+  了——实测某个源今天 21 次成功、2 次瞬时失败。但连接器健康度只看**最近一条** run 定性，所以一次抖动就
+  报 `dingtalk: error`；App 那边更糟，`latestRun` 是**跨所有源**的最新一条，一个源抖一下就在整个收集
+  工作区顶上挂一张要手动点掉的「操作失败」卡片，而那张卡片比它描述的状况活得长。
+
+  现在按**连续失败**判定，不按「失败过」：连续 0 次是 `ready`（顺带说一句「最近 N 次里失败过 M 次，
+  已恢复」，不隐瞒也不报警），有一次但前面刚成功过是新的 `flaky` 状态——中性颜色、显示失败频率而不是最新
+  那条报错、**不弹卡片**，因为它已经在自动重试了，没有任何人需要做什么。连续 2 次以上才是 `error`。
+  例外是能分类的失败（登录失效、缺权限）：那种不会自愈，**第一次就报**，等第二个样本只是白白晚 5 分钟。
+  卡片现在也只由「真的需要人处理」触发，不再由 `collect run --due` 的退出码触发——那个命令只要有一个源
+  失败就返回非零，是诚实的，但不该被读成「整个收集坏了」。
 
 - **「Agent 执行」页只在真有执行记录时出现。** 默认的交接路径不产生 `task_runs`——会话由 Codex
   自己拥有，ATM 通过 `session bind` 认识它——所以这一页在默认路径上永远是空的，空态还在指路一个

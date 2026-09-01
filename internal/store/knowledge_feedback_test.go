@@ -1,6 +1,8 @@
 package store
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -98,5 +100,41 @@ func TestSessionReviewKeepsOneRowPerSession(t *testing.T) {
 	}
 	if err := UpsertSessionReview(SessionReview{SessionID: "s3", Outcome: "maybe", ReviewedAt: "2026-07-02T00:00:00Z"}); err == nil {
 		t.Fatal("unknown review outcome was accepted")
+	}
+}
+
+// Reviews are written by whatever command happens to finish a session, and the
+// App can be marking one while the CLI marks another. A single-writer SQLite
+// file makes that contention real, so the upsert has to survive it rather than
+// surfacing "database is locked" to whoever lost the race.
+func TestConcurrentSessionReviewWrites(t *testing.T) {
+	withTempStore(t)
+	var wg sync.WaitGroup
+	errs := make(chan error, 12)
+	for index := 0; index < 12; index++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			errs <- UpsertSessionReview(SessionReview{
+				SessionID:  fmt.Sprintf("session-%d", index),
+				Outcome:    "none",
+				Note:       "no durable candidate",
+				ReviewedAt: "2026-07-02T00:00:00Z",
+			})
+		}(index)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	reviews, err := SessionReviews()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reviews) != 12 {
+		t.Fatalf("review count = %d, want 12", len(reviews))
 	}
 }

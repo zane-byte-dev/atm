@@ -90,11 +90,11 @@ type FeedbackEvent struct {
 }
 
 type FeedbackInput struct {
-	DocumentID string
-	SessionID  string
-	Query      string
-	Outcome    string
-	Note       string
+	DocumentID string `json:"document_id"`
+	SessionID  string `json:"session_id"`
+	Query      string `json:"query,omitempty"`
+	Outcome    string `json:"outcome"`
+	Note       string `json:"note,omitempty"`
 }
 
 type KnowledgeQuality struct {

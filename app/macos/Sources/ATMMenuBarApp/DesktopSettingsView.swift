@@ -1,19 +1,14 @@
 import AppKit
 import SwiftUI
 
-enum ATMTodoListPreferences {
-    static let showDroppedKey = "ATMShowDroppedTodos"
-    static let defaultShowsDropped = false
-}
-
 enum ATMSettingsTab: String, CaseIterable, Identifiable {
     case general
     case shortcuts
     case voice
     case notify
+    case guardGate
     case todo
     case model
-    case connectors
 
     var id: String { rawValue }
 
@@ -23,9 +18,9 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .shortcuts: return "快捷键"
         case .voice: return "语音"
         case .notify: return "通知"
+        case .guardGate: return "外发闸门"
         case .todo: return "Todo"
         case .model: return "模型"
-        case .connectors: return "连接器"
         }
     }
 
@@ -35,9 +30,9 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .shortcuts: return "keyboard"
         case .voice: return "waveform"
         case .notify: return "bell"
+        case .guardGate: return "hand.raised"
         case .todo: return "checklist"
         case .model: return "sparkles"
-        case .connectors: return "link"
         }
     }
 
@@ -47,9 +42,9 @@ enum ATMSettingsTab: String, CaseIterable, Identifiable {
         case .shortcuts: return "查看全部快捷键并改绑"
         case .voice: return "识别、文本与权限"
         case .notify: return "通知、Hook 与声音反馈"
+        case .guardGate: return "注册要拦的 CLI 与规则"
         case .todo: return "任务列表与默认行为"
         case .model: return "DeepSeek 文本服务"
-        case .connectors: return "自动收集与外部来源"
         }
     }
 }
@@ -60,8 +55,6 @@ struct DesktopSettingsView: View {
     @ObservedObject private var appearance = ATMAppearance.shared
     @ObservedObject private var hotKeys = ATMGlobalHotKeyManager.shared
     @State private var selectedTab: ATMSettingsTab = .general
-    @AppStorage(ATMTodoListPreferences.showDroppedKey)
-    private var showsDropped = ATMTodoListPreferences.defaultShowsDropped
     @AppStorage(ATMGlobalHotKeyPreferences.enabledKey)
     private var globalHotKeyEnabled = ATMGlobalHotKeyPreferences.defaultEnabled
     @AppStorage(ATMGlobalHotKeyPreferences.hotKeyKey)
@@ -109,6 +102,8 @@ struct DesktopSettingsView: View {
     @State private var textModelAPIKeyDraft = ""
     @State private var textModelBaseURLDraft = "https://api.deepseek.com"
     @State private var textModelNameDraft = "deepseek-v4-flash"
+    @State private var textModelSourceDraft = "deepseek"
+    @State private var todoRefinePromptDraft = ""
     @State private var textModelFieldsDirty = false
     @State private var showsAdvancedTextModelSettings = false
 
@@ -163,7 +158,7 @@ struct DesktopSettingsView: View {
                     } label: {
                         settingsSidebarRow(tab)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.atmRow)
                 }
             }
             .padding(8)
@@ -238,33 +233,34 @@ struct DesktopSettingsView: View {
                     .frame(height: 1)
             }
 
-            Group {
-                switch selectedTab {
-                case .general:
-                    generalSettings
-                case .shortcuts:
-                    shortcutSettings
-                case .voice:
-                    voiceSettings
-                case .notify:
-                    notifySettings
-                case .todo:
-                    todoSettings
-                case .model:
-                    textModelSettings
-                case .connectors:
-                    connectorSettings
+            ATMDetailBodySurface {
+                Group {
+                    switch selectedTab {
+                    case .general:
+                        generalSettings
+                    case .shortcuts:
+                        shortcutSettings
+                    case .voice:
+                        voiceSettings
+                    case .notify:
+                        notifySettings
+                    case .guardGate:
+                        DesktopGuardSettingsView(store: store)
+                    case .todo:
+                        todoSettings
+                    case .model:
+                        textModelSettings
+                    }
                 }
             }
         }
         // 设置内容是阅读/编辑画布，和任务、Agent 的详情栏一样保持清晰；
         // 冷中性色 listPane 只属于左侧分类抽屉。
-        .background(ATMTheme.elevated)
+        .background(ATMTheme.canvas)
     }
 
     private var generalSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card {
                     VStack(alignment: .leading, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -335,8 +331,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var aboutSection: some View {
@@ -364,8 +359,7 @@ struct DesktopSettingsView: View {
     // MARK: - 快捷键
 
     private var shortcutSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card { globalHotKeySection }
                 card { voiceShortcutSection }
 
@@ -377,8 +371,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func shortcutReferenceGroup(_ group: ATMShortcutGroup) -> some View {
@@ -486,8 +479,7 @@ struct DesktopSettingsView: View {
     /// lives with every other binding in 快捷键 so there is one place to discover
     /// and change keyboard behavior.
     private var voiceSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card { voiceEngineSection }
                 card { voiceTextSection }
                 card { voicePermissionSection }
@@ -498,8 +490,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear { voicePermissions = ATMVoicePermissionSnapshot.current() }
     }
 
@@ -856,8 +847,7 @@ struct DesktopSettingsView: View {
     /// raise it, and the state-change sounds that cover everything not worth a
     /// banner.
     private var notifySettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card { agentAttentionNotifySection }
 
                 card { agentHookSection }
@@ -918,8 +908,7 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func agentSoundEventRow(
@@ -968,180 +957,8 @@ struct DesktopSettingsView: View {
         .disabled(!agentSoundsEnabled)
     }
 
-    private var connectorSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                card {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("自动收集")
-                                    .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                                Text("ATM 在菜单栏常驻期间按间隔读取已启用来源，并为新事项创建 Todo。")
-                                    .font(ATMFont.footnote)
-                                    .foregroundStyle(ATMTheme.secondary)
-                            }
-                            Spacer()
-                            Toggle(
-                                "启用",
-                                isOn: Binding(
-                                    get: { store.collectionOverview.enabled },
-                                    set: { store.setCollectionEnabled($0) }
-                                )
-                            )
-                            .toggleStyle(.switch)
-                            .labelsHidden()
-                        }
-
-                        Divider()
-
-                        if store.collectionOverview.connectorHealth.isEmpty {
-                            Label("尚未配置连接器", systemImage: "link.badge.plus")
-                                .foregroundStyle(ATMTheme.secondary)
-                        } else {
-                            ForEach(store.collectionOverview.connectorHealth, id: \.connector) { health in
-                                HStack {
-                                    Text(health.connector)
-                                        .font(ATMFont.mono(.footnote))
-                                        .frame(width: 80, alignment: .leading)
-                                    Label(health.statusLabel, systemImage: health.statusIcon)
-                                        .foregroundStyle(ATMTheme.collectionHealthColor(health.status))
-                                        .font(ATMFont.font(.body, weight: .medium))
-                                    Spacer()
-                                    if let checkedAt = health.checkedAt {
-                                        Text("检测于 \(collectionSettingsRelativeTime(checkedAt))")
-                                            .font(ATMFont.caption)
-                                            .foregroundStyle(ATMTheme.secondary)
-                                    } else {
-                                        Text("请立即收集一次")
-                                            .font(ATMFont.caption)
-                                            .foregroundStyle(ATMTheme.secondary)
-                                    }
-                                }
-                                if let healthError = health.error, !healthError.isEmpty {
-                                    Text(healthError)
-                                        .font(ATMFont.footnote)
-                                        .foregroundStyle(ATMTheme.secondary)
-                                        .textSelection(.enabled)
-                                        .padding(.leading, 80)
-                                }
-                            }
-                        }
-
-                        Stepper(
-                            "采集间隔：\(store.collectionOverview.intervalMinutes) 分钟",
-                            value: Binding(
-                                get: { store.collectionOverview.intervalMinutes },
-                                set: { store.setCollectionInterval($0) }
-                            ),
-                            in: 1...60
-                        )
-                        .font(ATMFont.body)
-
-                        HStack {
-                            Text("分类模型")
-                                .foregroundStyle(ATMTheme.secondary)
-                                .frame(width: 80, alignment: .leading)
-                            Text(store.collectionOverview.modelCommand)
-                                .font(ATMFont.mono(.footnote))
-                                .textSelection(.enabled)
-                        }
-                    }
-                }
-
-                card {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("钉钉来源")
-                                .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                            Spacer()
-                            Button("刷新") { store.refreshCollection() }
-                                .controlSize(.small)
-                        }
-                        if store.collectionOverview.sources.isEmpty {
-                            Text("尚未配置来源。请在主窗口“收集”页添加群聊或联系人。")
-                                .font(ATMFont.footnote)
-                                .foregroundStyle(ATMTheme.secondary)
-                        } else {
-                            ForEach(store.collectionOverview.sources) { source in
-                                HStack {
-                                    Image(systemName: source.symbolName)
-                                        .frame(width: 20)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(source.displayName)
-                                            .font(ATMFont.font(.body, weight: .medium))
-                                        Text(source.project?.isEmpty == false ? source.project! : "未映射项目")
-                                            .font(ATMFont.caption)
-                                            .foregroundStyle(ATMTheme.secondary)
-                                        Text(source.effectiveStrategy == "observe"
-                                            ? "只沉淀知识 · 每 \(source.effectiveIntervalMinutes) 分钟"
-                                            : "任务提取 · 每 \(source.effectiveIntervalMinutes) 分钟")
-                                            .font(ATMFont.caption)
-                                            .foregroundStyle(ATMTheme.secondary)
-                                        if let exclusion = source.excludePattern, !exclusion.isEmpty {
-                                            Text("排除：\(exclusion)")
-                                                .font(ATMFont.caption)
-                                                .foregroundStyle(ATMTheme.secondary)
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                    Spacer()
-                                    Toggle(
-                                        "启用",
-                                        isOn: Binding(
-                                            get: { source.enabled },
-                                            set: { store.setCollectionSource(source, enabled: $0) }
-                                        )
-                                    )
-                                    .toggleStyle(.switch)
-                                    .labelsHidden()
-                                    .controlSize(.small)
-                                }
-                                if source.id != store.collectionOverview.sources.last?.id { Divider() }
-                            }
-                        }
-                    }
-                }
-
-                if let error = store.collectionErrorMessage, !error.isEmpty {
-                    card {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.warning)
-                            .textSelection(.enabled)
-                    }
-                }
-            }
-            .padding(24)
-        }
-        .onAppear { store.refreshCollection() }
-    }
-
     private var todoSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                card {
-                    VStack(alignment: .leading, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("任务列表")
-                                .font(ATMFont.font(.bodyLarge, weight: .semibold))
-                            Text("控制关闭态任务在桌面任务列表中的显示方式。")
-                                .font(ATMFont.footnote)
-                                .foregroundStyle(ATMTheme.secondary)
-                        }
-
-                        Toggle("显示已废弃", isOn: $showsDropped)
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                            .font(ATMFont.font(.body, weight: .medium))
-
-                        Text("关闭后仅从任务列表隐藏已放弃任务，不会删除任务或修改状态。")
-                            .font(ATMFont.footnote)
-                            .foregroundStyle(ATMTheme.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
+        VStack(alignment: .leading, spacing: 18) {
                 card {
                     VStack(alignment: .leading, spacing: 12) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -1160,7 +977,7 @@ struct DesktopSettingsView: View {
                         .controlSize(.small)
                         .font(ATMFont.font(.body, weight: .medium))
 
-                        Text("关闭后仍可在任务菜单里选「优化任务」。命令行添加默认不整理，需要时加 --refine。")
+                        Text("默认关闭：优化是详情页上的一个动作，随时可以带一句要求再跑一遍。打开后每张新建的卡都会先自动跑一次。命令行添加同样不整理，需要时加 --refine。")
                             .font(ATMFont.footnote)
                             .foregroundStyle(ATMTheme.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1171,14 +988,12 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .onAppear { store.loadTodoRefineOnAddSetting() }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear { store.loadSettings() }
     }
 
     private var textModelSettings: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 18) {
                 card {
                     VStack(alignment: .leading, spacing: 16) {
                         VStack(alignment: .leading, spacing: 4) {
@@ -1230,8 +1045,39 @@ struct DesktopSettingsView: View {
                                         .font(ATMFont.caption)
                                         .foregroundStyle(ATMTheme.secondary)
                                 }
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("来源标识")
+                                        .font(ATMFont.font(.footnote, weight: .semibold))
+                                        .foregroundStyle(ATMTheme.secondary)
+                                    TextField("deepseek", text: textModelSourceBinding)
+                                        .textFieldStyle(.roundedBorder)
+                                        .frame(maxWidth: 560)
+                                    Text("任务优化结果会显示为 from \(textModelSourceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "…" : textModelSourceDraft)。")
+                                        .font(ATMFont.caption)
+                                        .foregroundStyle(ATMTheme.secondary)
+                                }
                             }
                             .padding(.top, 12)
+                        }
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("任务优化 Prompt")
+                                .font(ATMFont.font(.footnote, weight: .semibold))
+                                .foregroundStyle(ATMTheme.secondary)
+                            TextEditor(text: todoRefinePromptBinding)
+                                .font(ATMFont.body)
+                                .scrollContentBackground(.hidden)
+                                .padding(8)
+                                .frame(maxWidth: 720, minHeight: 112)
+                                .background(ATMTheme.canvas, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(ATMTheme.border, lineWidth: 1)
+                                )
+                            Text("默认采用保守拆分策略，可直接修改；清空并保存会恢复默认文本。内容追加在 ATM 固定的安全、事实与 JSON 格式规则之后，不能覆盖这些约束。")
+                                .font(ATMFont.caption)
+                                .foregroundStyle(ATMTheme.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
 
                         HStack(spacing: 10) {
@@ -1239,7 +1085,9 @@ struct DesktopSettingsView: View {
                                 store.saveTextModelSettings(
                                     apiKey: textModelAPIKeyDraft,
                                     baseURL: textModelBaseURLDraft,
-                                    model: textModelNameDraft
+                                    model: textModelNameDraft,
+                                    source: textModelSourceDraft,
+                                    todoRefinePrompt: todoRefinePromptDraft
                                 )
                                 textModelAPIKeyDraft = ""
                                 textModelFieldsDirty = false
@@ -1294,19 +1142,26 @@ struct DesktopSettingsView: View {
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             textModelBaseURLDraft = store.textModelBaseURL
             textModelNameDraft = store.textModelName
+            textModelSourceDraft = store.textModelSource
+            todoRefinePromptDraft = store.todoRefinePrompt
             textModelFieldsDirty = false
-            store.loadTextModelSettings()
+            store.loadSettings()
         }
         .onChange(of: store.textModelBaseURL) { value in
             if !textModelFieldsDirty { textModelBaseURLDraft = value }
         }
         .onChange(of: store.textModelName) { value in
             if !textModelFieldsDirty { textModelNameDraft = value }
+        }
+        .onChange(of: store.textModelSource) { value in
+            if !textModelFieldsDirty { textModelSourceDraft = value }
+        }
+        .onChange(of: store.todoRefinePrompt) { value in
+            if !textModelFieldsDirty { todoRefinePromptDraft = value }
         }
     }
 
@@ -1332,9 +1187,31 @@ struct DesktopSettingsView: View {
         )
     }
 
+    private var textModelSourceBinding: Binding<String> {
+        Binding(
+            get: { textModelSourceDraft },
+            set: {
+                textModelSourceDraft = $0
+                textModelFieldsDirty = true
+                store.clearTextModelTestResult()
+            }
+        )
+    }
+
+    private var todoRefinePromptBinding: Binding<String> {
+        Binding(
+            get: { todoRefinePromptDraft },
+            set: {
+                todoRefinePromptDraft = $0
+                textModelFieldsDirty = true
+            }
+        )
+    }
+
     private var canSaveTextModelSettings: Bool {
         !textModelBaseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             !textModelNameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !textModelSourceDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
             (textModelFieldsDirty || !textModelAPIKeyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
@@ -1513,23 +1390,13 @@ struct DesktopSettingsView: View {
         content()
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                ATMTheme.elevated,
-                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(ATMTheme.border, lineWidth: 1)
+            .overlay(alignment: .bottom) {
+                Rectangle()
+                    .fill(ATMTheme.border.opacity(0.72))
+                    .frame(height: 1)
             }
     }
 
-    private func collectionSettingsRelativeTime(_ timestamp: Int64) -> String {
-        let elapsed = max(Int(Date().timeIntervalSince1970) - Int(timestamp), 0)
-        if elapsed < 60 { return "刚刚" }
-        if elapsed < 3_600 { return "\(elapsed / 60) 分钟前" }
-        if elapsed < 86_400 { return "\(elapsed / 3_600) 小时前" }
-        return "\(elapsed / 86_400) 天前"
-    }
 }
 
 /// Visual theme selector modeled after Enchanted's appearance cards. A button is

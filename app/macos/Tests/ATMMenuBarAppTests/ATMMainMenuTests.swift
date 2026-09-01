@@ -57,6 +57,27 @@ final class ATMMainMenuTests: XCTestCase {
         XCTAssertNil(forward.target)
     }
 
+    /// 分区切换此前只有侧栏那五个按钮，没有键盘入口。菜单项只带下标 tag，顺序必须跟
+    /// `ATMDesktopSection.allCases`（也就是侧栏）一致，否则 ⌘3 会跳到别的分区。
+    func testNavigationMenuBindsEverySectionToCommandDigits() throws {
+        let menu = try XCTUnwrap(ATMMainMenu.make(appName: "ATM").item(withTitle: "前往")?.submenu)
+
+        for (index, section) in ATMDesktopSection.allCases.enumerated() {
+            let item = try XCTUnwrap(menu.item(withTitle: section.title), "缺少分区菜单项：\(section.title)")
+            XCTAssertEqual(item.keyEquivalent, String(index + 1))
+            XCTAssertEqual(item.keyEquivalentModifierMask, .command)
+            XCTAssertEqual(item.tag, index, "\(section.title) 的 tag 必须是分区下标")
+            XCTAssertEqual(item.action, #selector(AppDelegate.selectSectionFromMenu(_:)))
+            XCTAssertNil(item.target)
+        }
+
+        // 分区在前、历史在后，中间一条分隔线。
+        let titles = menu.items.map(\.title)
+        let sectionTitles = ATMDesktopSection.allCases.map(\.title)
+        XCTAssertEqual(Array(titles.prefix(sectionTitles.count)), sectionTitles)
+        XCTAssertTrue(menu.items[sectionTitles.count].isSeparatorItem)
+    }
+
     /// ⌘S saves knowledge and ⌘K opens search: both belong to something that is on
     /// screen whatever the selected section is — the focused editor, the permanent
     /// sidebar — so the menu must not steal them from the views that own them.

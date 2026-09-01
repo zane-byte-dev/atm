@@ -5,14 +5,14 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
+	"io/fs"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -27,85 +27,58 @@ type Service struct {
 	Fetcher    Fetcher
 	Extractor  Extractor
 	Summarizer Summarizer
-	Dispatcher TodoDispatcher
 	Now        func() time.Time
-}
-
-// TodoDispatcher is the narrow boundary between collection and execution. The
-// production implementation re-enters the ATM CLI so there remains one claim,
-// policy and controller path for App, CLI and collector dispatches alike.
-type TodoDispatcher interface {
-	Dispatch(context.Context, string, string) error
-}
-
-type CommandTodoDispatcher struct {
-	Executable string
-}
-
-func (dispatcher CommandTodoDispatcher) Dispatch(ctx context.Context, todoID, project string) error {
-	if strings.TrimSpace(dispatcher.Executable) == "" {
-		return fmt.Errorf("ATM executable is unavailable for automatic dispatch")
-	}
-	workDir, err := collectionProjectWorkDir(project)
-	if err != nil {
-		return err
-	}
-	command := exec.CommandContext(ctx, dispatcher.Executable,
-		"todo", "run", todoID, "--cwd", workDir, "--json")
-	command.Env = append(os.Environ(), "ATM_SKIP_LOCAL_NOTIFICATION=1")
-	output, err := command.CombinedOutput()
-	if err != nil {
-		detail := strings.TrimSpace(string(output))
-		if detail == "" {
-			return fmt.Errorf("dispatch todo %s: %w", todoID, err)
-		}
-		return fmt.Errorf("dispatch todo %s: %w: %s", todoID, err, detail)
-	}
-	return nil
-}
-
-func collectionProjectWorkDir(project string) (string, error) {
-	project = strings.TrimSpace(project)
-	if project == "" {
-		return "", fmt.Errorf("automatic dispatch requires a Todo project")
-	}
-	candidates := []string{}
-	if filepath.IsAbs(project) {
-		candidates = append(candidates, project)
-	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, "mox", project),
-			filepath.Join(home, "work", project),
-			filepath.Join(home, project),
-		)
-	}
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err == nil && info.IsDir() {
-			absolute, err := filepath.Abs(candidate)
-			if err != nil {
-				return "", err
-			}
-			return absolute, nil
-		}
-	}
-	return "", fmt.Errorf("cannot resolve project directory for %q", project)
+	// ApplyCollectionEnabled is the config persistence port behind the global
+	// collection switch. Nil uses config.Default in production.
+	ApplyCollectionEnabled func(bool) (bool, error)
 }
 
 type RunReport struct {
 	Runs []store.CollectionRun `json:"runs"`
+	// Blocked names the connectors this run deliberately left alone because their
+	// login had already expired. Skipped sources write no run row, so without this
+	// the report would read as "nothing was due".
+	Blocked []BlockedConnector `json:"blocked,omitempty"`
 }
+
+// BlockedConnector is one connector whose login has expired, together with the
+// sources that were not attempted because of it.
+//
+// Deliberately only the login. A missing permission classifies just as firmly and
+// never recovers on its own either, but in practice it has been per-source — one
+// group this account cannot read while every sibling works — so holding the
+// connector back for it would silence four healthy sources over one broken.
+type BlockedConnector struct {
+	Connector      string `json:"connector"`
+	Status         string `json:"status"`
+	Error          string `json:"error,omitempty"`
+	SkippedSources int    `json:"skipped_sources"`
+	// RetryAt is when the background path probes again. Zero when the evidence is
+	// this run's own failure, which the next run dates from the ledger.
+	RetryAt int64 `json:"retry_at,omitempty"`
+	// LoginCommand is the connector's declared way back in, carried so the CLI and
+	// the desktop can offer it without either of them reading config themselves.
+	LoginCommand string `json:"login_command,omitempty"`
+}
+
+// authBlockedRetryInterval is how long the background path leaves a connector
+// alone after a failure only a person can clear. A login that needs a scan
+// cannot come back faster than the human does, so retrying it every interval
+// buys nothing: one morning of it left 90 identical failure rows behind and
+// still waited for the same person.
+const authBlockedRetryInterval = 30 * time.Minute
 
 func DefaultService() Service {
 	registry, registryErr := DefaultRegistry()
-	executable, _ := os.Executable()
 	return Service{
 		Connectors: registry, RegistryError: registryErr,
-		Extractor:  AutomaticExtractor{ModelCommand: config.CollectionModelCommand},
-		Summarizer: AutomaticSummarizer{ModelCommand: config.CollectionModelCommand},
-		Dispatcher: CommandTodoDispatcher{Executable: executable},
+		Extractor:  AutomaticExtractor{},
+		Summarizer: AutomaticSummarizer{},
 		Now:        func() time.Time { return time.Now().In(config.Loc) },
+		ApplyCollectionEnabled: func(enabled bool) (bool, error) {
+			settings, err := config.Default.Apply(config.SettingsPatch{CollectionEnabled: &enabled})
+			return settings.CollectionEnabled, err
+		},
 	}
 }
 
@@ -171,14 +144,38 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 		sources = due
 	}
 	report := RunReport{Runs: []store.CollectionRun{}}
+	// Only the background path honours the ledger. A manual run is the way back
+	// after logging in, so it always attempts.
+	blocked := map[string]BlockedConnector{}
+	if dueOnly {
+		blocked, err = blockedConnectors(db, service.Now())
+		if err != nil {
+			return RunReport{}, err
+		}
+	}
 	errors := []string{}
 	for _, source := range sources {
+		if block, ok := blocked[source.Connector]; ok {
+			block.SkippedSources++
+			blocked[source.Connector] = block
+			continue
+		}
 		run := service.runSource(ctx, db, source)
 		report.Runs = append(report.Runs, run)
 		if run.Status == "failed" {
 			errors = append(errors, sourceDisplayName(source)+": "+run.Error)
+			// An expired login belongs to the connector, not to this source: its
+			// siblings are about to fail identically against the same credential,
+			// and five copies of one message is how a real outage became noise.
+			if status := CollectionFailureStatus(run.Error); status == "auth_required" {
+				blocked[source.Connector] = BlockedConnector{
+					Connector: source.Connector, Status: status, Error: run.Error,
+					LoginCommand: ConnectorLoginCommand(source.Connector),
+				}
+			}
 		}
 	}
+	report.Blocked = blockedReport(blocked)
 	// Once per run rather than once per source. A failure here loses nothing and
 	// the next run retries it, so it does not fail the run; `atm doctor` reports
 	// chat that outlived its retention window, which is what a stuck prune looks
@@ -190,6 +187,62 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 		return report, fmt.Errorf("collection failed for %d source(s): %s", len(errors), strings.Join(errors, "; "))
 	}
 	return report, nil
+}
+
+// blockedConnectors reads the run ledger for connectors whose latest attempt
+// failed on an expired login, recently enough that attempting them again now
+// would only repeat it.
+func blockedConnectors(db *sql.DB, now time.Time) (map[string]BlockedConnector, error) {
+	latest, err := store.ListLatestCollectionRunsBySource(db)
+	if err != nil {
+		return nil, err
+	}
+	blocked := map[string]BlockedConnector{}
+	// Newest first, so the first finished row a connector contributes is its
+	// current state. A run still in flight says nothing either way.
+	decided := map[string]bool{}
+	for _, run := range latest {
+		if run.Status == "running" || decided[run.Connector] {
+			continue
+		}
+		decided[run.Connector] = true
+		if run.Status == "succeeded" {
+			continue
+		}
+		status := CollectionFailureStatus(run.Error)
+		if status != "auth_required" {
+			continue
+		}
+		finished := run.FinishedAt
+		if finished == 0 {
+			finished = run.StartedAt
+		}
+		retryAt := finished + int64(authBlockedRetryInterval.Seconds())
+		if now.Unix() >= retryAt {
+			continue
+		}
+		blocked[run.Connector] = BlockedConnector{
+			Connector: run.Connector, Status: status, Error: run.Error, RetryAt: retryAt,
+			LoginCommand: ConnectorLoginCommand(run.Connector),
+		}
+	}
+	return blocked, nil
+}
+
+// blockedReport keeps only the connectors that actually held work back. One that
+// blocked nothing has its own failed run row to speak for it.
+func blockedReport(blocked map[string]BlockedConnector) []BlockedConnector {
+	report := []BlockedConnector{}
+	for _, block := range blocked {
+		if block.SkippedSources > 0 {
+			report = append(report, block)
+		}
+	}
+	sort.Slice(report, func(i, j int) bool { return report[i].Connector < report[j].Connector })
+	if len(report) == 0 {
+		return nil
+	}
+	return report
 }
 
 func (service Service) runSource(ctx context.Context, db *sql.DB, source store.CollectionSource) store.CollectionRun {
@@ -249,7 +302,7 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 	}
 	batches := groupMessagesWithContext(source, messages, handledMessageIDs)
 	batchFailed := false
-	dispatchFailed := false
+	insights := []runInsight{}
 	for _, batch := range batches {
 		if ctx.Err() != nil {
 			run.FailedCount++
@@ -318,15 +371,18 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			batchFailed = true
 			continue
 		}
-		if item.DispatchStatus == "pending" {
-			if err := service.dispatchItem(ctx, db, &item, source.Project); err != nil {
-				run.FailedCount++
-				if run.Error == "" {
-					run.Error = compactError(err)
-				}
-				dispatchFailed = true
-			}
+		if item.Action == "insight" {
+			insights = append(insights, runInsight{item: item, messages: batch.Messages})
 		}
+	}
+	// Topics are how this run has to think — one batch, one decision, so an hour
+	// holding one thing worth remembering and fifty jokes can answer differently
+	// about each. They are not how a person reads the result: six cards land at
+	// once and bury each other. So the round's insights are collapsed into the one
+	// record it leaves behind, and the count follows the cards rather than the
+	// topics. Todos are untouched — a piece of work is still one item.
+	if service.mergeRunInsights(ctx, db, source, insights, now) {
+		run.InsightCount = 1
 	}
 	if batchFailed {
 		run.Status = "failed"
@@ -340,52 +396,140 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 			run.Status, run.Error, run.FailedCount = "failed", err.Error(), run.FailedCount+1
 		}
 	}
-	if dispatchFailed && run.Status == "running" {
-		run.Status = "failed"
-	}
 	finish(&run)
 	return run
 }
 
-func (service Service) dispatchItem(
-	ctx context.Context,
-	db *sql.DB,
-	item *store.CollectionItem,
-	trustedProject string,
-) error {
-	if item.TodoID == "" {
-		return fmt.Errorf("collection item %s has no Todo to dispatch", item.ID)
+// runInsight is one topic a run filed as an insight, held with its messages until
+// the run can collapse them all into the single record it leaves behind.
+type runInsight struct {
+	item     store.CollectionItem
+	messages []Message
+}
+
+// mergeRunInsights replaces this round's per-topic insight records with one
+// record covering all of them, and reports whether it did. A single insight is
+// left alone: it is already the one record, and merging it would cost a model
+// call to rewrite text that is fine.
+//
+// Failing to merge is not a failed run. Nothing was lost — the per-topic records
+// are still there, having been written and marked handled before this ran — and
+// failing the run would hold the checkpoint back over messages that are already
+// processed, so the next run would rebuild a window with nothing left to decide.
+func (service Service) mergeRunInsights(ctx context.Context, db *sql.DB,
+	source store.CollectionSource, insights []runInsight, now time.Time) bool {
+	if len(insights) < 2 {
+		return false
 	}
-	// A task run is the durable claim. It also closes the crash window where the
-	// child successfully created the run but the collection item was not updated.
-	runs, err := store.ListTaskRuns(db, item.TodoID)
+	sort.SliceStable(insights, func(i, j int) bool {
+		return insights[i].item.OccurredAt < insights[j].item.OccurredAt
+	})
+	batch := mergedInsightBatch(source, insights)
+	item, err := applyDecision(batch, itemFromBatch(batch, now.Unix()),
+		service.mergedInsightDecision(ctx, source, insights, now))
+	memberIDs := make([]string, 0, len(insights))
+	for _, insight := range insights {
+		memberIDs = append(memberIDs, insight.item.ID)
+	}
+	if err == nil {
+		_, err = store.MergeCollectionInsights(db, item, memberIDs)
+	}
 	if err != nil {
-		return err
+		logging.Failure("collection_insights_not_merged", source.ID, err, map[string]any{
+			"source": source.ID,
+			"items":  memberIDs,
+		})
+		return false
 	}
-	if len(runs) > 0 {
-		item.DispatchStatus, item.DispatchError = "dispatched", ""
-		return store.UpdateCollectionItem(db, *item)
+	return true
+}
+
+// mergedInsightDecision writes the merged record's title and body. The model is
+// asked first; a local join of what the per-topic records already say stands in
+// when it cannot answer. That fallback is not the guessing this package refuses
+// elsewhere — every line of it was already judged and written by an earlier model
+// call, and nothing new is being claimed. It exists because the invariant this
+// path is for, one round leaves one record, must not depend on the endpoint being
+// up, and because the per-topic records are deleted either way. Which one
+// happened is recorded in reason, where the App shows it.
+func (service Service) mergedInsightDecision(ctx context.Context, source store.CollectionSource,
+	insights []runInsight, now time.Time) Decision {
+	items := make([]store.CollectionItem, 0, len(insights))
+	confidence := float64(0)
+	for _, insight := range insights {
+		items = append(items, insight.item)
+		confidence += insight.item.Confidence
 	}
-	if service.Dispatcher == nil {
-		err = fmt.Errorf("automatic dispatch is not configured")
+	// The merge itself judges nothing, so the record inherits what the per-topic
+	// decisions claimed rather than announcing certainty of its own.
+	confidence /= float64(len(items))
+	reason := fmt.Sprintf("合并本轮 %d 条结论。", len(items))
+	if service.Summarizer != nil {
+		content, err := service.Summarizer.Summarize(ctx, DigestInput{Source: source,
+			Date: now.Format("2006-01-02"), Items: items, Scope: DigestScopeRun})
+		if err == nil {
+			title := strings.TrimSpace(content.Title)
+			if title == "" {
+				title = mergedInsightTitle(source, len(items))
+			}
+			return normalizeDecision(Decision{Action: "insight", Title: title,
+				Summary: strings.TrimSpace(content.Body), ItemType: "insight",
+				Reason: reason, Confidence: confidence}, source)
+		}
+		reason += "内置模型不可用（" + compactError(err) + "），正文按各条原文拼接。"
 	} else {
-		err = service.Dispatcher.Dispatch(ctx, item.TodoID, trustedProject)
+		reason += "没有配置摘要模型，正文按各条原文拼接。"
 	}
-	if err != nil {
-		// The command may have launched the controller and then lost its output.
-		// Prefer the durable run over the transport error in that case.
-		if current, readErr := store.ListTaskRuns(db, item.TodoID); readErr == nil && len(current) > 0 {
-			item.DispatchStatus, item.DispatchError = "dispatched", ""
-			return store.UpdateCollectionItem(db, *item)
+	return normalizeDecision(Decision{Action: "insight", Title: mergedInsightTitle(source, len(items)),
+		Summary: joinedInsightSummaries(items), ItemType: "insight",
+		Reason: reason, Confidence: confidence}, source)
+}
+
+// mergedInsightBatch is the merged record's own batch: every message the merged
+// topics owned, in time order. It carries the messages so the record answers for
+// them — the union is what marks them handled — and the raw context so the chat
+// behind the summary is still readable on the card.
+func mergedInsightBatch(source store.CollectionSource, insights []runInsight) MessageBatch {
+	messages := make([]Message, 0)
+	seen := map[string]struct{}{}
+	for _, insight := range insights {
+		for _, message := range insight.messages {
+			if _, ok := seen[message.ID]; ok {
+				continue
+			}
+			seen[message.ID] = struct{}{}
+			messages = append(messages, message)
 		}
-		item.DispatchStatus, item.DispatchError = "failed", compactError(err)
-		if updateErr := store.UpdateCollectionItem(db, *item); updateErr != nil {
-			return fmt.Errorf("%v; record dispatch failure: %w", err, updateErr)
-		}
-		return err
 	}
-	item.DispatchStatus, item.DispatchError = "dispatched", ""
-	return store.UpdateCollectionItem(db, *item)
+	sort.Slice(messages, func(i, j int) bool {
+		if messages[i].CreatedAt != messages[j].CreatedAt {
+			return messages[i].CreatedAt < messages[j].CreatedAt
+		}
+		return messages[i].ID < messages[j].ID
+	})
+	return MessageBatch{Source: source, Messages: messages,
+		Fingerprint: messageBatchFingerprint(source.ID, messages),
+		RawContext:  formatMessageContext(messages, nil)}
+}
+
+func mergedInsightTitle(source store.CollectionSource, count int) string {
+	return fmt.Sprintf("%s 本轮 %d 条结论", sourceDisplayName(source), count)
+}
+
+func joinedInsightSummaries(items []store.CollectionItem) string {
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		title, summary := strings.TrimSpace(item.Title), strings.TrimSpace(item.Summary)
+		switch {
+		case title == "":
+			lines = append(lines, "- "+summary)
+		case summary == "":
+			lines = append(lines, "- "+title)
+		default:
+			lines = append(lines, "- "+title+"："+summary)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (service Service) fetcherFor(source store.CollectionSource) (Fetcher, error) {
@@ -519,6 +663,11 @@ func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Dec
 		return normalizeDecision(Decision{Action: "ignore", ItemType: "conversation",
 			Reason: "命中来源排除规则：" + batch.ExcludedKeyword, Confidence: 1}, batch.Source), nil
 	}
+	if decision, settled, err := externalStateDecision(batch); err != nil {
+		return Decision{}, err
+	} else if settled {
+		return normalizeDecision(decision, batch.Source), nil
+	}
 	todos, err := store.LoadTodosReadOnly()
 	if err != nil {
 		return Decision{}, err
@@ -528,12 +677,6 @@ func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Dec
 		return Decision{}, err
 	}
 	decision = clampToStrategy(normalizeDecision(decision, batch.Source), batch.Source)
-	// Project becomes an execution boundary when auto-dispatch is enabled. Only
-	// the source configuration is trusted to choose a local repository; connector
-	// messages and classifier output cannot redirect Codex elsewhere.
-	if batch.Source.AutoDispatch {
-		decision.Project = batch.Source.Project
-	}
 	return decision, nil
 }
 
@@ -585,6 +728,14 @@ func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decis
 		// trying to avoid, but it is still better than marking the batch handled
 		// with nothing written anywhere.
 		if todoID == "" {
+			// The only place an append's title is unavoidable. It is normally the
+			// target's own, borrowed at classification time, but a target that was
+			// already inactive then was never in the candidate list to borrow from.
+			// An untitled Todo is worse than a retry.
+			if strings.TrimSpace(decision.Title) == "" {
+				return item, fmt.Errorf("collection model returned append without a title and target %s is not active",
+					decision.RelatedTodoID)
+			}
 			todoID, err = createDecision(batch, decision)
 			if err != nil {
 				return item, err
@@ -595,36 +746,36 @@ func applyDecision(batch MessageBatch, item store.CollectionItem, decision Decis
 	default:
 		return item, fmt.Errorf("unsupported collection decision: %s", decision.Action)
 	}
-	if item.Action == "create" && batch.Source.AutoDispatch {
-		item.DispatchStatus, item.DispatchError = "pending", ""
-	}
 	return item, nil
 }
 
 type ItemCorrection struct {
-	Title    *string
-	Project  *string
-	Priority *string
+	Title    *string `json:"title,omitempty"`
+	Project  *string `json:"project,omitempty"`
+	Priority *string `json:"priority,omitempty"`
 }
 
-// Reprocess retries a failed or ignored audit item without advancing the
+// reprocessItem retries a failed or ignored audit item without advancing the
 // source checkpoint. Processed writes must be explicitly reverted first so a
 // reclassification cannot silently orphan an earlier Todo side effect.
-func (service Service) Reprocess(ctx context.Context, itemID string) (store.CollectionItem, error) {
+func (service Service) reprocessItem(ctx context.Context, itemID string) (store.CollectionItem, error) {
 	if service.Extractor == nil {
-		return store.CollectionItem{}, fmt.Errorf("collector extractor is required")
+		return store.CollectionItem{}, application.NewError(application.CodeUnavailable, "collector extractor is required")
 	}
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, itemID)
+	item, err := getItemForUseCase(db, itemID)
 	if err != nil {
 		return item, err
 	}
 	if item.Action == "create" || item.Action == "append" {
-		return item, fmt.Errorf("collection item %s already changed Todo %s; revert it before reprocessing", item.ID, item.TodoID)
+		return item, itemConflict(
+			fmt.Sprintf("collection item %s already changed Todo %s; revert it before reprocessing", item.ID, item.TodoID),
+			item.ID,
+		)
 	}
 	_, batch, err := loadItemBatch(db, item)
 	if err != nil {
@@ -646,20 +797,20 @@ func (service Service) Reprocess(ctx context.Context, itemID string) (store.Coll
 	return item, nil
 }
 
-// Promote turns an ignored or failed item into a concrete Todo using explicit
+// promoteItem turns an ignored or failed item into a concrete Todo using explicit
 // user intent while retaining normal task-level deduplication.
-func (service Service) Promote(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
+func (service Service) promoteItem(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, itemID)
+	item, err := getItemForUseCase(db, itemID)
 	if err != nil {
 		return item, err
 	}
 	if item.Action == "create" || item.Action == "append" {
-		return item, fmt.Errorf("collection item %s already has Todo %s", item.ID, item.TodoID)
+		return item, itemConflict(fmt.Sprintf("collection item %s already has Todo %s", item.ID, item.TodoID), item.ID)
 	}
 	source, batch, err := loadItemBatch(db, item)
 	if err != nil {
@@ -715,44 +866,38 @@ func (service Service) Promote(itemID string, correction ItemCorrection) (store.
 	return item, store.UpdateCollectionItem(db, item)
 }
 
-// Correct keeps the audit decision and its Todo metadata in sync. Nil fields
+// correctItem keeps the audit decision and its Todo metadata in sync. Nil fields
 // mean unchanged; a non-nil empty project intentionally clears the mapping.
-func (service Service) Correct(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
+func (service Service) correctItem(itemID string, correction ItemCorrection) (store.CollectionItem, error) {
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, itemID)
+	item, err := getItemForUseCase(db, itemID)
 	if err != nil {
 		return item, err
 	}
-	if correction.Title == nil && correction.Project == nil && correction.Priority == nil {
-		return item, fmt.Errorf("no collection item correction supplied")
-	}
 	if correction.Title != nil {
-		value := strings.TrimSpace(*correction.Title)
-		if value == "" {
-			return item, fmt.Errorf("corrected title cannot be empty")
-		}
-		item.Title = value
+		item.Title = strings.TrimSpace(*correction.Title)
 	}
 	if correction.Project != nil {
 		item.Project = strings.TrimSpace(*correction.Project)
 	}
 	if correction.Priority != nil {
-		value := strings.ToUpper(strings.TrimSpace(*correction.Priority))
-		if value != "P0" && value != "P1" && value != "P2" && value != "P3" {
-			return item, fmt.Errorf("invalid priority: %s", value)
-		}
-		item.Priority = value
+		item.Priority = strings.ToUpper(strings.TrimSpace(*correction.Priority))
 	}
 	if item.TodoID != "" {
 		var corrected store.Todo
 		err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
 			todo, err := transaction.Todo(item.TodoID)
 			if err != nil {
-				return err
+				return linkedTodoConflict(
+					fmt.Sprintf("collection item %s references unavailable Todo %s", item.ID, item.TodoID),
+					item.ID,
+					item.TodoID,
+					err,
+				)
 			}
 			if correction.Title != nil {
 				todo.Title = item.Title
@@ -778,20 +923,20 @@ func (service Service) Correct(itemID string, correction ItemCorrection) (store.
 	return item, store.UpdateCollectionItem(db, item)
 }
 
-// Revert preserves history: a newly created Todo is dropped, while an append
+// revertItem preserves history: a newly created Todo is dropped, while an append
 // gets an explicit compensating note instead of destructive document surgery.
-func (service Service) Revert(itemID string) (store.CollectionItem, error) {
+func (service Service) revertItem(itemID string) (store.CollectionItem, error) {
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err
 	}
 	defer db.Close()
-	item, err := store.GetCollectionItem(db, itemID)
+	item, err := getItemForUseCase(db, itemID)
 	if err != nil {
 		return item, err
 	}
 	if item.TodoID == "" || (item.Action != "create" && item.Action != "append") {
-		return item, fmt.Errorf("collection item %s has no reversible Todo write", item.ID)
+		return item, itemConflict(fmt.Sprintf("collection item %s has no reversible Todo write", item.ID), item.ID)
 	}
 	if item.Action == "create" {
 		source, batch, err := loadItemBatch(db, item)
@@ -803,18 +948,23 @@ func (service Service) Revert(itemID string) (store.CollectionItem, error) {
 		err = workapp.Default.Mutate(func(transaction *workapp.Transaction) error {
 			todo, err := transaction.Todo(item.TodoID)
 			if err != nil {
-				return err
+				return linkedTodoConflict(
+					fmt.Sprintf("collection item %s references unavailable Todo %s", item.ID, item.TodoID),
+					item.ID,
+					item.TodoID,
+					err,
+				)
 			}
 			if todo.Source != connectorSource(batch) {
-				return fmt.Errorf("refusing to drop Todo %s because its source no longer matches this collection item", todo.ID)
-			}
-			today, reason := store.Today(), "撤销自动收集误创建"
-			now := time.Now().In(config.Loc).Unix()
-			todo.Status, todo.Closed, todo.ClosedReason, todo.DoneTS = store.TodoStatusDropped, &today, &reason, &now
-			if _, err := transaction.UnbindTodoSessions(todo.ID, "collection-reverted"); err != nil {
-				return err
+				return itemConflict(
+					fmt.Sprintf("refusing to archive Todo %s because its source no longer matches this collection item", todo.ID),
+					item.ID,
+				)
 			}
 			reverted = *todo
+			if _, err := transaction.ArchiveTodos([]string{todo.ID}); err != nil {
+				return err
+			}
 			return nil
 		})
 		if err != nil {
@@ -832,11 +982,17 @@ func (service Service) Revert(itemID string) (store.CollectionItem, error) {
 		}
 		todo := store.FindTodo(todos, item.TodoID)
 		if todo == nil {
-			return item, store.TodoNotFoundError(todos, item.TodoID)
+			cause := store.TodoNotFoundError(todos, item.TodoID)
+			return item, linkedTodoConflict(
+				fmt.Sprintf("collection item %s references unavailable Todo %s", item.ID, item.TodoID),
+				item.ID,
+				item.TodoID,
+				cause,
+			)
 		}
-		marker := "[撤销" + collectionSupplementMarker + ":" + shortFingerprint(item.Fingerprint) +
-			"] 此前自动补充被用户标记为误判；原记录保留供审计。"
-		if _, err := store.AppendTodoLog(todo, marker, "补充"); err != nil {
+		fingerprintMarker := collectionRevertMarker(item.Fingerprint)
+		note := fingerprintMarker + " 此前自动补充被用户标记为误判；原记录保留供审计。"
+		if err := appendTodoLogOnce(todo, note, "补充", fingerprintMarker); err != nil {
 			return item, err
 		}
 	}
@@ -1087,12 +1243,46 @@ func appendDecision(batch MessageBatch, decision Decision) (string, error) {
 	// The fingerprint goes in an HTML comment because the App strips exactly this
 	// shape out of the task timeline: the entry reads as the one sentence the chat
 	// added, and the marker stays on disk to tie it back to the collection item.
-	note := strings.TrimSpace(decision.Summary) +
-		"\n\n<!-- [" + collectionSupplementMarker + ":" + shortFingerprint(batch.Fingerprint) + "] -->"
-	if _, err := store.AppendTodoLog(target, note, "补充"); err != nil {
+	fingerprintMarker := collectionAppendMarker(batch.Fingerprint)
+	note := strings.TrimSpace(decision.Summary) + "\n\n" + fingerprintMarker
+	if err := appendTodoLogOnce(target, note, "补充", fingerprintMarker); err != nil {
 		return "", err
 	}
 	return target.ID, nil
+}
+
+func collectionAppendMarker(fingerprint string) string {
+	return "<!-- [" + collectionSupplementMarker + ":" + shortFingerprint(fingerprint) + "] -->"
+}
+
+func collectionRevertMarker(fingerprint string) string {
+	return "[撤销" + collectionSupplementMarker + ":" + shortFingerprint(fingerprint) + "]"
+}
+
+// appendTodoLogOnce closes the retry window between a Todo document write and
+// the collection item's SQLite update. A retry is keyed only by the stable
+// fingerprint marker, never by model-produced summary text: two batches may add
+// the same sentence, while one batch must never add its supplement twice.
+//
+// A missing card is normal because AppendTodoLog creates it. Other read errors
+// are surfaced so a permission or I/O failure cannot be mistaken for absence
+// and followed by another write attempt.
+func appendTodoLogOnce(todo *store.Todo, note, section, fingerprintMarker string) error {
+	return withTodoMarkerLock(todo.ID, func() error {
+		content, err := store.ReadTodoDoc(todo.ID)
+		switch {
+		case err == nil:
+			if strings.Contains(content, fingerprintMarker) {
+				return nil
+			}
+		case errors.Is(err, fs.ErrNotExist):
+			// AppendTodoLog initializes a missing Todo document.
+		default:
+			return fmt.Errorf("read Todo %s before appending collection marker: %w", todo.ID, err)
+		}
+		_, err = store.AppendTodoLog(todo, note, section)
+		return err
+	})
 }
 
 func todoDescription(decision Decision, relatedTodoID string) string {

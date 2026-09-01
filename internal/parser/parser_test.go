@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,7 +110,7 @@ func TestCodexLastUserEventSurvivesLargeTurnPayloads(t *testing.T) {
 	}
 	writeJSONL(t, rollout, lines...)
 
-	message := codexLastEventMessage(rollout, "user_message")
+	message := codexLastEventMessage(rollout, "user_message", codexLiveSessionMetadata{})
 	if visible := codexVisibleUserMessage(message); visible != "展示最近一次用户输入" {
 		t.Fatalf("visible user input = %q", visible)
 	}
@@ -124,12 +125,30 @@ func TestCodexRecentAgentEventsKeepChronologicalPhases(t *testing.T) {
 		`{"type":"event_msg","payload":{"type":"agent_message","message":"New turn update","phase":"commentary"}}`,
 	)
 
-	events := codexRecentAgentEvents(rollout, 3)
+	events := codexRecentAgentEvents(rollout, 3, codexLiveSessionMetadata{})
 	if len(events) != 3 {
 		t.Fatalf("agent events = %#v", events)
 	}
 	if events[0].Message != "First update" || events[1].Phase != "final_answer" || events[2].Message != "New turn update" {
 		t.Fatalf("agent events order = %#v", events)
+	}
+}
+
+func TestCodexRecentAgentEventsSupportCurrentResponseItems(t *testing.T) {
+	rollout := filepath.Join(t.TempDir(), "rollout-thread.jsonl")
+	writeJSONL(t, rollout,
+		`{"ordinal":1,"type":"response_item","payload":{"type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":"Current update"}]}}`,
+		`{"ordinal":2,"type":"event_msg","payload":{"type":"item_completed","item":{"type":"AgentMessage","phase":"commentary","content":[{"type":"Text","text":"Current update"}]}}}`,
+		`{"ordinal":3,"type":"response_item","payload":{"type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Current result"}]}}`,
+	)
+
+	events := codexRecentAgentEvents(rollout, 3, codexLiveSessionMetadata{})
+	if len(events) != 2 {
+		t.Fatalf("agent events = %#v", events)
+	}
+	if events[0] != (codexAgentEvent{Message: "Current update", Phase: "commentary"}) ||
+		events[1] != (codexAgentEvent{Message: "Current result", Phase: "final_answer"}) {
+		t.Fatalf("current agent events = %#v", events)
 	}
 }
 
@@ -389,6 +408,159 @@ func TestPiLiveSessionsExposeTheFullSessionID(t *testing.T) {
 	}
 }
 
+func TestCodexLiveSessionsKeepSubagentIdentityAndOwnActivity(t *testing.T) {
+	const (
+		childID  = "019fd0f0-e373-7f32-9c1a-656466790cbc"
+		parentID = "019fd0f0-e373-7f32-9c1a-656466790cba"
+	)
+	root := t.TempDir()
+	useCodexSessions(t, root)
+	now := time.Now().In(config.Loc)
+	fp := filepath.Join(root, now.Format("2006"), now.Format("01"), now.Format("02"),
+		"rollout-"+now.Format("2006-01-02T15-04-05")+"-"+childID+".jsonl")
+	writeJSONL(t, fp,
+		`{"ordinal":0,"timestamp":"2026-08-30T01:00:00Z","type":"session_meta","payload":{"session_id":"root-thread","id":"`+childID+`","parent_thread_id":"`+parentID+`","agent_path":"/root/recent_todos/status_model","agent_nickname":"Goodall","subagent_history_start_ordinal":6,"cwd":"/tmp/child-project","originator":"Codex Desktop","source":{"subagent":{"thread_spawn":{"parent_thread_id":"`+parentID+`","depth":2,"agent_path":"/root/recent_todos/status_model","agent_nickname":"Goodall"}}}}}`,
+		`{"ordinal":1,"timestamp":"2026-08-30T01:00:01Z","type":"session_meta","payload":{"id":"`+parentID+`","cwd":"/tmp/parent-project","originator":"Parent Client"}}`,
+		`{"ordinal":2,"timestamp":"2026-08-30T01:00:02Z","type":"turn_context","payload":{"model":"parent-model"}}`,
+		`{"ordinal":3,"timestamp":"2026-08-30T01:00:03Z","type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"copied parent prompt"}]}}`,
+		`{"ordinal":4,"timestamp":"2026-08-30T01:00:04Z","type":"event_msg","payload":{"type":"user_message","message":"copied parent event"}}`,
+		`{"ordinal":5,"timestamp":"2026-08-30T01:00:05Z","type":"event_msg","payload":{"type":"agent_message","message":"copied parent update","phase":"commentary"}}`,
+		`{"ordinal":6,"timestamp":"2026-08-30T01:00:06Z","type":"turn_context","payload":{"model":"child-model"}}`,
+		`{"ordinal":7,"timestamp":"2026-08-30T01:00:07Z","type":"response_item","payload":{"role":"assistant","content":[{"type":"output_text","text":"child answer"}]}}`,
+		`{"ordinal":8,"timestamp":"2026-08-30T01:00:08Z","type":"response_item","payload":{"type":"custom_tool_call","name":"exec"}}`,
+		`{"ordinal":9,"timestamp":"2026-08-30T01:00:09Z","type":"event_msg","payload":{"type":"agent_message","message":"child update","phase":"commentary"}}`,
+		`{"ordinal":10,"timestamp":"2026-08-30T01:00:10Z","type":"event_msg","payload":{"type":"agent_message","message":"child result","phase":"final_answer"}}`,
+	)
+
+	sessions := CodexLiveSessions(24 * time.Hour)
+	if len(sessions) != 1 {
+		t.Fatalf("sessions = %#v", sessions)
+	}
+	got := sessions[0]
+	if got.ResumeID != childID || got.RootSessionID != "root-thread" || got.ParentSessionID != parentID {
+		t.Errorf("session identity = resume %q root %q parent %q", got.ResumeID, got.RootSessionID, got.ParentSessionID)
+	}
+	if got.AgentPath != "/root/recent_todos/status_model" || got.AgentNickname != "Goodall" || got.SubagentDepth != 2 {
+		t.Errorf("subagent metadata = path %q nickname %q depth %d", got.AgentPath, got.AgentNickname, got.SubagentDepth)
+	}
+	if got.Client != "Codex Desktop" || got.CWD != "/tmp/child-project" || got.Model != "child-model" {
+		t.Errorf("child metadata overwritten by parent = client %q cwd %q model %q", got.Client, got.CWD, got.Model)
+	}
+	if got.FirstQ != "" || got.LastUserMsg != "" {
+		t.Errorf("copied parent prompt leaked into child row: first=%q last=%q", got.FirstQ, got.LastUserMsg)
+	}
+	if got.LatestResult != "child result" || len(got.RecentUpdates) != 1 || got.RecentUpdates[0] != "child update" {
+		t.Errorf("child activity = result %q updates %#v", got.LatestResult, got.RecentUpdates)
+	}
+	if len(got.RecentTools) != 1 || got.RecentTools[0] != "exec" {
+		t.Errorf("child tools = %#v", got.RecentTools)
+	}
+}
+
+func TestCodexLiveMetadataFindsOwnModelPastHeadWindow(t *testing.T) {
+	const boundary = 45
+	fp := filepath.Join(t.TempDir(), "rollout-deep-child.jsonl")
+	lines := []string{
+		`{"ordinal":0,"timestamp":"2026-08-30T01:00:00Z","type":"session_meta","payload":{"session_id":"root-thread","id":"deep-child","parent_thread_id":"direct-parent","thread_source":"subagent","subagent_history_start_ordinal":45,"agent_path":"/root/one/two/three","source":{"subagent":{"thread_spawn":{"depth":3,"parent_thread_id":"direct-parent"}}}}}`,
+	}
+	for ordinal := 1; ordinal < boundary; ordinal++ {
+		lines = append(lines, fmt.Sprintf(`{"ordinal":%d,"timestamp":"2026-08-30T01:00:01Z","type":"event_msg","payload":{"type":"copied_parent_record"}}`, ordinal))
+	}
+	lines = append(lines,
+		`{"ordinal":45,"timestamp":"2026-08-30T01:00:45Z","type":"turn_context","payload":{"model":"deep-child-model"}}`,
+		`{"ordinal":46,"timestamp":"2026-08-30T01:00:46Z","type":"turn_context","payload":{"model":"later-model"}}`,
+	)
+	writeJSONL(t, fp, lines...)
+
+	metadata := codexLiveMetadata(fp)
+	if metadata.Model != "deep-child-model" {
+		t.Fatalf("model = %q, want first own turn_context past HeadJSONL window", metadata.Model)
+	}
+	if metadata.RootSessionID != "root-thread" || metadata.ParentSessionID != "direct-parent" {
+		t.Errorf("session tree = root %q parent %q", metadata.RootSessionID, metadata.ParentSessionID)
+	}
+}
+
+func TestCodexLiveMetadataKeepsRegularForkOutOfSubagentTree(t *testing.T) {
+	fp := filepath.Join(t.TempDir(), "rollout-fork.jsonl")
+	writeJSONL(t, fp,
+		`{"ordinal":0,"timestamp":"2026-08-30T01:00:00Z","type":"session_meta","payload":{"id":"fork-thread","session_id":"original-root","forked_from_id":"parent-thread","parent_thread_id":"parent-thread","cwd":"/tmp/project","originator":"Codex Desktop"}}`,
+		`{"ordinal":1,"timestamp":"2026-08-30T01:00:01Z","type":"response_item","payload":{"role":"user","content":[{"type":"input_text","text":"continue this user fork"}]}}`,
+	)
+
+	metadata := codexLiveMetadata(fp)
+	if metadata.IsSubagent || metadata.ParentSessionID != "" || metadata.RootSessionID != "" {
+		t.Fatalf("regular fork classified as subagent: %#v", metadata)
+	}
+	if metadata.ResumeID != "fork-thread" || metadata.FirstQ != "continue this user fork" {
+		t.Errorf("regular fork identity = resume %q first %q", metadata.ResumeID, metadata.FirstQ)
+	}
+}
+
+func TestCodexLiveMetadataRecognizesLegacySubagentSourceShapes(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{name: "string", source: `{"subagent":"review"}`},
+		{name: "other", source: `{"subagent":{"other":"guardian"}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fp := filepath.Join(t.TempDir(), "rollout-legacy-child.jsonl")
+			writeJSONL(t, fp,
+				`{"timestamp":"2026-08-30T01:00:00Z","type":"session_meta","payload":{"id":"child-thread","session_id":"root-thread","forked_from_id":"parent-thread","source":`+test.source+`}}`,
+				`{"timestamp":"2026-08-30T01:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"copied parent prompt"}]}}`,
+			)
+			metadata := codexLiveMetadata(fp)
+			if !metadata.IsSubagent || metadata.ParentSessionID != "parent-thread" {
+				t.Fatalf("legacy metadata = %#v", metadata)
+			}
+			if metadata.FirstQ != "" {
+				t.Fatalf("copied parent prompt leaked: %q", metadata.FirstQ)
+			}
+		})
+	}
+}
+
+func TestCodexLiveMetadataRecoversSubagentIDFromRolloutFilename(t *testing.T) {
+	const (
+		childID = "019fd0f0-e373-7f32-9c1a-656466790cbc"
+		rootID  = "019fd0f0-e373-7f32-9c1a-656466790cba"
+	)
+	fp := filepath.Join(t.TempDir(), "rollout-2026-08-30T01-00-00-"+childID+".jsonl")
+	writeJSONL(t, fp,
+		`{"ordinal":0,"timestamp":"2026-08-30T01:00:00Z","type":"session_meta","payload":{"session_id":"`+rootID+`","parent_thread_id":"parent-thread","agent_path":"/root/child","subagent_history_start_ordinal":1,"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-thread","depth":1,"agent_path":"/root/child"}}}}}`,
+		`{"ordinal":1,"timestamp":"2026-08-30T01:00:01Z","type":"turn_context","payload":{"model":"child-model"}}`,
+	)
+
+	metadata := codexLiveMetadata(fp)
+	if metadata.ResumeID != childID || metadata.RootSessionID != rootID {
+		t.Fatalf("identity = resume %q root %q", metadata.ResumeID, metadata.RootSessionID)
+	}
+}
+
+func TestCodexLiveSessionsHideGuardianBeforeModelAppears(t *testing.T) {
+	root := t.TempDir()
+	useCodexSessions(t, root)
+	now := time.Now().In(config.Loc)
+	fp := filepath.Join(root, now.Format("2006"), now.Format("01"), now.Format("02"),
+		"rollout-"+now.Format("2006-01-02T15-04-05")+"-01a050a6-676b-78c3-8bb2-401cec33452b.jsonl")
+	writeJSONL(t, fp,
+		`{"timestamp":"2026-08-30T03:11:18.124Z","type":"session_meta","payload":{"id":"01a050a6-676b-78c3-8bb2-401cec33452b","session_id":"root-thread","parent_thread_id":"parent-thread","thread_source":"guardian_review","source":{"subagent":{"other":"guardian"}},"originator":"Codex Desktop","cwd":"/tmp/project"}}`,
+		`{"timestamp":"2026-08-30T03:11:18.124Z","type":"response_item","payload":{"type":"compaction"}}`,
+		`{"timestamp":"2026-08-30T03:11:18.124Z","type":"event_msg","payload":{"type":"thread_settings_applied"}}`,
+	)
+
+	metadata := codexLiveMetadata(fp)
+	if !metadata.IsSubagent || !metadata.IsInternalSubagent || metadata.Model != "" {
+		t.Fatalf("guardian metadata = %#v", metadata)
+	}
+	if sessions := CodexLiveSessions(24 * time.Hour); len(sessions) != 0 {
+		t.Fatalf("guardian leaked into live sessions: %#v", sessions)
+	}
+}
+
 func TestPiParseAppendReturnsOnlyNewRecords(t *testing.T) {
 	fp := filepath.Join(t.TempDir(), "--tmp-p--", "date_abcdefgh.jsonl")
 	writeJSONL(t, fp,
@@ -470,6 +642,55 @@ func TestCodexParseFileExtractsProjectMessagesAndTools(t *testing.T) {
 	}
 	if len(got.UsageEvents) != 2 || got.UsageEvents[0].InputTokens != 60 || got.UsageEvents[1].InputTokens != 30 || got.UsageEvents[1].CacheReadTokens != 30 {
 		t.Fatalf("usage events = %#v", got.UsageEvents)
+	}
+}
+
+func TestCodexParseFileKeepsOnlySubagentOwnRecords(t *testing.T) {
+	root := t.TempDir()
+	useCodexSessions(t, filepath.Join(root, "sessions"))
+	fp := filepath.Join(config.CodexSessions, "2026", "08", "30",
+		"rollout-2026-08-30T01-00-00-019fd0f0-e373-7f32-9c1a-656466790cbc.jsonl")
+	writeJSONL(t, fp,
+		`{"ordinal":0,"timestamp":"2026-08-30T01:00:00Z","type":"session_meta","payload":{"id":"child-thread","session_id":"root-thread","parent_thread_id":"parent-thread","cwd":"/tmp/child-project","agent_path":"/root/child","subagent_history_start_ordinal":7,"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent-thread","depth":1,"agent_path":"/root/child"}}}}}`,
+		`{"ordinal":1,"timestamp":"2026-08-30T01:00:01Z","type":"session_meta","payload":{"id":"parent-thread","cwd":"/tmp/parent-project"}}`,
+		`{"ordinal":2,"timestamp":"2026-08-30T01:00:02Z","type":"turn_context","payload":{"model":"parent-model"}}`,
+		`{"ordinal":3,"timestamp":"2026-08-30T01:00:03Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"copied parent prompt"}]}}`,
+		`{"ordinal":4,"timestamp":"2026-08-30T01:00:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"copied parent answer"}]}}`,
+		`{"ordinal":5,"timestamp":"2026-08-30T01:00:05Z","type":"response_item","payload":{"type":"function_call","name":"Skill","input":{"skill":"parent-skill"}}}`,
+		`{"ordinal":6,"timestamp":"2026-08-30T01:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":40},"total_token_usage":{"input_tokens":100,"output_tokens":20,"cached_input_tokens":40}}}}`,
+		`{"ordinal":7,"timestamp":"2026-08-30T01:00:07Z","type":"turn_context","payload":{"model":"child-model"}}`,
+		`{"ordinal":8,"timestamp":"2026-08-30T01:00:08Z","type":"response_item","payload":{"type":"agent_message","author":"/root","recipient":"/root/child","content":[{"type":"input_text","text":"delegated child task"}]}}`,
+		`{"ordinal":9,"timestamp":"2026-08-30T01:00:09Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"child answer"}]}}`,
+		`{"ordinal":10,"timestamp":"2026-08-30T01:00:10Z","type":"response_item","payload":{"type":"function_call","name":"Skill","input":{"skill":"atm"}}}`,
+		`{"ordinal":11,"timestamp":"2026-08-30T01:00:11Z","type":"response_item","payload":{"type":"custom_tool_call","name":"child_tool"}}`,
+		`{"ordinal":12,"timestamp":"2026-08-30T01:00:12Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":20,"output_tokens":5,"cached_input_tokens":10},"total_token_usage":{"input_tokens":120,"output_tokens":25,"cached_input_tokens":50}}}}`,
+	)
+
+	got := CodexParseFile(fp)
+	if got == nil {
+		t.Fatal("CodexParseFile returned nil")
+	}
+	if got.Project != "child-project" || got.Summary != "delegated child task" {
+		t.Errorf("identity = project %q summary %q", got.Project, got.Summary)
+	}
+	if len(got.Inputs) != 1 || got.Inputs[0].Content != "delegated child task" {
+		t.Errorf("inputs = %#v", got.Inputs)
+	}
+	if len(got.Outputs) != 1 || got.Outputs[0].Content != "child answer" {
+		t.Errorf("outputs = %#v", got.Outputs)
+	}
+	if got.Tools["Skill"] != 1 || got.Tools["child_tool"] != 1 || got.Tools["parent_tool"] != 0 {
+		t.Errorf("tools = %#v", got.Tools)
+	}
+	if len(got.Skills) != 1 || got.Skills[0].Name != "atm" {
+		t.Errorf("skills = %#v", got.Skills)
+	}
+	if got.Usage.Model != "child-model" || got.Usage.RequestCount != 1 || got.Usage.InputTokens != 10 ||
+		got.Usage.OutputTokens != 5 || got.Usage.CacheReadTokens != 10 || len(got.UsageEvents) != 1 {
+		t.Errorf("usage = %#v events %#v", got.Usage, got.UsageEvents)
+	}
+	if got.UsageEvents[0].DurationMS != 3_000 {
+		t.Errorf("child duration = %d ms, want 3000 from incoming agent task to last model output", got.UsageEvents[0].DurationMS)
 	}
 }
 

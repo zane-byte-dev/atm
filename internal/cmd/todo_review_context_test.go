@@ -148,39 +148,6 @@ func TestRunTodoContextJSONIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestReviewContextCompatibilityAliasUsesLiveContext(t *testing.T) {
-	withTempAtmDir(t)
-	todo := store.Todo{
-		ID: "t1", Title: "Compatibility alias", Priority: "P1",
-		Status: store.TodoStatusOpen, Created: store.Today(),
-	}
-	if err := seedTodos(todo); err != nil {
-		t.Fatal(err)
-	}
-	oldJSON, oldCWD := jsonOutput, todoContextCWD
-	t.Cleanup(func() {
-		jsonOutput = oldJSON
-		todoContextCWD = oldCWD
-	})
-	jsonOutput = true
-	todoContextCWD = t.TempDir()
-
-	var runErr error
-	result := captureStdout(t, func() {
-		runErr = todoReviewContextCmd.RunE(todoReviewContextCmd, []string{todo.ID})
-	})
-	if runErr != nil {
-		t.Fatal(runErr)
-	}
-	var decoded todoContext
-	if err := json.Unmarshal([]byte(result), &decoded); err != nil {
-		t.Fatalf("decode alias output: %v\n%s", err, result)
-	}
-	if decoded.WorkState.ID != todo.ID || decoded.Verification.Status != "not_run" {
-		t.Fatalf("alias context = %#v", decoded)
-	}
-}
-
 func TestTodoContextRequiresCWDForMultipleActiveWorktrees(t *testing.T) {
 	withTempAtmDir(t)
 	todo := store.Todo{

@@ -3,12 +3,14 @@ package cmd
 import (
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/zane-byte-dev/atm/internal/output"
+	"github.com/zane-byte-dev/atm/internal/store"
 )
 
 // openHandoffURL is injectable so tests can assert the URL without opening
@@ -39,6 +41,16 @@ func codexNewThreadDeepLink(workDir, prompt string) string {
 	)
 }
 
+// buildTodoPrompt writes the pointer a person pastes into a fresh Agent
+// session. The Agent reads the live requirement through `todo doc` instead of
+// starting from a copied snapshot that can immediately drift.
+func buildTodoPrompt(todo *store.Todo) string {
+	return fmt.Sprintf(
+		"使用 atm 实现任务 %s：%s\n先跑 atm todo doc %s 拿需求正文，再 atm session bind %s。",
+		todo.ID, todo.Title, todo.ID, todo.ID,
+	)
+}
+
 func queryEscapeSpaces(value string) string {
 	return strings.ReplaceAll(url.QueryEscape(value), "+", "%20")
 }
@@ -52,22 +64,43 @@ func openURLWithSystemOpener(target string) error {
 
 // runTodoHandoff hands a Todo to Codex Desktop without ATM running an Agent.
 //
-// The counterpart of `todo run`, and the one that matches ATM's own rule that it
-// never starts a session on the user's behalf: the pointer text and the working
-// directory are prepared here, the conversation, the approvals and the final
-// Enter belong to Codex. Nothing is claimed in `task_runs`, and the Todo is not
-// started — `atm session bind`, which the pointer tells the Agent to run, is
-// what records that work actually began.
+// ATM never starts a session on the user's behalf: the pointer text and the
+// working directory are prepared here, the conversation, the approvals and the
+// final Enter belong to Codex. The Todo is not started — `atm session bind`,
+// which the pointer tells the Agent to run, is what records that work actually
+// began.
 func runTodoHandoff(cmd *cobra.Command, args []string) error {
 	_, todo, err := loadTodoByID(args[0])
 	if err != nil {
 		return err
 	}
-	workDir, source, err := resolveTaskRunCWD(todo, todoHandoffCWDFlag)
+	prompt := buildTodoPrompt(todo)
+
+	// --copy is the former `todo prompt`: hand the pointer over for pasting into
+	// a session the user opens themselves. It deliberately returns before the
+	// workspace is resolved, because the working directory only matters to the
+	// deep link. Resolving it anyway would make copying a line of text fail on a
+	// Todo bound to several worktrees, which is a question only the caller who
+	// is actually opening Codex has to answer.
+	if todoHandoffCopyFlag {
+		if err := copyToClipboard(prompt); err != nil {
+			return err
+		}
+		if jsonOutput {
+			output.JSON(map[string]any{
+				"todo": todo.ID, "prompt": prompt, "opened": false, "copied": true,
+			})
+			return nil
+		}
+		fmt.Println(prompt)
+		fmt.Fprintln(os.Stderr, "Copied to clipboard.")
+		return nil
+	}
+
+	workDir, source, err := resolveTodoWorkspace(todo, todoHandoffCWDFlag)
 	if err != nil {
 		return err
 	}
-	prompt := buildTodoPrompt(todo)
 	target := codexNewThreadDeepLink(workDir, prompt)
 
 	if !todoHandoffPrintFlag {
@@ -103,10 +136,11 @@ handoff pointer already typed, and stop there. ATM starts no Agent, claims no
 run, and does not change the Todo's status: the conversation, the approvals and
 the Enter that starts the turn all belong to Codex.
 
-Use ` + "`todo run`" + ` instead when nobody will be at the keyboard.`,
+ATM does not launch Codex or any other Agent in the background.`,
 	Example: `  atm todo handoff t240
   atm todo handoff t240 --cwd /path/to/worktree
-  atm todo handoff t240 --print          # 只输出深链，不打开`,
+  atm todo handoff t240 --print          # 只输出深链，不打开
+  atm todo handoff t240 --copy           # 只把指针复制到剪贴板，不打开`,
 	Args: cobra.ExactArgs(1),
 	RunE: runTodoHandoff,
 }

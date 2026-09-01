@@ -51,6 +51,14 @@ var capabilities = map[string]Capabilities{
 	// extraction stays, the claim does not.
 	"qoderwork": {Messages: true, Usage: false},
 	"grokbuild": {Messages: true, Usage: true},
+	// Antigravity stores a conversation as protobuf blobs in a per-conversation
+	// SQLite database, with a different message shape per step kind and no
+	// published schema. Token accounting sits in its own table and comes through
+	// in full — per call, with the cached and uncached input split — so spend,
+	// sessions and projects are all reported; only the message text is missing.
+	// Same reasoning as qoder: the claim matches what is actually extracted, and
+	// flips when the text does.
+	"antigravity": {Messages: false, Usage: true},
 }
 
 // CapabilitiesFor reports what the named parser is expected to extract.

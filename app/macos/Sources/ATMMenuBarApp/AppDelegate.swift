@@ -37,6 +37,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         statusBarController?.navigateForward()
     }
 
+    /// 「前往 → 任务 / 收集 / …」(⌘1–⌘6)。菜单项只带一个下标 tag，分区的顺序由
+    /// `ATMDesktopSection.allCases` 定，跟侧栏共用同一个顺序。
+    @MainActor @objc func selectSectionFromMenu(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              ATMDesktopSection.allCases.indices.contains(item.tag)
+        else { return }
+        statusBarController?.selectSection(ATMDesktopSection.allCases[item.tag])
+    }
+
     @MainActor func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         switch menuItem.action {
         case #selector(navigateBackFromMenu(_:)):

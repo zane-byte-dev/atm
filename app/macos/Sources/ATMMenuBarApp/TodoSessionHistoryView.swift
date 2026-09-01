@@ -12,7 +12,7 @@ struct TodoSessionHistoryView: View {
     }
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 4) {
+        LazyVStack(alignment: .leading, spacing: 12) {
             if store.isLoadingBoundSessions(for: todo.id), sessions.isEmpty {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -31,9 +31,6 @@ struct TodoSessionHistoryView: View {
             } else {
                 ForEach(sessions) { session in
                     sessionRow(session)
-                    if session.id != sessions.last?.id {
-                        Divider()
-                    }
                 }
             }
         }
@@ -68,7 +65,9 @@ struct TodoSessionHistoryView: View {
             sessionActions(session)
                 .padding(.top, 1)
         }
-        .atmRowSurface(isSelected: false)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .atmWorkspaceCard()
     }
 
     private func sessionActions(_ session: ATMBoundSession) -> some View {

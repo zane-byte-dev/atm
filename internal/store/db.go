@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
 
@@ -206,6 +207,81 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 39
+		case 39:
+			if err := migrateV39ToV40(db); err != nil {
+				return err
+			}
+			version = 40
+		case 40:
+			if err := migrateV40ToV41(db); err != nil {
+				return err
+			}
+			version = 41
+		case 41:
+			if err := migrateV41ToV42(db); err != nil {
+				return err
+			}
+			version = 42
+		case 42:
+			if err := migrateV42ToV43(db); err != nil {
+				return err
+			}
+			version = 43
+		case 43:
+			if err := migrateV43ToV44(db); err != nil {
+				return err
+			}
+			version = 44
+		case 44:
+			if err := migrateV44ToV45(db); err != nil {
+				return err
+			}
+			version = 45
+		case 45:
+			if err := migrateV45ToV46(db); err != nil {
+				return err
+			}
+			version = 46
+		case 46:
+			if err := migrateV46ToV47(db); err != nil {
+				return err
+			}
+			version = 47
+		case 47:
+			if err := migrateV47ToV48(db); err != nil {
+				return err
+			}
+			version = 48
+		case 48:
+			if err := migrateV48ToV49(db); err != nil {
+				return err
+			}
+			version = 49
+		case 49:
+			if err := migrateV49ToV50(db); err != nil {
+				return err
+			}
+			version = 50
+		case 50:
+			if err := migrateV50ToV51(db); err != nil {
+				return err
+			}
+			version = 51
+		case 51:
+			if err := migrateV51ToV52(db); err != nil {
+				return err
+			}
+			version = 52
+		case 52:
+			if err := migrateV52ToV53(db); err != nil {
+				return err
+			}
+			version = 53
+		case 53:
+			if err := migrateV53ToV54(db); err != nil {
+				return err
+			}
+			version = 54
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}
@@ -987,6 +1063,587 @@ func migrateV38ToV39(db *sql.DB) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// migrateV39ToV40 adds the rebuildable AI Day projection. No existing rows
+// need backfilling: `atm day rebuild` derives them from the session mirror on
+// demand, and keeping migration free of product logic makes upgrades predictable.
+func migrateV39ToV40(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS ai_day_features (
+			day                 TEXT PRIMARY KEY CHECK (day GLOB '` + datePattern + `'),
+			timezone            TEXT NOT NULL,
+			session_count       INTEGER NOT NULL DEFAULT 0,
+			turn_count          INTEGER NOT NULL DEFAULT 0,
+			tool_calls          INTEGER NOT NULL DEFAULT 0,
+			source_count        INTEGER NOT NULL DEFAULT 0,
+			input_tokens        INTEGER NOT NULL DEFAULT 0,
+			output_tokens       INTEGER NOT NULL DEFAULT 0,
+			cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+			generation_seconds  INTEGER NOT NULL DEFAULT 0,
+			built_at            INTEGER NOT NULL,
+			feature_version     INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_results (
+			day            TEXT PRIMARY KEY REFERENCES ai_day_features(day) ON DELETE CASCADE,
+			state          TEXT NOT NULL CHECK (state IN ('ready','empty')),
+			concept_id     TEXT NOT NULL DEFAULT '',
+			title          TEXT NOT NULL DEFAULT '',
+			explanation    TEXT NOT NULL DEFAULT '',
+			tags_json      TEXT NOT NULL DEFAULT '[]',
+			evidence_json  TEXT NOT NULL DEFAULT '[]',
+			confidence     REAL NOT NULL DEFAULT 0,
+			baseline_days  INTEGER NOT NULL DEFAULT 0,
+			generated_at   INTEGER NOT NULL,
+			engine_version INTEGER NOT NULL
+		)`,
+		`UPDATE schema_version SET version = 40`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func migrateV40ToV41(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS ai_day_events (event_id TEXT PRIMARY KEY, occurred_at INTEGER NOT NULL, source TEXT NOT NULL, session_hash TEXT NOT NULL, event_type TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1, modality TEXT NOT NULL DEFAULT 'general', execution_mode TEXT NOT NULL DEFAULT 'interactive', input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cache_create_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0, semantic_labels_json TEXT NOT NULL DEFAULT '[]', semantic_confidence REAL NOT NULL DEFAULT 0, raw_content_retained INTEGER NOT NULL DEFAULT 0 CHECK (raw_content_retained = 0), schema_version INTEGER NOT NULL, ingested_at INTEGER NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_day_events_time ON ai_day_events(occurred_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_day_events_source_time ON ai_day_events(source, occurred_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_ai_day_events_session_time ON ai_day_events(session_hash, occurred_at)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_session_features (day TEXT NOT NULL CHECK (day GLOB '` + datePattern + `'), session_hash TEXT NOT NULL, source TEXT NOT NULL, modality TEXT NOT NULL DEFAULT 'general', execution_mode TEXT NOT NULL DEFAULT 'interactive', event_count INTEGER NOT NULL DEFAULT 0, turn_count INTEGER NOT NULL DEFAULT 0, tool_calls INTEGER NOT NULL DEFAULT 0, active_seconds INTEGER NOT NULL DEFAULT 0, semantic_counts_json TEXT NOT NULL DEFAULT '{}', built_at INTEGER NOT NULL, feature_version INTEGER NOT NULL, PRIMARY KEY (day, session_hash))`,
+		`CREATE TABLE IF NOT EXISTS ai_day_feature_details (day TEXT PRIMARY KEY REFERENCES ai_day_features(day) ON DELETE CASCADE, event_count INTEGER NOT NULL DEFAULT 0, active_seconds INTEGER NOT NULL DEFAULT 0, foreground_seconds INTEGER NOT NULL DEFAULT 0, background_seconds INTEGER NOT NULL DEFAULT 0, semantic_counts_json TEXT NOT NULL DEFAULT '{}', modality_counts_json TEXT NOT NULL DEFAULT '{}')`,
+		`CREATE TABLE IF NOT EXISTS ai_day_badge_days (day TEXT NOT NULL REFERENCES ai_day_features(day) ON DELETE CASCADE, badge_id TEXT NOT NULL, qualified INTEGER NOT NULL DEFAULT 0, selected INTEGER NOT NULL DEFAULT 0, level INTEGER NOT NULL DEFAULT 0, score REAL NOT NULL DEFAULT 0, evidence_json TEXT NOT NULL DEFAULT '[]', PRIMARY KEY (day, badge_id))`,
+		`CREATE TABLE IF NOT EXISTS ai_day_badge_progress (badge_id TEXT PRIMARY KEY, level INTEGER NOT NULL DEFAULT 0, qualified_days INTEGER NOT NULL DEFAULT 0, last_qualified TEXT NOT NULL DEFAULT '', cooldown_until TEXT NOT NULL DEFAULT '', first_unlocked TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_feedback (day TEXT PRIMARY KEY, verdict TEXT NOT NULL CHECK (verdict IN ('accurate','inaccurate','corrected')), corrected_badge_id TEXT NOT NULL DEFAULT '', semantic_labels_json TEXT NOT NULL DEFAULT '[]', updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_sources (source TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1, semantic_enabled INTEGER NOT NULL DEFAULT 1, updated_at INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS ai_day_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at INTEGER NOT NULL)`,
+		`UPDATE schema_version SET version = 41`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// migrateV41ToV42 records where an AI Day conclusion came from, and discards the
+// derived projections built by the previous engine.
+//
+// The reset is deliberate. The v2 engine's rarity term read badge rows for days
+// *after* the day being scored, so every rebuild of the same range produced
+// different history and the sequence never converged — the stored badge days,
+// levels and per-day concepts are output from a non-deterministic process and
+// cannot be reconciled with the days a rebuild would now produce. Modality
+// counting, tool-to-day attribution and self-source filtering also changed, so
+// the features themselves differ. These tables exist to be rebuilt from the
+// session mirror; user-authored rows (feedback, source and privacy settings) are
+// kept.
+func migrateV41ToV42(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, column := range []struct{ name, definition string }{
+		{"evidence_strength", `ALTER TABLE ai_day_results ADD COLUMN evidence_strength REAL NOT NULL DEFAULT 0`},
+		{"origin", `ALTER TABLE ai_day_results ADD COLUMN origin TEXT NOT NULL DEFAULT 'computed'`},
+		{"computed_badge_id", `ALTER TABLE ai_day_results ADD COLUMN computed_badge_id TEXT NOT NULL DEFAULT ''`},
+	} {
+		has, err := tableHasColumn(tx, "ai_day_results", column.name)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := tx.Exec(column.definition); err != nil {
+			return err
+		}
+	}
+	statements := []string{
+		`DELETE FROM ai_day_badge_progress`,
+		`DELETE FROM ai_day_badge_days`,
+		`DELETE FROM ai_day_session_features`,
+		`DELETE FROM ai_day_feature_details`,
+		`DELETE FROM ai_day_results`,
+		`DELETE FROM ai_day_features`,
+		`DELETE FROM ai_day_events`,
+		`UPDATE schema_version SET version = 42`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// migrateV42ToV43 keeps collected insights in their own conclusion until the
+// user explicitly saves one. Existing insight records remain unsaved: old daily
+// digest documents cannot be mapped back to one item without guessing.
+func migrateV42ToV43(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, column := range []struct{ name, definition string }{
+		{"knowledge_document_id", `ALTER TABLE collection_items ADD COLUMN knowledge_document_id TEXT NOT NULL DEFAULT ''`},
+		{"knowledge_collection", `ALTER TABLE collection_items ADD COLUMN knowledge_collection TEXT NOT NULL DEFAULT ''`},
+	} {
+		has, err := tableHasColumn(tx, "collection_items", column.name)
+		if err != nil {
+			return err
+		}
+		if !has {
+			if _, err := tx.Exec(column.definition); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 43`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV43ToV44 adds durable read state to collection results. Existing
+// records are marked read at their last update so upgrading does not turn the
+// entire historical ledger into a wall of new notifications; only records
+// produced after the migration start unread.
+func migrateV43ToV44(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	has, err := tableHasColumn(tx, "collection_items", "read_at")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := tx.Exec(`ALTER TABLE collection_items ADD COLUMN read_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE collection_items SET read_at=updated_at WHERE read_at=0`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_collection_items_unread
+		ON collection_items(read_at,updated_at DESC)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 44`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV44ToV45 adds the outbound action gate's ledger. Nothing is backfilled:
+// before v45 no command was gated, so there are no historical decisions to
+// invent, and inventing one would claim a send had been reviewed when it had not.
+func migrateV44ToV45(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	statements := []string{
+		`CREATE TABLE IF NOT EXISTS approvals (
+			id           TEXT PRIMARY KEY,
+			dedup_key    TEXT NOT NULL,
+			tool         TEXT NOT NULL,
+			rule_id      TEXT NOT NULL DEFAULT '',
+			real_bin     TEXT NOT NULL,
+			argv         TEXT NOT NULL,
+			cwd          TEXT NOT NULL DEFAULT '',
+			env_agent    TEXT NOT NULL DEFAULT '',
+			label        TEXT NOT NULL DEFAULT '',
+			preview_target TEXT NOT NULL DEFAULT '',
+			preview_title  TEXT NOT NULL DEFAULT '',
+			preview_body   TEXT NOT NULL DEFAULT '',
+			status       TEXT NOT NULL CHECK (status IN ('pending','approved','running','done','denied','expired')),
+			stdin_piped  INTEGER NOT NULL DEFAULT 0 CHECK (stdin_piped IN (0,1)),
+			gate_pid      INTEGER NOT NULL DEFAULT 0,
+			gate_deadline INTEGER NOT NULL DEFAULT 0,
+			attach_count INTEGER NOT NULL DEFAULT 1,
+			requested_at INTEGER NOT NULL,
+			expires_at   INTEGER NOT NULL,
+			decided_at   INTEGER,
+			decided_by   TEXT NOT NULL DEFAULT '',
+			reason       TEXT NOT NULL DEFAULT '',
+			ran_by       TEXT NOT NULL DEFAULT '',
+			exit_code    INTEGER,
+			output       TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_approvals_status_requested ON approvals(status, requested_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_approvals_dedup ON approvals(dedup_key, requested_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_approvals_pending_dedup ON approvals(dedup_key)
+			WHERE status='pending'`,
+		`UPDATE schema_version SET version = 45`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// migrateV45ToV46 lets one source be taken out of the desktop notifications
+// without being taken out of collection. Nothing is backfilled: 0 means "still
+// notifies", which is what every source did before this column existed, and the
+// distinction only ever suppresses a banner — unread counts and badges are the
+// same for a muted source as for any other.
+func migrateV45ToV46(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	has, err := tableHasColumn(tx, "collection_sources", "muted")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := tx.Exec(`ALTER TABLE collection_sources ADD COLUMN muted INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 46`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV46ToV47 gives collection results a recoverable manual end state.
+// Existing records remain active: unlike Todo-derived completion there is no
+// historical signal from which a manual decision could be reconstructed.
+func migrateV46ToV47(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	has, err := tableHasColumn(tx, "collection_items", "archived_at")
+	if err != nil {
+		return err
+	}
+	if !has {
+		if _, err := tx.Exec(`ALTER TABLE collection_items ADD COLUMN archived_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_collection_items_archived
+		ON collection_items(archived_at,updated_at DESC)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 47`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV47ToV48 adds locally managed image attachments. Existing Todos have
+// no images, so the relation starts empty and needs no data backfill.
+func migrateV47ToV48(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS todo_images (
+		todo_id       TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+		position      INTEGER NOT NULL,
+		stored_name   TEXT NOT NULL,
+		original_name TEXT NOT NULL,
+		media_type    TEXT NOT NULL,
+		size_bytes    INTEGER NOT NULL CHECK (size_bytes >= 0),
+		PRIMARY KEY (todo_id, stored_name)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_todo_images_todo_position
+		ON todo_images(todo_id, position)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 48`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV48ToV49 adds the durable Work effect outbox. Historical lifecycle
+// changes cannot be reconstructed reliably, so the table intentionally starts
+// empty; only transitions performed by v49 and later enqueue effects.
+func migrateV48ToV49(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS work_effect_outbox (
+		id              TEXT PRIMARY KEY,
+		request_id      TEXT NOT NULL,
+		todo_id         TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+		kind            TEXT NOT NULL,
+		payload_json    TEXT NOT NULL,
+		created_at      INTEGER NOT NULL,
+		completed_at    INTEGER,
+		attempt_count   INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+		last_attempt_at INTEGER,
+		last_error      TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_work_effect_outbox_pending
+		ON work_effect_outbox(todo_id, created_at, id) WHERE completed_at IS NULL`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 49`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV49ToV50 adds the append-only plan stream. Existing Todos start with
+// no plan; there is no legacy transient checklist that can be reconstructed.
+func migrateV49ToV50(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS todo_plan_revisions (
+		todo_id       TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+		revision      INTEGER NOT NULL CHECK (revision >= 1),
+		base_revision INTEGER NOT NULL CHECK (base_revision >= 0),
+		snapshot_json TEXT NOT NULL,
+		snapshot_hash TEXT NOT NULL,
+		request_id    TEXT NOT NULL,
+		actor_kind    TEXT NOT NULL,
+		origin        TEXT NOT NULL,
+		session_id    TEXT NOT NULL DEFAULT '',
+		binding_id    INTEGER,
+		run_id        TEXT NOT NULL DEFAULT '',
+		agent         TEXT NOT NULL DEFAULT '',
+		created_at    INTEGER NOT NULL,
+		PRIMARY KEY (todo_id, revision)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_todo_plan_latest
+		ON todo_plan_revisions(todo_id, revision DESC)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 50`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV50ToV51 removes workflow meaning from waiting and folds discard
+// vocabulary into the archive layer. Existing SQLite CHECK constraints remain
+// permissive so the data conversion can happen in place; fresh databases and
+// application validators expose only the four lifecycle states.
+func migrateV50ToV51(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().In(config.Loc).Unix()
+	if _, err := tx.Exec(`UPDATE todos
+		SET status='open', wake_condition='', review_at=''
+		WHERE status='waiting' AND TRIM(wake_condition)='暂不处理'`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE todos SET status='in_progress'
+		WHERE status IN ('waiting','blocked')`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE todos
+		SET status='open', archived_at=COALESCE(archived_at, ?),
+			closed=NULL, closed_reason=NULL, done_ts=NULL,
+			wake_condition='', review_at=''
+		WHERE status='dropped'`, now); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 51`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV51ToV52 drops the background-dispatch subsystem. ATM no longer starts
+// an Agent on the user's behalf, so nothing can produce a task_runs row, an
+// auto-dispatched collection item, or an ATM_RUN_ID: the columns could only ever
+// hold their defaults from here on, and a column nothing writes still has to be
+// read past by everyone maintaining these tables.
+//
+// This drops data rather than preserving it, which is the right trade only
+// because the data is inert: task_runs was never displayed after the "Agent
+// 执行" page was removed, and the dispatch columns never left their defaults.
+// The Todos those runs worked on are untouched — lifecycle always lived in
+// todos, and run rows were execution evidence beside it, never the record of
+// what the work was.
+//
+// DROP COLUMN is used directly instead of the rename-and-copy dance: SQLite
+// permits it here because no index, trigger, view or table-level constraint
+// names these columns, only their own column-level CHECKs.
+func migrateV51ToV52(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	// Each step is individually idempotent so a previous attempt that dropped
+	// some columns but failed before bumping the version can be replayed.
+	statements := []string{
+		`DROP TABLE IF EXISTS task_runs`,
+		`ALTER TABLE collection_sources DROP COLUMN auto_dispatch`,
+		`ALTER TABLE collection_items DROP COLUMN dispatch_status`,
+		`ALTER TABLE collection_items DROP COLUMN dispatch_error`,
+		`ALTER TABLE todo_plan_revisions DROP COLUMN run_id`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			if isMissingColumnError(err) {
+				continue
+			}
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 52`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV52ToV53 adds durable lineage and message provenance to the rebuildable
+// session mirror. Existing rows intentionally stay at parser_version 0: the
+// sync loop compares that field with parser.CurrentSessionParserVersion and
+// reparses an unchanged source on its next normal pass. Retained rows whose
+// source is already gone remain honest legacy data rather than being assigned
+// lineage ATM cannot reconstruct.
+func migrateV52ToV53(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	sessionColumns := []string{
+		`resume_id TEXT NOT NULL DEFAULT ''`,
+		`root_session_id TEXT NOT NULL DEFAULT ''`,
+		`parent_session_id TEXT NOT NULL DEFAULT ''`,
+		`agent_path TEXT NOT NULL DEFAULT ''`,
+		`agent_nickname TEXT NOT NULL DEFAULT ''`,
+		`subagent_depth INTEGER NOT NULL DEFAULT 0`,
+		`is_subagent INTEGER NOT NULL DEFAULT 0`,
+		`is_internal INTEGER NOT NULL DEFAULT 0`,
+		`parser_version INTEGER NOT NULL DEFAULT 0`,
+		`content_state TEXT NOT NULL DEFAULT 'empty'`,
+		`result_status TEXT NOT NULL DEFAULT 'unknown'`,
+		`latest_progress TEXT NOT NULL DEFAULT ''`,
+		`final_result TEXT NOT NULL DEFAULT ''`,
+	}
+	messageColumns := []string{
+		`scope TEXT NOT NULL DEFAULT 'local'`,
+		`kind TEXT NOT NULL DEFAULT 'conversation'`,
+		`phase TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, column := range sessionColumns {
+		if _, err := tx.Exec(`ALTER TABLE sessions ADD COLUMN ` + column); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	for _, column := range messageColumns {
+		if _, err := tx.Exec(`ALTER TABLE messages ADD COLUMN ` + column); err != nil &&
+			!strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET content_state = CASE
+		WHEN EXISTS (SELECT 1 FROM messages m WHERE m.session_id = sessions.id) THEN 'available'
+		ELSE 'empty' END WHERE parser_version = 0`); err != nil {
+		return err
+	}
+	for _, statement := range []string{
+		`CREATE INDEX IF NOT EXISTS idx_sessions_resume_id ON sessions(resume_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_root_session ON sessions(root_session_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_sessions_parent_session ON sessions(parent_session_id)`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`UPDATE schema_version SET version = 53`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// migrateV53ToV54 adds ATM's own content-free CLI invocation ledger. There is
+// no backfill: older logs contain redacted error strings but no success events,
+// so importing only their failures would manufacture a misleading rate.
+func migrateV53ToV54(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS cli_invocations (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			occurred_at  INTEGER NOT NULL,
+			session_id  TEXT NOT NULL DEFAULT '',
+			agent        TEXT NOT NULL DEFAULT '',
+			version      TEXT NOT NULL DEFAULT '',
+			command_path TEXT NOT NULL CHECK (command_path <> ''),
+			exit_code    INTEGER NOT NULL,
+			error_code   TEXT NOT NULL DEFAULT '',
+			cause_class  TEXT NOT NULL DEFAULT '',
+			retryable    INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0,1)),
+			duration_ms  INTEGER NOT NULL DEFAULT 0 CHECK (duration_ms >= 0),
+			success      INTEGER NOT NULL CHECK (success IN (0,1)),
+			CHECK (success = 0 OR exit_code = 0)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_cli_invocations_time ON cli_invocations(occurred_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_cli_invocations_session_time ON cli_invocations(session_id,occurred_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_cli_invocations_failure_time ON cli_invocations(success,occurred_at DESC)`,
+		`UPDATE schema_version SET version = 54`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// isMissingColumnError reports whether a DROP COLUMN failed because the column
+// was already gone, which is success for a replayed migration and an error for
+// anything else.
+func isMissingColumnError(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such column") ||
+		strings.Contains(message, "cannot drop column")
 }
 
 // tableHasColumn reports whether a column already exists, so a migration can run
