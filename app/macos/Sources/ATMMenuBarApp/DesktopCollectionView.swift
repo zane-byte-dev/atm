@@ -144,15 +144,27 @@ struct DesktopCollectionView: View {
     }
 
     private var collectionDrawerTabs: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             collectionDrawerTabButton(.records, title: "记录")
             collectionDrawerTabButton(.sources, title: "来源")
-            Spacer(minLength: 4)
+            Spacer(minLength: 2)
 
-            Circle()
-                .fill(collectionHealthColor)
-                .frame(width: 8, height: 8)
-                .help("\(collectionHealthText) · \(collectionSummaryHelp)")
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(collectionHealthColor)
+                    .frame(width: 6, height: 6)
+                Text(collectionHealthLabel)
+                    .font(ATMFont.font(.caption, weight: .medium))
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 24)
+            .background(ATMTheme.elevated.opacity(0.72), in: Capsule())
+            .overlay {
+                Capsule().stroke(ATMTheme.border)
+            }
+            .help("\(collectionHealthText) · \(collectionSummaryHelp)")
 
             if drawerTab == .records {
                 Button {
@@ -188,7 +200,7 @@ struct DesktopCollectionView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.top, 16)
+        .padding(.top, 14)
         .frame(height: 64)
     }
 
@@ -203,6 +215,7 @@ struct DesktopCollectionView: View {
             Text(title)
                 .font(ATMFont.font(.body, weight: .semibold))
                 .foregroundStyle(isSelected ? ATMTheme.primary : ATMTheme.secondary)
+                .frame(minWidth: 36)
                 .padding(.vertical, 12)
                 .overlay(alignment: .bottom) {
                     Rectangle()
@@ -237,7 +250,10 @@ struct DesktopCollectionView: View {
                 CollectionEmptyState(
                     title: "还没有收集来源",
                     systemImage: "tray.2",
-                    detail: "点击右上角添加来源，ATM 会按设定周期自动收集。"
+                    detail: "添加群聊或联系人后，ATM 会按设定周期在后台收集。",
+                    actionTitle: "添加来源",
+                    actionSystemImage: "plus",
+                    action: { showingAddSource = true }
                 )
             } else {
                 ScrollView {
@@ -331,6 +347,17 @@ struct DesktopCollectionView: View {
         return "等待首次运行"
     }
 
+    /// The toolbar only has room for the state itself. Relative time and today's
+    /// counters stay in the tooltip, where they remain available without making
+    /// the primary collect action jump horizontally as the text changes.
+    private var collectionHealthLabel: String {
+        if store.isCollecting { return "收集中" }
+        if store.collectionErrorMessage?.isEmpty == false { return "有异常" }
+        if !store.collectionOverview.enabled { return "已暂停" }
+        if store.collectionOverview.latestSuccessfulRun != nil { return "运行正常" }
+        return "待首次运行"
+    }
+
     private var collectionHealthColor: Color {
         if store.collectionErrorMessage?.isEmpty == false { return ATMTheme.warning }
         if !store.collectionOverview.enabled { return ATMTheme.secondary }
@@ -379,9 +406,13 @@ struct DesktopCollectionView: View {
         VStack(spacing: 0) {
             if filteredItems.isEmpty {
                 CollectionEmptyState(
-                    title: "暂无处理记录",
+                    title: collectionEmptyTitle,
                     systemImage: "tray",
-                    detail: "添加来源后，ATM 会在后台自动收集。"
+                    detail: collectionEmptyDetail,
+                    actionTitle: collectionEmptyActionTitle,
+                    actionSystemImage: collectionEmptyActionSystemImage,
+                    action: collectionEmptyAction,
+                    actionDisabled: store.isCollecting
                 )
             } else {
                 List {
@@ -466,6 +497,46 @@ struct DesktopCollectionView: View {
     private func requestClear(_ groupName: String, items: [ATMCollectionItem]) {
         guard !items.isEmpty else { return }
         itemDeletion = CollectionItemDeletion(items: items, groupName: groupName)
+    }
+
+    private var collectionEmptyTitle: String {
+        if store.collectionOverview.sources.isEmpty { return "从一个来源开始" }
+        if store.collectionOverview.summary.enabledSources == 0 { return "所有来源均已暂停" }
+        return "还没有处理记录"
+    }
+
+    private var collectionEmptyDetail: String {
+        if store.collectionOverview.sources.isEmpty {
+            return "添加群聊或联系人，新的事项会自动进入这里。"
+        }
+        if store.collectionOverview.summary.enabledSources == 0 {
+            return "启用至少一个来源后，ATM 才能继续在后台收集。"
+        }
+        return "来源已经就绪。立即运行一次，或等待下一轮自动收集。"
+    }
+
+    private var collectionEmptyActionTitle: String {
+        if store.collectionOverview.sources.isEmpty { return "添加来源" }
+        if store.collectionOverview.summary.enabledSources == 0 { return "管理来源" }
+        return store.isCollecting ? "正在收集" : "立即收集"
+    }
+
+    private var collectionEmptyActionSystemImage: String {
+        if store.collectionOverview.sources.isEmpty { return "plus" }
+        if store.collectionOverview.summary.enabledSources == 0 { return "slider.horizontal.3" }
+        return store.isCollecting ? "hourglass" : "arrow.clockwise"
+    }
+
+    private var collectionEmptyAction: () -> Void {
+        {
+            if store.collectionOverview.sources.isEmpty {
+                showingAddSource = true
+            } else if store.collectionOverview.summary.enabledSources == 0 {
+                drawerTab = .sources
+            } else if !store.isCollecting {
+                store.runCollectionNow()
+            }
+        }
     }
 
     private func sourceSectionHeader(
@@ -605,7 +676,9 @@ struct DesktopCollectionView: View {
         } else {
             CollectionEmptyState(
                 title: "选择一条处理记录",
-                systemImage: "doc.text.magnifyingglass"
+                systemImage: "doc.text.magnifyingglass",
+                detail: "在左侧选择记录后，可查看处理判断、原始上下文和关联 Todo。",
+                presentation: .detail
             )
         }
     }
@@ -639,25 +712,84 @@ struct DesktopCollectionView: View {
 }
 
 private struct CollectionEmptyState: View {
+    enum Presentation {
+        case drawer
+        case detail
+
+        var maxWidth: CGFloat {
+            switch self {
+            case .drawer: return 280
+            case .detail: return 380
+            }
+        }
+
+        var iconSide: CGFloat {
+            switch self {
+            case .drawer: return 54
+            case .detail: return 62
+            }
+        }
+    }
+
     let title: String
     let systemImage: String
     var detail: String? = nil
+    var actionTitle: String? = nil
+    var actionSystemImage: String? = nil
+    var action: (() -> Void)? = nil
+    var actionDisabled = false
+    var presentation: Presentation = .drawer
 
     var body: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 18) {
             Image(systemName: systemImage)
-                .font(ATMFont.font(.display, weight: .light))
-                .foregroundStyle(ATMTheme.secondary)
-            Text(title)
-                .font(ATMFont.font(.body, weight: .semibold))
-            if let detail {
-                Text(detail)
-                    .font(ATMFont.footnote)
-                    .foregroundStyle(ATMTheme.secondary)
-                    .multilineTextAlignment(.center)
+                .font(ATMFont.font(.title1, weight: .medium))
+                .foregroundStyle(ATMTheme.accent)
+                .frame(width: presentation.iconSide, height: presentation.iconSide)
+                .background(ATMTheme.accentFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(ATMTheme.accent.opacity(0.14))
+                }
+
+            VStack(spacing: 6) {
+                Text(title)
+                    .font(ATMFont.font(.body, weight: .semibold))
+                    .foregroundStyle(ATMTheme.primary)
+                if let detail {
+                    Text(detail)
+                        .font(ATMFont.footnote)
+                        .foregroundStyle(ATMTheme.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if let actionTitle, let action {
+                Button(action: action) {
+                    if let actionSystemImage {
+                        Label(actionTitle, systemImage: actionSystemImage)
+                    } else {
+                        Text(actionTitle)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .disabled(actionDisabled)
             }
         }
-        .padding(24)
+        .padding(.horizontal, presentation == .drawer ? 22 : 30)
+        .padding(.vertical, presentation == .drawer ? 24 : 30)
+        .frame(maxWidth: presentation.maxWidth)
+        .background(ATMTheme.elevated.opacity(presentation == .drawer ? 0.78 : 0.92),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(ATMTheme.border)
+        }
+        .shadow(color: .black.opacity(presentation == .drawer ? 0.025 : 0.04), radius: 12, y: 4)
+        .padding(presentation == .drawer ? 18 : 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

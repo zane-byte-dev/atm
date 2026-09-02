@@ -1565,23 +1565,27 @@ final class ATMDataStore: ObservableObject {
                 // Quota lives in the agents' own logs rather than the session
                 // index, so it is a separate command. Run it concurrently with
                 // the dashboard so the extra read costs no wall-clock time.
-                async let dashboardTask: ATMCommandOutcome<ATMDashboardEnvelope> = decodeCommand(
-                    runner,
-                    arguments: dashboardArguments
-                )
-                async let quotaTask: ATMCommandOutcome<ATMQuotaSnapshot> = decodeCommand(
-                    runner,
-                    arguments: ["quota", "--json"]
-                )
-                async let trashTask: ATMCommandOutcome<[ATMTodo]> = decodeCommand(
-                    runner,
-                    arguments: ["todo", "list", "--status", "trashed", "--json"]
-                )
-                let (dashboard, quotaOutcome, trashOutcome) = await (
-                    dashboardTask,
-                    quotaTask,
-                    trashTask
-                )
+                let dashboardTask = Task {
+                    await decodeCommand(
+                        runner,
+                        arguments: dashboardArguments
+                    ) as ATMCommandOutcome<ATMDashboardEnvelope>
+                }
+                let quotaTask = Task {
+                    await decodeCommand(
+                        runner,
+                        arguments: ["quota", "--json"]
+                    ) as ATMCommandOutcome<ATMQuotaSnapshot>
+                }
+                let trashTask = Task {
+                    await decodeCommand(
+                        runner,
+                        arguments: ["todo", "list", "--status", "trashed", "--json"]
+                    ) as ATMCommandOutcome<[ATMTodo]>
+                }
+                let dashboard = await dashboardTask.value
+                let quotaOutcome = await quotaTask.value
+                let trashOutcome = await trashTask.value
 
                 var nextState = dashboardState
                 if let error = dashboard.error {
