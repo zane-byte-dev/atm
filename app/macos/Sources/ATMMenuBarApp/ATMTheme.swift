@@ -168,7 +168,7 @@ enum ATMTheme {
 enum ATMMotion {
     static let hover = Animation.easeOut(duration: 0.10)
     static let disclosure = Animation.easeInOut(duration: 0.16)
-    static let selection = Animation.easeInOut(duration: 0.20)
+    static let selection = Animation.easeOut(duration: 0.10)
 
     enum SwapStyle {
         case workspace
@@ -177,9 +177,9 @@ enum ATMMotion {
 
         fileprivate var animation: Animation {
             switch self {
-            case .workspace: return .easeInOut(duration: 0.22)
-            case .tab: return .easeOut(duration: 0.18)
-            case .detail: return .easeOut(duration: 0.20)
+            case .workspace: return .easeOut(duration: 0.10)
+            case .tab: return .easeOut(duration: 0.08)
+            case .detail: return .easeOut(duration: 0.08)
             }
         }
 
@@ -200,7 +200,6 @@ private struct ATMAnimatedSwapModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .id(identity)
             .transition(reduceMotion ? .opacity : style.transition)
             .animation(
                 ATMMotion.resolved(style.animation, reduceMotion: reduceMotion),
@@ -278,9 +277,9 @@ extension View {
         modifier(ATMWorkspaceCardModifier(cornerRadius: cornerRadius))
     }
 
-    /// Animate an identity-backed replacement (workspace, tab body or detail)
-    /// with the shared motion rhythm. The modifier automatically falls back to
-    /// a short fade when macOS Reduce Motion is enabled.
+    /// Animate visible changes without owning view lifetime. Callers that need
+    /// separate edit/reading state for each object must set `.id(object.id)` on
+    /// that content explicitly; the surrounding shell stays mounted.
     func atmAnimatedSwap<ID: Hashable>(
         _ identity: ID,
         style: ATMMotion.SwapStyle

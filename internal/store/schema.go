@@ -74,7 +74,8 @@ import (
 // counted as the child's own conversation. v54 adds a content-free CLI
 // invocation ledger: command paths and stable outcome classes are observable,
 // while arguments, error messages, working directories and user content are not
-// representable in the schema.
+// representable in the schema. v55 records immutable Todo creation responses so
+// a retried Web request cannot create a second Todo or return later edits.
 //
 // Keep the minimum at 21 while those upgrade steps exist; after the live database
 // has been upgraded, raise this to SchemaVersion and delete the steps. Note what a
@@ -83,7 +84,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 54
+	SchemaVersion        = 55
 	minUpgradableVersion = 21
 )
 
@@ -486,6 +487,16 @@ func createSchema(tx *sql.Tx) error {
 		`CREATE TABLE work_state_meta (
 			key   TEXT PRIMARY KEY,
 			value TEXT NOT NULL
+		)`,
+		// Creation retries return the original response, even after the Todo is
+		// edited or deleted. This deliberately has no foreign key to todos: the
+		// record is written before writeTodos and must survive Todo deletion.
+		`CREATE TABLE work_create_idempotency (
+			idempotency_key TEXT PRIMARY KEY,
+			payload_hash    TEXT NOT NULL,
+			todo_id         TEXT NOT NULL,
+			result_json     TEXT NOT NULL,
+			created_at      INTEGER NOT NULL
 		)`,
 		// Lifecycle state is authoritative in SQLite, while Todo documents and UI
 		// notifications live outside it. Each row is a durable request to bring

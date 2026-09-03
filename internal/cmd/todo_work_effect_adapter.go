@@ -15,16 +15,21 @@ import (
 // durable Work effects. Work application services describe the required
 // projection; they never import command rendering or execute user-configured
 // shell text.
-type localWorkEffectExecutor struct{}
+type localWorkEffectExecutor struct {
+	// NotifyTodo replaces only desktop notification delivery. A nil value keeps
+	// the CLI's normal notifier; a workspace can supply a no-op while the macOS
+	// app owns notifications. Document and on-done effects always run normally.
+	NotifyTodo func(*store.Todo, string)
+}
 
-func (localWorkEffectExecutor) ApplyWorkEffect(event workapp.Effect) error {
+func (executor localWorkEffectExecutor) ApplyWorkEffect(event workapp.Effect) error {
 	todo := event.Todo
 	switch event.Kind {
 	case workapp.EffectTodoSubmitted:
 		if err := appendWorkEffectLogOnce(todo, event.Message); err != nil {
 			return fmt.Errorf("append todo log after submit: %w", err)
 		}
-		notifyTodoEvent(&todo, notifyEventReview)
+		executor.notifyTodo(&todo, notifyEventReview)
 		return syncWorkEffectDocument(todo, "after submit")
 	case workapp.EffectTodoWaiting:
 		return syncWorkEffectDocument(todo, "")
@@ -61,7 +66,7 @@ func (localWorkEffectExecutor) ApplyWorkEffect(event workapp.Effect) error {
 		// The close effect only ever means accepted-as-done now. It used to also
 		// carry 放弃, which was a status this branch checked for; setting work
 		// aside archives it instead, and archival is not a close.
-		notifyTodoEvent(&todo, notifyEventDone)
+		executor.notifyTodo(&todo, notifyEventDone)
 		if todo.Status == "done" && strings.TrimSpace(todo.OnDone) != "" {
 			// Delivery is at-least-once. A process crash after Start and before the
 			// outbox acknowledgement can launch this command again; OnDone hooks
@@ -83,6 +88,14 @@ func (localWorkEffectExecutor) ApplyWorkEffect(event workapp.Effect) error {
 	default:
 		return fmt.Errorf("unknown work effect %q", event.Kind)
 	}
+}
+
+func (executor localWorkEffectExecutor) notifyTodo(todo *store.Todo, event string) {
+	if executor.NotifyTodo != nil {
+		executor.NotifyTodo(todo, event)
+		return
+	}
+	notifyTodoEvent(todo, event)
 }
 
 func appendRefinementAnalysisOnce(todo workapp.Todo, message string) error {

@@ -101,6 +101,36 @@ func TestCLIInvocationSeparatesCobraContractFailureFromCommandFailure(t *testing
 	}
 }
 
+func TestResidentWorkspaceDoesNotRecordItsLifetimeAsCLIUsage(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	withCommandFlags(t)
+	oldArgs := os.Args
+	t.Cleanup(func() {
+		os.Args = oldArgs
+		cliCommandLongRunning.Store(false)
+	})
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	os.Args = []string{"atm", "serve"}
+	cliCommandLongRunning.Store(true)
+	recordCLIInvocation(time.Now().Add(-48*time.Hour), nil, 0)
+	// A separate status invocation remains a normal, short CLI action.
+	os.Args = []string{"atm", "serve", "status"}
+	cliCommandLongRunning.Store(false)
+	recordCLIInvocation(time.Now(), nil, 0)
+	result, err := store.QueryCLIInvocations(db, store.CLIInvocationQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 1 || result.Invocations[0].CommandPath != "atm serve status" {
+		t.Fatalf("workspace lifetime leaked into CLI usage: %#v", result)
+	}
+}
+
 func TestSessionToolsAdapterReturnsFailedInvocationEnvelope(t *testing.T) {
 	withIsolatedCommandEnv(t)
 	withCommandFlags(t)

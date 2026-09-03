@@ -17,6 +17,57 @@ final class DesktopSearchPaletteTests: XCTestCase {
         XCTAssertEqual(ATMSearchSelection.movedIndex(current: 7, resultCount: 0, step: 1), 0)
     }
 
+    func testProgressiveSearchCompletesEachDomainWithoutHidingOtherPendingDomains() {
+        var progress = ATMSearchProgress()
+        let request = progress.begin(query: "ATM")
+
+        XCTAssertTrue(progress.complete(.tasks, requestID: request, error: nil))
+        XCTAssertEqual(progress.resultQueries[.tasks], "ATM")
+        XCTAssertFalse(progress.pending.contains(.tasks))
+        XCTAssertTrue(progress.isSearching, "快速任务结果到达后，慢搜索域仍应显示加载状态")
+        XCTAssertTrue(progress.complete(.documents, requestID: request, error: "查询失败"))
+        XCTAssertEqual(progress.errorMessage, "知识：查询失败")
+        XCTAssertTrue(progress.isSearching)
+        progress.complete(.memories, requestID: request, error: nil)
+        progress.complete(.sessions, requestID: request, error: nil)
+        XCTAssertFalse(progress.isSearching)
+    }
+
+    func testProgressiveSearchRetainsResultQueryAndRejectsOlderRetryResults() {
+        var progress = ATMSearchProgress()
+        let first = progress.begin(query: "旧查询")
+        progress.complete(.tasks, requestID: first, error: nil)
+        let second = progress.begin(query: "新查询")
+        XCTAssertEqual(progress.previousQuery(for: .tasks), "旧查询")
+        XCTAssertFalse(progress.complete(.sessions, requestID: first, error: nil))
+        XCTAssertNil(progress.resultQueries[.sessions])
+
+        let retry = progress.begin(query: "新查询")
+        XCTAssertFalse(progress.accepts(second, query: "新查询"))
+        XCTAssertFalse(progress.complete(.tasks, requestID: second, error: nil))
+        XCTAssertTrue(progress.complete(.tasks, requestID: retry, error: nil))
+        XCTAssertNil(progress.previousQuery(for: .tasks))
+        XCTAssertEqual(progress.resultQueries[.tasks], "新查询")
+
+        progress.begin(query: "")
+        XCTAssertFalse(progress.isSearching)
+        XCTAssertTrue(progress.resultQueries.isEmpty)
+        XCTAssertFalse(progress.complete(.memories, requestID: retry, error: nil))
+    }
+
+    func testProgressiveResultsPreserveKeyboardSelectionWhenEarlierDomainArrives() {
+        XCTAssertEqual(
+            ATMSearchSelection.reconciledIndex(
+                current: 1, selectedAnchor: "session:s2", anchors: ["task:t1", "session:s1", "session:s2"]
+            ),
+            2
+        )
+        XCTAssertEqual(
+            ATMSearchSelection.reconciledIndex(current: 5, selectedAnchor: "removed", anchors: ["task:t1"]),
+            0
+        )
+    }
+
     @MainActor
     func testSearchTextFieldRoutesArrowReturnAndEscapeCommands() {
         var query = "ATM"

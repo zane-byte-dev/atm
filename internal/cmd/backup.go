@@ -69,6 +69,9 @@ var excludedBackupEntries = []string{
 	// machine and means nothing after a restore elsewhere.
 	"logs",
 	"notch.sock",
+	// Local server records and bearer credentials belong only to one process.
+	"runtime",
+	"backups",
 }
 
 type backupManifest struct {

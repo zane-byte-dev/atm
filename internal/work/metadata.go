@@ -28,19 +28,23 @@ type MetadataEffect struct {
 }
 
 type AddInput struct {
-	Title       string   `json:"title"`
-	Description string   `json:"description,omitempty"`
-	Priority    string   `json:"priority,omitempty"`
-	Project     string   `json:"project,omitempty"`
-	Source      string   `json:"source,omitempty"`
-	Creator     string   `json:"creator,omitempty"`
-	OnDone      string   `json:"on_done,omitempty"`
-	ImagePaths  []string `json:"image_paths,omitempty"`
+	// IdempotencyKey identifies one create intent across transport retries.
+	// Existing CLI callers may omit it; Web callers must provide one.
+	IdempotencyKey string   `json:"idempotency_key,omitempty"`
+	Title          string   `json:"title"`
+	Description    string   `json:"description,omitempty"`
+	Priority       string   `json:"priority,omitempty"`
+	Project        string   `json:"project,omitempty"`
+	Source         string   `json:"source,omitempty"`
+	Creator        string   `json:"creator,omitempty"`
+	OnDone         string   `json:"on_done,omitempty"`
+	ImagePaths     []string `json:"image_paths,omitempty"`
 }
 
 type AddResult struct {
-	Todo    Todo             `json:"todo"`
-	Effects []MetadataEffect `json:"-"`
+	Todo     Todo             `json:"todo"`
+	Replayed bool             `json:"replayed,omitempty"`
+	Effects  []MetadataEffect `json:"-"`
 }
 
 type BatchAddInput struct {
@@ -85,8 +89,9 @@ type EditPatch struct {
 }
 
 type EditInput struct {
-	TodoID string    `json:"todo_id"`
-	Patch  EditPatch `json:"patch"`
+	TodoID       string    `json:"todo_id"`
+	ExpectedETag string    `json:"expected_etag,omitempty"`
+	Patch        EditPatch `json:"patch"`
 }
 
 type EditResult struct {
@@ -129,10 +134,39 @@ func (service Service) Add(ctx context.Context, call application.Call, input Add
 	if err != nil {
 		return AddResult{}, err
 	}
+	idempotencyKey, err := normalizeCreateIdempotencyKey(call, input.IdempotencyKey)
+	if err != nil {
+		return AddResult{}, err
+	}
+	payloadHash := addPayloadHash(normalized)
 
 	result := AddResult{}
+	var documentTodo *Todo
 	var rollbackImageFiles func()
 	err = service.Mutate(func(transaction *Transaction) error {
+		if idempotencyKey != "" {
+			record, replayErr := transaction.state.FindTodoCreate(idempotencyKey)
+			if replayErr != nil {
+				return replayErr
+			}
+			if record != nil {
+				if record.PayloadHash != payloadHash {
+					return createIdempotencyConflict(idempotencyKey, record.TodoID)
+				}
+				if replayErr := restoreCreateSnapshot(record.ResultJSON, &result.Todo); replayErr != nil {
+					return replayErr
+				}
+				result.Replayed = true
+				// A retry may repair a missing document after the original commit,
+				// but must never project the old response over later CLI edits or
+				// recreate a document for a Todo removed from the working set.
+				if current := store.FindTodo(transaction.Todos(), record.TodoID); current != nil && !store.TodoDocExists(current.ID) {
+					copy := cloneTodo(*current)
+					documentTodo = &copy
+				}
+				return nil
+			}
+		}
 		todo := Todo{
 			ID:          store.NextTodoID(transaction.Todos()),
 			Title:       normalized.title,
@@ -153,6 +187,11 @@ func (service Service) Add(ctx context.Context, call application.Call, input Add
 		todo.Images = images
 		transaction.Todos().Items = append(transaction.Todos().Items, todo)
 		result.Todo = cloneTodo(todo)
+		copy := cloneTodo(todo)
+		documentTodo = &copy
+		if idempotencyKey != "" {
+			return transaction.recordTodoCreate(idempotencyKey, payloadHash, todo)
+		}
 		return nil
 	})
 	if err != nil {
@@ -161,10 +200,14 @@ func (service Service) Add(ctx context.Context, call application.Call, input Add
 		}
 		return AddResult{}, metadataApplicationError("add todo", err)
 	}
-	if _, err := store.EnsureTodoDoc(&result.Todo); err != nil {
-		return AddResult{}, metadataUnavailable("materialize todo document after add", err)
+	if documentTodo != nil {
+		if _, err := store.EnsureTodoDoc(documentTodo); err != nil {
+			return AddResult{}, metadataUnavailable("materialize todo document after add", err)
+		}
 	}
-	result.Effects = metadataEffectsForCreate(result.Todo)
+	if !result.Replayed {
+		result.Effects = metadataEffectsForCreate(result.Todo)
+	}
 	return result, nil
 }
 
@@ -253,6 +296,10 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 	if strings.TrimSpace(input.TodoID) == "" {
 		return EditResult{}, metadataInvalidArgument("todo ID is required", "todo_id", input.TodoID)
 	}
+	expectedETag := strings.TrimSpace(input.ExpectedETag)
+	if call.Actor.Origin == application.OriginWeb && expectedETag == "" {
+		return EditResult{}, metadataInvalidArgument("expected_etag is required for Web todo edits", "expected_etag", input.ExpectedETag)
+	}
 	patch, err := normalizeEditPatch(input.Patch)
 	if err != nil {
 		return EditResult{}, err
@@ -269,6 +316,9 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 		todo, findErr := transaction.Todo(input.TodoID)
 		if findErr != nil {
 			return metadataTodoNotFound(input.TodoID, findErr)
+		}
+		if expectedETag != "" && TodoETag(*todo) != expectedETag {
+			return todoETagConflict(*todo, expectedETag)
 		}
 		result.PreviousStatus = todo.Status
 		patch.apply(todo)

@@ -105,18 +105,26 @@ struct ATMTodoSuggestion: Equatable {
         todos: [ATMTodo],
         liveSessions: [ATMLiveSession] = []
     ) -> ATMTodoSuggestion {
+        let liveProject = liveSessions
+            .filter { !$0.project.isEmpty }
+            .min { $0.ageSeconds < $1.ageSeconds }?.project
+        return infer(text: text, knownProjects: knownProjects(in: todos), liveProject: liveProject)
+    }
+
+    static func infer(
+        text: String,
+        knownProjects known: [String],
+        liveProject: String?
+    ) -> ATMTodoSuggestion {
         let haystack = text.lowercased()
         var suggestion = empty
 
-        let known = knownProjects(in: todos)
         if let mentioned = known.first(where: { haystack.contains($0.lowercased()) }) {
             suggestion.project = mentioned
             suggestion.projectReason = "文本提到 \(mentioned)"
-        } else if let live = liveSessions
-            .filter({ !$0.project.isEmpty })
-            .min(by: { $0.ageSeconds < $1.ageSeconds }) {
-            suggestion.project = matchKnown(live.project, in: known) ?? live.project
-            suggestion.projectReason = "当前会话在 \(live.project)"
+        } else if let liveProject, !liveProject.isEmpty {
+            suggestion.project = matchKnown(liveProject, in: known) ?? liveProject
+            suggestion.projectReason = "当前会话在 \(liveProject)"
         } else if let recent = known.first {
             suggestion.project = recent
             suggestion.projectReason = "最近常用项目"
@@ -140,7 +148,7 @@ struct ATMTodoSuggestion: Equatable {
     /// Projects the user actually files todos under, most recently used first.
     /// Recency beats volume here: the project of this week's work is the better
     /// guess even when an older project has more todos.
-    private static func knownProjects(in todos: [ATMTodo]) -> [String] {
+    static func knownProjects(in todos: [ATMTodo]) -> [String] {
         var latest: [String: String] = [:]
         for todo in todos {
             guard let project = todo.project?.trimmingCharacters(in: .whitespacesAndNewlines),

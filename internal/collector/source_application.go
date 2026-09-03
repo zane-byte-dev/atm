@@ -396,10 +396,11 @@ func validateSourceCall(
 		return ctx, err
 	}
 	if mutation && (call.Actor.Kind != application.ActorHuman ||
-		(call.Actor.Origin != application.OriginCLI && call.Actor.Origin != application.OriginIPC)) {
+		(call.Actor.Origin != application.OriginCLI && call.Actor.Origin != application.OriginIPC &&
+			call.Actor.Origin != application.OriginWeb)) {
 		err := application.NewError(
 			application.CodeForbidden,
-			"only a human through the CLI or desktop app may change collection sources",
+			"only a human through the CLI, desktop app, or Web workspace may change collection sources",
 		)
 		err.Details = map[string]any{
 			"actor_kind": call.Actor.Kind,

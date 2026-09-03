@@ -2,14 +2,23 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BUILD_CONFIGURATION="${ATM_BUILD_CONFIGURATION:-debug}"
+case "$BUILD_CONFIGURATION" in
+    debug|release) ;;
+    *)
+        echo "ATM_BUILD_CONFIGURATION must be debug or release (received: $BUILD_CONFIGURATION)" >&2
+        exit 2
+        ;;
+esac
 APP_DIR="$ROOT_DIR/.build/dev-app/ATM Dev.app"
-BUILD_DIR="$ROOT_DIR/.build/debug"
+BUILD_DIR="$ROOT_DIR/.build/$BUILD_CONFIGURATION"
 RESOURCE_BUNDLE="$BUILD_DIR/ATMMenuBarApp_ATMMenuBarApp.bundle"
 ICON_SOURCE="$ROOT_DIR/Resources/AppIcon.png"
 ICONSET_DIR="$ROOT_DIR/.build/dev-app/AppIcon.iconset"
 ICON_FILE="$ROOT_DIR/.build/dev-app/AppIcon.icns"
 
-swift build --package-path "$ROOT_DIR"
+echo "Building ATM Dev ($BUILD_CONFIGURATION)"
+swift build --package-path "$ROOT_DIR" -c "$BUILD_CONFIGURATION"
 
 rm -rf "$APP_DIR" "$ICONSET_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources" "$ICONSET_DIR"
@@ -33,5 +42,11 @@ cp "$ROOT_DIR/Resources/DebugInfo.plist" "$APP_DIR/Contents/Info.plist"
 chmod +x "$APP_DIR/Contents/MacOS/ATMMenuBarApp"
 codesign --force --deep --sign - "$APP_DIR"
 
-echo "Running $APP_DIR"
+echo "Packaged $APP_DIR ($BUILD_CONFIGURATION)"
+if [[ "${ATM_BUILD_ONLY:-0}" == "1" ]]; then
+    echo "ATM_BUILD_ONLY=1: launch skipped"
+    exit 0
+fi
+
+echo "Running $APP_DIR ($BUILD_CONFIGURATION)"
 exec "$APP_DIR/Contents/MacOS/ATMMenuBarApp"

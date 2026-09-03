@@ -283,6 +283,22 @@ final class ATMAIDayStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var lastRefreshed: Date?
     @Published var errorMessage: String?
+    @Published var selectedTab: ATMAIDayTab = .today
+    @Published var showAtlasMap = true
+    @Published var historyFilter: String?
+    let scrollPositions = ATMWorkspaceScrollPositions()
+
+    private let loadDashboard: @MainActor () async throws -> ATMAIDayDashboard
+    private var refreshTask: Task<Void, Never>?
+    private var refreshGeneration = 0
+    private var mutationCount = 0
+    private var isVisible = false
+
+    init(loadDashboard: @escaping @MainActor () async throws -> ATMAIDayDashboard = {
+        try await ATMIPCClient().call(ATMAIDayCommand.snapshot)
+    }) {
+        self.loadDashboard = loadDashboard
+    }
 
     /// A day in progress keeps changing as sessions flush into the mirror, so the
     /// pane refreshes on its own instead of showing whatever was true when it was
@@ -305,29 +321,66 @@ final class ATMAIDayStore: ObservableObject {
     }
 
     func refresh() {
-        guard !isLoading else { return }
+        guard refreshTask == nil, mutationCount == 0 else { return }
+        refreshGeneration += 1
+        let generation = refreshGeneration
         isLoading = true
-        Task {
+        refreshTask = Task {
+            defer {
+                if refreshGeneration == generation {
+                    refreshTask = nil
+                    isLoading = mutationCount > 0
+                }
+            }
             do {
-                let dashboard = try await ATMIPCClient().call(ATMAIDayCommand.snapshot)
+                let dashboard = try await loadDashboard()
+                try Task.checkCancellation()
+                guard refreshGeneration == generation else { return }
                 today = dashboard.today
                 atlas = dashboard.atlas
                 history = dashboard.history
                 privacy = dashboard.privacy
                 lastRefreshed = Date()
                 errorMessage = nil
-            } catch { errorMessage = error.localizedDescription }
-            isLoading = false
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled, refreshGeneration == generation else { return }
+                errorMessage = error.localizedDescription
+            }
         }
+    }
+
+    private func cancelRead() {
+        refreshGeneration += 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        isLoading = mutationCount > 0
+    }
+
+    /// A snapshot that started before a write must never overwrite that write.
+    private func beginMutation() {
+        mutationCount += 1
+        lastRefreshed = nil
+        cancelRead()
+    }
+
+    private func endMutation(refreshAfterward: Bool = true) {
+        mutationCount -= 1
+        isLoading = mutationCount > 0
+        if mutationCount == 0, refreshAfterward, isVisible { refresh() }
     }
 
     /// Refreshes only when the data is old enough to be worth rebuilding for,
     /// so returning to the tab or reactivating the app is cheap.
     func refreshIfStale() {
+        guard isVisible else { return }
         if Self.shouldRefresh(lastRefreshed: lastRefreshed, now: Date()) { refresh() }
     }
 
     func startAutoRefresh() {
+        isVisible = true
+        refreshIfStale()
         guard timer == nil else { return }
         let timer = Timer(timeInterval: Self.refreshCheckInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshIfStale() }
@@ -337,8 +390,10 @@ final class ATMAIDayStore: ObservableObject {
     }
 
     func stopAutoRefresh() {
+        isVisible = false
         timer?.invalidate()
         timer = nil
+        cancelRead()
     }
 
     /// Loads one past day in full, for the history drill-down.
@@ -406,7 +461,9 @@ final class ATMAIDayStore: ObservableObject {
     }
 
     func deleteAll() {
+        beginMutation()
         Task {
+            defer { endMutation(refreshAfterward: false) }
             do {
                 _ = try await ATMIPCClient().call(
                     ATMAIDayCommand.deleteData,
@@ -428,10 +485,12 @@ final class ATMAIDayStore: ObservableObject {
         _ method: ATMIPCMethod<Request, Response>,
         request: Request
     ) {
+        beginMutation()
         Task {
+            defer { endMutation() }
             do {
                 _ = try await ATMIPCClient().call(method, request: request)
-                refresh()
+                errorMessage = nil
             }
             catch { errorMessage = error.localizedDescription }
         }

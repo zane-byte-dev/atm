@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/contract"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
@@ -37,7 +38,7 @@ func TestBuildSnapshotOrchestratesWorkAndReturnsStableEmptyCollections(t *testin
 		loadCurrent: func(_ context.Context, _ application.Call, sessionID string) (*CurrentSession, error) {
 			return &CurrentSession{SessionID: sessionID, State: "unbound"}, nil
 		},
-		query: func(_ context.Context, _ time.Time, _ string, sections sectionSet, sync bool) (queryResult, error) {
+		query: func(_ context.Context, _ time.Time, _ string, sections sectionSet, _ []config.MetricsRange, _ bool, sync bool) (queryResult, error) {
 			if !sections.work || sections.stats || sync {
 				t.Fatalf("query options = %+v, sync=%v", sections, sync)
 			}
@@ -95,7 +96,7 @@ func TestStatsOnlySnapshotDoesNotReadWorkOrLiveState(t *testing.T) {
 			t.Fatal("stats-only snapshot loaded live state")
 			return LiveStatus{}, nil
 		},
-		query: func(_ context.Context, _ time.Time, _ string, sections sectionSet, _ bool) (queryResult, error) {
+		query: func(_ context.Context, _ time.Time, _ string, sections sectionSet, _ []config.MetricsRange, _ bool, _ bool) (queryResult, error) {
 			if sections.work || !sections.stats {
 				t.Fatalf("sections = %+v", sections)
 			}

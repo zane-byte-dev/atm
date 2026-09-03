@@ -66,6 +66,25 @@ final class MemoryIPCTests: XCTestCase {
         XCTAssertNil(request["scope"])
     }
 
+    func testMemoryRecallWireAcceptsNullAndEmptyHitsAsNoMatches() throws {
+        for hits in ["null", "[]"] {
+            let response = Data("""
+            {"envelope_version":1,"protocol_version":1,"request_id":"ipc-memory-empty","verb":"memory.recall","data":{"hits":\(hits)}}
+            """.utf8)
+            let decoded = try JSONDecoder().decode(ATMIPCEnvelope<ATMMemoryRecallResponse>.self, from: response)
+            XCTAssertEqual(decoded.data.hits, [], "Go 空切片 \(hits) 应表示没有匹配记忆")
+        }
+    }
+
+    func testMemoryRecallWireStillRejectsMissingOrMalformedHits() {
+        for payload in ["{}", #"{"hits":{}}"#, #"{"hits":"invalid"}"#, #"{"hits":[null]}"#, #"{"hits":[{"id":"memory:1"}]}"#] {
+            let response = Data("""
+            {"envelope_version":1,"protocol_version":1,"request_id":"ipc-memory-malformed","verb":"memory.recall","data":\(payload)}
+            """.utf8)
+            XCTAssertThrowsError(try JSONDecoder().decode(ATMIPCEnvelope<ATMMemoryRecallResponse>.self, from: response))
+        }
+    }
+
     @MainActor
     func testDataStoreMemorySupersedeSendsCompleteReplacementIntent() async throws {
         let response = #"{"envelope_version":1,"protocol_version":1,"request_id":"ipc-memory-supersede","verb":"memory.supersede","data":{"event":{"id":"memory:2"}}}"#

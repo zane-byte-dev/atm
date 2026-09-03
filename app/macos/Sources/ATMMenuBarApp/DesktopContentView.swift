@@ -228,7 +228,7 @@ enum ATMTaskQuery {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
+        formatter.timeZone = .autoupdatingCurrent
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
@@ -270,7 +270,11 @@ enum ATMTaskQuery {
     /// numeric id is the fallback for rows closed before timestamps existed —
     /// comparing ids as strings put t99 above t100.
     static func sortedByCompletionDescending(_ todos: [ATMTodo]) -> [ATMTodo] {
-        todos.sorted { completionSortKey($0) > completionSortKey($1) }
+        // Date formatting and numeric ID parsing happen once per row, rather
+        // than in every comparison made by the sort.
+        todos.map { (todo: $0, key: completionSortKey($0)) }
+            .sorted { $0.key > $1.key }
+            .map(\.todo)
     }
 
     /// One total key rather than a chain of pairwise rules: mixing “compare by
@@ -288,9 +292,6 @@ enum ATMTaskQuery {
         from todos: [ATMTodo],
         now: Date = Date()
     ) -> [(id: String, title: String, todos: [ATMTodo])] {
-        let review = todos.filter { $0.status == "review" }
-        let working = todos.filter { $0.status == "in_progress" }
-        let open = todos.filter { $0.status == "open" }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: now)
         let cutoff = calendar.date(
@@ -299,20 +300,27 @@ enum ATMTaskQuery {
             to: today
         ) ?? today
         let cutoffDay = completionDayFormatter.string(from: cutoff)
-        let completed = sortedByCompletionDescending(todos.filter { $0.status == "done" })
-        let done = completed.filter { completionDay(for: $0) >= cutoffDay }
-        let history = completed.filter { completionDay(for: $0) < cutoffDay }
-        let buckets: [String: [ATMTodo]] = [
-            "review": review,
-            "working": working,
-            "open": open,
-            "done": done,
-            "history": history,
-        ]
+        var buckets: [String: [ATMTodo]] = [:]
+        var completed: [(todo: ATMTodo, key: (String, Int64, Int, String))] = []
+        for todo in todos {
+            switch todo.status {
+            case "done": completed.append((todo, completionSortKey(todo)))
+            case "in_progress": buckets["working", default: []].append(todo)
+            case "review", "open": buckets[todo.status, default: []].append(todo)
+            default: break
+            }
+        }
+        // One completion sort serves both sections, including a collapsed
+        // history group. Splitting the ordered result preserves that order.
+        completed.sort { $0.key > $1.key }
+        for item in completed {
+            let bucket = item.key.0 >= cutoffDay ? "done" : "history"
+            buckets[bucket, default: []].append(item.todo)
+        }
         let completionGroups: Set<String> = ["done", "history"]
         return groupSpecs.compactMap { spec in
             let items = completionGroups.contains(spec.id)
-                ? sortedByCompletionDescending(buckets[spec.id] ?? [])
+                ? buckets[spec.id] ?? []
                 : sortedByCreatedDescending(buckets[spec.id] ?? [])
             guard !items.isEmpty else { return nil }
             return (spec.id, spec.title, items)
@@ -373,7 +381,7 @@ enum ATMTaskQuery {
     }
 }
 
-private struct ATMTaskGroup: Identifiable {
+struct ATMTaskGroup: Identifiable {
     let id: String
     let title: String
     let todos: [ATMTodo]
@@ -644,6 +652,8 @@ struct DesktopContentView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
+    @StateObject private var knowledgeWorkspace = ATMKnowledgeWorkspaceModel()
+    @StateObject private var aiDayStore = ATMAIDayStore()
     @AppStorage("ATMDesktopSidebarCollapsed") private var sidebarCollapsed = false
     @AppStorage(ATMDesktopLayout.sidebarWidthDefaultsKey)
     private var storedSidebarWidth = Double(ATMDesktopLayout.expandedSidebarWidth)
@@ -781,6 +791,7 @@ struct DesktopContentView: View {
                 switch navigation.section {
                 case .tasks:
                     DesktopTasksView(store: store, navigation: navigation)
+                        .equatable()
                 case .collection:
                     DesktopCollectionView(store: store, navigation: navigation)
                 case .agents:
@@ -789,6 +800,7 @@ struct DesktopContentView: View {
                     DesktopKnowledgeView(
                         store: store,
                         navigation: navigation,
+                        workspace: knowledgeWorkspace,
                         onCreateCollection: {
                             newCollectionID = ""
                             newCollectionName = ""
@@ -814,7 +826,7 @@ struct DesktopContentView: View {
                 case .usage:
                     DesktopUsageView(store: store)
                 case .aiDay:
-                    DesktopAIDayView()
+                    DesktopAIDayView(store: aiDayStore)
                 case .settings:
                     DesktopSettingsView(store: store)
                 }
@@ -1129,9 +1141,12 @@ struct DesktopContentView: View {
 
 }
 
-private struct DesktopTasksView: View {
-    @ObservedObject var store: ATMDataStore
+private struct DesktopTasksView: View, Equatable {
+    let store: ATMDataStore
+    @ObservedObject private var taskState: ATMTaskState
     @ObservedObject var navigation: ATMDesktopNavigation
+    @State private var presentationCache = ATMTaskPresentationCache()
+    @State private var completionDay = Calendar.current.startOfDay(for: Date())
 
     @State private var deleteCandidate: ATMTodo?
 	@State private var retentionCandidate: ATMTaskGroupRetention?
@@ -1143,6 +1158,25 @@ private struct DesktopTasksView: View {
     @AppStorage("ATMDidApplyClosedTaskGroupsV2") private var didApplyClosedTaskGroupsV2 = false
     @AppStorage(ATMNavigatorPresentationPreferences.tasksKey)
     private var taskListPresentationRaw = ATMNavigatorPresentationPreferences.defaultValue
+
+    init(store: ATMDataStore, navigation: ATMDesktopNavigation) {
+        self.store = store
+        self.taskState = store.taskState
+        self.navigation = navigation
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.store === rhs.store && lhs.navigation === rhs.navigation
+    }
+
+    private var presentation: ATMTaskPresentation {
+        presentationCache.presentation(
+            version: taskState.dataVersion,
+            now: max(completionDay, Date()),
+            todos: { store.allTodos },
+            archived: { store.archivedTodos }
+        )
+    }
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsRaw.split(separator: ",").map(String.init))
@@ -1186,34 +1220,29 @@ private struct DesktopTasksView: View {
     }
 
     private var visibleTodos: [ATMTodo] {
-		store.allTodos + store.archivedTodos
+        presentation.visibleTodos
     }
 
     private var selectedTodo: ATMTodo? {
         guard let id = navigation.selectedTodoID else { return nil }
-        return visibleTodos.first { $0.id == id }
+        return presentation.todosByID[id]
     }
 
     private var groups: [ATMTaskGroup] {
-		ATMTaskQuery.groups(from: store.allTodos, includingArchived: store.archivedTodos).map {
-            ATMTaskGroup(id: $0.id, title: $0.title, todos: $0.todos)
-        }
+        presentation.groups
     }
 
 	private var managedGroups: [ATMTaskGroup] {
-		let byID = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
-		return (ATMTaskQuery.groupSpecs + [ATMTaskQuery.archiveGroupSpec]).map { spec in
-			byID[spec.id] ?? ATMTaskGroup(id: spec.id, title: spec.title, todos: [])
-		}
+        presentation.managedGroups
 	}
 
     private var flattenedTodos: [ATMTodo] {
-		groups.flatMap(\.todos)
+        presentation.flattenedTodos
     }
 
 	private var selectedTodoIsArchived: Bool {
 		guard let id = selectedTodo?.id else { return false }
-		return store.archivedTodos.contains(where: { $0.id == id })
+        return presentation.archivedIDs.contains(id)
 	}
 
     var body: some View {
@@ -1275,6 +1304,13 @@ private struct DesktopTasksView: View {
         // (e.g. 已完成). Only pick a default when the current selection is gone;
         // reveal stays on selection change / first appear.
 		.onChange(of: visibleTodos.map(\.id)) { _ in selectFirstIfNeeded() }
+        .onChange(of: taskState.isInitialWorkSettled) { _ in selectFirstIfNeeded() }
+        .onChange(of: taskState.isInitialArchiveSettled) { _ in selectFirstIfNeeded() }
+        .onChange(of: selectedTodo?.id) { id in
+            // A deep link can be selected before its source finishes loading.
+            // Reveal only when it resolves, not on every later data refresh.
+            if id != nil { revealSelectedGroup() }
+        }
         .onChange(of: navigation.selectedTodoID) { _ in
             revealSelectedTodoIfFiltered()
             selectFirstIfNeeded()
@@ -1284,6 +1320,19 @@ private struct DesktopTasksView: View {
 			if tab == .groups { selectManagedGroupIfNeeded() }
 		}
         .onChange(of: taskListPresentationRaw) { _ in revealSelectedGroup() }
+        .task {
+            // The recent/history boundary also advances while the app is left
+            // open overnight without any task mutation to publish a revision.
+            while !Task.isCancelled {
+                let now = Date()
+                completionDay = Calendar.current.startOfDay(for: now)
+                let nextDay = Calendar.current.date(byAdding: .day, value: 1, to: completionDay)
+                    ?? now.addingTimeInterval(86_400)
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(max(nextDay.timeIntervalSinceNow, 1) * 1_000_000_000))
+                } catch { return }
+            }
+        }
     }
 
     private var taskList: some View {
@@ -1420,7 +1469,7 @@ private struct DesktopTasksView: View {
 	}
 
     private func todoRow(_ todo: ATMTodo, showsStatus: Bool) -> some View {
-		let isArchived = store.archivedTodos.contains(where: { $0.id == todo.id })
+        let isArchived = presentation.archivedIDs.contains(todo.id)
 		return Button {
             navigation.selectedTodoID = todo.id
         } label: {
@@ -1428,8 +1477,9 @@ private struct DesktopTasksView: View {
                 todo: todo,
                 isSelected: navigation.selectedTodoID == todo.id,
 				showsStatus: showsStatus,
-				isArchived: isArchived
+                isArchived: isArchived
             )
+            .equatable()
         }
         .buttonStyle(.atmRow)
         .focusable(false)
@@ -1441,7 +1491,7 @@ private struct DesktopTasksView: View {
         ATMTodoMenu.entries(
             for: todo,
             store: store,
-			isArchived: store.archivedTodos.contains(where: { $0.id == todo.id }),
+            isArchived: presentation.archivedIDs.contains(todo.id),
             // Editing lives in the detail pane's form, so the row menu selects the
             // todo and asks the detail to open straight into it.
             onEdit: {
@@ -1453,13 +1503,13 @@ private struct DesktopTasksView: View {
     }
 
     private func selectFirstIfNeeded() {
-        if let selected = navigation.selectedTodoID,
-           visibleTodos.contains(where: { $0.id == selected }) {
-            // Keep the user's group collapse state. Reveal only when selection
-            // changes (see onChange) or on first appear.
-            return
-        }
-        navigation.selectedTodoID = ATMTaskQuery.preferredDefault(in: visibleTodos)?.id
+        let selected = ATMTaskSelection.resolve(
+            currentID: navigation.selectedTodoID,
+            in: presentation,
+            workSettled: taskState.isInitialWorkSettled,
+            archivesSettled: taskState.isInitialArchiveSettled
+        )
+        if selected != navigation.selectedTodoID { navigation.selectedTodoID = selected }
     }
 
     private func revealSelectedTodoIfFiltered() {
@@ -1648,7 +1698,7 @@ private struct DesktopTasksView: View {
 	}
 }
 
-private struct DesktopTodoRow: View {
+private struct DesktopTodoRow: View, Equatable {
     let todo: ATMTodo
     let isSelected: Bool
     var showsStatus = false
@@ -1769,7 +1819,8 @@ struct DesktopTodoDetail: View {
     }
 
     let todo: ATMTodo
-    @ObservedObject var store: ATMDataStore
+    let store: ATMDataStore
+    @ObservedObject private var taskState: ATMTaskState
     @ObservedObject var navigation: ATMDesktopNavigation
     let isArchived: Bool
 
@@ -1789,6 +1840,14 @@ struct DesktopTodoDetail: View {
     @State private var reviewAt = ""
     @State private var source = ""
 	@State private var previewImageURL: URL?
+
+    init(todo: ATMTodo, store: ATMDataStore, navigation: ATMDesktopNavigation, isArchived: Bool) {
+        self.todo = todo
+        self.store = store
+        self.taskState = store.taskState
+        self.navigation = navigation
+        self.isArchived = isArchived
+    }
 
     private static let reviewDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -1827,24 +1886,22 @@ struct DesktopTodoDetail: View {
         }
         .background(Color.clear)
         .onAppear {
-            if !isArchived {
-                store.loadBoundSessions(for: todo.id)
-                store.loadProgress(for: todo.id)
-                store.loadAdvice(for: todo.id)
-            }
+            store.retainTodoDetailReads(for: todo.id)
+            loadVisibleDetailData()
             // Selecting another row rebuilds this view (`.id(todo.id)`), so a
             // request aimed at a not-yet-selected todo arrives here rather than in
             // onChange.
             consumeEditRequest()
         }
+        .onDisappear { store.cancelTodoDetailReads(for: todo.id) }
         .onChange(of: navigation.editTodoID) { _ in consumeEditRequest() }
-        .onChange(of: store.snapshot.refreshedAt) { _ in
-            if !isArchived {
-                store.loadBoundSessions(for: todo.id)
-                store.loadAdvice(for: todo.id)
-            }
+        .onChange(of: taskState.dataVersion) { _ in loadVisibleDetailData() }
+        .onChange(of: taskState.refreshVersion) { _ in loadVisibleDetailData() }
+        .onChange(of: selectedTab) { _ in loadVisibleDetailData() }
+        .onChange(of: isArchived) { archived in
+            normalizeSelectedTab()
+            if !archived { loadVisibleDetailData() }
         }
-        .onChange(of: isArchived) { _ in normalizeSelectedTab() }
         .onChange(of: todo.description) { _ in
             if !isArchived { store.loadAdvice(for: todo.id, force: true) }
         }
@@ -1869,6 +1926,17 @@ struct DesktopTodoDetail: View {
         .sheet(isPresented: $showingRefineSheet) {
             refineSheet
         }
+    }
+
+    private func loadVisibleDetailData() {
+        guard !isArchived else { return }
+        // The next-action notice is visible above every tab for unfinished
+        // tasks. The full session history is fetched only when it is opened.
+        if todo.status != "done" || selectedTab == .activity {
+            store.loadProgress(for: todo.id)
+        }
+        if selectedTab == .sessions { store.loadBoundSessions(for: todo.id) }
+        store.loadAdvice(for: todo.id)
     }
 
     /// 优化 always goes through this sheet, including the first pass: the hint is
@@ -2148,17 +2216,14 @@ struct DesktopTodoDetail: View {
 								previewImageURL = URL(fileURLWithPath: image.path)
 							} label: {
 								VStack(alignment: .leading, spacing: 6) {
-									if let thumbnail = NSImage(contentsOfFile: image.path) {
-										Image(nsImage: thumbnail)
-											.resizable()
-											.scaledToFill()
-											.frame(height: 92)
-											.clipped()
-									} else {
-										Image(systemName: "photo.badge.exclamationmark")
-											.frame(maxWidth: .infinity, minHeight: 92)
-											.foregroundStyle(ATMTheme.secondary)
-									}
+                                    GeometryReader { geometry in
+                                        ATMAsyncThumbnail(
+                                            url: URL(fileURLWithPath: image.path),
+                                            width: geometry.size.width,
+                                            height: 92
+                                        )
+                                    }
+                                    .frame(height: 92)
 									Text(image.name)
 										.font(ATMFont.caption)
 										.lineLimit(1)
@@ -2654,18 +2719,15 @@ private struct DesktopAddTodoSheet: View {
 	@State private var imageError: String?
 	@State private var isImageDropTarget = false
 	@State private var submitted = false
+    @State private var imagePasteTasks: [UUID: Task<Void, Never>] = [:]
+    @State private var projectCache = ATMTodoProjectCache()
     let onAdd: (ATMTodoDraft) -> Void
 
-    private var suggestion: ATMTodoSuggestion {
-        ATMTodoSuggestion.infer(
-            text: text,
-            todos: store.allTodos,
-            liveSessions: store.snapshot.liveStatus.sessions
-        )
+    private var projectOptions: ATMTodoProjectCache {
+        projectCache.projects(version: store.taskState.dataVersion, todos: { store.allTodos })
     }
 
-    private var draft: ATMTodoDraft {
-        let suggestion = suggestion
+    private func draft(suggestion: ATMTodoSuggestion) -> ATMTodoDraft {
         return ATMTodoDraft(
             text: text,
             project: projectOverride ?? suggestion.project,
@@ -2676,17 +2738,19 @@ private struct DesktopAddTodoSheet: View {
     }
 
     private var knownProjects: [String] {
-        var seen: [String] = []
-        for todo in store.allTodos {
-            guard let project = todo.project, !project.isEmpty, !seen.contains(project) else { continue }
-            seen.append(project)
-        }
-        return seen.sorted()
+        projectOptions.alphabetical
     }
 
     var body: some View {
-        let draft = draft
-        let suggestion = suggestion
+        let liveProject = store.snapshot.liveStatus.sessions
+            .filter { !$0.project.isEmpty }
+            .min { $0.ageSeconds < $1.ageSeconds }?.project
+        let suggestion = ATMTodoSuggestion.infer(
+            text: text,
+            knownProjects: projectOptions.ranked,
+            liveProject: liveProject
+        )
+        let draft = draft(suggestion: suggestion)
         return VStack(alignment: .leading, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("添加任务").font(ATMFont.font(.title2, weight: .bold))
@@ -2745,7 +2809,7 @@ private struct DesktopAddTodoSheet: View {
                     .help("关闭 (⎋)")
                 Button("添加") { submit(draft) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(!draft.isSubmittable)
+                    .disabled(!draft.isSubmittable || !imagePasteTasks.isEmpty)
                     .help("添加任务 (⏎)")
             }
         }
@@ -2761,6 +2825,8 @@ private struct DesktopAddTodoSheet: View {
 		}
 		.background(ATMImagePasteMonitor(onPasteImages: handleImagePaste))
 		.onDisappear {
+            for task in imagePasteTasks.values { task.cancel() }
+            imagePasteTasks.removeAll()
 			if !submitted { draft.cleanupTemporaryImages() }
 		}
     }
@@ -2829,7 +2895,7 @@ projectOverride != nil || priorityOverride != nil
     }
 
     private func submit(_ draft: ATMTodoDraft) {
-        guard draft.isSubmittable else { return }
+        guard draft.isSubmittable, imagePasteTasks.isEmpty else { return }
 		submitted = true
         onAdd(draft)
     }
@@ -2837,7 +2903,7 @@ projectOverride != nil || priorityOverride != nil
 	private var imagePicker: some View {
 		VStack(alignment: .leading, spacing: 8) {
 			HStack {
-				Label("图片 \(images.count)/\(ATMTodoImageRules.maximumCount)", systemImage: "photo.on.rectangle.angled")
+				Label("图片 \(images.count + imagePasteTasks.count)/\(ATMTodoImageRules.maximumCount)", systemImage: "photo.on.rectangle.angled")
 					.font(ATMFont.font(.footnote, weight: .semibold))
 					.foregroundStyle(ATMTheme.secondary)
 				Spacer()
@@ -2847,9 +2913,9 @@ projectOverride != nil || priorityOverride != nil
 					Label("选择图片", systemImage: "plus")
 				}
 				.buttonStyle(.borderless)
-				.disabled(images.count >= ATMTodoImageRules.maximumCount)
+				.disabled(images.count + imagePasteTasks.count >= ATMTodoImageRules.maximumCount)
 			}
-			if images.isEmpty {
+			if images.isEmpty && imagePasteTasks.isEmpty {
 				Text("拖入图片，或在弹窗内按 ⌘V 粘贴截图")
 					.font(ATMFont.footnote)
 					.foregroundStyle(ATMTheme.secondary)
@@ -2859,17 +2925,7 @@ projectOverride != nil || priorityOverride != nil
 					HStack(spacing: 8) {
 						ForEach(images) { image in
 							ZStack(alignment: .topTrailing) {
-								if let thumbnail = NSImage(contentsOf: image.url) {
-									Image(nsImage: thumbnail)
-										.resizable()
-										.scaledToFill()
-										.frame(width: 72, height: 56)
-										.clipped()
-								} else {
-									Image(systemName: "photo.badge.exclamationmark")
-										.frame(width: 72, height: 56)
-										.background(ATMTheme.controlFill)
-								}
+                                ATMAsyncThumbnail(url: image.url, width: 72, height: 56)
 								Button {
 									removeImage(image)
 								} label: {
@@ -2883,6 +2939,13 @@ projectOverride != nil || priorityOverride != nil
 							.clipShape(RoundedRectangle(cornerRadius: 7))
 							.help(image.url.lastPathComponent)
 						}
+                        ForEach(imagePasteTasks.keys.sorted(by: { $0.uuidString < $1.uuidString }), id: \.self) { _ in
+                            ProgressView()
+                                .controlSize(.small)
+                                .frame(width: 72, height: 56)
+                                .background(ATMTheme.controlFill, in: RoundedRectangle(cornerRadius: 7))
+                                .help("正在处理粘贴的图片")
+                        }
 					}
 				}
 				.scrollIndicators(.hidden)
@@ -2921,7 +2984,7 @@ projectOverride != nil || priorityOverride != nil
 			if temporary { try? FileManager.default.removeItem(at: url) }
 			return
 		}
-		if let error = ATMTodoImageRules.validationError(for: url, currentCount: images.count) {
+		if let error = ATMTodoImageRules.validationError(for: url, currentCount: images.count + imagePasteTasks.count) {
 			imageError = error
 			if temporary { try? FileManager.default.removeItem(at: url) }
 			return
@@ -2945,22 +3008,36 @@ projectOverride != nil || priorityOverride != nil
 			for url in fileURLs { addImage(url) }
 			return true
 		}
-		guard let pasted = NSImage(pasteboard: pasteboard),
-			  let tiff = pasted.tiffRepresentation,
-			  let bitmap = NSBitmapImageRep(data: tiff),
-			  let png = bitmap.representation(using: .png, properties: [:]) else { return false }
-		let url = FileManager.default.temporaryDirectory
-			.appendingPathComponent("atm-pasted-\(UUID().uuidString).png")
-		do {
-			try png.write(to: url, options: .atomic)
-			try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-			addImage(url, temporary: true)
-			return true
-		} catch {
-			imageError = "无法保存粘贴的图片：\(error.localizedDescription)"
-			try? FileManager.default.removeItem(at: url)
-			return true
-		}
+        // Copy the advertised raster payload while on the pasteboard's owning
+        // thread; ImageIO conversion and disk writes happen on a worker.
+        let rasterTypes: [NSPasteboard.PasteboardType] = [
+            .png, .tiff, .init(UTType.jpeg.identifier), .init(UTType.heic.identifier),
+            .init(UTType.gif.identifier), .init(UTType.webP.identifier),
+        ]
+        guard let type = pasteboard.availableType(from: rasterTypes) else { return false }
+        guard images.count + imagePasteTasks.count < ATMTodoImageRules.maximumCount else {
+            imageError = "每个任务最多添加 10 张图片。"
+            return true
+        }
+        guard let data = pasteboard.data(forType: type) else { return false }
+        let id = UUID()
+        imageError = nil
+        imagePasteTasks[id] = Task { @MainActor in
+            do {
+                let url = try await ATMPastedImageWriter.writePNG(data: data)
+                guard !Task.isCancelled else {
+                    try? FileManager.default.removeItem(at: url)
+                    return
+                }
+                imagePasteTasks.removeValue(forKey: id)
+                addImage(url, temporary: true)
+            } catch {
+                guard !Task.isCancelled else { return }
+                imagePasteTasks.removeValue(forKey: id)
+                imageError = "无法保存粘贴的图片：\(error.localizedDescription)"
+            }
+        }
+        return true
 	}
 
 	private func handleImageDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -3079,9 +3156,14 @@ private struct DesktopUsageView: View {
             quota: store.quota,
             grokLiveQuotaEnabled: store.grokLiveQuotaEnabled,
             todaySessionsState: todaySessionsStore.state,
+            loadingUsageRanges: store.loadingUsageRanges,
+            usageErrorMessage: store.usageErrorMessage,
             setGrokLiveQuota: { store.setGrokLiveQuota($0) },
             loadTodaySessions: { todaySessionsStore.loadIfNeeded() },
             refreshTodaySessions: { todaySessionsStore.refresh() },
+            startUsageUpdates: { store.startUsageUpdates(range: $0) },
+            loadUsageStats: { store.loadUsageStats(range: $0, force: $1) },
+            stopUsageUpdates: { store.stopUsageUpdates() },
             showDataHealth: { showingDataHealth = true }
         )
         .equatable()
@@ -3103,9 +3185,14 @@ private struct DesktopUsageContent: View, Equatable {
     let quota: ATMQuotaSnapshot
     let grokLiveQuotaEnabled: Bool
     let todaySessionsState: ATMTodaySessionsState
+    let loadingUsageRanges: Set<ATMMetricsRange>
+    let usageErrorMessage: String?
     let setGrokLiveQuota: (Bool) -> Void
     let loadTodaySessions: () -> Void
     let refreshTodaySessions: () -> Void
+    let startUsageUpdates: (ATMMetricsRange) -> Void
+    let loadUsageStats: (ATMMetricsRange, Bool) -> Void
+    let stopUsageUpdates: () -> Void
     let showDataHealth: () -> Void
 
     @State private var pageTab = ATMUsagePageTab.overview
@@ -3123,7 +3210,7 @@ private struct DesktopUsageContent: View, Equatable {
 
     private var renderKey: ATMUsageRenderKey {
         ATMUsageRenderKey(
-            refreshedAt: snapshot.refreshedAt,
+            refreshedAt: snapshot.statsRefreshedAt,
             quota: quota,
             grokLiveQuotaEnabled: grokLiveQuotaEnabled,
             todaySessionsState: todaySessionsState
@@ -3132,6 +3219,8 @@ private struct DesktopUsageContent: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.renderKey == rhs.renderKey
+            && lhs.loadingUsageRanges == rhs.loadingUsageRanges
+            && lhs.usageErrorMessage == rhs.usageErrorMessage
     }
 
     private var filters: ATMUsageFilters {
@@ -3179,6 +3268,22 @@ private struct DesktopUsageContent: View, Equatable {
             }
             ATMDetailBodySurface {
                 LazyVStack(alignment: .leading, spacing: 20) {
+                    if let error = usageErrorMessage {
+                        ATMInlineNotice(
+                            severity: .warning,
+                            title: "统计暂时未更新",
+                            message: error,
+                            actionTitle: "重试",
+                            onAction: { loadUsageStats(range, true) }
+                        )
+                    } else if loadingUsageRanges.contains(range) {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("正在加载统计…")
+                                .font(ATMFont.footnote)
+                                .foregroundStyle(ATMTheme.secondary)
+                        }
+                    }
                     if pageTab == .requirements {
                         requirementToolbar
                     } else {
@@ -3208,11 +3313,15 @@ private struct DesktopUsageContent: View, Equatable {
         }
         .background(ATMTheme.canvas)
         .onAppear {
-            normalizeFilters()
-            normalizeRequirementProject()
+            startUsageUpdates(range)
+            if snapshot.rangeData[range] != nil {
+                normalizeFilters()
+                normalizeRequirementProject()
+            }
         }
+        .onDisappear { stopUsageUpdates() }
         .onChange(of: pageTab) { tab in
-            normalizeFilters()
+            if tab != .overview || snapshot.rangeData[range] != nil { normalizeFilters() }
             todaySessionsPage = 0
             if tab == .todaySessions {
                 loadTodaySessions()
@@ -3220,16 +3329,17 @@ private struct DesktopUsageContent: View, Equatable {
                 normalizeRequirementProject()
             }
         }
-        .onChange(of: range) { _ in
-            if pageTab == .overview {
+        .onChange(of: range) { selectedRange in
+            loadUsageStats(selectedRange, false)
+            if pageTab == .overview, snapshot.rangeData[selectedRange] != nil {
                 normalizeFilters()
             }
         }
         .onChange(of: filters) { _ in
             todaySessionsPage = 0
         }
-        .onChange(of: snapshot.refreshedAt) { _ in
-            if pageTab == .overview {
+        .onChange(of: snapshot.statsRefreshedAt) { _ in
+            if pageTab == .overview, snapshot.rangeData[range] != nil {
                 normalizeFilters()
             } else if pageTab == .requirements {
                 normalizeRequirementProject()

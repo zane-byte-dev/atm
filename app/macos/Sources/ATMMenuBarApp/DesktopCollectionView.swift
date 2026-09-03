@@ -40,6 +40,7 @@ private struct CollectionItemDeletion {
 struct DesktopCollectionView: View {
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
+    @StateObject private var listIndexStore = ATMCollectionListIndexStore()
 
     @State private var showingAddSource = false
     @State private var editingSourceID: String?
@@ -79,50 +80,42 @@ struct DesktopCollectionView: View {
         store.collectionOverview.items
     }
 
-    private var groupedItems: [ATMCollectionItem] {
-        ATMCollectionItemGrouping.visibleItems(filteredItems)
-    }
+    private var listIndex: ATMCollectionListIndex { listIndexStore.index }
 
     private var selectedItem: ATMCollectionItem? {
-        guard let id = navigation.selectedCollectionItemID else { return displayedItems.first }
-        return displayedItems.first { $0.id == id } ?? displayedItems.first
-    }
-
-    private var selectedSource: ATMCollectionSource? {
-        let sources = orderedSources
-        guard let selectedSourceID else { return sources.first }
-        return sources.first { $0.id == selectedSourceID } ?? sources.first
-    }
-
-    private var orderedSources: [ATMCollectionSource] {
-        ATMManualOrder.ordered(
-            store.collectionOverview.sources,
-            stored: collectionSourceOrder,
-            id: \.id
+        listIndex.selectedItem(
+            id: navigation.selectedCollectionItemID,
+            flat: recordListPresentation == .flat,
+            showingIgnored: showingIgnoredItems
         )
     }
 
+    private var selectedSource: ATMCollectionSource? {
+        guard let selectedSourceID else { return orderedSources.first }
+        return listIndex.sourcesByID[selectedSourceID] ?? orderedSources.first
+    }
+
+    private var orderedSources: [ATMCollectionSource] {
+        listIndex.orderedSources
+    }
+
     private var primaryItems: [ATMCollectionItem] {
-        groupedItems.filter { !shouldCollapse($0) }
+        listIndex.primaryItems
     }
 
     private var ignoredItems: [ATMCollectionItem] {
-        groupedItems.filter(shouldCollapse)
+        listIndex.ignoredItems
     }
 
     private var displayedItems: [ATMCollectionItem] {
         if recordListPresentation == .flat { return flattenedItems }
-        return showingIgnoredItems ? primaryItems + ignoredItems : primaryItems
+        return showingIgnoredItems ? listIndex.groupedAllItems : primaryItems
     }
 
     /// Match grouped presentation order: configured sources first, orphaned
     /// records next, and records normally folded under the closed section last.
     private var flattenedItems: [ATMCollectionItem] {
-        let sourceItems = orderedSources.flatMap { source in
-            primaryItems.filter { $0.sourceID == source.id }
-        }
-        let unknownItems = primaryItems.filter { source(for: $0) == nil }
-        return sourceItems + unknownItems + ignoredItems
+        listIndex.flattenedItems
     }
 
     var body: some View {
@@ -152,18 +145,27 @@ struct DesktopCollectionView: View {
                 .atmAnimatedSwap(collectionDetailIdentity, style: .detail)
         }
         .background(Color.clear)
+        .onReceive(store.$collectionOverview) { overview in
+            listIndexStore.update(items: overview.items, sources: overview.sources, sourceOrder: collectionSourceOrder)
+        }
         .onAppear {
+            updateListIndex()
             store.refreshCollection()
             selectDefaultItem()
             selectDefaultSource()
             revealSelectedSourceGroup()
             markSelectedItemRead()
         }
-        .onChange(of: store.collectionOverview.items.map(\.id)) { _ in
+        .onChange(of: store.collectionOverview.items) { _ in
+            updateListIndex()
             selectDefaultItem()
             markSelectedItemRead()
         }
-        .onChange(of: store.collectionOverview.sources.map(\.id)) { _ in selectDefaultSource() }
+        .onChange(of: store.collectionOverview.sources) { _ in
+            updateListIndex()
+            selectDefaultSource()
+        }
+        .onChange(of: collectionSourceOrder) { _ in updateListIndex() }
         .onChange(of: drawerTab) { tab in
             if tab == .sources {
                 selectDefaultSource()
@@ -419,7 +421,7 @@ struct DesktopCollectionView: View {
                 ATMGroupedNavigatorScroll {
                     if recordListPresentation == .grouped {
                         ForEach(orderedSources) { source in
-                            let items = primaryItems.filter { $0.sourceID == source.id }
+                            let items = listIndex.primaryItemsBySource[source.id] ?? []
                             if !items.isEmpty {
                                 let expanded = expandedBinding(for: source.id)
                                 ATMNavigatorGroup {
@@ -434,7 +436,7 @@ struct DesktopCollectionView: View {
                             }
                         }
 
-                        let unknownItems = primaryItems.filter { source(for: $0) == nil }
+                        let unknownItems = listIndex.unknownItems
                         if !unknownItems.isEmpty {
                             let expanded = expandedBinding(for: "__unknown__")
                             ATMNavigatorGroup {
@@ -625,17 +627,17 @@ struct DesktopCollectionView: View {
         // 选中判定比的是 `selectedItem`，不是 selectedCollectionItemID —— 后者为 nil 时
         // 详情栏会回退展示首条，直接比 ID 会出现「右栏有内容、中栏没高亮」。
         let selected = selectedItem?.id == item.id
-        let records = [item] + supplements(for: item)
-        let rowUnreadCount = records.filter(\.isUnread).count
+        let supplementCount = listIndex.supplementsByItemID[item.id]?.count ?? 0
+        let rowUnreadCount = listIndex.unreadCountsByItemID[item.id] ?? 0
         return Button {
             if rowUnreadCount > 0 {
-                store.setCollectionItemsRead(records, read: true)
+                store.setCollectionItemsRead(recordsIncludingSupplements([item]), read: true)
             }
             navigation.selectedCollectionItemID = item.id
         } label: {
             CollectionItemRow(
                 item: item,
-                supplementCount: records.count - 1,
+                supplementCount: supplementCount,
                 unreadCount: rowUnreadCount,
                 isSelected: selected,
                 sourceName: showsSource ? source(for: item)?.displayName ?? "其他来源" : nil
@@ -649,11 +651,11 @@ struct DesktopCollectionView: View {
         .atmRightClickMenu {
             if rowUnreadCount > 0 {
                 ATMMenuItem("标为已读", systemImage: "checkmark.circle") {
-                    store.setCollectionItemsRead(records, read: true)
+                    store.setCollectionItemsRead(recordsIncludingSupplements([item]), read: true)
                 }
             } else {
                 ATMMenuItem("标为未读", systemImage: "circle.fill") {
-                    store.setCollectionItemsRead(records, read: false)
+                    store.setCollectionItemsRead(recordsIncludingSupplements([item]), read: false)
                 }
             }
             if item.todoID != nil {
@@ -665,11 +667,11 @@ struct DesktopCollectionView: View {
             ATMMenuSeparator()
             if item.isArchived {
                 ATMMenuItem("重新打开", systemImage: "arrow.uturn.backward") {
-                    store.setCollectionItemsArchived(records, archived: false)
+                    store.setCollectionItemsArchived(recordsIncludingSupplements([item]), archived: false)
                 }
             } else if !item.shouldCollapseInCollection {
                 ATMMenuItem("了结记录", systemImage: "archivebox") {
-                    store.setCollectionItemsArchived(records, archived: true)
+                    store.setCollectionItemsArchived(recordsIncludingSupplements([item]), archived: true)
                 }
             }
             ATMMenuItem("删除记录", destructive: true) {
@@ -693,6 +695,7 @@ struct DesktopCollectionView: View {
                 onCollect: { store.runCollectionNow(source: source) },
                 onDelete: { deleteCandidate = source }
             )
+            .id(source.id)
         } else if drawerTab == .sources {
             ATMDetailBodySurface {
                 ATMEmptyState(
@@ -716,6 +719,7 @@ struct DesktopCollectionView: View {
                     navigation.section = .knowledge
                 }
             )
+            .id(item.id)
         } else {
             ATMDetailBodySurface {
                 ATMEmptyState(
@@ -736,11 +740,16 @@ struct DesktopCollectionView: View {
     }
 
     private func source(for item: ATMCollectionItem) -> ATMCollectionSource? {
-        store.collectionOverview.sources.first { $0.id == item.sourceID }
+        listIndex.sourcesByID[item.sourceID]
     }
 
     private func supplements(for item: ATMCollectionItem) -> [ATMCollectionItem] {
-        ATMCollectionItemGrouping.supplements(for: item, in: filteredItems)
+        listIndex.supplementsByItemID[item.id] ?? []
+    }
+
+    private func updateListIndex() {
+        let overview = store.collectionOverview
+        listIndexStore.update(items: overview.items, sources: overview.sources, sourceOrder: collectionSourceOrder)
     }
 
     private func recordsIncludingSupplements(_ items: [ATMCollectionItem]) -> [ATMCollectionItem] {

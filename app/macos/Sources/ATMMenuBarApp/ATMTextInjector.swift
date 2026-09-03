@@ -72,8 +72,10 @@ enum ATMTextInjector {
         // would otherwise paste into the wrong window.
         application.activate(options: [.activateAllWindows])
         try? await Task.sleep(for: .milliseconds(140))
-        postPasteKeystroke()
-        try? await Task.sleep(for: .milliseconds(320))
+        await postPasteKeystroke()
+        // Once a keypress was posted, let the target consume the borrowed
+        // clipboard even if the recording task is cancelled during the hold.
+        await ATMPasteKeySequence.pause(milliseconds: 320)
 
         // Only restore if nothing else wrote in the meantime: an app that copies
         // something as part of handling the paste owns the clipboard now, and putting
@@ -94,7 +96,7 @@ enum ATMTextInjector {
 
     /// Synthesizes ⌘V at the HID level, which is the layer where an app cannot tell it
     /// from a real keypress.
-    private static func postPasteKeystroke() {
+    private static func postPasteKeystroke() async {
         let source = CGEventSource(stateID: .hidSystemState)
         let vKeyCode = CGKeyCode(0x09) // kVK_ANSI_V
         guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKeyCode, keyDown: true),
@@ -103,11 +105,30 @@ enum ATMTextInjector {
         }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
-        keyDown.post(tap: .cghidEventTap)
-        // Apps that watch for the key going down and up separately drop the event
-        // when both arrive in the same instant.
-        usleep(50_000)
-        keyUp.post(tap: .cghidEventTap)
+        await ATMPasteKeySequence.perform(
+            keyDown: { keyDown.post(tap: .cghidEventTap) },
+            keyUp: { keyUp.post(tap: .cghidEventTap) }
+        )
+    }
+}
+
+@MainActor
+enum ATMPasteKeySequence {
+    static func perform(keyDown: @MainActor () -> Void, keyUp: @MainActor () -> Void) async {
+        keyDown()
+        defer { keyUp() }
+        // The delay must yield the main actor, and key-up must still follow a
+        // complete hold if dictation is cancelled after key-down. A continuation
+        // deliberately makes this tiny key sequence indivisible by cancellation.
+        await pause(milliseconds: 50)
+    }
+
+    static func pause(milliseconds: Int) async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(milliseconds)) {
+                continuation.resume()
+            }
+        }
     }
 }
 

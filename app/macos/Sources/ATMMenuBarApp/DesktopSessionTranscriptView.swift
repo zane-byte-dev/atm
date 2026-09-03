@@ -89,11 +89,13 @@ struct DesktopSessionTranscriptView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(.horizontal, ATMDetailLayout.horizontalPadding)
             .padding(.vertical, 16)
+            // Disclosure and lazy-row state belongs to one session/read mode.
+            .id("\(sessionID)|\(mode.rawValue)")
             .atmAnimatedSwap(mode.rawValue, style: .detail)
         }
         // 切段和换会话都重新取一次；已缓存的组合不会真的落到 CLI。
         .task(id: "\(sessionID)|\(mode.rawValue)") {
-            store.loadSessionRead(sessionID, mode: mode)
+            await store.observeSessionRead(sessionID, mode: mode)
         }
     }
 
@@ -106,13 +108,14 @@ struct DesktopSessionTranscriptView: View {
                 if transcript.turns.isEmpty {
                     placeholder("这个会话还没有可读的问答")
                 } else {
-                    VStack(alignment: .leading, spacing: 0) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         transcriptNotices(transcript)
-                        ForEach(Array(transcript.turns.enumerated()), id: \.element.id) { index, turn in
-                            turnBlock(turn)
-                            if index < transcript.turns.count - 1 {
-                                Divider()
-                            }
+                        ForEach(transcript.turns) { turn in
+                            DesktopSessionTurnView(
+                                turn: turn,
+                                agentLabel: agentLabel,
+                                showsDivider: turn.id != transcript.turns.last?.id
+                            )
                         }
                         if transcript.truncated, mode == .brief {
                             // 说清楚这是尾部而不是全部，否则「摘要」会被读成「会话只有这么多」。
@@ -150,46 +153,6 @@ struct DesktopSessionTranscriptView: View {
         }
     }
 
-    /// Conversation is one reading stream, not a dashboard of independent
-    /// objects. Dividers separate turns without lifting every message into its
-    /// own card.
-    private func turnBlock(_ turn: ATMSessionTurn) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text("第 \(turn.turn) 轮")
-                    .font(ATMFont.font(.footnote, weight: .semibold))
-                    .foregroundStyle(ATMTheme.secondary)
-                Spacer(minLength: 0)
-            }
-            if let question = turn.question, !question.isEmpty {
-                speaker("你", tint: ATMTheme.accent)
-                ATMMarkdownContentView(source: question)
-            }
-            if let thinking = turn.thinking, !thinking.isEmpty {
-                DisclosureGroup {
-                    ATMMarkdownContentView(source: thinking)
-                        .padding(.top, 8)
-                } label: {
-                    Label("思考过程", systemImage: "brain")
-                        .font(ATMFont.font(.footnote, weight: .medium))
-                        .foregroundStyle(ATMTheme.secondary)
-                }
-            }
-            if let answer = turn.answer, !answer.isEmpty {
-                speaker(agentLabel, tint: ATMTheme.success)
-                ATMMarkdownContentView(source: answer)
-            }
-        }
-        .padding(.vertical, 15)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func speaker(_ name: String, tint: Color) -> some View {
-        Text(name)
-            .font(ATMFont.font(.caption, weight: .semibold))
-            .foregroundStyle(tint)
-    }
-
     // MARK: - 时序
 
     private var timelineContent: some View {
@@ -199,10 +162,10 @@ struct DesktopSessionTranscriptView: View {
                 if entries.isEmpty {
                     placeholder("这个会话没有可读的时间线")
                 } else {
-                    VStack(alignment: .leading, spacing: 8) {
+                    LazyVStack(alignment: .leading, spacing: 8) {
                         timelineTotals(entries)
-                        ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                            timelineRow(entry)
+                        ForEach(entries.indices, id: \.self) { index in
+                            timelineRow(entries[index])
                         }
                     }
                 }
@@ -286,6 +249,57 @@ struct DesktopSessionTranscriptView: View {
             .font(ATMFont.footnote)
             .foregroundStyle(ATMTheme.secondary)
             .frame(maxWidth: .infinity, minHeight: 120)
+    }
+}
+
+/// Keep a turn as one lazy row, including its separator. Collapsed thinking
+/// content is not initialized or prepared until the reader opens it.
+private struct DesktopSessionTurnView: View {
+    let turn: ATMSessionTurn
+    let agentLabel: String
+    let showsDivider: Bool
+    @State private var thinkingExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Text("第 \(turn.turn) 轮")
+                        .font(ATMFont.font(.footnote, weight: .semibold))
+                        .foregroundStyle(ATMTheme.secondary)
+                    Spacer(minLength: 0)
+                }
+                if let question = turn.question, !question.isEmpty {
+                    speaker("你", tint: ATMTheme.accent)
+                    ATMMarkdownContentView(source: question)
+                }
+                if let thinking = turn.thinking, !thinking.isEmpty {
+                    DisclosureGroup(isExpanded: $thinkingExpanded) {
+                        if thinkingExpanded {
+                            ATMMarkdownContentView(source: thinking)
+                                .padding(.top, 8)
+                        }
+                    } label: {
+                        Label("思考过程", systemImage: "brain")
+                            .font(ATMFont.font(.footnote, weight: .medium))
+                            .foregroundStyle(ATMTheme.secondary)
+                    }
+                }
+                if let answer = turn.answer, !answer.isEmpty {
+                    speaker(agentLabel, tint: ATMTheme.success)
+                    ATMMarkdownContentView(source: answer)
+                }
+            }
+            .padding(.vertical, 15)
+            if showsDivider { Divider() }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func speaker(_ name: String, tint: Color) -> some View {
+        Text(name)
+            .font(ATMFont.font(.caption, weight: .semibold))
+            .foregroundStyle(tint)
     }
 }
 

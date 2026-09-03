@@ -29,6 +29,57 @@ type QA struct {
 	Thinking string   `json:"thinking,omitempty"`
 }
 
+// PageInput is the indexed browser read, deliberately separate from the CLI's
+// range/thinking/sync contract. Only a positive bounded page can be requested.
+type PageInput struct {
+	SessionID string
+	Offset    int
+	Limit     int
+}
+
+func (service Service) ShowPage(ctx context.Context, input PageInput) (ShowResult, error) {
+	if ctx == nil {
+		return ShowResult{}, invalidArgument("session page context is required", "context", nil)
+	}
+	if err := contextError(ctx); err != nil {
+		return ShowResult{}, err
+	}
+	input.SessionID = strings.TrimSpace(input.SessionID)
+	if input.SessionID == "" {
+		return ShowResult{}, invalidArgument("session id must not be empty", "session_id", input.SessionID)
+	}
+	if input.Offset < 0 || input.Offset > 100000 {
+		return ShowResult{}, invalidArgument("offset must be 0–100000", "offset", input.Offset)
+	}
+	if input.Limit < 1 || input.Limit > 50 {
+		return ShowResult{}, invalidArgument("limit must be 1–50", "limit", input.Limit)
+	}
+	db, meta, err := service.openRead(ctx, false)
+	if err != nil {
+		return ShowResult{}, err
+	}
+	defer db.Close()
+	stored, total, err := store.GetSessionPage(ctx, db, input.SessionID, input.Offset, input.Limit)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ShowResult{}, sessionNotFound(input.SessionID, err)
+		}
+		return ShowResult{}, unavailable("read session page", err)
+	}
+	qas := buildQAs(stored, nil, false)
+	if err := contextError(ctx); err != nil {
+		return ShowResult{}, err
+	}
+	return ShowResult{
+		ID: stored.FullID, Agent: stored.Agent, Project: stored.Project, QA: qas, Tools: stored.Tools,
+		TotalTurns: total, ReturnedTurns: len(qas), Truncated: len(qas) < total,
+		ResumeID: stored.ResumeID, RootSessionID: stored.RootSessionID, ParentSessionID: stored.ParentSessionID,
+		AgentPath: stored.AgentPath, AgentNickname: stored.AgentNickname, SubagentDepth: stored.SubagentDepth, IsSubagent: stored.IsSubagent,
+		ParserVersion: stored.ParserVersion, ContentState: stored.ContentState, ResultStatus: stored.ResultStatus,
+		LatestProgress: stored.LatestProgress, FinalResult: stored.FinalResult, Meta: meta,
+	}, nil
+}
+
 type ShowResult struct {
 	ID                    string         `json:"id"`
 	Agent                 string         `json:"agent"`
@@ -143,6 +194,9 @@ func buildQAs(stored *store.ShowResult, thinkingBlocks []parser.ThinkingBlock, i
 	thinkingIndex := 0
 	for index, turn := range stored.Turns {
 		qa := QA{Turn: index + 1, Q: cleanMessage(turn.Question)}
+		if turn.Number > 0 {
+			qa.Turn = turn.Number
+		}
 		for _, progress := range turn.Progress {
 			if cleaned := cleanMessage(progress); cleaned != "" {
 				qa.Progress = append(qa.Progress, cleaned)

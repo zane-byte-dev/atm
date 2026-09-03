@@ -63,6 +63,7 @@ func Execute() {
 	applyCommandGroups()
 	bufferBuiltinModelCalls()
 	cliCommandEnteredRun.Store(false)
+	cliCommandLongRunning.Store(false)
 	if err := rootCmd.Execute(); err != nil {
 		// 失败路径也要落账：一次超时的收集判定同样占了一次调用。os.Exit 不跑 defer，
 		// 所以这里和成功路径各显式落一次。

@@ -18,6 +18,11 @@ enum ATMSearchSelection {
         guard resultCount > 0 else { return 0 }
         return min(max(current + step, 0), resultCount - 1)
     }
+
+    static func reconciledIndex(current: Int, selectedAnchor: String?, anchors: [String]) -> Int {
+        if let selectedAnchor, let index = anchors.firstIndex(of: selectedAnchor) { return index }
+        return movedIndex(current: current, resultCount: anchors.count, step: 0)
+    }
 }
 
 enum ATMSearchResultPolicy {
@@ -176,15 +181,24 @@ struct DesktopSearchPalette: View {
     @State private var sessionResults: [ATMSessionSearchHit] = []
     @State private var docResults: [ATMKnowledgeDocumentSummary] = []
     @State private var memoryResults: [ATMMemoryHit] = []
-    @State private var isSearching = false
+    @State private var searchProgress = ATMSearchProgress()
     @State private var selectedSession: ATMSessionSearchHit?
     @State private var selectedResultIndex = 0
-    @State private var searchErrorMessage: String?
     @State private var showingResults = false
     @State private var searchFocused = false
 
     private var trimmedQuery: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isSearching: Bool { searchProgress.isSearching }
+    private var searchErrorMessage: String? { searchProgress.errorMessage }
+
+    private var resultAnchors: [String] {
+        taskResults.map { ATMSearchResultAnchor.task($0.id) }
+            + sessionResults.map { ATMSearchResultAnchor.session($0.shortID) }
+            + docResults.map { ATMSearchResultAnchor.document($0.documentID) }
+            + memoryResults.map { ATMSearchResultAnchor.memory($0.id) }
     }
 
     private var hasResults: Bool {
@@ -203,12 +217,13 @@ struct DesktopSearchPalette: View {
 
     private var resultsBodyHeight: CGFloat {
         if trimmedQuery.isEmpty { return 118 }
-        if isSearching, !hasResults { return 92 }
+        if isSearching, !hasResults { return searchErrorMessage == nil ? 92 : 148 }
         if !hasResults { return 148 }
         let rows = CGFloat(min(totalResultCount, 6)) * 58
         let headers = CGFloat(resultSectionCount) * 28
         let warning: CGFloat = searchErrorMessage == nil ? 0 : 46
-        return min(max(rows + headers + warning + 16, 156), 382)
+        let progress: CGFloat = isSearching ? 30 : 0
+        return min(max(rows + headers + warning + progress + 16, 156), 382)
     }
 
     private var selectedResultAnchor: String? {
@@ -389,6 +404,9 @@ struct DesktopSearchPalette: View {
                 Text("正在搜索…")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
+                if let searchErrorMessage {
+                    searchWarning(searchErrorMessage)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let searchErrorMessage, !hasResults && !isSearching {
@@ -414,11 +432,22 @@ struct DesktopSearchPalette: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 2) {
+                        if isSearching {
+                            HStack(spacing: 8) {
+                                ProgressView().controlSize(.small)
+                                Text("正在搜索“\(searchProgress.query)”…")
+                                    .font(ATMFont.footnote)
+                                    .foregroundStyle(ATMTheme.secondary)
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                        }
                         if let searchErrorMessage {
                             searchWarning(searchErrorMessage)
                         }
                         if !taskResults.isEmpty {
-                            sectionHeader("任务", count: taskResults.count)
+                            sectionHeader(.tasks, count: taskResults.count)
                             ForEach(taskResults) { todo in
                                 let index = taskResults.firstIndex(of: todo) ?? 0
                                 resultRow(
@@ -433,7 +462,7 @@ struct DesktopSearchPalette: View {
                             }
                         }
                         if !sessionResults.isEmpty {
-                            sectionHeader("会话", count: sessionResults.count)
+                            sectionHeader(.sessions, count: sessionResults.count)
                             ForEach(sessionResults) { session in
                                 let index = taskResults.count + (sessionResults.firstIndex(of: session) ?? 0)
                                 resultRow(
@@ -448,7 +477,7 @@ struct DesktopSearchPalette: View {
                             }
                         }
                         if !docResults.isEmpty {
-                            sectionHeader("知识", count: docResults.count)
+                            sectionHeader(.documents, count: docResults.count)
                             ForEach(docResults) { doc in
                                 let index = taskResults.count + sessionResults.count + (docResults.firstIndex(of: doc) ?? 0)
                                 resultRow(
@@ -463,7 +492,7 @@ struct DesktopSearchPalette: View {
                             }
                         }
                         if !memoryResults.isEmpty {
-                            sectionHeader("共享记忆", count: memoryResults.count)
+                            sectionHeader(.memories, count: memoryResults.count)
                             ForEach(memoryResults) { memory in
                                 let index = taskResults.count + sessionResults.count + docResults.count
                                     + (memoryResults.firstIndex(of: memory) ?? 0)
@@ -491,14 +520,24 @@ struct DesktopSearchPalette: View {
         }
     }
 
-    private func sectionHeader(_ title: String, count: Int) -> some View {
+    private func sectionHeader(_ domain: ATMSearchDomain, count: Int) -> some View {
         HStack(spacing: 6) {
-            Text(title)
+            Text(domain.title)
                 .font(ATMFont.font(.footnote, weight: .semibold))
                 .foregroundStyle(ATMTheme.secondary)
             Text("\(count)")
                 .font(ATMFont.mono(.caption, .semibold))
                 .foregroundStyle(ATMTheme.secondary)
+            if let previousQuery = searchProgress.previousQuery(for: domain) {
+                Text("上次“\(previousQuery)”的结果 · 更新中")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+                    .lineLimit(1)
+            } else if searchProgress.pending.contains(domain) {
+                Text("更新中")
+                    .font(ATMFont.caption)
+                    .foregroundStyle(ATMTheme.secondary)
+            }
         }
         .padding(.horizontal, 8)
         .padding(.top, 8)
@@ -563,57 +602,65 @@ struct DesktopSearchPalette: View {
     @MainActor
     private func runSearch() async {
         let needle = trimmedQuery
+        let requestID = searchProgress.begin(query: needle)
         guard !needle.isEmpty else {
             taskResults = []
             sessionResults = []
             docResults = []
             memoryResults = []
-            searchErrorMessage = nil
-            isSearching = false
+            selectedResultIndex = 0
             return
         }
 
-        isSearching = true
-        taskResults = []
-        sessionResults = []
-        docResults = []
-        memoryResults = []
-        searchErrorMessage = nil
         selectedResultIndex = 0
         do {
             try await Task.sleep(nanoseconds: 200_000_000)
         } catch {
             return
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, searchProgress.accepts(requestID, query: trimmedQuery) else { return }
 
-        async let tasksRequest = searchOutcome { try await store.searchTodos(needle) }
-        async let sessionsRequest = searchOutcome { try await store.searchSessions(needle) }
-        async let docsRequest = searchOutcome { try await store.searchKnowledge(needle, status: "active") }
-        async let memoriesRequest = searchOutcome { try await store.memories(query: needle) }
-        let tasks = await tasksRequest
-        let sessions = await sessionsRequest
-        let docs = await docsRequest
-        let memories = await memoriesRequest
-        guard !Task.isCancelled, trimmedQuery == needle else { return }
-        taskResults = ATMSearchResultPolicy.top(tasks.value ?? [])
-        sessionResults = ATMSearchResultPolicy.top(sessions.value ?? [])
-        docResults = ATMSearchResultPolicy.top(docs.value ?? [])
-        memoryResults = ATMSearchResultPolicy.top(memories.value ?? [])
-        let errorMessages = [
-            tasks.error.map { "任务：\($0)" },
-            sessions.error.map { "会话：\($0)" },
-            docs.error.map { "知识：\($0)" },
-            memories.error.map { "记忆：\($0)" },
-        ]
-        .compactMap { $0 }
-        searchErrorMessage = errorMessages.isEmpty ? nil : errorMessages.joined(separator: "；")
-        selectedResultIndex = 0
-        isSearching = false
+        // Each child publishes its own result before finishing. Waiting for the
+        // children here only owns their cancellation/lifetime, not first paint.
+        async let tasksRequest: Void = searchDomain(.tasks, needle: needle, requestID: requestID) {
+            try await store.searchTodos(needle)
+        } apply: { taskResults = $0 }
+        async let sessionsRequest: Void = searchDomain(.sessions, needle: needle, requestID: requestID) {
+            try await store.searchSessions(needle)
+        } apply: { sessionResults = $0 }
+        async let docsRequest: Void = searchDomain(.documents, needle: needle, requestID: requestID) {
+            try await store.searchKnowledge(needle, status: "active")
+        } apply: { docResults = $0 }
+        async let memoriesRequest: Void = searchDomain(.memories, needle: needle, requestID: requestID) {
+            try await store.memories(query: needle)
+        } apply: { memoryResults = $0 }
+        _ = await (tasksRequest, sessionsRequest, docsRequest, memoriesRequest)
     }
 
+    @MainActor
+    private func searchDomain<Value>(
+        _ domain: ATMSearchDomain,
+        needle: String,
+        requestID: UUID,
+        operation: @MainActor () async throws -> [Value],
+        apply: @MainActor ([Value]) -> Void
+    ) async {
+        let outcome = await searchOutcome(operation)
+        guard !Task.isCancelled, trimmedQuery == needle,
+              searchProgress.accepts(requestID, query: needle) else { return }
+        let anchor = selectedResultAnchor
+        apply(ATMSearchResultPolicy.top(outcome.value ?? []))
+        searchProgress.complete(domain, requestID: requestID, error: outcome.error)
+        // Faster sections can be inserted above a section already navigated with
+        // arrow keys. Keep the selected object, rather than its old row number.
+        selectedResultIndex = ATMSearchSelection.reconciledIndex(
+            current: selectedResultIndex, selectedAnchor: anchor, anchors: resultAnchors
+        )
+    }
+
+    @MainActor
     private func searchOutcome<Value>(
-        _ operation: () async throws -> Value
+        _ operation: @MainActor () async throws -> Value
     ) async -> ATMSearchOutcome<Value> {
         do {
             return ATMSearchOutcome(value: try await operation(), error: nil)

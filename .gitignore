@@ -6,3 +6,5 @@ skills/*-workspace/
 .playwright-cli/
 .DS_Store
 .gz
+/dist/
+/app/web/dist/

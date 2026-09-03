@@ -12,6 +12,8 @@ import (
 // The App schedules sync separately and consumes the all-agent projection.
 type DashboardRequest struct {
 	Sections  []string `json:"sections,omitempty"`
+	Ranges    []string `json:"ranges,omitempty"`
+	Compact   bool     `json:"compact,omitempty"`
 	SessionID string   `json:"session_id,omitempty"`
 }
 
@@ -23,6 +25,8 @@ func registerDashboard(registry *ipc.Registry, dependencies Dependencies) {
 	) (dashboard.Snapshot, error) {
 		return dependencies.Dashboard.BuildSnapshot(ctx, call, dashboard.Request{
 			Sections:  input.Sections,
+			Ranges:    input.Ranges,
+			Compact:   input.Compact,
 			SessionID: input.SessionID,
 		})
 	})

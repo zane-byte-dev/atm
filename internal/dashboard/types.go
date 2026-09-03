@@ -5,14 +5,23 @@ import (
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
-// Request selects the independently useful halves of a dashboard snapshot.
-// Empty Sections means the complete snapshot. SessionID is optional because the
-// desktop app can run without an Agent session in its environment.
+// Request selects the independently useful parts of a dashboard snapshot.
+// Empty Sections means the complete snapshot. Empty Ranges retains all usage
+// windows; selecting ranges avoids aggregating windows the client is not showing.
+// The summary section reads only today's day_stats bucket for the menu bar,
+// independently of the historical charts and breakdowns in stats.
+// SessionID is optional because the desktop app can run without an Agent session
+// in its environment.
 type Request struct {
-	Sections  []string `json:"sections,omitempty"`
-	Agent     string   `json:"agent,omitempty"`
-	SessionID string   `json:"session_id,omitempty"`
-	Sync      bool     `json:"sync,omitempty"`
+	Sections []string `json:"sections,omitempty"`
+	Ranges   []string `json:"ranges,omitempty"`
+	// Compact also narrows time-series buckets to the requested ranges and
+	// today. It has no effect without an explicit range selection, so existing
+	// full snapshots retain their chart history.
+	Compact   bool   `json:"compact,omitempty"`
+	Agent     string `json:"agent,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Sync      bool   `json:"sync,omitempty"`
 }
 
 type WorkSummary struct {

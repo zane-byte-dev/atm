@@ -2,7 +2,8 @@ import SwiftUI
 
 struct TodoProgressView: View {
     let todo: ATMTodo
-    @ObservedObject var store: ATMDataStore
+    let store: ATMDataStore
+    @ObservedObject private var taskState: ATMTaskState
     @ObservedObject private var appearance = ATMAppearance.shared
     @State private var showingAllEntries = false
     @State private var progressLinkHovered = false
@@ -11,15 +12,20 @@ struct TodoProgressView: View {
         store.progress(for: todo.id)
     }
 
-    private var newestFirstEntries: [ATMTodoProgressEntry] {
-        Array(entries.reversed())
+    init(todo: ATMTodo, store: ATMDataStore) {
+        self.todo = todo
+        self.store = store
+        _taskState = ObservedObject(wrappedValue: store.taskState)
     }
 
     private var visibleEntries: [ATMTodoProgressEntry] {
-        showingAllEntries ? newestFirstEntries : Array(newestFirstEntries.prefix(3))
+        // Avoid allocating a reversed copy of the whole history for a preview
+        // that only displays its last three entries.
+        showingAllEntries ? Array(entries.reversed()) : Array(entries.suffix(3).reversed())
     }
 
     var body: some View {
+        let visibleEntries = self.visibleEntries
         VStack(alignment: .leading, spacing: 12) {
             if store.isLoadingProgress(for: todo.id), entries.isEmpty {
                 HStack(spacing: 8) {
@@ -33,7 +39,7 @@ struct TodoProgressView: View {
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)
             } else {
-                VStack(alignment: .leading, spacing: 0) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(visibleEntries.enumerated()), id: \.element.id) { index, entry in
                         entryRow(entry, isLast: index == visibleEntries.count - 1)
                     }
@@ -60,8 +66,11 @@ struct TodoProgressView: View {
                 }
             }
         }
-        .onAppear { store.loadProgress(for: todo.id) }
-        .onChange(of: store.snapshot.refreshedAt) { _ in
+        .task(id: todo.id) {
+            store.loadProgress(for: todo.id)
+        }
+        .onChange(of: todo.id) { _ in showingAllEntries = false }
+        .onChange(of: taskState.dataVersion) { _ in
             store.loadProgress(for: todo.id)
         }
     }
@@ -101,7 +110,7 @@ struct TodoProgressView: View {
                             .background(ATMTheme.accentFill, in: Capsule())
                     }
                 }
-                Text(ATMMarkdown.render(entry.text))
+                ATMMarkdownInlineText(source: entry.text)
                     // Progress entries are read, not glanced at — they follow the
                     // 正文字号 setting like the other long-form areas.
                     .font(.system(size: appearance.contentTextSize.pointSize))

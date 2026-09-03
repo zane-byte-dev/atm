@@ -98,6 +98,10 @@ type ShowResult struct {
 // separately so several assistant records no longer shift the answer onto the
 // next user question or get flattened into one opaque string.
 type SessionTurn struct {
+	// Number is set by indexed page reads to preserve the original turn label
+	// when hidden turns leave gaps. Full transcript readers keep their existing
+	// sequential numbering by leaving it zero.
+	Number   int
 	Question string
 	Answer   string
 	Progress []string
@@ -316,25 +320,10 @@ func sessionLookupArgs(idOrPrefix string) []any {
 }
 
 func GetSession(db *sql.DB, idOrPrefix string) (*ShowResult, error) {
-	var stored ShowResult
-	var internal bool
-	err := db.QueryRow(`SELECT s.id, s.agent, s.project, s.file_path, s.resume_id,
-		s.root_session_id, s.parent_session_id, s.agent_path, s.agent_nickname,
-		s.subagent_depth, s.is_subagent, s.is_internal, s.parser_version,
-		CASE WHEN NOT EXISTS (SELECT 1 FROM sync_state st WHERE st.file_path = s.file_path)
-			THEN 'retained' ELSE s.content_state END,
-		s.result_status, s.latest_progress, s.final_result
-		FROM sessions s WHERE s.id = ? OR s.short_id LIKE ? ORDER BY s.last_ts DESC LIMIT 1`,
-		sessionLookupArgs(idOrPrefix)...).Scan(&stored.FullID, &stored.AgentKey, &stored.Project,
-		&stored.FilePath, &stored.ResumeID, &stored.RootSessionID, &stored.ParentSessionID,
-		&stored.AgentPath, &stored.AgentNickname, &stored.SubagentDepth, &stored.IsSubagent,
-		&internal, &stored.ParserVersion, &stored.ContentState, &stored.ResultStatus,
-		&stored.LatestProgress, &stored.FinalResult)
+	stored, err := getSessionMetadata(db, idOrPrefix)
 	if err != nil {
 		return nil, err
 	}
-	stored.Project = config.CanonicalProject(stored.Project)
-
 	turns, err := scanSessionTurns(db, stored.FullID)
 	if err != nil {
 		return nil, err
@@ -357,9 +346,30 @@ func GetSession(db *sql.DB, idOrPrefix string) (*ShowResult, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	stored.Agent = AgentDisplayName(stored.AgentKey)
 	stored.Tools = tools
+	return stored, nil
+}
+
+func getSessionMetadata(db sqlQueryer, idOrPrefix string) (*ShowResult, error) {
+	var stored ShowResult
+	var internal bool
+	err := db.QueryRow(`SELECT s.id, s.agent, s.project, s.file_path, s.resume_id,
+		s.root_session_id, s.parent_session_id, s.agent_path, s.agent_nickname,
+		s.subagent_depth, s.is_subagent, s.is_internal, s.parser_version,
+		CASE WHEN NOT EXISTS (SELECT 1 FROM sync_state st WHERE st.file_path = s.file_path)
+			THEN 'retained' ELSE s.content_state END,
+		s.result_status, s.latest_progress, s.final_result
+		FROM sessions s WHERE s.id = ? OR s.short_id LIKE ? ORDER BY s.last_ts DESC LIMIT 1`,
+		sessionLookupArgs(idOrPrefix)...).Scan(&stored.FullID, &stored.AgentKey, &stored.Project,
+		&stored.FilePath, &stored.ResumeID, &stored.RootSessionID, &stored.ParentSessionID,
+		&stored.AgentPath, &stored.AgentNickname, &stored.SubagentDepth, &stored.IsSubagent,
+		&internal, &stored.ParserVersion, &stored.ContentState, &stored.ResultStatus,
+		&stored.LatestProgress, &stored.FinalResult)
+	if err != nil {
+		return nil, err
+	}
+	stored.Project = config.CanonicalProject(stored.Project)
+	stored.Agent = AgentDisplayName(stored.AgentKey)
 	return &stored, nil
 }
 
@@ -505,7 +515,7 @@ func scanMessages(db *sql.DB, query string, args ...any) ([]string, []string, er
 	return inputs, outputs, nil
 }
 
-func scanTools(db *sql.DB, sessionID string) (map[string]int, error) {
+func scanTools(db sqlQueryer, sessionID string) (map[string]int, error) {
 	rows, err := db.Query("SELECT name, count FROM tools WHERE session_id = ?", sessionID)
 	if err != nil {
 		return nil, err

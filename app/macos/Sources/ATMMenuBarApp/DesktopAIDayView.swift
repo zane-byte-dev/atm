@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-private enum ATMAIDayTab: String, CaseIterable, Identifiable {
+enum ATMAIDayTab: String, CaseIterable, Identifiable {
     case today = "今日"
     case atlas = "Atlas"
     case history = "历史"
@@ -11,20 +11,29 @@ private enum ATMAIDayTab: String, CaseIterable, Identifiable {
 }
 
 struct DesktopAIDayView: View {
-    @StateObject private var store = ATMAIDayStore()
-    @State private var tab: ATMAIDayTab = .today
+    @ObservedObject var store: ATMAIDayStore
+    private var tab: ATMAIDayTab {
+        get { store.selectedTab }
+        nonmutating set { store.selectedTab = newValue }
+    }
     @State private var selectedBadge: ATMAIDayBadge?
     @State private var showingCorrection = false
     @State private var showingShare = false
     @State private var confirmingDelete = false
     @State private var sourceToDelete: ATMAIDaySource?
-    @State private var showAtlasMap = true
+    private var showAtlasMap: Bool {
+        get { store.showAtlasMap }
+        nonmutating set { store.showAtlasMap = newValue }
+    }
     @State private var correctionChoice: String?
     @State private var selectedHistoryDay: ATMAIDayResult?
     @State private var confirmingSemanticOff = false
     @State private var retentionDraft: Int?
     @State private var confirmingRetention = false
-    @State private var historyFilter: String?
+    private var historyFilter: String? {
+        get { store.historyFilter }
+        nonmutating set { store.historyFilter = newValue }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -47,10 +56,10 @@ struct DesktopAIDayView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .atmAnimatedSwap(tab, style: .tab)
+                .atmRetainsScrollPosition(positions: store.scrollPositions, key: tab.rawValue)
             }
         }
         .background(ATMTheme.canvas)
-        .task { if store.today == nil { store.refresh() } }
         .sheet(item: $selectedBadge) { ATMAIDayBadgeDetail(badge: $0) }
         .sheet(isPresented: $showingCorrection) { correctionSheet }
         .sheet(isPresented: $showingShare) {
@@ -103,7 +112,7 @@ struct DesktopAIDayView: View {
     /// 等宽的 `ATMCompactSegmentedTabs` 会把「数据与隐私」压出格子。
     private var tabs: some View {
         ATMCapsuleTabs(
-            selection: $tab,
+            selection: $store.selectedTab,
             items: ATMAIDayTab.allCases.map { (value: $0, title: $0.rawValue) }
         )
     }
@@ -198,7 +207,7 @@ struct DesktopAIDayView: View {
             VStack(alignment: .leading, spacing: 18) {
                     HStack {
                         Text("徽章星图").font(ATMFont.font(.title2, weight: .semibold))
-                        Picker("", selection: $showAtlasMap) { Text("星图").tag(true); Text("列表").tag(false) }.pickerStyle(.segmented).frame(width: 150)
+                        Picker("", selection: $store.showAtlasMap) { Text("星图").tag(true); Text("列表").tag(false) }.pickerStyle(.segmented).frame(width: 150)
                         Spacer()
                         Text("已解锁 \(atlas.unlocked) / \(atlas.total)").foregroundStyle(ATMTheme.secondary)
                     }
@@ -237,7 +246,7 @@ struct DesktopAIDayView: View {
             VStack(alignment: .leading, spacing: 16) {
                     HStack {
                         Text("历史").font(ATMFont.font(.title2, weight: .semibold))
-                        Picker("", selection: $historyFilter) {
+                        Picker("", selection: $store.historyFilter) {
                             Text("全部徽章").tag(String?.none)
                             ForEach(store.atlas?.badges ?? []) { badge in
                                 Text(badge.name).tag(Optional(badge.id))

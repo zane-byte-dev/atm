@@ -5,11 +5,15 @@ project_name: atm
 before:
   hooks:
     - go mod tidy
+    - npm ci --prefix app/web
+    - npm run build --prefix app/web
 
 builds:
   - id: atm
     main: ./cmd/atm
     binary: atm
+    tags:
+      - webui
     env:
       - CGO_ENABLED=0
     ldflags:

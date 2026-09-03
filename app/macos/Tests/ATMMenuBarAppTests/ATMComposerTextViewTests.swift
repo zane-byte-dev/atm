@@ -68,6 +68,45 @@ final class ATMComposerTextViewTests: XCTestCase {
         XCTAssertGreaterThan(narrowHeight, wideHeight, "窄面板里同样的标题要占更多行")
     }
 
+    func testBoundedMeasurementStopsAtVisibleLinesAndShrinksAfterDeletion() {
+        let textView = makeTextView(width: 200)
+        let ceiling = NSLayoutManager().defaultLineHeight(for: font) * 4
+        textView.maximumMeasuredHeight = ceiling
+        var measured: CGFloat = 0
+        textView.onMeasuredHeight = { measured = $0 }
+        textView.string = String(repeating: "这是需要滚动查看的长输入。\n", count: 10_000)
+        textView.reportMeasuredHeight()
+
+        XCTAssertEqual(measured, ceiling, accuracy: 0.5)
+        XCTAssertLessThan(
+            textView.layoutManager?.firstUnlaidCharacterIndex() ?? Int.max,
+            (textView.string as NSString).length,
+            "仅测前四行不应强制全文布局"
+        )
+
+        textView.string = "短标题"
+        textView.reportMeasuredHeight()
+        XCTAssertGreaterThan(measured, 0)
+        XCTAssertLessThan(measured, ceiling)
+    }
+
+    func testBoundedMeasurementShrinksWhenWidthGrowsAndIgnoresHeightOnlyResize() {
+        let textView = makeTextView(width: 120)
+        let ceiling = NSLayoutManager().defaultLineHeight(for: font) * 3
+        textView.maximumMeasuredHeight = ceiling
+        var reports: [CGFloat] = []
+        textView.onMeasuredHeight = { reports.append($0) }
+        textView.string = "一段在窄输入框中占多行的任务标题"
+        textView.reportMeasuredHeight()
+        XCTAssertEqual(reports.last ?? 0, ceiling, accuracy: 0.5)
+
+        textView.setFrameSize(NSSize(width: 800, height: 40))
+        XCTAssertLessThan(reports.last ?? ceiling, ceiling)
+        let count = reports.count
+        textView.setFrameSize(NSSize(width: 800, height: 100))
+        XCTAssertEqual(reports.count, count)
+    }
+
     func testSingleLineFieldKeepsPastedNewlinesOutOfTheStorage() {
         let textView = makeTextView()
         textView.allowsNewlines = false

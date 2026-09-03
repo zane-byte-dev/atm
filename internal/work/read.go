@@ -63,6 +63,7 @@ type SessionSummary struct {
 
 type ShowResult struct {
 	Todo       Todo                 `json:"todo"`
+	Archived   bool                 `json:"archived,omitempty"`
 	Document   DocumentSnapshot     `json:"document"`
 	Bindings   []TodoSessionBinding `json:"bindings,omitempty"`
 	Sessions   []TodoBoundSession   `json:"sessions,omitempty"`
@@ -112,6 +113,49 @@ func (service Service) Show(ctx context.Context, call application.Call, input Sh
 	if err != nil {
 		return ShowResult{}, err
 	}
+	return inspectTodoReadModel(*todo)
+}
+
+// ShowIncludingArchived is the read-only detail surface for interfaces that
+// expose archive/restore. Existing CLI current-todo resolution stays unchanged.
+func (service Service) ShowIncludingArchived(ctx context.Context, call application.Call, input ShowInput) (ShowResult, error) {
+	result, err := service.Show(ctx, call, input)
+	var appErr *application.Error
+	if err == nil || !errors.As(err, &appErr) || appErr.Code != application.CodeNotFound || strings.TrimSpace(input.TodoID) == "" {
+		return result, err
+	}
+	archived, archiveErr := store.LoadArchivedTodos()
+	if archiveErr != nil {
+		return ShowResult{}, readApplicationError("load archived todo", archiveErr)
+	}
+	for _, todo := range archived {
+		if todo.ID == store.NormalizeTodoID(input.TodoID) {
+			result, err := inspectTodoReadModel(todo.Todo)
+			result.Archived = true
+			return result, err
+		}
+	}
+	return ShowResult{}, err
+}
+
+// ReadDocument never creates or reconciles Markdown. Doc intentionally retains
+// the historical CLI materialization behavior; HTTP queries use this method.
+func (service Service) ReadDocument(ctx context.Context, call application.Call, input ShowInput) (DocResult, error) {
+	result, err := service.ShowIncludingArchived(ctx, call, input)
+	if err != nil {
+		return DocResult{}, err
+	}
+	content, err := store.ReadTodoDoc(result.Todo.ID)
+	if errors.Is(err, os.ErrNotExist) {
+		return DocResult{TodoID: result.Todo.ID, Exists: false}, nil
+	}
+	if err != nil {
+		return DocResult{}, readApplicationError("read todo document", err)
+	}
+	return DocResult{TodoID: result.Todo.ID, Exists: true, Content: content}, nil
+}
+
+func inspectTodoReadModel(todo Todo) (ShowResult, error) {
 
 	bindings, err := store.ListTodoSessionBindings(todo.ID)
 	if err != nil {
@@ -131,7 +175,7 @@ func (service Service) Show(ctx context.Context, call application.Call, input Sh
 	}
 
 	result := ShowResult{
-		Todo:     *todo,
+		Todo:     todo,
 		Document: inspectTodoDocument(todo.ID, 5),
 		Bindings: bindings,
 		Sessions: sessions,

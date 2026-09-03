@@ -3,7 +3,8 @@
 给人用的 AI 管理面板。看 AI 都在干什么、干得怎么样、花了多少钱。
 
 本地优先、单机单用户：它读各家 AI CLI 已经写在你硬盘上的会话记录，索引成一个能查、能统计、
-能挂待办的库，再配一个 macOS 菜单栏 App。它不代理你和 AI 的对话，停掉它也不影响任何会话。
+能挂待办的库。日常界面正从 macOS 主窗口迁到本机浏览器：Web 提供任务、收集、Agent、知识、统计、
+AI Day 和设置七个工作区，后台同步与采集暂由 macOS App 承担。它不代理你和 AI 的对话，停掉它也不影响任何会话。
 
 ATM 会索引可能包含源码、提示词、模型回复和个人信息的本地数据。公开使用或参与开发前请读
 [隐私与数据处理](PRIVACY.md)、[安全报告流程](SECURITY.md)和[贡献指南](CONTRIBUTING.md)；
@@ -17,17 +18,22 @@ ATM 会索引可能包含源码、提示词、模型回复和个人信息的本�
 curl -fsSL https://raw.githubusercontent.com/zane-byte-dev/atm/main/install.sh | sh
 ```
 
-**go install**：
+**go install（仅 CLI，无需 Node.js）**：
 
 ```bash
 go install github.com/zane-byte-dev/atm/cmd/atm@latest
 ```
 
-**从源码构建**（需要 Go 1.25+）：
+此方式不包含编译后的 Web 页面；启动新 Web 实例需要完整构建。CLI 不依赖 Web 服务运行。
+
+**从源码构建完整版**（需要 Go 1.25+、Node.js 24 和 npm）：
 
 ```bash
-make install    # 构建并安装到 /usr/local/bin
+make install    # npm ci、构建 Web、嵌入 Go，再安装到 /usr/local/bin
 ```
+
+完整构建和后续发布包把页面嵌入同一个 `atm` 二进制，运行时无需 Node.js。本次 Web 迁移尚未发版，
+体验任务工作区请从当前源码构建。已有数据库可先只读预览，启用写入前按下面的说明显式备份升级。
 
 ## 上手
 
@@ -39,6 +45,46 @@ atm session status      # 现在各个 AI 在干什么
 atm now                 # 我这边工作中、等待中、待验收的事
 atm stats --days 7      # 这周花了多少 token 和钱
 ```
+
+## 本地 Web 工作区
+
+使用完整构建启动：
+
+```bash
+atm serve --open         # 前台运行服务，并打开浏览器工作区
+atm serve status --json  # 在另一个终端查看实例
+atm serve stop           # 停止同一数据目录的实例
+```
+
+默认只监听 `127.0.0.1:47321`，通过 `--port` 更换端口，`--port 0` 自动分配。再次运行
+`atm serve --open` 会打开已有实例。首次打开或服务重启后，使用这条命令建立浏览器会话；直接输入
+未授权的地址不会获得业务数据。服务在终端前台运行，关闭浏览器不会停止它，`Ctrl-C` 或 `serve stop`
+才会退出。
+
+当前页面支持任务搜索、状态/项目筛选、分页、详情与进展阅读，以及新建、编辑、开始、人工完成、归档和
+恢复。编辑草稿保存在各标签页独立的 `sessionStorage`，刷新/切页可恢复，多个页面彼此隔离；关闭标签页后的恢复不保证。
+并发编辑会提示冲突，创建重试使用持久化幂等记录。已有图片附件可读，
+上传仍使用 CLI。页面在前台每 5 秒轮询，并在重新聚焦时刷新。
+
+侧栏还提供收集来源与条目、Agent 会话和对话、知识与共享记忆、用量统计与缓存额度、AI Day 历史、
+个人设置。各工作区按需加载，读取现有本机索引，详细操作范围见开发说明。
+
+这一阶段 `serve` 尚未接管自动同步、外部采集、Agent hook 和系统通知；使用这些后台能力时继续运行
+原 macOS App。Web 的任务操作保留文档与回调处理，桌面通知由现有 App 展示。SSE、后台自启动、与 Go 同源的 Vite HMR、独立菜单栏和语音 App
+都还在迁移计划中。路线见[技术方案](docs/design/local-web-runtime.md)，开发步骤见
+[`app/web/README.md`](app/web/README.md)。
+
+**切换现有数据**：现有 schema 54 数据库首次通过 `serve --open` 打开时只读，不会自动升级。准备启用
+任务写入时，按以下顺序操作：
+
+1. 执行 `atm serve stop`，退出旧 macOS App，并暂停其他 ATM 写入。该命令不会自动退出 App。
+2. 让日用 CLI、Web 和 macOS App 配置的 CLI 使用同一份新二进制。
+3. 用新二进制执行 `atm serve migrate`。它先将升级前备份写到数据目录的 `backups/`，备份成功后才升级
+   至 schema 55；备份失败则不迁移。保存命令打印的备份路径。
+4. 执行 `atm serve --open` 重新打开工作区，再恢复 macOS App 的后台功能。
+
+使用自定义数据目录时，以上 `serve` 命令均传入相同的 `--data-dir`。新建空工作区无需迁移。旧 schema 54
+二进制不能直接打开升级后的库；回退前应停止所有写入、另存新库，再恢复升级前备份，保留备份之后的修改。
 
 ## 命令
 
@@ -165,7 +211,7 @@ atm guard forget mytool                  # 忘掉一个注册过的 CLI（先 un
 
 ## macOS 菜单栏 App
 
-独立菜单栏 App 常驻显示今日 Token 和「需要你 N」，主窗口提供任务、收集、Agent、知识、统计和 AI Day 六个
+当前 macOS App 常驻显示今日 Token 和「需要你 N」，主窗口提供任务、收集、Agent、知识、统计和 AI Day 六个
 工作区。会话详情的「对话」支持摘要、时序、完整三种读法；收集工作区把钉钉等外部来源的消息分类成
 Todo 或待确认结论。新 Todo、Todo 补充和未保存结论会作为未读收集结果持续提醒，打开后标为已读；
 结论由用户明确保存到知识库，并可重试、纠错与撤销。
@@ -175,7 +221,8 @@ app/macos/Scripts/build-app.sh
 open app/macos/dist/ATM.app
 ```
 
-开发与路径配置见 [`app/macos/README.md`](app/macos/README.md)。
+开发与路径配置见 [`app/macos/README.md`](app/macos/README.md)。Web 迁移期间保留现有 App；轻量菜单栏
+伴随 App 和全局语音工具的独立拆分尚未交付。
 
 ## 通知
 
@@ -276,17 +323,32 @@ Qoder 装完要重启才生效；Pi 需要手动复制
 ## 构建
 
 ```bash
-make build      # 构建到 bin/atm
-make install    # 构建并安装
-make dist       # 跨平台编译（darwin/linux × amd64/arm64）
-make clean      # 清理构建产物
+make build      # 安装前端依赖、编译页面，构建完整 bin/atm
+make build-cli  # 只构建 CLI 到 bin/atm，无需 Node.js
+make web-build  # 仅构建 app/web/dist
+make install    # 完整构建并安装
+make dist       # 嵌入页面后跨平台编译（darwin/linux × amd64/arm64）
+make clean      # 清理二进制和前端构建产物
 ```
+
+`build` 与 `build-cli` 默认写入同一产物，按需选择其中一种。开发验证使用仓库内的其他产物名称，保留
+正在使用的 CLI，也避免 macOS 对临时目录中可执行文件的限制：
+
+```bash
+NPM_CONFIG_CACHE=/private/tmp/atm-web-npm-cache make build APP=atm-web
+bin/atm-web serve --data-dir /private/tmp/atm-web-data --port 0 --open
+```
+
+`--data-dir` 只用于 `serve` 及其子命令，不修改 HOME；写入测试应使用空目录或脱敏副本。上述 npm 缓存
+路径也适用于默认缓存存在权限问题的开发环境。GoReleaser 会先执行同一套前端安装和构建，再用 `webui`
+标签嵌入页面；未生成页面时完整构建失败，不能发布缺少界面的包。
 
 ## 更多文档
 
 | 想知道 | 看 |
 |---|---|
 | 为什么这么设计、什么坚决不做 | [DESIGN.md](DESIGN.md) |
+| 本地 Web、后台接管与原生应用拆分的方向 | [本地 Web 技术方案](docs/design/local-web-runtime.md) |
 | 某个行为背后的机制、失败时会发生什么 | [docs/internals.md](docs/internals.md) |
 | 某条命令的全部参数 | `atm <命令> --help` |
 | 版本间的变化 | [CHANGELOG.md](CHANGELOG.md) |

@@ -1,37 +1,140 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum KnowledgeDrawerTab: String {
+fileprivate enum KnowledgeDrawerTab: String {
     case articles
     case libraries
+}
+
+/// Owned by the desktop shell; only the visible workspace mounts SwiftUI views.
+@MainActor
+final class ATMKnowledgeWorkspaceModel: ObservableObject {
+    @Published fileprivate var items: [KnowledgeListItem] = []
+    @Published fileprivate var itemsByLibraryID: [String: [KnowledgeListItem]] = [:]
+    @Published fileprivate var selectedItemID: String? = nil
+    @Published fileprivate var document: ATMKnowledgeDocument? = nil
+    fileprivate var documentCache: [String: ATMKnowledgeDocument] = [:]
+    @Published fileprivate var isListLoading: Bool = false
+    @Published fileprivate var isDetailLoading: Bool = false
+    @Published fileprivate var listError: String? = nil
+    @Published fileprivate var detailError: String? = nil
+    @Published fileprivate var refreshGeneration: Int = 0 {
+        didSet {
+            libraryRequests.invalidate()
+            flatLoadedRefreshGeneration = nil
+        }
+    }
+    @Published fileprivate var editingItemID: String? = nil
+    @Published fileprivate var editContent: String = ""
+    @Published fileprivate var originalEditContent: String = ""
+    @Published fileprivate var editorMode: KnowledgeEditorMode = .edit
+    @Published fileprivate var isSaving: Bool = false
+    @Published fileprivate var editError: String? = nil
+    @Published fileprivate var isFlatListLoading: Bool = false
+    @Published fileprivate var flatListError: String? = nil
+    @Published fileprivate var flatLoadedRefreshGeneration: Int? = nil
+    @Published fileprivate var expandedLibraryIDs: Set<String> = []
+    @Published fileprivate var drawerTab: KnowledgeDrawerTab = .articles
+    fileprivate let libraryRequests = ATMWorkspaceRequestCache<String, [KnowledgeListItem]>()
+    fileprivate var listLoadToken = UUID()
+    fileprivate var detailLoadToken = UUID()
+    fileprivate var flatLoadToken = UUID()
+    fileprivate var catalog: [ATMKnowledgeCollection] = []
+    let scrollPositions = ATMWorkspaceScrollPositions()
+
+    func reconcileCatalog(_ collections: [ATMKnowledgeCollection]) {
+        guard catalog != collections else { return }
+        let previous = catalog
+        catalog = collections
+        guard !previous.isEmpty else { return }
+        let existing = Set(collections.map(\.id) + [ATMKnowledgeLibrary.memoryID, ATMKnowledgeLibrary.archiveID])
+        itemsByLibraryID = itemsByLibraryID.filter { existing.contains($0.key) }
+        expandedLibraryIDs.formIntersection(existing)
+        documentCache.removeAll()
+        refreshGeneration += 1
+    }
+
+    func cancelReads() {
+        libraryRequests.cancelPending()
+    }
 }
 
 struct DesktopKnowledgeView: View {
     @ObservedObject var store: ATMDataStore
     @ObservedObject var navigation: ATMDesktopNavigation
+    @ObservedObject var workspace: ATMKnowledgeWorkspaceModel
     let onCreateCollection: () -> Void
     let onRenameCollection: (ATMKnowledgeCollection) -> Void
     let onDeleteCollection: (ATMKnowledgeCollection) -> Void
 
-    @State private var items: [KnowledgeListItem] = []
-    @State private var itemsByLibraryID: [String: [KnowledgeListItem]] = [:]
-    @State private var selectedItemID: String?
-    @State private var document: ATMKnowledgeDocument?
-    @State private var documentCache: [String: ATMKnowledgeDocument] = [:]
-    @State private var isListLoading = false
-    @State private var isDetailLoading = false
-    @State private var listError: String?
-    @State private var detailError: String?
-    @State private var refreshGeneration = 0
+    private var items: [KnowledgeListItem] {
+        get { workspace.items }
+        nonmutating set { workspace.items = newValue }
+    }
+    private var itemsByLibraryID: [String: [KnowledgeListItem]] {
+        get { workspace.itemsByLibraryID }
+        nonmutating set { workspace.itemsByLibraryID = newValue }
+    }
+    private var selectedItemID: String? {
+        get { workspace.selectedItemID }
+        nonmutating set { workspace.selectedItemID = newValue }
+    }
+    private var document: ATMKnowledgeDocument? {
+        get { workspace.document }
+        nonmutating set { workspace.document = newValue }
+    }
+    private var documentCache: [String: ATMKnowledgeDocument] {
+        get { workspace.documentCache }
+        nonmutating set { workspace.documentCache = newValue }
+    }
+    private var isListLoading: Bool {
+        get { workspace.isListLoading }
+        nonmutating set { workspace.isListLoading = newValue }
+    }
+    private var isDetailLoading: Bool {
+        get { workspace.isDetailLoading }
+        nonmutating set { workspace.isDetailLoading = newValue }
+    }
+    private var listError: String? {
+        get { workspace.listError }
+        nonmutating set { workspace.listError = newValue }
+    }
+    private var detailError: String? {
+        get { workspace.detailError }
+        nonmutating set { workspace.detailError = newValue }
+    }
+    private var refreshGeneration: Int {
+        get { workspace.refreshGeneration }
+        nonmutating set { workspace.refreshGeneration = newValue }
+    }
     @State private var showingInfo = false
     @State private var copiedIdentifier: String?
-    @State private var editingItemID: String?
-    @State private var editContent = ""
-    @State private var originalEditContent = ""
-    @State private var editorMode = KnowledgeEditorMode.edit
-    @State private var isSaving = false
-    @State private var editError: String?
+    private var editingItemID: String? {
+        get { workspace.editingItemID }
+        nonmutating set { workspace.editingItemID = newValue }
+    }
+    private var editContent: String {
+        get { workspace.editContent }
+        nonmutating set { workspace.editContent = newValue }
+    }
+    private var originalEditContent: String {
+        get { workspace.originalEditContent }
+        nonmutating set { workspace.originalEditContent = newValue }
+    }
+    private var editorMode: KnowledgeEditorMode {
+        get { workspace.editorMode }
+        nonmutating set { workspace.editorMode = newValue }
+    }
+    private var isSaving: Bool {
+        get { workspace.isSaving }
+        nonmutating set { workspace.isSaving = newValue }
+    }
+    private var editError: String? {
+        get { workspace.editError }
+        nonmutating set { workspace.editError = newValue }
+    }
     @State private var showingDiscardAlert = false
     @State private var pendingSelectionID: String?
     @State private var showingCreateSheet = false
@@ -41,17 +144,32 @@ struct DesktopKnowledgeView: View {
     @State private var showingArchiveConfirmation = false
     @State private var deleteSummary: ATMKnowledgeDocumentSummary?
     @State private var isImporting = false
-    @State private var isFlatListLoading = false
-    @State private var flatListError: String?
-    @State private var flatLoadedRefreshGeneration: Int?
+    private var isFlatListLoading: Bool {
+        get { workspace.isFlatListLoading }
+        nonmutating set { workspace.isFlatListLoading = newValue }
+    }
+    private var flatListError: String? {
+        get { workspace.flatListError }
+        nonmutating set { workspace.flatListError = newValue }
+    }
+    private var flatLoadedRefreshGeneration: Int? {
+        get { workspace.flatLoadedRefreshGeneration }
+        nonmutating set { workspace.flatLoadedRefreshGeneration = newValue }
+    }
     @State private var operationError: KnowledgeOperationError?
     @State private var renameSummary: ATMKnowledgeDocumentSummary?
     @State private var renameText = ""
     @State private var feedbackDraft: KnowledgeFeedbackDraft?
     @State private var feedbackStatus: String?
     @State private var isFeedbackSaving = false
-    @State private var expandedLibraryIDs: Set<String> = []
-    @State private var drawerTab = KnowledgeDrawerTab.articles
+    private var expandedLibraryIDs: Set<String> {
+        get { workspace.expandedLibraryIDs }
+        nonmutating set { workspace.expandedLibraryIDs = newValue }
+    }
+    private var drawerTab: KnowledgeDrawerTab {
+        get { workspace.drawerTab }
+        nonmutating set { workspace.drawerTab = newValue }
+    }
     @State private var draggedLibraryID: String?
     @AppStorage(ATMManualOrder.knowledgeCollectionsKey) private var knowledgeCollectionOrder = ""
     @AppStorage(ATMNavigatorPresentationPreferences.knowledgeKey)
@@ -108,6 +226,7 @@ struct DesktopKnowledgeView: View {
                 .atmAnimatedSwap(knowledgeDetailIdentity, style: .detail)
         }
         .task {
+            workspace.reconcileCatalog(store.knowledgeCollections)
             if store.knowledgeCollections.isEmpty {
                 store.refreshKnowledgeCatalog()
             }
@@ -118,7 +237,7 @@ struct DesktopKnowledgeView: View {
         )) {
             await loadItems()
         }
-        .task(id: selectedItemID) {
+        .task(id: knowledgeDocumentLoadKey) {
             await loadSelectedDocument()
         }
         .onChange(of: navigation.locateKnowledgeDocumentID) { target in
@@ -126,14 +245,21 @@ struct DesktopKnowledgeView: View {
             drawerTab = .articles
             expandedLibraryIDs.insert(selectedLibraryID)
             selectedItemID = target
+            if !(itemsByLibraryID[selectedLibraryID] ?? []).contains(where: { $0.id == target }) {
+                refreshGeneration += 1
+            }
             navigation.locateKnowledgeDocumentID = nil
         }
+        .onDisappear { workspace.cancelReads() }
         .onAppear {
             expandedLibraryIDs.insert(selectedLibraryID)
             guard let target = navigation.locateKnowledgeDocumentID else { return }
             drawerTab = .articles
             expandedLibraryIDs.insert(selectedLibraryID)
             selectedItemID = target
+            if !(itemsByLibraryID[selectedLibraryID] ?? []).contains(where: { $0.id == target }) {
+                refreshGeneration += 1
+            }
             navigation.locateKnowledgeDocumentID = nil
         }
         .alert("放弃未保存的修改？", isPresented: $showingDiscardAlert) {
@@ -257,9 +383,9 @@ struct DesktopKnowledgeView: View {
         .onChange(of: selectedLibraryID) { libraryID in
             expandedLibraryIDs.insert(libraryID)
             items = itemsByLibraryID[libraryID] ?? []
-            selectFirstItemIfNeeded()
         }
-        .onChange(of: store.knowledgeCollections.map(\.id)) { _ in
+        .onChange(of: store.knowledgeCollections) { collections in
+            workspace.reconcileCatalog(collections)
             if drawerTab == .libraries { selectDefaultManagedLibrary() }
         }
         .onChange(of: drawerTab) { tab in
@@ -293,6 +419,11 @@ struct DesktopKnowledgeView: View {
         }
     }
 
+    private var knowledgeDocumentLoadKey: String {
+        guard case .document(let summary) = selectedItem else { return "none:\(refreshGeneration)" }
+        return "\(summary.documentID)|\(summary.updatedAt ?? "")|\(refreshGeneration)"
+    }
+
     private var knowledgeDetailIdentity: String {
         if drawerTab == .libraries {
             return "library:\(selectedLibrary?.id ?? "empty")"
@@ -303,7 +434,7 @@ struct DesktopKnowledgeView: View {
     private var knowledgeDrawerTabs: some View {
         ATMNavigatorHeader {
             ATMCompactSegmentedTabs(
-                selection: $drawerTab,
+                selection: $workspace.drawerTab,
                 items: [(.articles, "文章"), (.libraries, "知识库")]
             )
         } trailing: {
@@ -702,7 +833,7 @@ struct DesktopKnowledgeView: View {
                 Group {
                     if isSelected && isListLoading && displayedItems.isEmpty {
                         knowledgeInlineState(icon: "hourglass", title: "正在读取知识")
-                    } else if isSelected, let listError {
+                    } else if isSelected, let listError, displayedItems.isEmpty {
                         let presentation = ATMErrorPresentation.resolve(listError, fallbackTitle: "知识加载失败")
                         ATMInlineNotice(
                             severity: .error,
@@ -782,7 +913,7 @@ struct DesktopKnowledgeView: View {
                 ATMDetailBodySurface {
                     ATMEmptyState(icon: "hourglass", title: "正在读取详情", size: .inline, minHeight: 180)
                 }
-            } else if let detailError {
+            } else if let detailError, document == nil {
                 let presentation = ATMErrorPresentation.resolve(detailError, fallbackTitle: "详情加载失败")
                 ATMDetailBodySurface {
                     VStack {
@@ -802,7 +933,7 @@ struct DesktopKnowledgeView: View {
             } else if let item = selectedItem {
                 switch item {
                 case .document(let summary):
-                    if let document {
+                    if let document, document.metadata.id == summary.documentID {
                         documentDetail(document, summary: summary)
                     } else {
                         ATMDetailBodySurface {
@@ -1053,6 +1184,7 @@ struct DesktopKnowledgeView: View {
                 .padding(.vertical, 20)
                 .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .atmRetainsScrollPosition(positions: workspace.scrollPositions, key: "document:\(document.metadata.id)")
             }
         }
     }
@@ -1166,6 +1298,7 @@ struct DesktopKnowledgeView: View {
                     .padding(.vertical, 20)
                     .frame(maxWidth: ATMDetailLayout.contentMaxWidth, alignment: .leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                .atmRetainsScrollPosition(positions: workspace.scrollPositions, key: "memory:\(memory.id)")
             }
         }
     }
@@ -1330,7 +1463,7 @@ struct DesktopKnowledgeView: View {
             Divider()
             ATMDetailBodySurface {
                 if editorMode == .edit {
-                    TextEditor(text: $editContent)
+                    TextEditor(text: $workspace.editContent)
                         .font(ATMFont.mono(.body))
                         .lineSpacing(3)
                         .scrollContentBackground(.hidden)
@@ -1593,24 +1726,29 @@ struct DesktopKnowledgeView: View {
     @MainActor
     private func loadItems() async {
         let libraryID = selectedLibraryID
-        isListLoading = true
+        let generation = refreshGeneration
+        let token = UUID()
+        workspace.listLoadToken = token
+        if let cached = itemsByLibraryID[libraryID] {
+            items = cached
+        }
+        isListLoading = !workspace.libraryRequests.isFresh(libraryID)
         listError = nil
-        defer { isListLoading = false }
+        defer { if workspace.listLoadToken == token { isListLoading = false } }
 
         do {
             let loaded = try await fetchItems(for: libraryID)
-            guard !Task.isCancelled, selectedLibraryID == libraryID else { return }
+            guard !Task.isCancelled, refreshGeneration == generation,
+                  workspace.listLoadToken == token, selectedLibraryID == libraryID else { return }
             itemsByLibraryID[libraryID] = loaded
             items = loaded
             selectFirstItemIfNeeded()
         } catch is CancellationError {
             return
         } catch {
-            guard !Task.isCancelled, selectedLibraryID == libraryID else { return }
-            itemsByLibraryID.removeValue(forKey: libraryID)
-            items = []
-            selectedItemID = nil
-            document = nil
+            guard !Task.isCancelled, refreshGeneration == generation,
+                  workspace.listLoadToken == token, selectedLibraryID == libraryID else { return }
+            // Cached content remains useful when a background revalidation fails.
             listError = error.localizedDescription
         }
     }
@@ -1618,49 +1756,73 @@ struct DesktopKnowledgeView: View {
     @MainActor
     private func loadFlatArticleItems() async {
         let libraryIDs = articleLibraryIDs
-        if flatLoadedRefreshGeneration == refreshGeneration,
-           libraryIDs.allSatisfy({ itemsByLibraryID[$0] != nil }) {
-            return
-        }
-
+        let generation = refreshGeneration
+        if libraryIDs.allSatisfy({ workspace.libraryRequests.isFresh($0) }) { return }
+        let token = UUID()
+        workspace.flatLoadToken = token
         isFlatListLoading = true
         flatListError = nil
-        defer { isFlatListLoading = false }
+        defer { if workspace.flatLoadToken == token { isFlatListLoading = false } }
 
-        var firstError: Error?
-        for libraryID in libraryIDs {
-            guard !Task.isCancelled else { return }
-            do {
-                let loaded = try await fetchItems(for: libraryID)
-                guard !Task.isCancelled else { return }
-                itemsByLibraryID[libraryID] = loaded
-                if selectedLibraryID == libraryID { items = loaded }
-            } catch is CancellationError {
-                return
-            } catch {
-                if firstError == nil { firstError = error }
+        // Reuse a selected library's in-flight read, and replenish a small worker
+        // pool as results arrive instead of waiting for every library serially.
+        await withTaskGroup(of: (String, Result<[KnowledgeListItem], Error>).self) { group in
+            var remaining = libraryIDs.makeIterator()
+            func enqueue(_ libraryID: String) {
+                group.addTask {
+                    do { return (libraryID, .success(try await fetchItems(for: libraryID))) }
+                    catch { return (libraryID, .failure(error)) }
+                }
+            }
+            for _ in 0..<3 {
+                if let libraryID = remaining.next() { enqueue(libraryID) }
+            }
+            while let (libraryID, result) = await group.next() {
+                guard !Task.isCancelled, refreshGeneration == generation,
+                      workspace.flatLoadToken == token else {
+                    group.cancelAll()
+                    return
+                }
+                switch result {
+                case .success(let loaded):
+                    itemsByLibraryID[libraryID] = loaded
+                    if selectedLibraryID == libraryID {
+                        items = loaded
+                        selectFirstItemIfNeeded()
+                    }
+                case .failure(let error):
+                    if !(error is CancellationError), flatListError == nil {
+                        flatListError = error.localizedDescription
+                    }
+                }
+                if let libraryID = remaining.next() { enqueue(libraryID) }
+            }
+            if !Task.isCancelled, refreshGeneration == generation,
+               workspace.flatLoadToken == token {
+                flatLoadedRefreshGeneration = generation
             }
         }
-
-        guard !Task.isCancelled else { return }
-        flatLoadedRefreshGeneration = refreshGeneration
-        flatListError = firstError?.localizedDescription
-        selectFirstItemIfNeeded()
     }
 
+    @MainActor
     private func fetchItems(for libraryID: String) async throws -> [KnowledgeListItem] {
-        if libraryID == ATMKnowledgeLibrary.memoryID {
-            return try await store.memories(query: "").map(KnowledgeListItem.memory)
+        try await workspace.libraryRequests.value(for: libraryID) {
+            if libraryID == ATMKnowledgeLibrary.memoryID {
+                return try await store.memories(query: "").map(KnowledgeListItem.memory)
+            }
+            if libraryID == ATMKnowledgeLibrary.archiveID {
+                return try await store.archivedKnowledgeDocuments().map(KnowledgeListItem.document)
+            }
+            return try await store.knowledgeDocuments(collectionID: libraryID, status: "active")
+                .map(KnowledgeListItem.document)
         }
-        if libraryID == ATMKnowledgeLibrary.archiveID {
-            return try await store.archivedKnowledgeDocuments().map(KnowledgeListItem.document)
-        }
-        return try await store.knowledgeDocuments(collectionID: libraryID, status: "active")
-            .map(KnowledgeListItem.document)
     }
 
     @MainActor
     private func loadSelectedDocument() async {
+        let token = UUID()
+        workspace.detailLoadToken = token
+        let generation = refreshGeneration
         showingInfo = false
         copiedIdentifier = nil
         detailError = nil
@@ -1669,23 +1831,31 @@ struct DesktopKnowledgeView: View {
             isDetailLoading = false
             return
         }
-        if let cached = documentCache[summary.documentID] {
-            document = cached
+        let cached = documentCache[summary.documentID]
+        document = cached
+        if let cached, summary.updatedAt == nil || summary.updatedAt == cached.metadata.updatedAt {
             isDetailLoading = false
             return
         }
-        document = nil
-        isDetailLoading = true
-        defer { isDetailLoading = false }
+        isDetailLoading = cached == nil
+        defer { if workspace.detailLoadToken == token { isDetailLoading = false } }
         do {
             let loaded = try await store.knowledgeDocument(summary.documentID)
-            guard !Task.isCancelled, selectedItemID == KnowledgeListItem.document(summary).id else { return }
+            guard !Task.isCancelled, refreshGeneration == generation,
+                  workspace.detailLoadToken == token,
+                  selectedItemID == KnowledgeListItem.document(summary).id else { return }
             document = loaded
             documentCache[summary.documentID] = loaded
+            // Long-lived workspace caches have a budget; keep the current article.
+            if documentCache.count > 64,
+               let victim = documentCache.keys.first(where: { $0 != summary.documentID }) {
+                documentCache.removeValue(forKey: victim)
+            }
         } catch is CancellationError {
             return
         } catch {
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, refreshGeneration == generation,
+                  workspace.detailLoadToken == token else { return }
             detailError = error.localizedDescription
         }
     }
@@ -1983,12 +2153,12 @@ private struct KnowledgeInfoField: Identifiable, Equatable {
     var id: String { "\(label):\(value)" }
 }
 
-private enum KnowledgeEditorMode: String {
+fileprivate enum KnowledgeEditorMode: String {
     case edit
     case preview
 }
 
-private enum KnowledgeListItem: Identifiable, Equatable {
+fileprivate enum KnowledgeListItem: Identifiable, Equatable {
     case document(ATMKnowledgeDocumentSummary)
     case memory(ATMMemoryHit)
 

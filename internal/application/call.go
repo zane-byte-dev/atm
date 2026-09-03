@@ -33,6 +33,7 @@ type Origin string
 const (
 	OriginCLI        Origin = "cli"
 	OriginIPC        Origin = "ipc"
+	OriginWeb        Origin = "web"
 	OriginController Origin = "controller"
 	OriginHook       Origin = "hook"
 )
@@ -40,7 +41,7 @@ const (
 // Valid reports whether origin is one of the stable application origins.
 func (origin Origin) Valid() bool {
 	switch origin {
-	case OriginCLI, OriginIPC, OriginController, OriginHook:
+	case OriginCLI, OriginIPC, OriginWeb, OriginController, OriginHook:
 		return true
 	default:
 		return false

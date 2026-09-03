@@ -37,12 +37,15 @@ func CreateCollection(dataDir, id string, input EditCollectionInput) (*Collectio
 		return nil, err
 	}
 	dir := filepath.Join(knowledgeRoot(dataDir), id)
-	if _, err := os.Stat(dir); err == nil {
-		return nil, fmt.Errorf("knowledge collection already exists: %s", id)
-	} else if !os.IsNotExist(err) {
+	if err := os.MkdirAll(knowledgeRoot(dataDir), 0700); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	// Only the process that exclusively creates the leaf owns this creation.
+	// Stat followed by MkdirAll allowed two creators to replace one manifest.
+	if err := os.Mkdir(dir, 0700); err != nil {
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("knowledge collection already exists: %s", id)
+		}
 		return nil, err
 	}
 	info := CollectionInfo{ID: id, Name: id}
@@ -50,8 +53,17 @@ func CreateCollection(dataDir, id string, input EditCollectionInput) (*Collectio
 	if strings.TrimSpace(info.Name) == "" {
 		info.Name = id
 	}
-	if err := writeCollectionManifest(filepath.Join(dir, "_collection.md"), info, ""); err != nil {
-		_ = os.RemoveAll(dir)
+	content, err := marshalCollectionManifest(info, "")
+	if err == nil {
+		err = atomicWriteNew(filepath.Join(dir, "_collection.md"), content, 0600)
+	}
+	if err != nil {
+		// A CLI may have added a document after the directory became visible.
+		// Remove only an empty directory; never recursively remove shared data.
+		_ = os.Remove(dir)
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("knowledge collection already exists: %s: %w", id, err)
+		}
 		return nil, err
 	}
 	return &info, nil
@@ -245,17 +257,25 @@ func applyCollectionEdit(info *CollectionInfo, input EditCollectionInput) {
 }
 
 func writeCollectionManifest(path string, info CollectionInfo, body string) error {
+	content, err := marshalCollectionManifest(info, body)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(path, content, 0600)
+}
+
+func marshalCollectionManifest(info CollectionInfo, body string) ([]byte, error) {
 	info.DocumentCount = 0
 	frontmatter, err := yaml.Marshal(info)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	content := append([]byte("---\n"), frontmatter...)
 	content = append(content, []byte("---\n")...)
 	if strings.TrimSpace(body) != "" {
 		content = append(content, []byte("\n"+strings.TrimSpace(body)+"\n")...)
 	}
-	return atomicWrite(path, content, 0600)
+	return content, nil
 }
 
 func collectionByID(dataDir, id string) (*CollectionInfo, error) {

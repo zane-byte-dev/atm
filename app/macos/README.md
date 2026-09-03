@@ -245,8 +245,22 @@ swift run --package-path app/macos
 > 弹不出来，而那个请求的回调也就永远不来。按下语音快捷键会直接告诉你这件事并让你换运行方式，
 > 而不是停在「正在打开麦克风…」上等；设置 → 语音的权限区同样会横幅提示。
 > 需要验证图标、通知、语音输入、辅助功能或 UI 自动化时，运行
-> `app/macos/Scripts/run-dev-app.sh`。它仍使用 Debug 构建，但会放进独立的
+> `app/macos/Scripts/run-dev-app.sh`。它默认使用 Debug 构建，放进独立的
 > `ATM Dev.app`，使用开发 bundle ID，终端日志也会保留。
+
+复测任务切换和滚动性能时，可使用开启编译优化的 Release 开发包：
+
+```bash
+ATM_BUILD_CONFIGURATION=release app/macos/Scripts/run-dev-app.sh
+```
+
+`ATM_BUILD_CONFIGURATION` 只接受 `debug` 或 `release`。两种构建都输出到
+`app/macos/.build/dev-app/ATM Dev.app`，使用同一个开发 bundle ID，保留既有偏好。
+如需由 UI 自动化或 Finder 启动，设置 `ATM_BUILD_ONLY=1`，脚本完成打包与签名后退出：
+
+```bash
+ATM_BUILD_CONFIGURATION=release ATM_BUILD_ONLY=1 app/macos/Scripts/run-dev-app.sh
+```
 
 如果 `atm` 不在 `/usr/local/bin`、`/opt/homebrew/bin` 或 `~/.local/bin`，可显式指定：
 

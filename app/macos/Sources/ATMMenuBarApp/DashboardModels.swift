@@ -346,15 +346,19 @@ struct ATMDashboardEnvelope: Decodable {
 /// before the statistics queries finish.
 struct ATMDashboardRequest: Encodable, Equatable {
     let sections: [String]
+    let ranges: [String]?
+    let compact: Bool?
     let sessionID: String?
 
     enum CodingKeys: String, CodingKey {
-        case sections
+        case sections, ranges, compact
         case sessionID = "session_id"
     }
 
-    init(sections: [String] = [], sessionID: String? = nil) {
+    init(sections: [String] = [], ranges: [String]? = nil, compact: Bool? = nil, sessionID: String? = nil) {
         self.sections = sections
+        self.ranges = ranges
+        self.compact = compact
         self.sessionID = sessionID?.isEmpty == false ? sessionID : nil
     }
 }
@@ -396,6 +400,8 @@ struct ATMDashboardSnapshot {
     let currentSession: ATMCurrentSession?
     let indexHealth: ATMIndexHealthReport?
     let refreshedAt: Date
+    let statsRefreshedAt: Date
+    let todaySummary: ATMDayStats?
 
     init(
         work: ATMNowSnapshot,
@@ -410,7 +416,9 @@ struct ATMDashboardSnapshot {
         liveStatus: ATMLiveStatus,
         currentSession: ATMCurrentSession?,
         indexHealth: ATMIndexHealthReport? = nil,
-        refreshedAt: Date
+        refreshedAt: Date,
+        statsRefreshedAt: Date? = nil,
+        todaySummary: ATMDayStats? = nil
     ) {
         self.work = work
         self.dayStats = dayStats
@@ -425,6 +433,8 @@ struct ATMDashboardSnapshot {
         self.currentSession = currentSession
         self.indexHealth = indexHealth
         self.refreshedAt = refreshedAt
+        self.statsRefreshedAt = statsRefreshedAt ?? refreshedAt
+        self.todaySummary = todaySummary
     }
 
     static let empty = ATMDashboardSnapshot(
@@ -438,6 +448,43 @@ struct ATMDashboardSnapshot {
         currentSession: nil,
         refreshedAt: .distantPast
     )
+
+    /// Merge sections instead of allowing a cheap work response to erase usage,
+    /// or an older statistics response to restore stale task/presence state.
+    func mergingWork(_ incoming: ATMDashboardSnapshot) -> ATMDashboardSnapshot {
+        // The work request also carries one cheap today summary for the menu
+        // bar. Replace that day without replacing a selected range's history.
+        let incomingDays = Dictionary(uniqueKeysWithValues: incoming.dayStats.map { ($0.date, $0) })
+        let keptDays = dayStats.filter { incomingDays[$0.date] == nil }
+        let mergedDays = (keptDays + incoming.dayStats).sorted { $0.date < $1.date }
+        return ATMDashboardSnapshot(
+            work: incoming.work, dayStats: mergedDays, hourStats: hourStats,
+            modelDayStats: modelDayStats, modelHourStats: modelHourStats,
+            projectDayStats: projectDayStats, projectHourStats: projectHourStats,
+            todoCompletions: todoCompletions, rangeData: rangeData,
+            liveStatus: incoming.liveStatus, currentSession: incoming.currentSession,
+            indexHealth: incoming.indexHealth, refreshedAt: incoming.refreshedAt,
+            statsRefreshedAt: statsRefreshedAt,
+            todaySummary: incoming.dayStats.last ?? todaySummary
+        )
+    }
+
+    func mergingStats(_ incoming: ATMDashboardEnvelope, at date: Date = Date()) -> ATMDashboardSnapshot {
+        let stats = incoming.makeSnapshot(refreshedAt: date)
+        var mergedRanges = rangeData
+        for range in ATMMetricsRange.allCases where incoming.ranges[range.rawValue] != nil {
+            mergedRanges[range] = stats.rangeData[range]
+        }
+        return ATMDashboardSnapshot(
+            work: work, dayStats: stats.dayStats, hourStats: stats.hourStats,
+            modelDayStats: stats.modelDayStats, modelHourStats: stats.modelHourStats,
+            projectDayStats: stats.projectDayStats, projectHourStats: stats.projectHourStats,
+            todoCompletions: stats.todoCompletions, rangeData: mergedRanges,
+            liveStatus: liveStatus, currentSession: currentSession,
+            indexHealth: indexHealth, refreshedAt: refreshedAt, statsRefreshedAt: date,
+            todaySummary: todaySummary
+        )
+    }
 
     func removingTodos(withIDs ids: Set<String>) -> ATMDashboardSnapshot {
         guard !ids.isEmpty else { return self }
@@ -454,7 +501,9 @@ struct ATMDashboardSnapshot {
             liveStatus: liveStatus,
             currentSession: currentSession,
             indexHealth: indexHealth,
-            refreshedAt: refreshedAt
+            refreshedAt: refreshedAt,
+            statsRefreshedAt: statsRefreshedAt,
+            todaySummary: todaySummary
         )
     }
 
@@ -472,7 +521,9 @@ struct ATMDashboardSnapshot {
             liveStatus: liveStatus,
             currentSession: currentSession,
             indexHealth: indexHealth,
-            refreshedAt: refreshedAt
+            refreshedAt: refreshedAt,
+            statsRefreshedAt: statsRefreshedAt,
+            todaySummary: todaySummary
         )
     }
 
@@ -490,11 +541,13 @@ struct ATMDashboardSnapshot {
             liveStatus: liveStatus,
             currentSession: currentSession,
             indexHealth: indexHealth,
-            refreshedAt: refreshedAt
+            refreshedAt: refreshedAt,
+            statsRefreshedAt: statsRefreshedAt,
+            todaySummary: todaySummary
         )
     }
 
-    var todayStats: ATMDayStats? { dayStats.last }
+    var todayStats: ATMDayStats? { todaySummary ?? dayStats.last }
 
     private var requirementCalendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
@@ -772,13 +825,17 @@ struct ATMDashboardSnapshot {
     /// Model rows in the same buckets `trendStats` uses, so a chart drawn over hour
     /// buckets never looks its series up in day rows and finds nothing.
     private func modelSeriesSource(for range: ATMMetricsRange) -> [ATMModelDayStats] {
-        guard let window = hourWindow(for: range) else { return modelDayStats }
+        guard let window = hourWindow(for: range) else {
+            return modelDayStats.filter { rangeData[range]?.contains(date: $0.date) ?? true }
+        }
         return modelHourStats.filter { window.contains(date: $0.date) }
     }
 
     /// See modelSeriesSource: the project rows, bucketed the same way.
     private func projectSeriesSource(for range: ATMMetricsRange) -> [ATMProjectDayStats] {
-        guard let window = hourWindow(for: range) else { return projectDayStats }
+        guard let window = hourWindow(for: range) else {
+            return projectDayStats.filter { rangeData[range]?.contains(date: $0.date) ?? true }
+        }
         return projectHourStats.filter { window.contains(date: $0.date) }
     }
 

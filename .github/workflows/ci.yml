@@ -18,7 +18,7 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Build
+      - name: Build CLI without frontend assets
         run: go build ./...
 
       - name: Test
@@ -26,6 +26,36 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.25"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: app/web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix app/web
+
+      - name: Check frontend types
+        run: npm run check --prefix app/web
+
+      - name: Test frontend state handling
+        run: npm run test --prefix app/web
+
+      - name: Build frontend assets
+        run: npm run build --prefix app/web
+
+      - name: Build complete binary with embedded assets
+        run: go build -trimpath -tags webui -o bin/atm-web-ci-check ./cmd/atm
 
   release-contract:
     runs-on: macos-latest
@@ -36,5 +66,11 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Verify CLI, macOS, migration, and release contracts
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: app/web/package-lock.json
+
+      - name: Verify CLI, Web, macOS, migration, and release contracts
         run: ./scripts/release-check.sh

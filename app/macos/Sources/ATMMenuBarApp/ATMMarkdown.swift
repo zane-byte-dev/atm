@@ -1,17 +1,17 @@
 import Foundation
 
-struct ATMMarkdownTaskItem: Equatable {
+struct ATMMarkdownTaskItem: Equatable, Sendable {
     let checked: Bool
     let text: String
 }
 
-enum ATMMarkdownTableAlignment: Equatable {
+enum ATMMarkdownTableAlignment: Equatable, Sendable {
     case leading
     case center
     case trailing
 }
 
-enum ATMMarkdownBlock: Equatable {
+enum ATMMarkdownBlock: Equatable, Sendable {
     case heading(level: Int, text: String)
     case paragraph(String)
     case list(ordered: Bool, items: [String])
@@ -27,14 +27,45 @@ enum ATMMarkdownBlock: Equatable {
 }
 
 enum ATMMarkdown {
+    private struct SummaryKey: Hashable {
+        let source: String
+        let limit: Int
+    }
+    private static let summaryCache = ATMBoundedContentCache<SummaryKey, String>(
+        countLimit: 512, costLimit: 2 * 1_024 * 1_024
+    )
+    private static let renderedCache = ATMBoundedContentCache<String, AttributedString>(
+        countLimit: 1_024, costLimit: 6 * 1_024 * 1_024
+    )
+    private static let blockCache = ATMBoundedContentCache<String, [ATMMarkdownBlock]>(
+        countLimit: 128, costLimit: 4 * 1_024 * 1_024
+    )
+    private static let linkDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType.link.rawValue
+    )
+
+    static func cachedRender(_ source: String) -> AttributedString? {
+        renderedCache.value(for: source)
+    }
+
     static func render(_ source: String) -> AttributedString {
-        (try? AttributedString(
+        if let cached = cachedRender(source) { return cached }
+        let result = (try? AttributedString(
             markdown: protectBareLinks(in: source),
             options: AttributedString.MarkdownParsingOptions(interpretedSyntax: .full)
         )) ?? AttributedString(source)
+        renderedCache.insert(result, for: source, cost: source.utf8.count * 8 + 256)
+        return result
     }
 
     static func blocks(_ source: String) -> [ATMMarkdownBlock] {
+        if let cached = blockCache.value(for: source) { return cached }
+        let result = parseBlocks(source)
+        blockCache.insert(result, for: source, cost: source.utf8.count * 3 + result.count * 128)
+        return result
+    }
+
+    private static func parseBlocks(_ source: String) -> [ATMMarkdownBlock] {
         var result: [ATMMarkdownBlock] = []
         var paragraph: [String] = []
         var listItems: [String] = []
@@ -189,6 +220,8 @@ enum ATMMarkdown {
     }
 
     static func plainSummary(_ source: String, limit: Int) -> String {
+        let key = SummaryKey(source: source, limit: limit)
+        if let cached = summaryCache.value(for: key) { return cached }
         let prose = blocks(source).compactMap { block -> String? in
             switch block {
             case .heading(_, let text), .paragraph(let text), .quote(let text): return text
@@ -204,8 +237,11 @@ enum ATMMarkdown {
             .replacingOccurrences(of: "\n", with: " ")
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
-        guard rendered.count > limit else { return rendered }
-        return String(rendered.prefix(limit)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        let result = rendered.count > limit
+            ? String(rendered.prefix(max(0, limit))).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+            : rendered
+        summaryCache.insert(result, for: key, cost: source.utf8.count + result.utf8.count + 128)
+        return result
     }
 
     static func documentBody(_ source: String, removingTitle title: String) -> String {
@@ -356,57 +392,78 @@ enum ATMMarkdown {
     }
 
     private static func protectBareLinks(in source: String) -> String {
-        guard let detector = try? NSDataDetector(
-            types: NSTextCheckingResult.CheckingType.link.rawValue
-        ) else {
-            return source
-        }
+        guard let detector = linkDetector else { return source }
 
         let original = source as NSString
-        let mutable = NSMutableString(string: source)
         let matches = detector.matches(
             in: source,
             range: NSRange(location: 0, length: original.length)
         )
 
-        for match in matches.reversed() where match.resultType == .link {
-            guard !isInsideMarkdownCode(at: match.range.location, in: original) else { continue }
+        // NSDataDetector returns matches in source order. Scan code delimiters
+        // once while walking those matches, instead of rescanning the entire
+        // prefix for every URL in a link-heavy document.
+        var codeScanner = CodeScanner(source: original)
+        var protectedRanges: [NSRange] = []
+        for match in matches where match.resultType == .link {
+            guard !codeScanner.isInsideCode(at: match.range.location) else { continue }
             let previousCharacter = match.range.location > 0
                 ? original.substring(with: NSRange(location: match.range.location - 1, length: 1))
                 : ""
             guard previousCharacter != "(", previousCharacter != "<" else { continue }
 
-            let visibleURL = original.substring(with: match.range)
-            mutable.replaceCharacters(in: match.range, with: "<\(visibleURL)>")
+            protectedRanges.append(match.range)
         }
-        return mutable as String
+        guard !protectedRanges.isEmpty else { return source }
+        // Assemble once as well: inserting angle brackets into a mutable
+        // string repeatedly would shift the suffix for each protected URL.
+        var protected = ""
+        protected.reserveCapacity(source.utf8.count + protectedRanges.count * 2)
+        var copiedThrough = 0
+        for range in protectedRanges {
+            protected.append(original.substring(with: NSRange(
+                location: copiedThrough, length: range.location - copiedThrough
+            )))
+            protected.append("<")
+            protected.append(original.substring(with: range))
+            protected.append(">")
+            copiedThrough = NSMaxRange(range)
+        }
+        protected.append(original.substring(from: copiedThrough))
+        return protected
     }
 
-    private static func isInsideMarkdownCode(at offset: Int, in source: NSString) -> Bool {
-        var activeBacktickCount = 0
-        var index = 0
-        while index < offset {
-            let character = source.character(at: index)
-            if character == 92, index + 1 < offset {
-                index += 2
-                continue
-            }
-            if character == 96 {
-                var runLength = 1
-                while index + runLength < offset,
-                      source.character(at: index + runLength) == 96 {
-                    runLength += 1
+    private struct CodeScanner {
+        let source: NSString
+        private var activeBacktickCount = 0
+        private var index = 0
+
+        init(source: NSString) { self.source = source }
+
+        mutating func isInsideCode(at offset: Int) -> Bool {
+            while index < offset {
+                let character = source.character(at: index)
+                if character == 92, index + 1 < offset {
+                    index += 2
+                    continue
                 }
-                if activeBacktickCount == 0 {
-                    activeBacktickCount = runLength
-                } else if activeBacktickCount == runLength {
-                    activeBacktickCount = 0
+                if character == 96 {
+                    var runLength = 1
+                    while index + runLength < offset,
+                          source.character(at: index + runLength) == 96 {
+                        runLength += 1
+                    }
+                    if activeBacktickCount == 0 {
+                        activeBacktickCount = runLength
+                    } else if activeBacktickCount == runLength {
+                        activeBacktickCount = 0
+                    }
+                    index += runLength
+                    continue
                 }
-                index += runLength
-                continue
+                index += 1
             }
-            index += 1
+            return activeBacktickCount != 0
         }
-        return activeBacktickCount != 0
     }
 }

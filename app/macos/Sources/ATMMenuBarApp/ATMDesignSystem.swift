@@ -140,7 +140,10 @@ struct ATMNavigatorGroup<Header: View, Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // Laziness has to reach the rows inside an expanded group. An eager
+        // VStack here caused the outer lazy navigator to build a whole group
+        // as soon as even its header entered the viewport.
+        LazyVStack(alignment: .leading, spacing: 0) {
             header
             content
         }

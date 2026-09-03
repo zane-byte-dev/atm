@@ -21,6 +21,18 @@ struct ATMMemoryRecallRequest: Encodable, Equatable {
 
 struct ATMMemoryRecallResponse: Decodable, Equatable {
     let hits: [ATMMemoryHit]
+
+    private enum CodingKeys: String, CodingKey {
+        case hits
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        // The Go service encodes an empty, nil slice as null. Keep the key
+        // required and decode non-null values strictly so malformed responses
+        // still surface as errors instead of masquerading as no matches.
+        hits = try values.decodeNil(forKey: .hits) ? [] : values.decode([ATMMemoryHit].self, forKey: .hits)
+    }
 }
 
 struct ATMMemorySupersedeRequest: Encodable, Equatable {

@@ -23,8 +23,9 @@ const (
 )
 
 type sectionSet struct {
-	work  bool
-	stats bool
+	work    bool
+	stats   bool
+	summary bool
 }
 
 // LiveStatusProvider isolates process and transcript discovery from the
@@ -32,7 +33,7 @@ type sectionSet struct {
 // the adapter owns the operating-system-specific discovery implementation.
 type LiveStatusProvider func(context.Context, string) (LiveStatus, error)
 
-type queryProvider func(context.Context, time.Time, string, sectionSet, bool) (queryResult, error)
+type queryProvider func(context.Context, time.Time, string, sectionSet, []config.MetricsRange, bool, bool) (queryResult, error)
 type todoProvider func() (*store.TodoFile, error)
 type currentProvider func(context.Context, application.Call, string) (*CurrentSession, error)
 
@@ -72,6 +73,10 @@ func (service Service) BuildSnapshot(
 		return Snapshot{}, err
 	}
 	sections, err := parseSections(input.Sections)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	ranges, err := parseRanges(input.Ranges)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -118,7 +123,8 @@ func (service Service) BuildSnapshot(
 		}
 	}
 
-	queried, err := service.query(ctx, now, agent, sections, input.Sync)
+	compact := input.Compact && len(input.Ranges) > 0
+	queried, err := service.query(ctx, now, agent, sections, ranges, compact, input.Sync)
 	if err != nil {
 		return Snapshot{}, preserveApplicationError("query dashboard", err)
 	}
@@ -163,10 +169,33 @@ func parseSections(names []string) (sectionSet, error) {
 			selected.work = true
 		case "stats":
 			selected.stats = true
+		case "summary":
+			selected.summary = true
 		default:
 			err := application.NewError(application.CodeInvalidArgument, "unknown dashboard section")
-			err.Details = map[string]any{"field": "sections", "value": raw, "allowed": []string{"work", "stats"}}
+			err.Details = map[string]any{"field": "sections", "value": raw, "allowed": []string{"work", "stats", "summary"}}
 			return selected, err
+		}
+	}
+	return selected, nil
+}
+
+func parseRanges(names []string) ([]config.MetricsRange, error) {
+	if len(names) == 0 {
+		return append([]config.MetricsRange(nil), config.MetricsRanges...), nil
+	}
+	selected := make([]config.MetricsRange, 0, len(names))
+	seen := make(map[config.MetricsRange]bool, len(names))
+	for _, raw := range names {
+		name, err := config.ParseMetricsRange(raw)
+		if err != nil {
+			appErr := application.NewError(application.CodeInvalidArgument, "unknown dashboard range")
+			appErr.Details = map[string]any{"field": "ranges", "value": raw, "allowed": config.MetricsRanges}
+			return nil, appErr
+		}
+		if !seen[name] {
+			selected = append(selected, name)
+			seen[name] = true
 		}
 	}
 	return selected, nil
@@ -229,6 +258,8 @@ func queryStore(
 	now time.Time,
 	agent string,
 	sections sectionSet,
+	ranges []config.MetricsRange,
+	compact bool,
 	syncBeforeRead bool,
 ) (queryResult, error) {
 	if err := ctx.Err(); err != nil {
@@ -246,7 +277,7 @@ func queryStore(
 	}
 
 	result := queryResult{ranges: map[string]Range{}}
-	parts := make([]rangeParts, len(config.MetricsRanges))
+	parts := make([]rangeParts, len(ranges))
 	group := newQueryGroup()
 	if sections.work {
 		group.Go(func() (queryErr error) {
@@ -254,36 +285,52 @@ func queryStore(
 			return
 		})
 	}
+	// The menu bar needs today's total even while no analytics page is open.
+	// Keep that read independent of range breakdowns, historical charts, and
+	// completions. A full stats read already supplies the same summary bucket.
+	if sections.summary && !sections.stats {
+		group.Go(func() (queryErr error) {
+			start, end := bounds(now, 1)
+			result.dayStats, queryErr = store.GetDayStats(db, start, end, agent, config.Loc)
+			return
+		})
+	}
 	if sections.stats {
+		dayStart, dayEnd := bounds(now, 30)
+		hourStart, hourEnd := bounds(now, hourlyDays)
+		if compact {
+			dayStart, dayEnd = compactSeriesBounds(now, ranges)
+			hourStart = max(hourStart, dayStart)
+		}
 		group.Go(func() (queryErr error) {
-			result.dayStats, queryErr = dayStats(db, now, 30, agent, false)
+			result.dayStats, queryErr = store.GetDayStats(db, dayStart, dayEnd, agent, config.Loc)
 			return
 		})
 		group.Go(func() (queryErr error) {
-			result.hourStats, queryErr = dayStats(db, now, hourlyDays, agent, true)
+			result.hourStats, queryErr = store.GetHourStats(db, hourStart, hourEnd, agent, config.Loc)
 			return
 		})
 		group.Go(func() (queryErr error) {
-			result.modelDayStats, queryErr = modelStatsByTime(db, now, 30, agent, false)
+			result.modelDayStats, queryErr = store.GetModelDayStats(db, dayStart, dayEnd, agent, config.Loc)
 			return
 		})
 		group.Go(func() (queryErr error) {
-			result.modelHourStats, queryErr = modelStatsByTime(db, now, hourlyDays, agent, true)
+			result.modelHourStats, queryErr = store.GetModelHourStats(db, hourStart, hourEnd, agent, config.Loc)
 			return
 		})
 		group.Go(func() (queryErr error) {
-			result.projectDayStats, queryErr = projectStatsByTime(db, now, 30, agent, false)
+			result.projectDayStats, queryErr = store.GetProjectDayStats(db, dayStart, dayEnd, agent, config.Loc)
 			return
 		})
 		group.Go(func() (queryErr error) {
-			result.projectHourStats, queryErr = projectStatsByTime(db, now, hourlyDays, agent, true)
+			result.projectHourStats, queryErr = store.GetProjectHourStats(db, hourStart, hourEnd, agent, config.Loc)
 			return
 		})
 		group.Go(func() (queryErr error) {
 			result.todoCompletions, queryErr = store.GetTodoCompletions(db)
 			return
 		})
-		for index, name := range config.MetricsRanges {
+		for index, name := range ranges {
 			submitRange(group, db, now, name, agent, &parts[index])
 		}
 	}
@@ -291,7 +338,7 @@ func queryStore(
 		return queryResult{}, unavailable("read dashboard data", err)
 	}
 	if sections.stats {
-		for index, name := range config.MetricsRanges {
+		for index, name := range ranges {
 			result.ranges[string(name)] = parts[index].build()
 		}
 	}
@@ -376,28 +423,15 @@ func bounds(now time.Time, days int) (int64, int64) {
 	return start.Unix(), now.Unix()
 }
 
-func dayStats(db *sql.DB, now time.Time, days int, agent string, hourly bool) ([]store.DayStatsResult, error) {
-	start, end := bounds(now, days)
-	if hourly {
-		return store.GetHourStats(db, start, end, agent, config.Loc)
+// Keep today's bucket for the menu-bar summary even when the selected range is
+// historical. Hour buckets remain bounded to hourlyDays: longer ranges use days.
+func compactSeriesBounds(now time.Time, ranges []config.MetricsRange) (int64, int64) {
+	start, _ := bounds(now, 1)
+	for _, name := range ranges {
+		rangeStart, _ := name.UnixBounds(now)
+		start = min(start, rangeStart)
 	}
-	return store.GetDayStats(db, start, end, agent, config.Loc)
-}
-
-func modelStatsByTime(db *sql.DB, now time.Time, days int, agent string, hourly bool) ([]store.ModelDayStatsResult, error) {
-	start, end := bounds(now, days)
-	if hourly {
-		return store.GetModelHourStats(db, start, end, agent, config.Loc)
-	}
-	return store.GetModelDayStats(db, start, end, agent, config.Loc)
-}
-
-func projectStatsByTime(db *sql.DB, now time.Time, days int, agent string, hourly bool) ([]store.ProjectDayStatsResult, error) {
-	start, end := bounds(now, days)
-	if hourly {
-		return store.GetProjectHourStats(db, start, end, agent, config.Loc)
-	}
-	return store.GetProjectDayStats(db, start, end, agent, config.Loc)
+	return start, now.Unix()
 }
 
 type rangeParts struct {

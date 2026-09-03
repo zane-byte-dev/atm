@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/config"
@@ -41,6 +42,13 @@ func Open() (*sql.DB, error) {
 // database means "nothing to show" or "the user needs to run sync".
 var ErrDatabaseMissing = errors.New("database does not exist: run `atm sync` first")
 
+var strictReadOnly atomic.Bool
+
+// SetStrictReadOnly disables the immutable fallback for a long-running host.
+// Set this once before serving requests: a runtime must see committed WAL data
+// or return the read error, never silently serve a pre-checkpoint snapshot.
+func SetStrictReadOnly(enabled bool) { strictReadOnly.Store(enabled) }
+
 // OpenReadOnly opens the existing session database without creating files,
 // migrating schemas, changing journal mode, or otherwise mutating state.
 // Callers that need fresh session data must explicitly run sync first.
@@ -55,6 +63,9 @@ func OpenReadOnly() (*sql.DB, error) {
 	db, err := openReadOnlyDSN(base + "?mode=ro&_pragma=query_only(1)")
 	if err == nil {
 		return db, nil
+	}
+	if strictReadOnly.Load() {
+		return nil, err
 	}
 
 	// Sandboxed agents may be allowed to read the database file but not create
@@ -282,6 +293,11 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 54
+		case 54:
+			if err := migrateV54ToV55(db); err != nil {
+				return err
+			}
+			version = 55
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}

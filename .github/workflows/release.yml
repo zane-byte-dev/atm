@@ -20,6 +20,11 @@ jobs:
         with:
           go-version: "1.25"
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
       - name: Verify release contracts
         run: ./scripts/release-check.sh
 

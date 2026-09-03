@@ -137,32 +137,6 @@ enum ATMAgentSessionContext {
     }
 }
 
-private final class ATMRunningProcess: @unchecked Sendable {
-    private let lock = NSLock()
-    private var process: Process?
-
-    func attach(_ process: Process) {
-        lock.lock()
-        self.process = process
-        lock.unlock()
-    }
-
-    func detach() {
-        lock.lock()
-        process = nil
-        lock.unlock()
-    }
-
-    func terminate() {
-        lock.lock()
-        let process = self.process
-        lock.unlock()
-        if process?.isRunning == true {
-            process?.terminate()
-        }
-    }
-}
-
 enum ATMErrorText {
     static func compact(_ value: String, limit: Int = 280) -> String {
         let normalized = value
@@ -388,79 +362,12 @@ struct ATMCommandRunner: Sendable {
         standardInput: Data? = nil,
         timeout: TimeInterval? = nil
     ) async throws -> ATMCommandProcessResult {
-        let executableURL = executableURL
-        let processHandle = ATMRunningProcess()
-        let timeout = timeout ?? ATMCommandPolicy.timeout(for: arguments)
-        let worker = Task.detached(priority: .utility) {
-            let process = Process()
-            let stdout = Pipe()
-            let stderr = Pipe()
-            let stdin = standardInput.map { _ in Pipe() }
-            process.executableURL = executableURL
-            process.arguments = arguments
-            process.standardOutput = stdout
-            process.standardError = stderr
-            process.standardInput = stdin
-            var environment = ProcessInfo.processInfo.environment
-            let commonPath = "/usr/local/bin:/opt/homebrew/bin:\(FileManager.default.homeDirectoryForCurrentUser.path)/.local/bin"
-            environment["PATH"] = commonPath + ":" + (environment["PATH"] ?? "")
-            environment["ATM_SKIP_LOCAL_NOTIFICATION"] = "1"
-            process.environment = environment
-
-            try Task.checkCancellation()
-            try process.run()
-            processHandle.attach(process)
-            defer { processHandle.detach() }
-            if let standardInput, let stdin {
-                stdin.fileHandleForWriting.write(standardInput)
-                try? stdin.fileHandleForWriting.close()
-            }
-            let outputTask = Task.detached(priority: .utility) {
-                stdout.fileHandleForReading.readDataToEndOfFile()
-            }
-            let errorTask = Task.detached(priority: .utility) {
-                stderr.fileHandleForReading.readDataToEndOfFile()
-            }
-            let deadline = Date().addingTimeInterval(timeout)
-            while process.isRunning {
-                if Task.isCancelled {
-                    process.terminate()
-                    throw CancellationError()
-                }
-                if Date() >= deadline {
-                    process.terminate()
-                    let graceDeadline = Date().addingTimeInterval(0.5)
-                    while process.isRunning, Date() < graceDeadline {
-                        try? await Task.sleep(nanoseconds: 20_000_000)
-                    }
-                    if process.isRunning {
-                        kill(process.processIdentifier, SIGKILL)
-                    }
-                    throw ATMCommandError.timedOut(arguments: arguments, seconds: timeout)
-                }
-                try await Task.sleep(nanoseconds: 20_000_000)
-            }
-            let output = await outputTask.value
-            let errorOutput = await errorTask.value
-            return ATMCommandProcessResult(
-                standardOutput: output,
-                standardError: errorOutput,
-                terminationStatus: process.terminationStatus
-            )
-        }
-        return try await withTaskCancellationHandler {
-            do {
-                let output = try await worker.value
-                try Task.checkCancellation()
-                return output
-            } catch {
-                try Task.checkCancellation()
-                throw error
-            }
-        } onCancel: {
-            processHandle.terminate()
-            worker.cancel()
-        }
+        try await ATMProcessExecutor.run(
+            executableURL: executableURL,
+            arguments: arguments,
+            standardInput: standardInput,
+            timeout: timeout ?? ATMCommandPolicy.timeout(for: arguments)
+        )
     }
 }
 
@@ -844,7 +751,18 @@ final class ATMDataStore: ObservableObject {
     /// Dashboard-backed values publish as one unit. A refresh used to assign
     /// quota, todos, snapshot and error independently, invalidating every view
     /// that observed this store several times for the same response.
-    @Published private(set) var dashboardState = ATMStoreDashboardState()
+    @Published private(set) var dashboardState = ATMStoreDashboardState() {
+        didSet {
+            let changed = oldValue.allTodos != dashboardState.allTodos
+            if changed || oldValue.errorMessage != dashboardState.errorMessage
+                || oldValue.snapshot.currentSession != dashboardState.snapshot.currentSession {
+                taskState.invalidate(dataChanged: changed)
+            }
+        }
+    }
+    /// Tasks subscribe here rather than to unrelated presence, statistics or
+    /// collection publications on the compatibility store.
+    let taskState = ATMTaskState()
     let todaySessionsStore = ATMTodaySessionsStore()
 
     var snapshot: ATMDashboardSnapshot { dashboardState.snapshot }
@@ -863,7 +781,7 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var grokLiveQuotaEnabled = false
     /// Mirrors `owner_name` in ~/.atm/config.json: how to name the human when a
     /// todo they filed themselves is displayed. Empty falls back to 我.
-    @Published private(set) var ownerName = ""
+    @Published private(set) var ownerName = "" { didSet { taskState.invalidate() } }
     /// Mirrors `todo_refine_on_add`. Default off, matching the CLI default:
     /// refining on add rewrote the card before anyone had looked at it, and a
     /// second bare pass on an already-structured card returns the same text —
@@ -879,23 +797,23 @@ final class ATMDataStore: ObservableObject {
     @Published private(set) var isTestingTextModelSettings = false
     @Published private(set) var textModelTestSuccessMessage: String?
     @Published var textModelSettingsErrorMessage: String?
-    @Published private(set) var refiningTodoIDs: Set<String> = []
-    @Published private(set) var refineErrorByTodoID: [String: String] = [:]
+    @Published private(set) var refiningTodoIDs: Set<String> = [] { didSet { taskState.invalidate() } }
+    @Published private(set) var refineErrorByTodoID: [String: String] = [:] { didSet { taskState.invalidate() } }
     /// Todos whose last refine pass returned `changed: false`. Without this the
     /// action looked broken: the CLI prints "already clear" and the App wrote
     /// nothing, so nothing on screen moved.
-    @Published private(set) var refineUnchangedTodoIDs: Set<String> = []
-    @Published private(set) var adviceByTodoID: [String: ATMTodoAdviceResponse] = [:]
-    @Published private(set) var loadingAdviceTodoIDs: Set<String> = []
-    @Published private(set) var adviceErrorByTodoID: [String: String] = [:]
+    @Published private(set) var refineUnchangedTodoIDs: Set<String> = [] { didSet { taskState.invalidate() } }
+    @Published private(set) var adviceByTodoID: [String: ATMTodoAdviceResponse] = [:] { didSet { taskState.invalidate() } }
+    @Published private(set) var loadingAdviceTodoIDs: Set<String> = [] { didSet { taskState.invalidate() } }
+    @Published private(set) var adviceErrorByTodoID: [String: String] = [:] { didSet { taskState.invalidate() } }
     private let adviceDefaults: UserDefaults
     private var adviceAttemptedAt: [String: Date] = [:]
     /// Internal refresh gate only. No view renders this flag, so publishing it
     /// needlessly rebuilt the desktop at both ends of every one-minute refresh.
     private(set) var isLoading = false
     @Published private(set) var isSyncing = false
-    @Published private(set) var isActing = false
-    @Published private(set) var archivedTodos: [ATMTodo] = []
+    @Published private(set) var isActing = false { didSet { taskState.invalidate() } }
+    @Published private(set) var archivedTodos: [ATMTodo] = [] { didSet { if oldValue != archivedTodos { taskState.invalidate(dataChanged: true) } } }
     @Published private(set) var knowledgeCollections: [ATMKnowledgeCollection] = []
     @Published private(set) var isKnowledgeCatalogLoading = false
     @Published var knowledgeErrorMessage: String?
@@ -903,11 +821,12 @@ final class ATMDataStore: ObservableObject {
     private let makeKnowledgeIPCClient: @Sendable () throws -> ATMKnowledgeIPCClient
     private let makeMemoryIPCClient: @Sendable () throws -> ATMMemoryIPCClient
     private let makeSessionIPCClient: @Sendable () throws -> ATMSessionIPCClient
+    private let makeDashboardRunner: @Sendable () throws -> ATMCommandRunner
     private let makeTodoIPCClient: @Sendable () throws -> ATMTodoIPCClient
-    @Published private(set) var progressByTodoID: [String: [ATMTodoProgressEntry]] = [:]
-    @Published private(set) var loadingProgressTodoIDs: Set<String> = []
-    @Published private(set) var boundSessionsByTodoID: [String: [ATMBoundSession]] = [:]
-    @Published private(set) var loadingBoundSessionTodoIDs: Set<String> = []
+    @Published private(set) var progressByTodoID: [String: [ATMTodoProgressEntry]] = [:] { didSet { taskState.invalidate() } }
+    @Published private(set) var loadingProgressTodoIDs: Set<String> = [] { didSet { taskState.invalidate() } }
+    @Published private(set) var boundSessionsByTodoID: [String: [ATMBoundSession]] = [:] { didSet { taskState.invalidate() } }
+    @Published private(set) var loadingBoundSessionTodoIDs: Set<String> = [] { didSet { taskState.invalidate() } }
     @Published private(set) var collectionOverview = ATMCollectionOverview.empty
     @Published private(set) var isCollecting = false
     @Published private(set) var collectingSourceIDs: Set<String> = []
@@ -949,13 +868,29 @@ final class ATMDataStore: ObservableObject {
     private var lastSyncAttemptAt: Date?
     private var lastLiveStatusAppliedAt: Date?
     private var lastLiveStatusPollAt: Date?
-    /// Whether a full dashboard has ever been applied. Gates `primeWork()`, whose
-    /// work-only snapshot carries no statistics and so must never land on top of
-    /// one that does.
-    private var hasLoadedFullDashboard = false
-    private var activeRefreshIncludesSync = false
     private var pendingRefresh = false
-    private var pendingSync = false
+    private var syncTask: Task<Void, Never>?
+    private var quotaTask: Task<Void, Never>?
+    private var archiveTask: Task<Void, Never>?
+    private var visibleUsageRange: ATMMetricsRange?
+    private var usageViewConsumers = 0
+    private var usageTasks: [ATMMetricsRange: Task<Void, Never>] = [:]
+    private var usageLoadedAt: [ATMMetricsRange: Date] = [:]
+    private var usageSnapshots: [ATMMetricsRange: ATMDashboardEnvelope] = [:]
+    private var usageRequestIDs: [ATMMetricsRange: UUID] = [:]
+    private var appliedUsageRange: ATMMetricsRange?
+    private var dashboardReadErrors: [String: String] = [:]
+    private var usageReadErrors: [String: String] = [:]
+    @Published private(set) var loadingUsageRanges: Set<ATMMetricsRange> = []
+    @Published private(set) var usageErrorMessage: String?
+    private var detailConsumers: [String: Int] = [:]
+    private var detailTasks: [String: Task<Void, Never>] = [:]
+    private var detailRequestIDs: [String: UUID] = [:]
+    private var detailFreshness: [String: ATMTodoDetailFreshness] = [:]
+    private var sessionReadTasks: [String: Task<Void, Never>] = [:]
+    private var sessionReadRequestIDs: [String: UUID] = [:]
+    private var sessionReadConsumers: [String: Int] = [:]
+    private var sessionReadBudget = ATMReadCacheBudget(byteLimit: 24 * 1024 * 1024, countLimit: 32)
     private var isCollectionRefreshing = false
     private var collectionReadUpdatesInFlight: Set<String> = []
     /// Outbound actions waiting on a decision. Published because the quick panel
@@ -990,6 +925,8 @@ final class ATMDataStore: ObservableObject {
     /// Keeps an older in-flight archive listing from resurrecting a row after the
     /// irreversible delete command has succeeded.
     private var optimisticallyPermanentlyDeletedTodoIDs: Set<String> = []
+    private var optimisticallyArchivedTodos: [String: ATMTodo] = [:]
+    private var optimisticallyRestoredTodoIDs: Set<String> = []
     private var optimisticallyUpdatedTodos: [String: ATMTodo] = [:]
     // Successful link writes protect against dashboard reads already in flight.
     // The next read started after the write is authoritative, including external edits.
@@ -1014,7 +951,8 @@ final class ATMDataStore: ObservableObject {
         adviceDefaults: UserDefaults = .standard,
         makeTodoIPCClient: @escaping @Sendable () throws -> ATMTodoIPCClient = {
             try ATMTodoIPCClient()
-        }
+        },
+        makeDashboardRunner: @escaping @Sendable () throws -> ATMCommandRunner = { try ATMCommandRunner() }
     ) {
         self.adviceDefaults = adviceDefaults
         self.makeAgentHookIPCClient = makeAgentHookIPCClient
@@ -1022,6 +960,7 @@ final class ATMDataStore: ObservableObject {
         self.makeMemoryIPCClient = makeMemoryIPCClient
         self.makeSessionIPCClient = makeSessionIPCClient
         self.makeTodoIPCClient = makeTodoIPCClient
+        self.makeDashboardRunner = makeDashboardRunner
     }
 
     var currentSessionID: String? {
@@ -1036,69 +975,26 @@ final class ATMDataStore: ObservableObject {
     }
 
     func applyDashboardRefresh(_ state: ATMStoreDashboardState) {
-        hasLoadedFullDashboard = true
         dashboardState = state
-    }
-
-    /// Paints the task list from the cheap half of the dashboard.
-    ///
-    /// The complete dashboard snapshot also computes usage statistics, which on a real
-    /// database is about a second of SQL aggregation that no task row reads —
-    /// the todos themselves are ready in a few milliseconds. Asking for the work
-    /// section first fills the window at launch rather than after the charts.
-    ///
-    /// Cold start only, and deliberately so. With nothing on screen yet the user
-    /// has had nothing to act on, so none of the optimistic-edit bookkeeping that
-    /// `refresh()` reconciles against can hold entries. That is what lets this
-    /// path assign the todos straight through instead of duplicating a
-    /// reconciliation that would then have two places to drift apart. It also
-    /// leaves `notifiedTodoStatus` alone, so the full refresh still decides which
-    /// status changes are worth a notification.
-    private func primeWork() {
-        Task {
-            let outcome: ATMCommandOutcome<ATMDashboardEnvelope>
-            do {
-                let runner = try ATMCommandRunner()
-                outcome = await decodeIPCCommand(
-                    runner,
-                    method: ATMDashboardIPCCommand.snapshot,
-                    request: ATMDashboardRequest(
-                        sections: ["work"],
-                        sessionID: ATMAgentSessionContext.sessionID()
-                    )
-                )
-            } catch {
-                // The full refresh is already in flight and reports its own
-                // failures. A broken fast path only costs the head start.
-                return
-            }
-            guard let value = outcome.value else { return }
-            // The full refresh runs concurrently and is authoritative. Once it has
-            // landed, this thinner snapshot would blank the statistics it carries.
-            guard !hasLoadedFullDashboard else { return }
-            guard optimisticallyDeletedTodoIDs.isEmpty,
-                  optimisticallyUpdatedTodos.isEmpty,
-                  persistedTodoLinkUpdates.isEmpty,
-                  optimisticallyPermanentlyDeletedTodoIDs.isEmpty else { return }
-            var next = dashboardState
-            next.allTodos = value.todos
-            next.snapshot = value.makeSnapshot()
-            dashboardState = next
-        }
     }
 
     func start() {
         guard timer == nil else { return }
         loadSettings()
-        primeWork()
+        // First paint is a normal work refresh. Sync follows independently so
+        // startup never runs duplicate statistics queries or delays the first rows.
         refresh()
-        refresh(sync: true)
+        scheduleSync()
         refreshCollection(runIfDue: true)
         refreshApprovals()
         timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.refresh(sync: ATMSyncPolicy.shouldSync(lastAttemptAt: self.lastSyncAttemptAt))
+                self.refresh()
+                if ATMSyncPolicy.shouldSync(lastAttemptAt: self.lastSyncAttemptAt) {
+                    self.scheduleSync()
+                }
+                if let range = self.visibleUsageRange { self.loadUsageStats(range: range) }
                 self.refreshCollection(runIfDue: true)
                 self.refreshApprovals()
             }
@@ -1499,23 +1395,41 @@ final class ATMDataStore: ObservableObject {
     }
 
     func loadAdvice(for id: String, force: Bool = false) {
-        guard !loadingAdviceTodoIDs.contains(id) else { return }
+        let key = "advice|\(id)"
+        let version = todoVersion(id)
+        guard detailTasks[key] == nil else { return }
         // Detail activation and dashboard ticks both enter here. Throttle failed
         // attempts too so an unavailable provider cannot spam the message area.
-        if !force, let last = adviceAttemptedAt[id], Date().timeIntervalSince(last) < 300 { return }
+        if !force, let last = adviceAttemptedAt[id], Date().timeIntervalSince(last) < 300,
+           detailFreshness[key]?.todo == version { return }
         adviceAttemptedAt[id] = Date()
+        detailFreshness[key] = ATMTodoDetailFreshness(todo: version, loadedAt: Date())
+        let requestID = UUID()
+        detailRequestIDs[key] = requestID
         loadingAdviceTodoIDs.insert(id)
         adviceErrorByTodoID[id] = nil
         let cacheKey = "atm.todoAdvice.baselines.v1.\(id)"
         let previous = adviceDefaults.data(forKey: cacheKey).flatMap {
             try? JSONDecoder().decode([ATMTodoAdviceBaseline].self, from: $0)
         } ?? []
-        Task {
-            defer { loadingAdviceTodoIDs.remove(id) }
+        detailTasks[key] = Task {
+            defer {
+                if detailRequestIDs[key] == requestID {
+                    detailTasks[key] = nil
+                    detailRequestIDs[key] = nil
+                    loadingAdviceTodoIDs.remove(id)
+                    if !Task.isCancelled, todoVersion(id) != version,
+                       detailConsumers[id, default: 0] > 0 {
+                        loadAdvice(for: id)
+                    }
+                }
+            }
             do {
                 let result = try await makeTodoIPCClient().advice(
                     ATMTodoAdviceRequest(todoID: id, previous: previous)
                 )
+                try Task.checkCancellation()
+                guard detailRequestIDs[key] == requestID, todoVersion(id) == version else { return }
                 guard result.todoID == id else {
                     throw ATMCommandError.failed(
                         arguments: ATMTodoIPCCommand.advice.arguments,
@@ -1528,7 +1442,9 @@ final class ATMDataStore: ObservableObject {
                 let baselines = result.reviews.compactMap(\.baseline)
                 let encoded = try JSONEncoder().encode(baselines)
                 adviceDefaults.set(encoded, forKey: cacheKey)
+            } catch is CancellationError {
             } catch {
+                guard detailRequestIDs[key] == requestID, !Task.isCancelled else { return }
                 adviceErrorByTodoID[id] = ATMErrorText.compact(error.localizedDescription, limit: 180)
             }
         }
@@ -1555,7 +1471,7 @@ final class ATMDataStore: ObservableObject {
                 }
                 // Children and a rewritten title only exist after refine returns.
                 refresh()
-                loadProgress(for: trimmed)
+                loadProgress(for: trimmed, force: true)
             } catch {
                 let message = ATMErrorText.compact(error.localizedDescription, limit: 180)
                 refineErrorByTodoID[trimmed] = message
@@ -2355,100 +2271,38 @@ final class ATMDataStore: ObservableObject {
         )
     }
 
+    /// Work, archive and quota commit when their own read completes. Slow
+    /// provider logs and usage aggregation never hold back a task mutation.
     func refresh(sync: Bool = false) {
+        if sync { scheduleSync() }
+        refreshQuota()
+        refreshArchivedTodos()
         guard !isLoading else {
-            if sync && !activeRefreshIncludesSync {
-                pendingSync = true
-            } else if !sync {
-                pendingRefresh = true
-            }
+            pendingRefresh = true
             return
         }
         isLoading = true
-        activeRefreshIncludesSync = sync
         Task {
             defer {
                 isLoading = false
-                activeRefreshIncludesSync = false
-                if pendingSync || pendingRefresh {
-                    let shouldSync = pendingSync
-                    pendingSync = false
+                taskState.settleInitialWork()
+                if pendingRefresh {
                     pendingRefresh = false
-                    refresh(sync: shouldSync)
+                    refresh()
                 }
             }
             do {
-                let runner = try ATMCommandRunner()
-                var warnings: [String] = []
-                if sync {
-                    isSyncing = true
-                    lastSyncAttemptAt = Date()
-                    defer { isSyncing = false }
-                    do {
-                        _ = try await runner.run(["sync"])
-                    } catch {
-                        warnings.append("同步：\(ATMErrorText.compact(error.localizedDescription, limit: 160))")
-                    }
-                }
-
+                let runner = try makeDashboardRunner()
                 let dashboardRequestStartedAt = Date()
-                // Quota lives in the agents' own logs rather than the session
-                // index, so it is a separate command. Run it concurrently with
-                // the dashboard so the extra read costs no wall-clock time.
-                async let dashboardTask: ATMCommandOutcome<ATMDashboardEnvelope> = decodeIPCCommand(
+                let dashboard: ATMCommandOutcome<ATMDashboardEnvelope> = await decodeIPCCommand(
                     runner,
                     method: ATMDashboardIPCCommand.snapshot,
                     request: ATMDashboardRequest(
+                        sections: ["work", "summary"],
                         sessionID: ATMAgentSessionContext.sessionID()
                     )
                 )
-                async let quotaTask: ATMCommandOutcome<ATMQuotaSnapshot> = decodeIPCCommand(
-                    runner,
-                    method: ATMIPCCommand.quota,
-                    request: ATMQuotaRequest(agent: nil)
-                )
-                async let archiveTask: ATMCommandOutcome<[ATMTodo]> = decodeIPCCommand(
-                    runner,
-                    method: ATMTodoIPCCommand.list,
-                    request: ATMTodoListRequest(status: "archived")
-                )
-                let (dashboard, quotaOutcome, archiveOutcome) = await (
-                    dashboardTask,
-                    quotaTask,
-                    archiveTask
-                )
-
                 var nextState = dashboardState
-                if let error = dashboard.error {
-                    warnings.append("仪表盘：\(error)")
-                }
-                if let error = quotaOutcome.error {
-                    warnings.append("配额：\(error)")
-                }
-                if let error = archiveOutcome.error {
-                    warnings.append("归档：\(error)")
-                }
-                if let value = quotaOutcome.value {
-                    nextState.quota = value
-                }
-                if let value = archiveOutcome.value {
-                    let permanentlyDeletedIDs = optimisticallyPermanentlyDeletedTodoIDs
-                    let restoringIDs = Set(optimisticallyUpdatedTodos.keys)
-                    var incomingArchive = value.filter {
-                        !permanentlyDeletedIDs.contains($0.id) && !restoringIDs.contains($0.id)
-                    }
-                    // A listing that started before `todo archive` may not include
-                    // the newly moved row. Preserve the optimistic copy until the
-                    // dashboard has observed that it left the working set.
-                    incomingArchive.append(contentsOf: archivedTodos.filter { optimistic in
-                        optimisticallyDeletedTodoIDs.contains(optimistic.id)
-                            && !incomingArchive.contains(where: { $0.id == optimistic.id })
-                    })
-                    archivedTodos = incomingArchive
-                    optimisticallyPermanentlyDeletedTodoIDs.formIntersection(
-                        Set(value.map(\.id))
-                    )
-                }
                 if let value = dashboard.value {
                     let deletedIDs = optimisticallyDeletedTodoIDs
                     let updatedTodos = optimisticallyUpdatedTodos
@@ -2503,7 +2357,7 @@ final class ATMDataStore: ObservableObject {
                         snapshot = snapshot.replacingTodo(update.todo)
                     }
                     persistedTodoLinkUpdates = newerLinkUpdates
-                    nextState.snapshot = snapshot
+                    nextState.snapshot = nextState.snapshot.mergingWork(snapshot)
                     optimisticallyDeletedTodoIDs.formIntersection(
                         Set(value.todos.map(\.id))
                     )
@@ -2515,36 +2369,194 @@ final class ATMDataStore: ObservableObject {
                         lastSyncAttemptAt = date
                     }
                 }
-                // A contract skew is not "some data did not refresh" — the App and
-                // the CLI cannot talk at all, and wrapping it in that prefix next to
-                // unrelated warnings buries the one thing the user must act on.
                 if let mismatch = dashboard.schemaMismatch {
-                    nextState.errorMessage = mismatch.summary
+                    dashboardReadErrors["work"] = mismatch.summary
                     ATMLog.failure("dashboard_schema_mismatch", fields: [
                         "cli_version": String(mismatch.cliVersion),
                         "app_version": String(mismatch.appVersion),
                     ])
                 } else {
-                    nextState.errorMessage = warnings.isEmpty
-                        ? nil
-                        : "部分数据未刷新：" + warnings.prefix(3).joined(separator: "；")
-                            + (warnings.count > 3 ? "；另有 \(warnings.count - 3) 项" : "")
+                    dashboardReadErrors["work"] = dashboard.error.map { "任务数据未刷新：" + $0 }
                 }
-                // On screen this is replaced by the next successful cycle, which is
-                // why an intermittent failure was impossible to investigate: by the
-                // time anyone looked, the evidence was gone.
+                nextState.errorMessage = dashboardReadErrorMessage
                 if let error = dashboard.error {
                     ATMLog.failure("dashboard_refresh_failed", error: error)
                 }
-                if let error = quotaOutcome.error {
-                    ATMLog.failure("quota_refresh_failed", error: error)
-                }
                 applyDashboardRefresh(nextState)
+                if dashboard.value != nil { taskState.didRefreshWork() }
             } catch {
-                errorMessage = error.localizedDescription
+                setDashboardReadError("work", "任务数据未刷新：" + error.localizedDescription)
                 ATMLog.failure("refresh_failed", error: error.localizedDescription)
             }
         }
+    }
+
+    private func scheduleSync() {
+        guard syncTask == nil else { return }
+        isSyncing = true
+        lastSyncAttemptAt = Date()
+        syncTask = Task {
+            defer { isSyncing = false; syncTask = nil }
+            do {
+                _ = try await makeDashboardRunner().run(["sync"])
+                setDashboardReadError("sync", nil)
+                usageLoadedAt.removeAll()
+                for task in usageTasks.values { task.cancel() }
+                usageTasks.removeAll()
+                usageRequestIDs.removeAll()
+                loadingUsageRanges.removeAll()
+                refresh()
+                if let range = visibleUsageRange { loadUsageStats(range: range, force: true) }
+            } catch {
+                setDashboardReadError("sync", "同步：" + ATMErrorText.compact(error.localizedDescription, limit: 160))
+                ATMLog.failure("sync_failed", error: error.localizedDescription)
+            }
+        }
+    }
+
+    private func refreshQuota() {
+        guard quotaTask == nil else { return }
+        quotaTask = Task {
+            defer { quotaTask = nil }
+            do {
+                let outcome: ATMCommandOutcome<ATMQuotaSnapshot> = await decodeIPCCommand(
+                    try makeDashboardRunner(), method: ATMIPCCommand.quota,
+                    request: ATMQuotaRequest(agent: nil)
+                )
+                if let value = outcome.value, quota != value {
+                    updateDashboardState { $0.quota = value }
+                }
+                setUsageReadError("quota", outcome.error.map { "配额：" + $0 })
+                if let error = outcome.error {
+                    ATMLog.failure("quota_refresh_failed", error: error)
+                }
+            } catch {
+                setUsageReadError("quota", "配额：" + ATMErrorText.compact(error.localizedDescription))
+            }
+        }
+    }
+
+    private func refreshArchivedTodos() {
+        guard archiveTask == nil else { return }
+        archiveTask = Task {
+            defer {
+                archiveTask = nil
+                taskState.settleInitialArchive()
+            }
+            do {
+                let outcome: ATMCommandOutcome<[ATMTodo]> = await decodeIPCCommand(
+                    try makeDashboardRunner(), method: ATMTodoIPCCommand.list,
+                    request: ATMTodoListRequest(status: "archived")
+                )
+                if let value = outcome.value { applyArchiveRefresh(value) }
+                setDashboardReadError("archive", outcome.error.map { "归档未刷新：" + $0 })
+                if let error = outcome.error {
+                    ATMLog.failure("archive_refresh_failed", error: error)
+                }
+            } catch {
+                setDashboardReadError("archive", "归档未刷新：" + ATMErrorText.compact(error.localizedDescription))
+            }
+        }
+    }
+
+    /// Independent archive reads need their own acknowledgement fences: a work
+    /// response may acknowledge the move before an older archive response lands.
+    func applyArchiveRefresh(_ value: [ATMTodo]) {
+        let serverIDs = Set(value.map(\.id))
+        var incoming = value.filter {
+            !optimisticallyPermanentlyDeletedTodoIDs.contains($0.id)
+                && !optimisticallyRestoredTodoIDs.contains($0.id)
+        }
+        incoming.append(contentsOf: optimisticallyArchivedTodos.values.filter {
+            !serverIDs.contains($0.id)
+        })
+        if archivedTodos != incoming { archivedTodos = incoming }
+        optimisticallyPermanentlyDeletedTodoIDs.formIntersection(serverIDs)
+        optimisticallyRestoredTodoIDs.formIntersection(serverIDs)
+        for id in serverIDs { optimisticallyArchivedTodos.removeValue(forKey: id) }
+    }
+
+    func startUsageUpdates(range: ATMMetricsRange) {
+        usageViewConsumers += 1
+        visibleUsageRange = range
+        loadUsageStats(range: range)
+        refreshQuota()
+    }
+
+    func stopUsageUpdates() {
+        usageViewConsumers = max(0, usageViewConsumers - 1)
+        guard usageViewConsumers == 0 else { return }
+        visibleUsageRange = nil
+        for task in usageTasks.values { task.cancel() }
+        usageTasks.removeAll()
+        usageRequestIDs.removeAll()
+        loadingUsageRanges.removeAll()
+    }
+
+    func loadUsageStats(range: ATMMetricsRange, force: Bool = false) {
+        if usageViewConsumers > 0 { visibleUsageRange = range }
+        // Each compact response carries chart buckets for its range. Restore
+        // those together with the range when navigating back to a cached page.
+        if appliedUsageRange != range, let cached = usageSnapshots[range] {
+            updateDashboardState { $0.snapshot = $0.snapshot.mergingStats(cached) }
+            appliedUsageRange = range
+        }
+        guard usageTasks[range] == nil else { return }
+        if !force, let last = usageLoadedAt[range], Date().timeIntervalSince(last) < 60 { return }
+        let requestID = UUID()
+        usageRequestIDs[range] = requestID
+        loadingUsageRanges.insert(range)
+        usageTasks[range] = Task {
+            defer {
+                if usageRequestIDs[range] == requestID {
+                    usageTasks[range] = nil
+                    usageRequestIDs[range] = nil
+                    loadingUsageRanges.remove(range)
+                }
+            }
+            do {
+                let outcome: ATMCommandOutcome<ATMDashboardEnvelope> = await decodeIPCCommand(
+                    try makeDashboardRunner(), method: ATMDashboardIPCCommand.snapshot,
+                    request: ATMDashboardRequest(sections: ["stats"], ranges: [range.rawValue], compact: true)
+                )
+                try Task.checkCancellation()
+                guard usageRequestIDs[range] == requestID else { return }
+                if let value = outcome.value {
+                    usageSnapshots[range] = value
+                    usageLoadedAt[range] = Date()
+                    // Responses for a page we already left warm its cache without
+                    // replacing the active page's chart arrays.
+                    if visibleUsageRange == nil || visibleUsageRange == range {
+                        updateDashboardState { $0.snapshot = $0.snapshot.mergingStats(value) }
+                        appliedUsageRange = range
+                        setUsageReadError("stats", nil)
+                    }
+                } else if visibleUsageRange == nil || visibleUsageRange == range {
+                    setUsageReadError("stats", outcome.schemaMismatch?.summary ?? outcome.error)
+                }
+            } catch is CancellationError {
+                // Leaving usage cancels only usage work; the task list keeps refreshing.
+            } catch {
+                guard usageRequestIDs[range] == requestID, !Task.isCancelled else { return }
+                setUsageReadError("stats", ATMErrorText.compact(error.localizedDescription))
+            }
+        }
+    }
+
+    private var dashboardReadErrorMessage: String? {
+        let messages = ["work", "archive", "sync"].compactMap { dashboardReadErrors[$0] }
+        return messages.isEmpty ? nil : messages.joined(separator: "；")
+    }
+
+    private func setDashboardReadError(_ section: String, _ message: String?) {
+        dashboardReadErrors[section] = message
+        errorMessage = dashboardReadErrorMessage
+    }
+
+    private func setUsageReadError(_ section: String, _ message: String?) {
+        usageReadErrors[section] = message
+        let messages = ["stats", "quota"].compactMap { usageReadErrors[$0] }
+        usageErrorMessage = messages.isEmpty ? nil : messages.joined(separator: "；")
     }
 
     func dismissDashboardError() {
@@ -2641,6 +2653,8 @@ final class ATMDataStore: ObservableObject {
     /// set and archive immediately while a queued refresh reconciles other fields.
     func applySuccessfulTodoAction(_ action: ATMTodoAction, on todo: ATMTodo) {
         if action == .archive {
+            optimisticallyArchivedTodos[todo.id] = todo
+            optimisticallyRestoredTodoIDs.remove(todo.id)
             let deletedIDs: Set<String> = [todo.id]
             optimisticallyDeletedTodoIDs.insert(todo.id)
             optimisticallyUpdatedTodos.removeValue(forKey: todo.id)
@@ -2656,6 +2670,8 @@ final class ATMDataStore: ObservableObject {
         }
 
         if action == .restore {
+            optimisticallyArchivedTodos.removeValue(forKey: todo.id)
+            optimisticallyRestoredTodoIDs.insert(todo.id)
             archivedTodos.removeAll { $0.id == todo.id }
             optimisticallyDeletedTodoIDs.remove(todo.id)
             optimisticallyUpdatedTodos[todo.id] = todo
@@ -2669,6 +2685,8 @@ final class ATMDataStore: ObservableObject {
         }
 
         if action == .delete {
+            optimisticallyArchivedTodos.removeValue(forKey: todo.id)
+            optimisticallyRestoredTodoIDs.remove(todo.id)
             archivedTodos.removeAll { $0.id == todo.id }
             let deletedIDs: Set<String> = [todo.id]
             optimisticallyDeletedTodoIDs.insert(todo.id)
@@ -2850,6 +2868,33 @@ final class ATMDataStore: ObservableObject {
         }
     }
 
+    private func todoVersion(_ id: String) -> ATMTodo? {
+        allTodos.first { $0.id == id } ?? archivedTodos.first { $0.id == id }
+    }
+
+    func retainTodoDetailReads(for todoID: String) {
+        detailConsumers[todoID, default: 0] += 1
+    }
+
+    /// Called by the detail surface that acquired the reads. A second window
+    /// viewing the same task keeps the request alive until its own release.
+    func cancelTodoDetailReads(for todoID: String) {
+        let remaining = max(0, (detailConsumers[todoID] ?? 1) - 1)
+        if remaining > 0 { detailConsumers[todoID] = remaining; return }
+        detailConsumers.removeValue(forKey: todoID)
+        for kind in ["progress", "sessions", "advice"] {
+            let key = "\(kind)|\(todoID)"
+            if let task = detailTasks.removeValue(forKey: key) {
+                task.cancel()
+                if kind == "advice" { adviceAttemptedAt.removeValue(forKey: todoID) }
+            }
+            detailRequestIDs.removeValue(forKey: key)
+        }
+        loadingProgressTodoIDs.remove(todoID)
+        loadingBoundSessionTodoIDs.remove(todoID)
+        loadingAdviceTodoIDs.remove(todoID)
+    }
+
     func progress(for todoID: String) -> [ATMTodoProgressEntry] {
         progressByTodoID[todoID] ?? []
     }
@@ -2858,17 +2903,40 @@ final class ATMDataStore: ObservableObject {
         loadingProgressTodoIDs.contains(todoID)
     }
 
-    func loadProgress(for todoID: String) {
-        guard !loadingProgressTodoIDs.contains(todoID) else { return }
+    func loadProgress(for todoID: String, force: Bool = false) {
+        let key = "progress|\(todoID)"
+        let version = todoVersion(todoID)
+        guard detailTasks[key] == nil else { return }
+        if !force, progressByTodoID[todoID] != nil,
+           detailFreshness[key]?.isFresh(for: version) == true { return }
+        let requestID = UUID()
+        detailRequestIDs[key] = requestID
         loadingProgressTodoIDs.insert(todoID)
-        Task {
-            defer { loadingProgressTodoIDs.remove(todoID) }
+        detailTasks[key] = Task {
+            defer {
+                if detailRequestIDs[key] == requestID {
+                    detailTasks[key] = nil
+                    detailRequestIDs[key] = nil
+                    loadingProgressTodoIDs.remove(todoID)
+                    if !Task.isCancelled, todoVersion(todoID) != version,
+                       detailConsumers[todoID, default: 0] > 0 {
+                        loadProgress(for: todoID)
+                    }
+                }
+            }
             do {
                 let doc = try await makeTodoIPCClient().document(todoID)
+                try Task.checkCancellation()
+                guard detailRequestIDs[key] == requestID, todoVersion(todoID) == version else { return }
                 let content = doc.content ?? ""
-                progressByTodoID[todoID] = ATMTodoProgressEntry.parse(from: content)
+                let parsed = ATMTodoProgressEntry.parse(from: content)
+                if progressByTodoID[todoID] != parsed { progressByTodoID[todoID] = parsed }
+                detailFreshness[key] = ATMTodoDetailFreshness(todo: version, loadedAt: Date())
+            } catch is CancellationError {
             } catch {
-                progressByTodoID[todoID] = []
+                guard detailRequestIDs[key] == requestID, !Task.isCancelled else { return }
+                // A failed revalidation should not blank already visible progress.
+                if progressByTodoID[todoID] == nil { progressByTodoID[todoID] = [] }
             }
         }
     }
@@ -2881,16 +2949,37 @@ final class ATMDataStore: ObservableObject {
         loadingBoundSessionTodoIDs.contains(todoID)
     }
 
-    func loadBoundSessions(for todoID: String) {
-        guard !loadingBoundSessionTodoIDs.contains(todoID) else { return }
+    func loadBoundSessions(for todoID: String, force: Bool = false) {
+        let key = "sessions|\(todoID)"
+        let version = todoVersion(todoID)
+        guard detailTasks[key] == nil else { return }
+        if !force, boundSessionsByTodoID[todoID] != nil,
+           detailFreshness[key]?.isFresh(for: version) == true { return }
+        let requestID = UUID()
+        detailRequestIDs[key] = requestID
         loadingBoundSessionTodoIDs.insert(todoID)
-        Task {
-            defer { loadingBoundSessionTodoIDs.remove(todoID) }
+        detailTasks[key] = Task {
+            defer {
+                if detailRequestIDs[key] == requestID {
+                    detailTasks[key] = nil
+                    detailRequestIDs[key] = nil
+                    loadingBoundSessionTodoIDs.remove(todoID)
+                    if !Task.isCancelled, todoVersion(todoID) != version,
+                       detailConsumers[todoID, default: 0] > 0 {
+                        loadBoundSessions(for: todoID)
+                    }
+                }
+            }
             do {
                 let detail = try await makeTodoIPCClient().show(todoID)
+                try Task.checkCancellation()
+                guard detailRequestIDs[key] == requestID, todoVersion(todoID) == version else { return }
                 boundSessionsByTodoID[todoID] = detail.sessions ?? []
+                detailFreshness[key] = ATMTodoDetailFreshness(todo: version, loadedAt: Date())
+            } catch is CancellationError {
             } catch {
-                boundSessionsByTodoID[todoID] = []
+                guard detailRequestIDs[key] == requestID, !Task.isCancelled else { return }
+                if boundSessionsByTodoID[todoID] == nil { boundSessionsByTodoID[todoID] = [] }
             }
         }
     }
@@ -3170,11 +3259,14 @@ final class ATMDataStore: ObservableObject {
     }
 
     func sessionTranscript(_ sessionID: String, mode: ATMSessionReadMode) -> ATMSessionTranscript? {
-        sessionTranscripts[sessionReadKey(sessionID, mode)]
+        let key = sessionReadKey(sessionID, mode)
+        sessionReadBudget.touch(key)
+        return sessionTranscripts[key]
     }
 
     func sessionTimeline(_ sessionID: String) -> [ATMSessionTimelineEntry]? {
-        sessionTimelines[sessionID]
+        sessionReadBudget.touch(sessionReadKey(sessionID, .timeline))
+        return sessionTimelines[sessionID]
     }
 
     func sessionReadError(_ sessionID: String, mode: ATMSessionReadMode) -> String? {
@@ -3185,30 +3277,94 @@ final class ATMDataStore: ObservableObject {
         loadingSessionReads.contains(sessionReadKey(sessionID, mode))
     }
 
-    /// Reads one session at one depth. Results are cached per (session, mode):
-    /// a transcript is immutable history for every mode except the tail of a live
-    /// session, and `reload` is what refreshes that case explicitly.
+    /// SwiftUI's task lifetime owns this reader. Switching session/mode releases
+    /// it immediately; another window reading the same key keeps it pinned.
+    func observeSessionRead(_ sessionID: String, mode: ATMSessionReadMode) async {
+        guard !Task.isCancelled else { return }
+        let key = sessionReadKey(sessionID, mode)
+        sessionReadConsumers[key, default: 0] += 1
+        loadSessionRead(sessionID, mode: mode)
+        defer {
+            let remaining = max(0, (sessionReadConsumers[key] ?? 1) - 1)
+            if remaining > 0 {
+                sessionReadConsumers[key] = remaining
+            } else {
+                sessionReadConsumers.removeValue(forKey: key)
+                sessionReadTasks.removeValue(forKey: key)?.cancel()
+                sessionReadRequestIDs.removeValue(forKey: key)
+                loadingSessionReads.remove(key)
+                evictSessionReads()
+            }
+        }
+        // Suspension has no timer wakeups. Cancellation of the view task ends
+        // the wait and executes the ownership cleanup above.
+        let lifetime = AsyncStream<Void> { _ in }
+        for await _ in lifetime {}
+    }
+
+    private func evictSessionReads(alsoProtecting key: String? = nil) {
+        var protected = Set(sessionReadConsumers.keys)
+        if let key { protected.insert(key) }
+        for evicted in sessionReadBudget.evict(protecting: protected) {
+            if evicted.hasPrefix("timeline|") {
+                sessionTimelines.removeValue(forKey: String(evicted.dropFirst("timeline|".count)))
+            } else {
+                sessionTranscripts.removeValue(forKey: evicted)
+            }
+            sessionReadErrors.removeValue(forKey: evicted)
+        }
+    }
+
+    /// Reads remain cached by (session, mode), bounded jointly by bytes and LRU
+    /// entry count. Reload explicitly refreshes the tail of a live session.
     func loadSessionRead(_ sessionID: String, mode: ATMSessionReadMode, reload: Bool = false) {
         let key = sessionReadKey(sessionID, mode)
-        guard !loadingSessionReads.contains(key) else { return }
+        guard sessionReadTasks[key] == nil else { return }
+        sessionReadBudget.touch(key)
         if !reload {
             if mode == .timeline, sessionTimelines[sessionID] != nil { return }
             if mode != .timeline, sessionTranscripts[key] != nil { return }
         }
+        let requestID = UUID()
+        sessionReadRequestIDs[key] = requestID
         loadingSessionReads.insert(key)
-        Task {
-            defer { loadingSessionReads.remove(key) }
+        sessionReadTasks[key] = Task {
+            defer {
+                if sessionReadRequestIDs[key] == requestID {
+                    sessionReadTasks[key] = nil
+                    sessionReadRequestIDs[key] = nil
+                    loadingSessionReads.remove(key)
+                }
+            }
             do {
                 if mode == .timeline {
-                    sessionTimelines[sessionID] = try await makeSessionIPCClient().timeline(
+                    let entries = try await makeSessionIPCClient().timeline(
                         ATMSessionTimelineRequest(sessionID: sessionID)
                     )
+                    try Task.checkCancellation()
+                    guard sessionReadRequestIDs[key] == requestID else { return }
+                    sessionTimelines[sessionID] = entries
+                    sessionReadBudget.insert(key, bytes: entries.reduce(0) { $0 + $1.estimatedCacheBytes })
                 } else if let request = mode.showRequest(sessionID: sessionID) {
-                    sessionTranscripts[key] = try await makeSessionIPCClient().show(request)
+                    let transcript = try await makeSessionIPCClient().show(request)
+                    try Task.checkCancellation()
+                    guard sessionReadRequestIDs[key] == requestID else { return }
+                    sessionTranscripts[key] = transcript
+                    sessionReadBudget.insert(key, bytes: transcript.estimatedCacheBytes)
                 }
                 sessionReadErrors[key] = nil
+                evictSessionReads(alsoProtecting: key)
+            } catch is CancellationError {
             } catch {
+                guard sessionReadRequestIDs[key] == requestID, !Task.isCancelled else { return }
                 sessionReadErrors[key] = ATMErrorText.compact(error.localizedDescription)
+                // Failed keys need a bound too; preserve any cached transcript's cost.
+                let hasCachedValue = mode == .timeline
+                    ? sessionTimelines[sessionID] != nil : sessionTranscripts[key] != nil
+                if !hasCachedValue {
+                    sessionReadBudget.insert(key, bytes: 512)
+                }
+                evictSessionReads(alsoProtecting: key)
             }
         }
     }

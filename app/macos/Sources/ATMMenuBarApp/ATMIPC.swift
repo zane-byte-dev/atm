@@ -14,16 +14,20 @@ enum ATMIPCContract {
     static let supportedProtocolVersion = 1
     static let supportedEnvelopeVersion = 1
 
-    static func validate(envelopeVersion: Int, protocolVersion: Int) throws {
-        // The business protocol is checked first on purpose. It is the useful
-        // upgrade direction for a user, and it must win over any payload shape
-        // change introduced by that newer protocol.
+    static func validate(protocolVersion: Int) throws {
         guard protocolVersion == supportedProtocolVersion else {
             throw ATMIPCProtocolMismatch(
                 cliVersion: protocolVersion,
                 appVersion: supportedProtocolVersion
             )
         }
+    }
+
+    static func validate(envelopeVersion: Int, protocolVersion: Int) throws {
+        // The business protocol is checked first on purpose. It is the useful
+        // upgrade direction for a user, and it must win over any payload shape
+        // change introduced by that newer protocol.
+        try validate(protocolVersion: protocolVersion)
         guard envelopeVersion == supportedEnvelopeVersion else {
             throw ATMIPCEnvelopeVersionMismatch(
                 cliVersion: envelopeVersion,
@@ -207,6 +211,7 @@ struct ATMIPCEnvelope<Value: Decodable>: Decodable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         protocolVersion = try values.decode(Int.self, forKey: .protocolVersion)
+        try ATMIPCContract.validate(protocolVersion: protocolVersion)
         envelopeVersion = try values.decode(Int.self, forKey: .envelopeVersion)
         try ATMIPCContract.validate(
             envelopeVersion: envelopeVersion,
@@ -218,36 +223,95 @@ struct ATMIPCEnvelope<Value: Decodable>: Decodable {
     }
 }
 
-/// The identity/error half is decoded before a success payload. That ordering is
-/// what lets an application error survive Cobra's non-zero exit status, and what
-/// prevents a schema error inside `data` from hiding a protocol mismatch.
-private struct ATMIPCEnvelopeProbe: Decodable {
-    let envelopeVersion: Int
-    let protocolVersion: Int
-    let requestID: String
-    let verb: String
-    let error: ATMIPCErrorPayload?
+private struct ATMIPCResponseContext {
+    let expectedVerb: String
+    let keyDecoding: ATMIPCResponseKeyDecoding
+    let result: ATMCommandProcessResult
+    let arguments: [String]
+}
+
+private extension CodingUserInfoKey {
+    static let atmIPCResponse = CodingUserInfoKey(rawValue: "ATMIPCResponse")!
+}
+
+/// Reads the wrapper and business payload in one decoder traversal. Validation
+/// happens before decoding any shape owned by a newer protocol, including the
+/// transport version and the error object. Keep this ordering when adding fields.
+private struct ATMIPCValidatedResponse<Value: Decodable>: Decodable {
+    let data: Value
 
     enum CodingKeys: String, CodingKey {
         case envelopeVersion = "envelope_version"
+        case convertedEnvelopeVersion = "envelopeVersion"
         case protocolVersion = "protocol_version"
+        case convertedProtocolVersion = "protocolVersion"
         case requestID = "request_id"
+        case convertedRequestID = "requestId"
         case verb
         case error
+        case data
     }
 
     init(from decoder: Decoder) throws {
+        guard let context = decoder.userInfo[.atmIPCResponse] as? ATMIPCResponseContext else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "missing IPC response context"
+            ))
+        }
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        protocolVersion = try values.decode(Int.self, forKey: .protocolVersion)
-        envelopeVersion = try values.decode(Int.self, forKey: .envelopeVersion)
+        // The payload's key strategy also applies to the outer keyed container.
+        // Separate metadata keys let Foundation perform the conversion itself.
+        let convertsKeys = context.keyDecoding == .convertFromSnakeCase
+        let protocolVersion = try values.decode(
+            Int.self, forKey: convertsKeys ? .convertedProtocolVersion : .protocolVersion
+        )
+        try ATMIPCContract.validate(protocolVersion: protocolVersion)
+        let envelopeVersion = try values.decode(
+            Int.self, forKey: convertsKeys ? .convertedEnvelopeVersion : .envelopeVersion
+        )
         try ATMIPCContract.validate(
             envelopeVersion: envelopeVersion,
             protocolVersion: protocolVersion
         )
-        requestID = try values.decode(String.self, forKey: .requestID)
-        verb = try values.decode(String.self, forKey: .verb)
-        error = try values.decodeIfPresent(ATMIPCErrorPayload.self, forKey: .error)
+        let requestID = try values.decode(
+            String.self, forKey: convertsKeys ? .convertedRequestID : .requestID
+        )
+        let verb = try values.decode(String.self, forKey: .verb)
+        guard verb == context.expectedVerb else {
+            throw ATMIPCVerbMismatch(
+                expected: context.expectedVerb,
+                actual: verb,
+                requestID: requestID
+            )
+        }
+        if let error = try values.decodeIfPresent(ATMIPCErrorPayload.self, forKey: .error) {
+            throw ATMIPCRemoteError(
+                code: error.code,
+                message: error.message,
+                details: error.details,
+                retryable: error.retryable,
+                requestID: requestID,
+                verb: verb
+            )
+        }
+        guard context.result.terminationStatus == 0 else {
+            throw context.result.commandError(arguments: context.arguments)
+        }
+        guard values.contains(.data), try !values.decodeNil(forKey: .data) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath,
+                debugDescription: "successful IPC response has no data payload"
+            ))
+        }
+        data = try values.decode(Value.self, forKey: .data)
     }
+}
+
+/// Raw export validates the same wrapper but leaves unknown payload values for
+/// JSONSerialization, which preserves integers that ATMJSONValue's Double cannot.
+private struct ATMIPCIgnoredPayload: Decodable {
+    init(from decoder: Decoder) {}
 }
 
 /// Phantom request for methods whose Go handler intentionally never reads stdin.
@@ -299,8 +363,8 @@ struct ATMIPCClient: Sendable {
     func call<Response>(
         _ method: ATMIPCMethod<ATMIPCNoRequest, Response>
     ) async throws -> Response {
-        let payload = try await validatedPayload(method, standardInput: nil)
-        return try decode(payload, for: method)
+        let result = try await run(method, standardInput: nil)
+        return try decode(Response.self, result: result, for: method)
     }
 
     func call<Request, Response>(
@@ -308,11 +372,11 @@ struct ATMIPCClient: Sendable {
         request: Request
     ) async throws -> Response {
         let encoder = JSONEncoder()
-        let payload = try await validatedPayload(
+        let result = try await run(
             method,
             standardInput: encoder.encode(request)
         )
-        return try decode(payload, for: method)
+        return try decode(Response.self, result: result, for: method)
     }
 
     /// Returns the verb's `data` object as user-facing JSON rather than the IPC
@@ -320,8 +384,15 @@ struct ATMIPCClient: Sendable {
     func callRawPayload(
         _ method: ATMIPCMethod<ATMIPCNoRequest, ATMJSONValue>
     ) async throws -> Data {
-        let payload = try await validatedPayload(method, standardInput: nil)
-        let object = try JSONSerialization.jsonObject(with: payload, options: [.fragmentsAllowed])
+        let result = try await run(method, standardInput: nil)
+        _ = try decode(ATMIPCIgnoredPayload.self, result: result, for: method)
+        guard let envelope = try JSONSerialization.jsonObject(with: result.standardOutput) as? [String: Any],
+              let object = envelope["data"], !(object is NSNull) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [],
+                debugDescription: "successful IPC response has no data payload"
+            ))
+        }
         var encoded = try JSONSerialization.data(
             withJSONObject: object,
             options: [.prettyPrinted, .withoutEscapingSlashes, .fragmentsAllowed]
@@ -330,77 +401,50 @@ struct ATMIPCClient: Sendable {
         return encoded
     }
 
-    private func validatedPayload<Request, Response>(
+    private func run<Request, Response>(
         _ method: ATMIPCMethod<Request, Response>,
         standardInput: Data?
-    ) async throws -> Data {
-        let result = try await runner.runRaw(
+    ) async throws -> ATMCommandProcessResult {
+        try await runner.runRaw(
             method.arguments,
             standardInput: standardInput,
             timeout: method.timeout
         )
-        let decoder = JSONDecoder()
+    }
 
-        let probe: ATMIPCEnvelopeProbe
+    private func decode<Value: Decodable, Request, Response>(
+        _ type: Value.Type,
+        result: ATMCommandProcessResult,
+        for method: ATMIPCMethod<Request, Response>
+    ) throws -> Value {
+        let decoder = JSONDecoder()
+        if method.responseKeyDecoding == .convertFromSnakeCase {
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+        }
+        decoder.userInfo[.atmIPCResponse] = ATMIPCResponseContext(
+            expectedVerb: method.verb,
+            keyDecoding: method.responseKeyDecoding,
+            result: result,
+            arguments: method.arguments
+        )
         do {
-            probe = try decoder.decode(ATMIPCEnvelopeProbe.self, from: result.standardOutput)
+            return try decoder.decode(ATMIPCValidatedResponse<Value>.self, from: result.standardOutput).data
         } catch let mismatch as ATMIPCProtocolMismatch {
             throw mismatch
         } catch let mismatch as ATMIPCEnvelopeVersionMismatch {
             throw mismatch
+        } catch let mismatch as ATMIPCVerbMismatch {
+            throw mismatch
+        } catch let remote as ATMIPCRemoteError {
+            throw remote
         } catch {
-            // A legacy/non-IPC failure has no usable stdout envelope. Preserve
-            // the established command error (and stderr) in that fallback case.
+            // Legacy/non-IPC failures still use stderr, while a structured error
+            // or contract mismatch remains actionable even on a non-zero exit.
             if result.terminationStatus != 0 {
                 throw result.commandError(arguments: method.arguments)
             }
             throw error
         }
-
-        guard probe.verb == method.verb else {
-            throw ATMIPCVerbMismatch(
-                expected: method.verb,
-                actual: probe.verb,
-                requestID: probe.requestID
-            )
-        }
-        if let error = probe.error {
-            throw ATMIPCRemoteError(
-                code: error.code,
-                message: error.message,
-                details: error.details,
-                retryable: error.retryable,
-                requestID: probe.requestID,
-                verb: probe.verb
-            )
-        }
-        guard result.terminationStatus == 0 else {
-            throw result.commandError(arguments: method.arguments)
-        }
-
-        let object = try JSONSerialization.jsonObject(with: result.standardOutput)
-        guard let envelope = object as? [String: Any],
-              let payload = envelope["data"],
-              !(payload is NSNull) else {
-            throw DecodingError.dataCorrupted(
-                DecodingError.Context(
-                    codingPath: [],
-                    debugDescription: "successful IPC response has no data payload"
-                )
-            )
-        }
-        return try JSONSerialization.data(withJSONObject: payload, options: [.fragmentsAllowed])
-    }
-
-    private func decode<Request, Response>(
-        _ payload: Data,
-        for method: ATMIPCMethod<Request, Response>
-    ) throws -> Response {
-        let decoder = JSONDecoder()
-        if method.responseKeyDecoding == .convertFromSnakeCase {
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-        }
-        return try decoder.decode(Response.self, from: payload)
     }
 }
 

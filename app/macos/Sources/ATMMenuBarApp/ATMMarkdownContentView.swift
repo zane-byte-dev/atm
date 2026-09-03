@@ -12,12 +12,13 @@ struct ATMMarkdownContentView: View {
 
     let source: String
     var sizing: Sizing
-    private let blocks: [ATMMarkdownBlock]
+    @StateObject private var model: ATMMarkdownDocumentModel
+    @State private var tablePaging = ATMMarkdownTablePaging()
 
     init(source: String, sizing: Sizing = .content) {
         self.source = source
         self.sizing = sizing
-        blocks = ATMMarkdown.blocks(source)
+        _model = StateObject(wrappedValue: ATMMarkdownDocumentModel(source: source))
     }
 
     @ObservedObject private var appearance = ATMAppearance.shared
@@ -30,38 +31,56 @@ struct ATMMarkdownContentView: View {
     }
 
     var body: some View {
+        let document = model.document.flatMap { $0.source == source ? $0 : nil }
+            ?? ATMMarkdown.cachedDocument(source)
+        Group {
+            if let document {
+                content(document)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+            }
+        }
+        .preference(key: ATMWorkspaceContentReadyPreferenceKey.self, value: document != nil)
+        .task(id: source) { await model.load(source) }
+    }
+
+    private func content(_ document: ATMPreparedMarkdown) -> some View {
         LazyVStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+            ForEach(document.blocks.indices, id: \.self) { index in
+                let block = document.blocks[index]
                 switch block {
                 case .heading(let level, let text):
-                    Text(ATMMarkdown.render(text))
+                    Text(document.inline(text))
                         .font(.system(size: headingSize(level), weight: level <= 2 ? .bold : .semibold))
                         .padding(.top, level <= 2 ? 7 : 3)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 case .paragraph(let text):
-                    markdownText(text)
+                    markdownText(text, in: document)
                 case .list(let ordered, let items):
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(items.indices, id: \.self) { index in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Text(ordered ? "\(index + 1)." : "•")
                                     .font(.system(size: bodySize, weight: .semibold))
                                     .foregroundStyle(ATMTheme.secondary)
                                     .frame(minWidth: ordered ? 20 : 10, alignment: .trailing)
-                                markdownText(item)
+                                markdownText(items[index], in: document)
                             }
                         }
                     }
                     .padding(.leading, 2)
                 case .taskList(let items):
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(items.indices, id: \.self) { index in
+                            let item = items[index]
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 Image(systemName: item.checked ? "checkmark.square.fill" : "square")
                                     .font(.system(size: bodySize, weight: .medium))
                                     .foregroundStyle(item.checked ? ATMTheme.accent : ATMTheme.secondary)
-                                markdownText(item.text)
+                                markdownText(item.text, in: document)
                                     .foregroundStyle(item.checked ? ATMTheme.secondary : ATMTheme.primary)
                             }
                         }
@@ -72,7 +91,7 @@ struct ATMMarkdownContentView: View {
                         RoundedRectangle(cornerRadius: 1)
                             .fill(ATMTheme.accent.opacity(0.55))
                             .frame(width: 3)
-                        markdownText(text)
+                        markdownText(text, in: document)
                             .foregroundStyle(ATMTheme.secondary)
                     }
                     .padding(.vertical, 3)
@@ -101,26 +120,39 @@ struct ATMMarkdownContentView: View {
                         .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                     }
                 case .table(let headers, let alignments, let rows):
-                    ScrollView(.horizontal) {
-                        Grid(horizontalSpacing: 0, verticalSpacing: 0) {
-                            markdownTableRow(
-                                headers,
-                                alignments: alignments,
-                                isHeader: true
-                            )
-                            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    let visibleCount = tablePaging.visibleCount(table: index, source: source, total: rows.count)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ScrollView(.horizontal) {
+                            Grid(horizontalSpacing: 0, verticalSpacing: 0) {
                                 markdownTableRow(
-                                    row,
+                                    headers,
                                     alignments: alignments,
-                                    isHeader: false
+                                    isHeader: true,
+                                    document: document
                                 )
+                                ForEach(0..<visibleCount, id: \.self) { row in
+                                    markdownTableRow(
+                                        rows[row],
+                                        alignments: alignments,
+                                        isHeader: false,
+                                        document: document
+                                    )
+                                }
                             }
                         }
+                        // As with code blocks: a table cut off mid-column needs to say so.
+                        .scrollIndicators(.visible, axes: .horizontal)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                        .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
+                        if visibleCount < rows.count {
+                            Button("显示更多（已显示 \(visibleCount) / \(rows.count) 行）") {
+                                tablePaging.showMore(table: index, source: source, total: rows.count)
+                            }
+                            .buttonStyle(.plain)
+                            .font(ATMFont.footnote)
+                            .foregroundStyle(ATMTheme.accent)
+                        }
                     }
-                    // As with code blocks: a table cut off mid-column needs to say so.
-                    .scrollIndicators(.visible, axes: .horizontal)
-                    .clipShape(RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(ATMTheme.border))
                 }
             }
         }
@@ -138,8 +170,8 @@ struct ATMMarkdownContentView: View {
         }
     }
 
-    private func markdownText(_ text: String) -> some View {
-        Text(ATMMarkdown.render(text))
+    private func markdownText(_ text: String, in document: ATMPreparedMarkdown) -> some View {
+        Text(document.inline(text))
             .font(.system(size: bodySize))
             .lineSpacing(3)
             .fixedSize(horizontal: false, vertical: true)
@@ -150,11 +182,12 @@ struct ATMMarkdownContentView: View {
     private func markdownTableRow(
         _ cells: [String],
         alignments: [ATMMarkdownTableAlignment],
-        isHeader: Bool
+        isHeader: Bool,
+        document: ATMPreparedMarkdown
     ) -> some View {
         GridRow {
             ForEach(Array(cells.enumerated()), id: \.offset) { index, cell in
-                Text(ATMMarkdown.render(cell))
+                Text(document.inline(cell))
                     .font(.system(size: bodySize, weight: isHeader ? .semibold : .regular))
                     .lineSpacing(2)
                     .padding(.horizontal, 10)
@@ -177,6 +210,38 @@ struct ATMMarkdownContentView: View {
         case .leading: return .leading
         case .center: return .center
         case .trailing: return .trailing
+        }
+    }
+}
+
+/// A single rich-text paragraph, used by progress rows that already own their
+/// layout. Parsing is shared with the document renderer but stays off the main
+/// actor; modifiers on this view still control selection, font and color.
+struct ATMMarkdownInlineText: View {
+    let source: String
+    @State private var prepared: Prepared?
+
+    private struct Prepared {
+        let source: String
+        let text: AttributedString
+    }
+
+    private var currentText: AttributedString? {
+        if let prepared, prepared.source == source { return prepared.text }
+        return ATMMarkdown.cachedRender(source)
+    }
+
+    var body: some View {
+        Group {
+            if let text = currentText {
+                Text(text)
+            } else {
+                ProgressView().controlSize(.mini)
+            }
+        }
+        .task(id: source) {
+            guard let text = await ATMMarkdown.prepareInline(source), !Task.isCancelled else { return }
+            prepared = Prepared(source: source, text: text)
         }
     }
 }

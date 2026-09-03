@@ -1,4 +1,8 @@
-APP     := atm
+APP      ?= atm
+BIN_DIR  ?= bin
+DIST_DIR ?= dist
+NPM      ?= npm
+WEB_DIR  := app/web
 
 # Derive the version from git so a locally built binary reports the commit it
 # was actually built from, including a -dirty suffix for uncommitted work. A
@@ -11,28 +15,43 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
-.PHONY: build install dist clean
+.PHONY: build build-cli install dist clean web-build web-deps
 
-build:
-	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/$(APP) ./cmd/atm
+# Keep dependency installation, frontend compilation, and embedding in one
+# dependency chain, including when make runs with -j or builds several targets.
+web-deps:
+	$(NPM) ci --prefix $(WEB_DIR)
+
+web-build: web-deps
+	$(NPM) run build --prefix $(WEB_DIR)
+	test -s $(WEB_DIR)/dist/index.html
+
+build: web-build
+	mkdir -p "$(BIN_DIR)"
+	go build -trimpath -tags webui -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(APP)" ./cmd/atm
+
+# This path deliberately has no frontend dependency and works without Node.js.
+build-cli:
+	mkdir -p "$(BIN_DIR)"
+	go build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(APP)" ./cmd/atm
 
 install: build
-	@if [ "$$(readlink /usr/local/bin/$(APP))" = "$(CURDIR)/bin/$(APP)" ]; then \
-		echo "/usr/local/bin/$(APP) -> bin/$(APP) (symlink); build already updated it"; \
+	@if [ "$$(readlink /usr/local/bin/$(APP))" = "$(abspath $(BIN_DIR))/$(APP)" ]; then \
+		echo "/usr/local/bin/$(APP) -> $(abspath $(BIN_DIR))/$(APP) (symlink); build already updated it"; \
 	else \
-		cp bin/$(APP) /usr/local/bin/$(APP) && echo "installed to /usr/local/bin/$(APP)"; \
+		cp "$(BIN_DIR)/$(APP)" /usr/local/bin/$(APP) && echo "installed to /usr/local/bin/$(APP)"; \
 	fi
 
-dist:
-	@rm -rf dist && mkdir -p dist
+dist: web-build
+	@mkdir -p "$(DIST_DIR)"
 	@for platform in $(PLATFORMS); do \
 		os=$${platform%/*}; \
 		arch=$${platform#*/}; \
-		out=dist/$(APP)-$${os}-$${arch}; \
+		out="$(DIST_DIR)/$(APP)-$${os}-$${arch}"; \
 		echo "==> building $${out}"; \
 		GOOS=$${os} GOARCH=$${arch} CGO_ENABLED=0 \
-			go build -trimpath -ldflags "$(LDFLAGS)" -o $${out} ./cmd/atm || exit 1; \
+			go build -trimpath -tags webui -ldflags "$(LDFLAGS)" -o "$${out}" ./cmd/atm || exit 1; \
 	done
 
 clean:
-	rm -rf bin/ dist/
+	rm -rf "$(BIN_DIR)" "$(DIST_DIR)" $(WEB_DIR)/dist/

@@ -15,8 +15,13 @@ import (
 )
 
 var cliCommandEnteredRun atomic.Bool
+var cliCommandLongRunning atomic.Bool
 
 func recordCLIInvocation(started time.Time, commandErr error, exitCode int) {
+	// A resident workspace's lifetime is not the duration of one CLI action.
+	if cliCommandLongRunning.Load() {
+		return
+	}
 	store.RecordCLIInvocationBestEffort(cliInvocationForExecution(started, commandErr, exitCode))
 }
 

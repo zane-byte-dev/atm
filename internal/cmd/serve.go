@@ -1,0 +1,311 @@
+package cmd
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"syscall"
+	"time"
+
+	"github.com/spf13/cobra"
+	webassets "github.com/zane-byte-dev/atm/app/web"
+	"github.com/zane-byte-dev/atm/internal/apphost"
+	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/store"
+	webapp "github.com/zane-byte-dev/atm/internal/web"
+)
+
+var (
+	servePort    int
+	serveOpen    bool
+	serveDataDir string
+)
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Open a local browser workspace for ATM",
+	Long: `Serve ATM's browser workspace on this Mac. The CLI continues to work independently.
+
+The workspace serves tasks, collection, Agent sessions, knowledge, usage,
+AI Day, and settings. It does not take over the macOS app's background sync,
+collection, Agent hook socket, or notifications. Keep the existing app running
+if you use those background features.
+
+Use --open to establish a browser connection. An existing workspace for the
+same data directory is reused. --data-dir selects an isolated ATM data directory
+without changing HOME or Agent source directories.
+
+An older database opens read-only. Use atm serve stop, then atm serve migrate
+to create a backup and explicitly upgrade it before enabling Web changes.`,
+	Args: noSubcommandArgs,
+	RunE: runServe,
+}
+
+func init() {
+	serveCmd.PersistentFlags().IntVar(&servePort, "port", 47321, "loopback port (0 selects an available port)")
+	serveCmd.PersistentFlags().BoolVar(&serveOpen, "open", false, "open an authenticated browser page")
+	serveCmd.PersistentFlags().StringVar(&serveDataDir, "data-dir", "", "ATM data directory (default: configured directory)")
+	serveCmd.AddCommand(&cobra.Command{Use: "status", Short: "Show this data directory's running workspace", Args: cobra.NoArgs, RunE: runServeStatus})
+	serveCmd.AddCommand(&cobra.Command{Use: "stop", Short: "Gracefully stop this data directory's workspace", Args: cobra.NoArgs, RunE: runServeStop})
+	serveCmd.AddCommand(&cobra.Command{
+		Use: "migrate", Short: "Back up and explicitly upgrade an existing workspace database", Args: cobra.NoArgs, RunE: runServeMigrate,
+		Long: `Back up an existing ATM data directory, then upgrade its database for this build.
+
+Stop the workspace with atm serve stop first. Before upgrading, update both the
+CLI you run and the CLI used by the macOS app to this same version. Pause other
+ATM writers while upgrading. This command does not stop or update the macOS app.
+
+A normal atm backup archive is created in <data-dir>/backups before any schema
+change. If the backup fails, the database is not migrated. Keep the archive for
+recovery with atm restore. Use --data-dir to select the intended data directory.`,
+	})
+	rootCmd.AddCommand(serveCmd)
+}
+
+func runServe(command *cobra.Command, args []string) error {
+	if servePort < 0 || servePort > 65535 {
+		return fmt.Errorf("port must be between 0 and 65535")
+	}
+	if err := apphost.ConfigureDataDir(serveDataDir); err != nil {
+		return err
+	}
+	ctx, cancel := signal.NotifyContext(commandContext(command), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	// A CLI-only binary can still open a complete instance that is already
+	// serving pages; asset availability matters only when starting a new one.
+	if status, err := webapp.ReadStatus(ctx, config.AtmDir); err == nil && status.Running {
+		if serveOpen {
+			return openExistingWorkspace(ctx, config.AtmDir)
+		}
+		fmt.Fprintf(command.OutOrStdout(), "ATM workspace is already running at %s\n", status.Instance.Origin)
+		return nil
+	}
+	assets, err := webassets.Assets()
+	if err != nil {
+		return err
+	}
+	database, err := readWorkspaceDatabase()
+	if err != nil {
+		return err
+	}
+	host := apphost.New(rootCmd.Version)
+	// The existing macOS app still owns desktop notifications in workspace
+	// mode. Keep all document/on_done projections without a second banner.
+	host.SetWorkEffects(localWorkEffectExecutor{NotifyTodo: func(*store.Todo, string) {}})
+	server, err := webapp.Start(webapp.Options{DataDir: config.AtmDir, Version: rootCmd.Version, Port: servePort, Assets: assets, Dispatch: host.Call, Attachment: host.Attachment, AllowWrites: !database.UpgradeRequired, DataUpgradeRequired: database.UpgradeRequired})
+	if errors.Is(err, webapp.ErrAlreadyRunning) && serveOpen {
+		return openExistingWorkspace(ctx, config.AtmDir)
+	}
+	if err != nil {
+		return err
+	}
+	defer server.Close()
+	cliCommandLongRunning.Store(true)
+	fmt.Fprintf(command.OutOrStdout(), "ATM workspace: %s\n", server.Info().Origin)
+	fmt.Fprintln(command.OutOrStdout(), "Mode: workspace; background sync and Agent hooks remain with the existing macOS app.")
+	if database.UpgradeRequired {
+		fmt.Fprintf(command.OutOrStdout(), "Database v%d is read-only. Run atm serve stop, then atm serve migrate to back up and upgrade to v%d.\n", database.Version, store.SchemaVersion)
+	}
+	if serveOpen {
+		browserURL, err := server.BrowserURL()
+		if err != nil {
+			return err
+		}
+		if err := launchWorkspaceBrowser(ctx, browserURL); err != nil {
+			fmt.Fprintln(command.ErrOrStderr(), "The workspace is running, but the browser could not open. Retry with atm serve --open.")
+		}
+	}
+	return server.Wait(ctx)
+}
+
+func runServeStatus(command *cobra.Command, args []string) error {
+	if err := apphost.ConfigureDataDir(serveDataDir); err != nil {
+		return err
+	}
+	status, err := webapp.ReadStatus(commandContext(command), config.AtmDir)
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return json.NewEncoder(command.OutOrStdout()).Encode(status)
+	}
+	if !status.Running {
+		fmt.Fprintln(command.OutOrStdout(), "ATM workspace is not running.")
+		return nil
+	}
+	fmt.Fprintf(command.OutOrStdout(), "ATM workspace: %s (pid %d, %s, mode %s)\n", status.Instance.Origin, status.Instance.PID, status.Instance.Version, status.Instance.Mode)
+	return nil
+}
+
+func runServeStop(command *cobra.Command, args []string) error {
+	if err := apphost.ConfigureDataDir(serveDataDir); err != nil {
+		return err
+	}
+	if err := webapp.Stop(commandContext(command), config.AtmDir); err != nil {
+		return err
+	}
+	if jsonOutput {
+		return json.NewEncoder(command.OutOrStdout()).Encode(map[string]bool{"stopping": true})
+	}
+	fmt.Fprintln(command.OutOrStdout(), "ATM workspace stop requested.")
+	return nil
+}
+
+type workspaceDatabase struct {
+	Version         int
+	Missing         bool
+	UpgradeRequired bool
+}
+
+// The startup path must not call store.Open: opening a page is not permission
+// to migrate an existing database shared with the CLI and macOS app.
+func readWorkspaceDatabase() (workspaceDatabase, error) {
+	version, err := store.ReadSchemaVersionAt(config.AtmDB)
+	if errors.Is(err, store.ErrDatabaseMissing) {
+		return workspaceDatabase{Missing: true}, nil
+	}
+	if err != nil {
+		return workspaceDatabase{}, fmt.Errorf("read workspace database schema: %w", err)
+	}
+	if version <= 0 {
+		return workspaceDatabase{}, fmt.Errorf("database at %s has no ATM schema; refusing to initialize an existing unrecognized file", config.AtmDB)
+	}
+	if version > store.SchemaVersion {
+		return workspaceDatabase{}, fmt.Errorf("database schema v%d is newer than this ATM build (v%d); update ATM before opening this workspace", version, store.SchemaVersion)
+	}
+	return workspaceDatabase{Version: version, UpgradeRequired: version < store.SchemaVersion}, nil
+}
+
+type serveMigrationResult struct {
+	Database   string `json:"database"`
+	FromSchema int    `json:"from_schema"`
+	ToSchema   int    `json:"to_schema"`
+	Migrated   bool   `json:"migrated"`
+	Archive    string `json:"archive,omitempty"`
+}
+
+func runServeMigrate(command *cobra.Command, args []string) error {
+	if err := apphost.ConfigureDataDir(serveDataDir); err != nil {
+		return err
+	}
+	database, err := readWorkspaceDatabase()
+	if err != nil {
+		return err
+	}
+	if database.Missing {
+		return fmt.Errorf("no existing ATM database at %s; a new workspace does not need migration", config.AtmDB)
+	}
+	result := serveMigrationResult{Database: config.AtmDB, ToSchema: store.SchemaVersion}
+	err = webapp.WithStoppedInstance(config.AtmDir, func() error {
+		// Read again under the instance lock: another migration may have completed
+		// since the initial check, or the database may have been replaced.
+		database, err := readWorkspaceDatabase()
+		if err != nil {
+			return err
+		}
+		if database.Missing {
+			return fmt.Errorf("ATM database disappeared before migration: %s", config.AtmDB)
+		}
+		result.FromSchema = database.Version
+		if !database.UpgradeRequired {
+			return nil
+		}
+		fmt.Fprintln(command.ErrOrStderr(), "Before upgrading, use this ATM version for both your CLI and the macOS app's CLI, and pause other ATM writers. The macOS app is not stopped automatically.")
+		result.Archive, err = backupBeforeServeMigration(database.Version)
+		if err != nil {
+			return fmt.Errorf("pre-upgrade backup failed; database was not migrated: %w", err)
+		}
+		fmt.Fprintf(command.ErrOrStderr(), "Pre-upgrade backup: %s\n", result.Archive)
+		db, err := store.Open()
+		if err != nil {
+			return fmt.Errorf("migration failed; pre-upgrade backup is at %s: %w", result.Archive, err)
+		}
+		if err := db.Close(); err != nil {
+			return err
+		}
+		version, err := store.ReadSchemaVersionAt(config.AtmDB)
+		if err != nil {
+			return err
+		}
+		if version != store.SchemaVersion {
+			return fmt.Errorf("migration ended at schema v%d, expected v%d; backup: %s", version, store.SchemaVersion, result.Archive)
+		}
+		result.Migrated = true
+		return nil
+	})
+	if errors.Is(err, webapp.ErrAlreadyRunning) {
+		return fmt.Errorf("stop this workspace with atm serve stop before running atm serve migrate: %w", err)
+	}
+	if err != nil {
+		return err
+	}
+	if jsonOutput {
+		return json.NewEncoder(command.OutOrStdout()).Encode(result)
+	}
+	if !result.Migrated {
+		fmt.Fprintf(command.OutOrStdout(), "ATM database already uses schema v%d; no migration was needed.\n", result.ToSchema)
+		return nil
+	}
+	fmt.Fprintf(command.OutOrStdout(), "ATM database upgraded from v%d to v%d.\nBackup: %s\nStart the workspace again with atm serve --open.\n", result.FromSchema, result.ToSchema, result.Archive)
+	return nil
+}
+
+// Reuse atm backup's archive, manifest and restore contract. The snapshot API
+// reads the old database without migration, including committed WAL records.
+func backupBeforeServeMigration(version int) (string, error) {
+	backupDir := filepath.Join(config.AtmDir, "backups")
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(backupDir, 0o700); err != nil {
+		return "", err
+	}
+	staging, err := os.MkdirTemp(backupDir, ".atm-migration-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(staging)
+	snapshot := filepath.Join(staging, "atm.db")
+	if err := store.SnapshotOwnRecords(snapshot); err != nil {
+		return "", err
+	}
+	unbacked, err := unbackedEntries()
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	manifest := backupManifest{ATMVersion: rootCmd.Version, SchemaVersion: version, CreatedAt: now.Format(time.RFC3339), Database: "atm.db", EmptiedTables: store.RebuildableTables(), UnbackedEntries: unbacked}
+	stagedArchive := filepath.Join(staging, "backup.tar.gz")
+	if _, err := writeBackupArchive(stagedArchive, snapshot, &manifest); err != nil {
+		return "", err
+	}
+	archive := filepath.Join(backupDir, fmt.Sprintf("atm-before-schema-v%d-to-v%d-%s.tar.gz", version, store.SchemaVersion, now.Format("20060102-150405.000000000")))
+	// Linking publishes the fully written archive without overwriting any
+	// existing backup. Both paths are deliberately on the same filesystem.
+	if err := os.Link(stagedArchive, archive); err != nil {
+		return "", err
+	}
+	return filepath.Abs(archive)
+}
+
+func openExistingWorkspace(ctx context.Context, dataDir string) error {
+	url, err := webapp.OpenExisting(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	return launchWorkspaceBrowser(ctx, url)
+}
+
+func launchWorkspaceBrowser(ctx context.Context, url string) error {
+	program := "open"
+	if runtime.GOOS == "linux" {
+		program = "xdg-open"
+	}
+	return exec.CommandContext(ctx, program, url).Run()
+}

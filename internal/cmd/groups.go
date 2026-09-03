@@ -24,7 +24,7 @@ var commandGroups = []struct {
 	{"", "observe", "Observe:", []string{"now", "session", "stats", "quota", "report"}},
 	{"", "brain", "Second brain:", []string{"knowledge", "memory", "artifact"}},
 	{"", "setup", "Setup and maintenance:", []string{
-		"agent", "config", "day", "sync", "doctor", "diagnose", "backup", "restore", "version",
+		"agent", "config", "day", "sync", "serve", "doctor", "diagnose", "backup", "restore", "version",
 	}},
 
 	// `todo` earns its own grouping because it is the one command whose children

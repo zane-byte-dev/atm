@@ -66,6 +66,9 @@ struct ATMComposerTextView: NSViewRepresentable {
     /// Laid-out height of the text, insets excluded, reported whenever the content
     /// or the available width changes. Drives `ATMGrowingTextField`.
     var onMeasuredHeight: ((CGFloat) -> Void)?
+    /// Growing fields only need layout through their visible height ceiling.
+    /// Nil retains full measurement for callers without a height limit.
+    var maximumMeasuredHeight: CGFloat?
     /// Called when Return is pressed without a modifier. Nil disables submission.
     var onSubmit: (() -> Void)?
 	/// Gives image-aware forms first refusal on paste. Returning false preserves
@@ -90,6 +93,7 @@ struct ATMComposerTextView: NSViewRepresentable {
         textView.placeholderString = placeholder
         textView.allowsNewlines = allowsNewlines
         textView.onMeasuredHeight = onMeasuredHeight
+		textView.maximumMeasuredHeight = maximumMeasuredHeight
 		textView.onPasteImages = onPasteImages
 
         scrollView.documentView = textView
@@ -107,20 +111,28 @@ struct ATMComposerTextView: NSViewRepresentable {
         context.coordinator.allowsNewlines = allowsNewlines
         context.coordinator.onSubmit = onSubmit
         guard let textView = nsView.documentView as? ATMComposerNSTextView else { return }
-        textView.font = font
+        let metricsChanged = textView.font != font || textView.textContainerInset != textInset
+            || textView.maximumMeasuredHeight != maximumMeasuredHeight
+        if textView.font != font { textView.font = font }
         textView.placeholderString = placeholder
         textView.allowsNewlines = allowsNewlines
         textView.onMeasuredHeight = onMeasuredHeight
+		textView.maximumMeasuredHeight = maximumMeasuredHeight
 		textView.onPasteImages = onPasteImages
-        textView.textContainerInset = textInset
+        if textView.textContainerInset != textInset { textView.textContainerInset = textInset }
         // Never replace the storage while an IME is composing — that clears
         // marked text and re-shows the placeholder mid-pinyin.
-        guard !textView.hasMarkedText() else { return }
+        guard !textView.hasMarkedText() else {
+            if metricsChanged { textView.reportMeasuredHeight() }
+            return
+        }
         if textView.string != text {
             textView.string = text
             textView.needsDisplay = true
             // Assigning `string` skips `didChangeText`, so a value that arrives from
             // the binding (opening the edit form) still has to remeasure.
+            textView.reportMeasuredHeight()
+        } else if metricsChanged {
             textView.reportMeasuredHeight()
         }
     }
@@ -183,6 +195,7 @@ final class ATMComposerNSTextView: NSTextView {
             height: CGFloat.greatestFiniteMagnitude
         )
         textView.textContainer?.widthTracksTextView = true
+        textView.layoutManager?.allowsNonContiguousLayout = true
         textView.font = font
         textView.isRichText = false
         textView.allowsUndo = true
@@ -209,6 +222,7 @@ final class ATMComposerNSTextView: NSTextView {
 
     /// See `ATMComposerTextView.onMeasuredHeight`.
     var onMeasuredHeight: ((CGFloat) -> Void)?
+    var maximumMeasuredHeight: CGFloat?
 	var onPasteImages: ((NSPasteboard) -> Bool)?
 
     private var lastMeasuredHeight: CGFloat = -1
@@ -228,8 +242,9 @@ final class ATMComposerNSTextView: NSTextView {
     /// Width drives wrapping, so the height has to be recomputed when the pane is
     /// resized — not only when the text changes.
     override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = abs(frame.size.width - newSize.width) > 0.5
         super.setFrameSize(newSize)
-        reportMeasuredHeight()
+        if widthChanged { reportMeasuredHeight() }
     }
 
     override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
@@ -273,8 +288,21 @@ final class ATMComposerNSTextView: NSTextView {
         guard let onMeasuredHeight, let container = textContainer, let manager = layoutManager else { return }
         isMeasuring = true
         defer { isMeasuring = false }
-        manager.ensureLayout(for: container)
-        let height = manager.usedRect(for: container).height
+        let height: CGFloat
+        if let maximumMeasuredHeight, maximumMeasuredHeight > 0 {
+            // Layout only the first visible lines, even when the storage holds
+            // thousands more. AppKit lays out other ranges as the user scrolls.
+            // Re-measuring this bounded region also allows a deletion or wider
+            // field to shrink back below the ceiling without a length heuristic.
+            manager.ensureLayout(
+                forBoundingRect: NSRect(x: 0, y: 0, width: container.containerSize.width, height: maximumMeasuredHeight),
+                in: container
+            )
+            height = min(manager.usedRect(for: container).height, maximumMeasuredHeight)
+        } else {
+            manager.ensureLayout(for: container)
+            height = manager.usedRect(for: container).height
+        }
         guard abs(height - lastMeasuredHeight) > 0.5 else { return }
         lastMeasuredHeight = height
         onMeasuredHeight(height)
@@ -359,6 +387,7 @@ struct ATMGrowingTextField: View {
                 // assigning SwiftUI state there is a re-entrant update.
                 DispatchQueue.main.async { contentHeight = measured }
             },
+            maximumMeasuredHeight: NSLayoutManager().defaultLineHeight(for: font) * CGFloat(max(max(1, minLines), maxLines)),
             onSubmit: onSubmit
         )
         .frame(

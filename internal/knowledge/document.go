@@ -71,11 +71,8 @@ func Add(dataDir string, input AddDocumentInput) (*Document, error) {
 		Collection: collection,
 		Content:    input.Content,
 	}
-	targetPath, err := readableDocumentPath(dataDir, collection, input.Title, document.Metadata.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := writeDocumentAt(targetPath, document); err != nil {
+	targetPath := filepath.Join(knowledgeRoot(dataDir), collection, safeMarkdownName(input.Title)+".md")
+	if err := createDocumentAt(targetPath, document); err != nil {
 		return nil, err
 	}
 	return document, nil
@@ -615,17 +612,59 @@ func writeDocumentAt(path string, document *Document) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	frontmatter, err := yaml.Marshal(document.Metadata)
+	content, err := marshalDocument(document)
 	if err != nil {
 		return err
 	}
-	content := append([]byte("---\n"), frontmatter...)
-	content = append(content, []byte("---\n\n"+strings.TrimSpace(document.Content)+"\n")...)
 	if err := atomicWrite(path, content, 0600); err != nil {
 		return err
 	}
 	document.Path = path
 	return nil
+}
+
+// createDocumentAt publishes a complete new document without ever replacing
+// an existing entry. The name decision and publication are one OS operation,
+// so CLI and Web creates do not rely on sharing an in-process mutex. A loser
+// retries with its own document identity while preserving the winning file.
+func createDocumentAt(path string, document *Document) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	content, err := marshalDocument(document)
+	if err != nil {
+		return err
+	}
+	extension := filepath.Ext(path)
+	base := strings.TrimSuffix(path, extension)
+	idHash := sha256.Sum256([]byte(document.Metadata.ID))
+	suffix := hex.EncodeToString(idHash[:4])
+	for attempt := 0; attempt < 256; attempt++ {
+		target := path
+		if attempt == 1 {
+			target = base + "--" + suffix + extension
+		} else if attempt > 1 {
+			target = fmt.Sprintf("%s--%s-%d%s", base, suffix, attempt, extension)
+		}
+		if err := atomicWriteNew(target, content, 0600); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return err
+		}
+		document.Path = target
+		return nil
+	}
+	return fmt.Errorf("cannot choose an unused knowledge document filename: %s", path)
+}
+
+func marshalDocument(document *Document) ([]byte, error) {
+	frontmatter, err := yaml.Marshal(document.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	content := append([]byte("---\n"), frontmatter...)
+	return append(content, []byte("---\n\n"+strings.TrimSpace(document.Content)+"\n")...), nil
 }
 
 func knowledgeRoot(dataDir string) string {
@@ -710,6 +749,17 @@ func normalizeValues(values []string) []string {
 }
 
 func atomicWrite(path string, content []byte, mode os.FileMode) error {
+	return atomicPublish(path, content, mode, os.Rename)
+}
+
+// Link publishes the fully written temporary inode only if path is still
+// absent. Unlike Rename, it cannot overwrite a concurrent creator, a symlink,
+// or an unrelated existing file. Both names are in one directory/filesystem.
+func atomicWriteNew(path string, content []byte, mode os.FileMode) error {
+	return atomicPublish(path, content, mode, os.Link)
+}
+
+func atomicPublish(path string, content []byte, mode os.FileMode, publish func(string, string) error) error {
 	dir := filepath.Dir(path)
 	temporary, err := os.CreateTemp(dir, ".atm-*.tmp")
 	if err != nil {
@@ -732,5 +782,5 @@ func atomicWrite(path string, content []byte, mode os.FileMode) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return publish(temporaryPath, path)
 }
