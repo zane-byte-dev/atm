@@ -648,20 +648,6 @@ enum ATMTodoStatusActions {
     }
 }
 
-enum ATMTodoCompletionReason {
-    private static let genericReasons: Set<String> = [
-        "完成", "已完成", "done", "验收", "验收通过", "通过验收",
-        "通过 atm 菜单栏完成", "通过 atm 菜单栏验收",
-    ]
-
-    static func normalized(_ value: String) -> String? {
-        let reason = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard reason.count >= 4 else { return nil }
-        guard !genericReasons.contains(reason.lowercased()) else { return nil }
-        return reason
-    }
-}
-
 enum ATMTodoReopenReason {
     private static let genericReasons: Set<String> = [
         "继续", "继续做", "重新开始", "重开", "reopen", "resume",
@@ -672,34 +658,6 @@ enum ATMTodoReopenReason {
         guard reason.count >= 4 else { return nil }
         guard !genericReasons.contains(reason.lowercased()) else { return nil }
         return reason
-    }
-}
-
-private enum ATMTodoCompletionPrompt {
-    @MainActor
-    static func request(for todo: ATMTodo) -> String? {
-        let field = NSTextField(string: "")
-        field.placeholderString = todo.status == "review"
-            ? "例如：功能已验收，关键路径与回归测试通过"
-            : "例如：目标已达成，结果已归档并验证"
-        field.frame = NSRect(x: 0, y: 0, width: 380, height: 24)
-
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = todo.status == "review" ? "填写验收结论" : "填写完成结论"
-        alert.informativeText = "请写明已验证的结果或可检查的证据；结论会进入 Todo 审计记录。"
-        alert.accessoryView = field
-        alert.addButton(withTitle: todo.status == "review" ? "验收" : "完成")
-        alert.addButton(withTitle: "取消")
-
-        while alert.runModal() == .alertFirstButtonReturn {
-            if let reason = ATMTodoCompletionReason.normalized(field.stringValue) {
-                return reason
-            }
-            alert.informativeText = "结论不能只写“完成”或“验收通过”，请补充结果或证据。"
-            field.becomeFirstResponder()
-        }
-        return nil
     }
 }
 
@@ -927,6 +885,11 @@ final class ATMDataStore: ObservableObject {
     /// action looked broken: the CLI prints "already clear" and the App wrote
     /// nothing, so nothing on screen moved.
     @Published private(set) var refineUnchangedTodoIDs: Set<String> = []
+    @Published private(set) var adviceByTodoID: [String: ATMTodoAdviceResponse] = [:]
+    @Published private(set) var loadingAdviceTodoIDs: Set<String> = []
+    @Published private(set) var adviceErrorByTodoID: [String: String] = [:]
+    private let adviceDefaults: UserDefaults
+    private var adviceAttemptedAt: [String: Date] = [:]
     /// Internal refresh gate only. No view renders this flag, so publishing it
     /// needlessly rebuilt the desktop at both ends of every one-minute refresh.
     private(set) var isLoading = false
@@ -1028,6 +991,9 @@ final class ATMDataStore: ObservableObject {
     /// irreversible delete command has succeeded.
     private var optimisticallyPermanentlyDeletedTodoIDs: Set<String> = []
     private var optimisticallyUpdatedTodos: [String: ATMTodo] = [:]
+    // Successful link writes protect against dashboard reads already in flight.
+    // The next read started after the write is authoritative, including external edits.
+    private var persistedTodoLinkUpdates: [String: (todo: ATMTodo, savedAt: Date)] = [:]
     /// Prior id→status map for human-facing notifications. nil until first
     /// successful dashboard load (baseline, no historical flood).
     private var notifiedTodoStatus: [String: String]?
@@ -1045,10 +1011,12 @@ final class ATMDataStore: ObservableObject {
         makeSessionIPCClient: @escaping @Sendable () throws -> ATMSessionIPCClient = {
             try ATMSessionIPCClient()
         },
+        adviceDefaults: UserDefaults = .standard,
         makeTodoIPCClient: @escaping @Sendable () throws -> ATMTodoIPCClient = {
             try ATMTodoIPCClient()
         }
     ) {
+        self.adviceDefaults = adviceDefaults
         self.makeAgentHookIPCClient = makeAgentHookIPCClient
         self.makeKnowledgeIPCClient = makeKnowledgeIPCClient
         self.makeMemoryIPCClient = makeMemoryIPCClient
@@ -1110,6 +1078,7 @@ final class ATMDataStore: ObservableObject {
             guard !hasLoadedFullDashboard else { return }
             guard optimisticallyDeletedTodoIDs.isEmpty,
                   optimisticallyUpdatedTodos.isEmpty,
+                  persistedTodoLinkUpdates.isEmpty,
                   optimisticallyPermanentlyDeletedTodoIDs.isEmpty else { return }
             var next = dashboardState
             next.allTodos = value.todos
@@ -1527,6 +1496,42 @@ final class ATMDataStore: ObservableObject {
 
     func clearTextModelTestResult() {
         textModelTestSuccessMessage = nil
+    }
+
+    func loadAdvice(for id: String, force: Bool = false) {
+        guard !loadingAdviceTodoIDs.contains(id) else { return }
+        // Detail activation and dashboard ticks both enter here. Throttle failed
+        // attempts too so an unavailable provider cannot spam the message area.
+        if !force, let last = adviceAttemptedAt[id], Date().timeIntervalSince(last) < 300 { return }
+        adviceAttemptedAt[id] = Date()
+        loadingAdviceTodoIDs.insert(id)
+        adviceErrorByTodoID[id] = nil
+        let cacheKey = "atm.todoAdvice.baselines.v1.\(id)"
+        let previous = adviceDefaults.data(forKey: cacheKey).flatMap {
+            try? JSONDecoder().decode([ATMTodoAdviceBaseline].self, from: $0)
+        } ?? []
+        Task {
+            defer { loadingAdviceTodoIDs.remove(id) }
+            do {
+                let result = try await makeTodoIPCClient().advice(
+                    ATMTodoAdviceRequest(todoID: id, previous: previous)
+                )
+                guard result.todoID == id else {
+                    throw ATMCommandError.failed(
+                        arguments: ATMTodoIPCCommand.advice.arguments,
+                        status: 1, message: "建议返回的任务与当前任务不一致"
+                    )
+                }
+                adviceByTodoID[id] = result
+                // Only IDs and observation times persist, not comment bodies.
+                // Failed comment queries return the previous successful baseline.
+                let baselines = result.reviews.compactMap(\.baseline)
+                let encoded = try JSONEncoder().encode(baselines)
+                adviceDefaults.set(encoded, forKey: cacheKey)
+            } catch {
+                adviceErrorByTodoID[id] = ATMErrorText.compact(error.localizedDescription, limit: 180)
+            }
+        }
     }
 
     func refineTodo(id: String, hint: String = "", automatic: Bool = false) {
@@ -2449,7 +2454,9 @@ final class ATMDataStore: ObservableObject {
                     let updatedTodos = optimisticallyUpdatedTodos
                     let serverTodoIDs = Set(value.todos.map(\.id))
                     var observedTransitionIDs: Set<String> = []
-                    var incoming = value.todos.compactMap { serverTodo -> ATMTodo? in
+                    let newerLinkUpdates = persistedTodoLinkUpdates.filter { $0.value.savedAt > dashboardRequestStartedAt }
+                    let serverTodos = value.todos.map { newerLinkUpdates[$0.id]?.todo ?? $0 }
+                    var incoming = serverTodos.compactMap { serverTodo -> ATMTodo? in
                         guard !deletedIDs.contains(serverTodo.id) else { return nil }
                         guard let updated = updatedTodos[serverTodo.id] else {
                             return serverTodo
@@ -2492,6 +2499,10 @@ final class ATMDataStore: ObservableObject {
                     where !observedTransitionIDs.contains(updated.id) {
                         snapshot = snapshot.replacingTodo(updated)
                     }
+                    for update in newerLinkUpdates.values where !deletedIDs.contains(update.todo.id) && updatedTodos[update.todo.id] == nil {
+                        snapshot = snapshot.replacingTodo(update.todo)
+                    }
+                    persistedTodoLinkUpdates = newerLinkUpdates
                     nextState.snapshot = snapshot
                     optimisticallyDeletedTodoIDs.formIntersection(
                         Set(value.todos.map(\.id))
@@ -2547,18 +2558,7 @@ final class ATMDataStore: ObservableObject {
         reopenReason suppliedReopenReason: String? = nil
     ) {
         guard !isActing else { return }
-        let completionReason: String?
         let reopenReason: String?
-        if action == .complete {
-            if let suppliedCompletionReason {
-                completionReason = ATMTodoCompletionReason.normalized(suppliedCompletionReason)
-            } else {
-                completionReason = ATMTodoCompletionPrompt.request(for: todo)
-            }
-            guard completionReason != nil else { return }
-        } else {
-            completionReason = nil
-        }
         if action == .start, ["review", "done"].contains(todo.status) {
             if let suppliedReopenReason {
                 reopenReason = ATMTodoReopenReason.normalized(suppliedReopenReason)
@@ -2579,9 +2579,11 @@ final class ATMDataStore: ObservableObject {
                 case .start:
                     _ = try await client.start(todo.id, reopenReason: reopenReason)
                 case .complete:
+                    // Clicking complete is the human acceptance decision. The
+                    // service records a GUI receipt when no optional note is supplied.
                     _ = try await client.done(
                         todo.id,
-                        reason: completionReason ?? ""
+                        reason: suppliedCompletionReason ?? ""
                     )
                 case .archive:
                     _ = try await client.archive(todo.id)
@@ -2774,6 +2776,37 @@ final class ATMDataStore: ObservableObject {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+
+    func saveTodoLink(_ request: ATMTodoLinkSaveRequest) async throws {
+        guard !isActing else { throw NSError(domain: "ATMTodoLinks", code: 1, userInfo: [NSLocalizedDescriptionKey: "另一项任务操作正在进行，请稍后重试。"]) }
+        isActing = true
+        defer { isActing = false }
+        let updated = try await makeTodoIPCClient().saveLink(request)
+        applyTodoLinkUpdate(updated)
+    }
+
+    func removeTodoLink(todoID: String, url: String) async throws {
+        guard !isActing else { throw NSError(domain: "ATMTodoLinks", code: 1, userInfo: [NSLocalizedDescriptionKey: "另一项任务操作正在进行，请稍后重试。"]) }
+        isActing = true
+        defer { isActing = false }
+        let updated = try await makeTodoIPCClient().removeLink(ATMTodoLinkRemoveRequest(todoID: todoID, url: url))
+        applyTodoLinkUpdate(updated)
+    }
+
+    private func applyTodoLinkUpdate(_ updated: ATMTodo) {
+        persistedTodoLinkUpdates[updated.id] = (updated, Date())
+        updateDashboardState {
+            if let index = $0.allTodos.firstIndex(where: { $0.id == updated.id }) {
+                $0.allTodos[index] = updated
+            }
+            $0.snapshot = $0.snapshot.replacingTodo(updated)
+        }
+        // A link edit changes the inputs of the read-only advice panel.
+        adviceByTodoID.removeValue(forKey: updated.id)
+        adviceErrorByTodoID.removeValue(forKey: updated.id)
+        adviceAttemptedAt.removeValue(forKey: updated.id)
+        refresh()
     }
 
     func openTodoProjectInVSCode(_ todo: ATMTodo) {

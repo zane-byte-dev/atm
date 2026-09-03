@@ -4757,16 +4757,6 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(store.snapshot.work.summary.review, 0)
     }
 
-    func testTodoCompletionReasonRequiresSpecificEvidence() {
-        XCTAssertNil(ATMTodoCompletionReason.normalized(""))
-        XCTAssertNil(ATMTodoCompletionReason.normalized("完成"))
-        XCTAssertNil(ATMTodoCompletionReason.normalized("通过 ATM 菜单栏验收"))
-        XCTAssertEqual(
-            ATMTodoCompletionReason.normalized("  关键路径与回归测试已验证通过  "),
-            "关键路径与回归测试已验证通过"
-        )
-    }
-
     func testTodoReopenReasonRequiresNewScopeOrEvidence() {
         XCTAssertNil(ATMTodoReopenReason.normalized(""))
         XCTAssertNil(ATMTodoReopenReason.normalized("继续"))

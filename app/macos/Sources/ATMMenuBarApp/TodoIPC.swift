@@ -3,6 +3,17 @@ import Foundation
 /// Typed desktop methods for Todo metadata, read models, lifecycle and
 /// retention. Dependency and Plan workflows keep their own surfaces.
 enum ATMTodoIPCCommand {
+    static let saveLink = ATMIPCMethod<ATMTodoLinkSaveRequest, ATMTodo>(
+        "todo.link.save", responseKeyDecoding: .useDefault
+    )
+    static let removeLink = ATMIPCMethod<ATMTodoLinkRemoveRequest, ATMTodo>(
+        "todo.link.remove", responseKeyDecoding: .useDefault
+    )
+    static let advice = ATMIPCMethod<ATMTodoAdviceRequest, ATMTodoAdviceResponse>(
+        "todo.advice",
+        timeout: 60,
+        responseKeyDecoding: .useDefault
+    )
     static let list = ATMIPCMethod<ATMTodoListRequest, [ATMTodo]>(
         "todo.list",
         responseKeyDecoding: .useDefault
@@ -320,6 +331,10 @@ struct ATMTodoIPCClient: Sendable {
         try await ipc.call(ATMTodoIPCCommand.show, request: ATMTodoIDRequest(todoID: todoID))
     }
 
+    func advice(_ request: ATMTodoAdviceRequest) async throws -> ATMTodoAdviceResponse {
+        try await ipc.call(ATMTodoIPCCommand.advice, request: request)
+    }
+
     func document(_ todoID: String) async throws -> ATMTodoDocumentResponse {
         try await ipc.call(ATMTodoIPCCommand.document, request: ATMTodoIDRequest(todoID: todoID))
     }
@@ -337,6 +352,14 @@ struct ATMTodoIPCClient: Sendable {
 
     func update(_ request: ATMTodoUpdateRequest) async throws -> ATMTodo {
         try await ipc.call(ATMTodoIPCCommand.update, request: request)
+    }
+
+    func saveLink(_ request: ATMTodoLinkSaveRequest) async throws -> ATMTodo {
+        try await ipc.call(ATMTodoIPCCommand.saveLink, request: request)
+    }
+
+    func removeLink(_ request: ATMTodoLinkRemoveRequest) async throws -> ATMTodo {
+        try await ipc.call(ATMTodoIPCCommand.removeLink, request: request)
     }
 
     func refine(_ request: ATMTodoRefineRequest) async throws -> ATMTodoRefineResponse {

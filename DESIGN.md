@@ -84,6 +84,8 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 - **`review` 状态保留，但不是状态前置闸门**：它表示「Agent 声称完成、人尚未验收」。`todo done` 只允许
   人执行，但不要求 Todo 必须先在 `review`——人点下完成时验收已经发生。Agent 完成实现只能 `submit`；
   删掉 `review` 等于让 Agent 自己宣布完成。
+- **GUI 人工完成不强制填写结论**：点击完成/验收即生效，空结论自动留下人工 GUI 操作记录，不虚构测试证据；
+  可选结论原样保留（仅去除首尾空白）。CLI 的 `done --reason` 证据要求和 Agent 禁止 `done` 的边界不变。
 - **Session 镜像不主动清理**（2026-08-05 决定）：索引只增不减，没有保留期，没有后台 compaction。
   理由是它的存在意义就是比 Agent 自己的日志活得更久 —— Claude Code 三十天就清 `~/.claude/projects`，
   而 ATM 承诺 `atm stats --days 90` 的历史不会自己缩水（见

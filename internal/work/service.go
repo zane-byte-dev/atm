@@ -12,6 +12,8 @@ type Service struct {
 	// ATM's built-in text-model adapter; tests and alternate compositions can
 	// inject a deterministic implementation without changing the use case.
 	RefinementModel RefinementModel
+	// AdviceRunner queries external review evidence without mutating Todos.
+	AdviceRunner AdviceRunner
 }
 
 var Default Service

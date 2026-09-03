@@ -73,6 +73,14 @@ func TestIPCTodoRequestsRejectCLIAndHiddenMutationFields(t *testing.T) {
 		input string
 	}{
 		{
+			name: "advice executor", verb: "todo.advice",
+			input: `{"todo_id":"t1","argv":["repo","mr","merge","1"]}`,
+		},
+		{
+			name: "advice URL override", verb: "todo.advice",
+			input: `{"todo_id":"t1","url":"https://example.test"}`,
+		},
+		{
 			name: "create status", verb: "todo.create",
 			input: `{"title":"Must stay open","status":"review"}`,
 		},
@@ -124,7 +132,22 @@ func TestIPCTodoRequestsRejectCLIAndHiddenMutationFields(t *testing.T) {
 	}
 }
 
-func TestIPCTodoLifecycleRequiresReopenAndAcceptanceEvidence(t *testing.T) {
+func TestIPCTodoAdviceReadsExistingTaskWithoutLinks(t *testing.T) {
+	withIsolatedCommandEnv(t)
+	created := runTodoIPCSuccess[appipc.TodoCreateRequest, workapp.Todo](t, "todo.create", appipc.TodoCreateRequest{
+		Title: "Local task", Project: "atm",
+	})
+	result := runTodoIPCSuccess[workapp.AdviceInput, workapp.AdviceResult](t, "todo.advice", workapp.AdviceInput{TodoID: created.ID})
+	if result.TodoID != created.ID || result.CheckedAt == "" || len(result.Reviews) != 0 || result.Summary == "" {
+		t.Fatalf("advice = %+v", result)
+	}
+	shown := runTodoIPCSuccess[appipc.TodoIDRequest, appipc.TodoShowResponse](t, "todo.show", appipc.TodoIDRequest{TodoID: created.ID})
+	if shown.Todo.Status != "open" {
+		t.Fatalf("advice changed status: %+v", shown.Todo)
+	}
+}
+
+func TestIPCTodoLifecycleRequiresReopenReasonButAcceptsGUIClick(t *testing.T) {
 	withIsolatedCommandEnv(t)
 	if err := seedTodos(store.Todo{
 		ID: "t1", Title: "Review guard", Priority: "P2", Status: store.TodoStatusReview,
@@ -143,16 +166,15 @@ func TestIPCTodoLifecycleRequiresReopenAndAcceptanceEvidence(t *testing.T) {
 	if reopened.Status != store.TodoStatusInProgress {
 		t.Fatalf("reopened = %+v", reopened)
 	}
-	output.Reset()
-	err = rawTodoIPC("todo.done", `{"todo_id":"t1","reason":"通过 ATM 菜单栏完成"}`, &output)
-	if !errors.Is(err, application.ErrInvalidArgument) || !strings.Contains(err.Error(), "evidence") {
-		t.Fatalf("generic acceptance = %v\n%s", err, output.String())
-	}
 	completed := runTodoIPCSuccess[appipc.TodoDoneRequest, workapp.Todo](t, "todo.done", appipc.TodoDoneRequest{
-		TodoID: "t1", Reason: "reviewed the fix and reran lifecycle tests",
+		TodoID: "t1",
 	})
-	if completed.Status != store.TodoStatusDone || completed.ClosedReason == nil || *completed.ClosedReason == "" {
+	if completed.Status != store.TodoStatusDone || completed.ClosedReason == nil || *completed.ClosedReason != store.TodoGUICompletionReceipt {
 		t.Fatalf("completed = %+v", completed)
+	}
+	document, err := store.ReadTodoDoc("t1")
+	if err != nil || !strings.Contains(document, "[done] "+store.TodoGUICompletionReceipt) {
+		t.Fatalf("GUI acceptance audit = %q, err=%v", document, err)
 	}
 }
 

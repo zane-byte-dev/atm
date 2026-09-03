@@ -33,14 +33,29 @@ type TodoLintRuntime struct {
 	Now      time.Time
 }
 
+// TodoGUICompletionReceipt records the human's click without inventing evidence.
+const TodoGUICompletionReceipt = "通过 ATM GUI 完成"
+
+func isTodoGUICompletionReceipt(reason string) bool {
+	switch strings.ToLower(strings.Join(strings.Fields(reason), " ")) {
+	case "通过 atm gui 完成", "通过 atm 菜单栏完成", "通过 atm 菜单栏验收",
+		"通过菜单栏完成", "completed via atm menu bar":
+		return true
+	default:
+		return false
+	}
+}
+
 // IsGenericTodoCompletionReason recognizes UI/action receipts that contain no
 // acceptance evidence. Keep this list deliberately exact: lint must not reject
 // a short but meaningful human statement merely because it lacks a keyword.
 func IsGenericTodoCompletionReason(reason string) bool {
+	if isTodoGUICompletionReceipt(reason) {
+		return true
+	}
 	normalized := strings.ToLower(strings.Join(strings.Fields(reason), " "))
 	switch normalized {
-	case "完成", "已完成", "done", "completed",
-		"通过 atm 菜单栏完成", "通过菜单栏完成", "completed via atm menu bar":
+	case "完成", "已完成", "done", "completed":
 		return true
 	default:
 		return false
@@ -154,6 +169,11 @@ func lintTodoCompletionEvidence(todo *Todo) []TodoLintIssue {
 	reason := ""
 	if todo.ClosedReason != nil {
 		reason = strings.TrimSpace(*todo.ClosedReason)
+	}
+	// GUI acceptance is intentionally one-click. Its action receipt is valid
+	// audit history, though it is not evidence acceptable to the CLI validator.
+	if isTodoGUICompletionReceipt(reason) {
+		return nil
 	}
 	if reason == "" {
 		return []TodoLintIssue{{

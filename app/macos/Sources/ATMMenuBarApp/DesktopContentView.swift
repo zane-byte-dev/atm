@@ -1763,6 +1763,7 @@ private struct DesktopTodoRow: View {
 struct DesktopTodoDetail: View {
     private enum DetailTab: String, CaseIterable {
         case detail
+        case links
         case activity
         case sessions
     }
@@ -1813,6 +1814,8 @@ struct DesktopTodoDetail: View {
                     Group {
                         if selectedTab == .detail {
                             readContent
+                        } else if selectedTab == .links {
+                            DesktopTodoLinksView(todo: todo, store: store, isArchived: isArchived)
                         } else if selectedTab == .activity {
                             activityContent
                         } else {
@@ -1827,6 +1830,7 @@ struct DesktopTodoDetail: View {
             if !isArchived {
                 store.loadBoundSessions(for: todo.id)
                 store.loadProgress(for: todo.id)
+                store.loadAdvice(for: todo.id)
             }
             // Selecting another row rebuilds this view (`.id(todo.id)`), so a
             // request aimed at a not-yet-selected todo arrives here rather than in
@@ -1837,9 +1841,13 @@ struct DesktopTodoDetail: View {
         .onChange(of: store.snapshot.refreshedAt) { _ in
             if !isArchived {
                 store.loadBoundSessions(for: todo.id)
+                store.loadAdvice(for: todo.id)
             }
         }
         .onChange(of: isArchived) { _ in normalizeSelectedTab() }
+        .onChange(of: todo.description) { _ in
+            if !isArchived { store.loadAdvice(for: todo.id, force: true) }
+        }
         .confirmationDialog(
             "永久删除 \(deleteCandidate?.id.uppercased() ?? "")？",
             isPresented: Binding(
@@ -1969,6 +1977,7 @@ struct DesktopTodoDetail: View {
                         message: nextAction
                     )
                 }
+                DesktopTodoAdviceMessages(todoID: todo.id, store: store)
             }
             // Aligned with the body card's edges, not the reading column: the
             // band is a sibling of the card, so it shares its gutters.
@@ -1984,11 +1993,15 @@ struct DesktopTodoDetail: View {
         if store.refiningTodoIDs.contains(todo.id) { return true }
         if let error = store.refineErrorByTodoID[todo.id], !error.isEmpty { return true }
         if store.refineUnchangedTodoIDs.contains(todo.id) { return true }
+        if store.adviceByTodoID[todo.id]?.reviews.isEmpty == false { return true }
+        if store.adviceErrorByTodoID[todo.id] != nil { return true }
         return latestNextAction != nil
     }
 
     private var detailTabItems: [(value: DetailTab, title: String)] {
-        var items: [(value: DetailTab, title: String)] = [(.detail, "任务描述")]
+        var items: [(value: DetailTab, title: String)] = [
+            (.detail, "任务描述"), (.links, "关联内容 \(todo.links?.count ?? 0)")
+        ]
         if !isArchived {
             items.append((.activity, "动态"))
             items.append((.sessions, sessionTabTitle))
@@ -2162,23 +2175,7 @@ struct DesktopTodoDetail: View {
 				.quickLookPreview($previewImageURL)
 			}
 
-            if let links = todo.links, !links.isEmpty {
-                detailCard("关联链接", icon: "link") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(Array(links.enumerated()), id: \.offset) { _, link in
-                            if let url = URL(string: link.url) {
-                                Link(destination: url) {
-                                    Label(link.title ?? link.url, systemImage: "arrow.up.right.square")
-                                        .font(ATMFont.font(.body, weight: .medium))
-                                        .lineLimit(2)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-			if nonEmpty(todo.description) == nil, todo.links?.isEmpty != false, todo.images?.isEmpty != false {
+			if nonEmpty(todo.description) == nil, todo.images?.isEmpty != false {
                 Text("暂无任务描述。")
                     .font(ATMFont.footnote)
                     .foregroundStyle(ATMTheme.secondary)

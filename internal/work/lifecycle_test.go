@@ -86,7 +86,7 @@ func TestDoneRequiresAcceptanceEvidenceButRetryRemainsIdempotent(t *testing.T) {
 		Creator: store.TodoCreatorMe, Created: store.Today(),
 	})
 	call := lifecycleCall(application.ActorHuman, "done-evidence")
-	for _, reason := range []string{"", "通过 ATM 菜单栏完成"} {
+	for _, reason := range []string{"", "通过 ATM 菜单栏完成", store.TodoGUICompletionReceipt} {
 		_, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1", Reason: reason})
 		if !errors.Is(err, application.ErrInvalidArgument) || !strings.Contains(err.Error(), "evidence") {
 			t.Fatalf("Done(%q) error = %v", reason, err)
@@ -98,6 +98,66 @@ func TestDoneRequiresAcceptanceEvidenceButRetryRemainsIdempotent(t *testing.T) {
 	}
 	if _, err := Default.Done(context.Background(), lifecycleCall(application.ActorHuman, "done-retry-evidence"), CloseInput{TodoID: "t1"}); err != nil {
 		t.Fatalf("idempotent retry required evidence again: %v", err)
+	}
+}
+
+func TestDoneFromGUIAcceptsOptionalNotesAndKeepsAudit(t *testing.T) {
+	for _, status := range []string{store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusReview} {
+		for _, note := range []struct{ name, input, want string }{
+			{"empty", "", store.TodoGUICompletionReceipt},
+			{"whitespace", " \n\t ", store.TodoGUICompletionReceipt},
+			{"short", "完成", "完成"},
+			{"legacy_receipt", "通过 ATM 菜单栏完成", "通过 ATM 菜单栏完成"},
+			{"custom", "  关键路径已验证  ", "关键路径已验证"},
+		} {
+			t.Run(status+"/"+note.name, func(t *testing.T) {
+				withTempWorkStore(t)
+				seedWorkTodos(t, store.Todo{
+					ID: "t1", Title: "Human GUI acceptance", Status: status,
+					Priority: "P2", Creator: store.TodoCreatorMe, Created: store.Today(),
+				})
+				call := lifecycleCall(application.ActorHuman, "gui-done")
+				call.Actor.Origin = application.OriginIPC
+				result, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1", Reason: note.input})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if result.Todo.Status != store.TodoStatusDone || result.Todo.ClosedReason == nil ||
+					*result.Todo.ClosedReason != note.want || result.Todo.DoneTS == nil {
+					t.Fatalf("GUI Done = %+v", result)
+				}
+				if len(result.Effects) != 1 || result.Effects[0].Kind != EffectTodoClosed ||
+					result.Effects[0].Message != "[done] "+note.want {
+					t.Fatalf("GUI audit = %+v", result.Effects)
+				}
+				call.RequestID = "gui-done-retry"
+				retry, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1"})
+				if err != nil || !retry.AlreadyClosed || retry.Todo.ClosedReason == nil ||
+					*retry.Todo.ClosedReason != note.want || len(retry.Effects) != 1 ||
+					retry.Effects[0].ID != result.Effects[0].ID || *retry.Todo.DoneTS != *result.Todo.DoneTS {
+					t.Fatalf("GUI retry = %+v, err=%v", retry, err)
+				}
+			})
+		}
+	}
+}
+
+func TestDoneFromIPCStillRejectsNonHumanActors(t *testing.T) {
+	withTempWorkStore(t)
+	seedWorkTodos(t, store.Todo{
+		ID: "t1", Title: "Needs human acceptance", Status: store.TodoStatusReview, Created: store.Today(),
+	})
+	for _, kind := range []application.ActorKind{application.ActorAgent, application.ActorController} {
+		call := lifecycleCall(kind, "nonhuman-ipc-done")
+		call.Actor.Origin = application.OriginIPC
+		_, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1", Reason: store.TodoGUICompletionReceipt})
+		if !errors.Is(err, application.ErrForbidden) {
+			t.Fatalf("Done(%s@ipc) = %v, want forbidden", kind, err)
+		}
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil || store.FindTodo(todos, "t1").Status != store.TodoStatusReview {
+		t.Fatalf("non-human IPC changed state: %+v, err=%v", todos, err)
 	}
 }
 

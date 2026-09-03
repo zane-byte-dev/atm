@@ -168,8 +168,13 @@ func LoadArchivedTodos() ([]ArchivedTodo, error) {
 	if err != nil {
 		return nil, err
 	}
+	links, err := loadGroupedTodoLinks(db)
+	if err != nil {
+		return nil, err
+	}
 	for index := range archived {
 		archived[index].Images = images[archived[index].ID]
+		archived[index].Links = links[archived[index].ID]
 	}
 	return archived, nil
 }

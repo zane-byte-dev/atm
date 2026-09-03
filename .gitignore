@@ -1,6 +1,7 @@
 node_modules/
 bin/
 /atm
+.build/
 skills/*-workspace/
 .playwright-cli/
 .DS_Store

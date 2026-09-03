@@ -156,6 +156,16 @@ type TodoRefineResponse struct {
 }
 
 func registerTodo(registry *ipc.Registry, dependencies Dependencies) {
+	bind(registry, "todo.link.save", func(ctx context.Context, call application.Call, input work.SaveLinkInput) (work.Todo, error) {
+		return dependencies.Work.SaveLink(ctx, call, input)
+	})
+	bind(registry, "todo.link.remove", func(ctx context.Context, call application.Call, input work.RemoveLinkInput) (work.Todo, error) {
+		result, err := dependencies.Work.RemoveLink(ctx, call, input)
+		return result.Todo, err
+	})
+	bind(registry, "todo.advice", func(ctx context.Context, call application.Call, input work.AdviceInput) (work.AdviceResult, error) {
+		return dependencies.Work.Advice(ctx, call, input)
+	})
 	bind(registry, "todo.title", func(
 		ctx context.Context,
 		_ application.Call,

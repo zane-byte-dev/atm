@@ -164,6 +164,12 @@ func (service Service) Done(ctx context.Context, call application.Call, input Cl
 		err.Details = map[string]any{"actor_kind": call.Actor.Kind, "required_actor_kind": application.ActorHuman}
 		return CloseResult{}, err
 	}
+	// The desktop click is the acceptance decision, not a request to justify
+	// it. Keep an honest action receipt when the human supplies no optional note.
+	// CLI acceptance still requires evidence; this does not relax actor policy.
+	if call.Actor.Origin == application.OriginIPC && strings.TrimSpace(input.Reason) == "" {
+		input.Reason = store.TodoGUICompletionReceipt
+	}
 	return service.close(ctx, call, input, store.TodoStatusDone, doneTransitionTarget)
 }
 
@@ -252,7 +258,7 @@ func (service Service) close(
 			result.Effects, err = transaction.pendingLifecycleEffects(todo.ID, EffectTodoClosed)
 			return err
 		}
-		if status == store.TodoStatusDone {
+		if status == store.TodoStatusDone && call.Actor.Origin != application.OriginIPC {
 			if reasonErr := store.ValidateTodoCompletionReason(reason); reasonErr != nil {
 				appErr := lifecycleInvalidArgument(reasonErr.Error(), "reason", input.Reason)
 				appErr.Details["required_flag"] = "--reason"

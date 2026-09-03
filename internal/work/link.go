@@ -44,6 +44,76 @@ type RemoveLinkInput struct {
 type RemoveLinkResult struct {
 	TodoID  string   `json:"todo_id"`
 	Removed TodoLink `json:"removed"`
+	Todo    Todo     `json:"-"`
+}
+
+// SaveLinkInput is a full form submission. OriginalURL identifies an existing
+// link; omitting it adds a new one. Empty title/relation explicitly clear them.
+type SaveLinkInput struct {
+	TodoID      string `json:"todo_id"`
+	OriginalURL string `json:"original_url,omitempty"`
+	URL         string `json:"url"`
+	Kind        string `json:"kind,omitempty"`
+	Title       string `json:"title,omitempty"`
+	Relation    string `json:"relation,omitempty"`
+}
+
+// SaveLink replaces a link atomically, preserving order and rejecting collisions
+// instead of removing the old URL before the replacement is safely committed.
+func (service Service) SaveLink(ctx context.Context, call application.Call, input SaveLinkInput) (Todo, error) {
+	if err := validateLinkCall(ctx, call); err != nil {
+		return Todo{}, err
+	}
+	todoID, err := normalizeLinkTodoID(input.TodoID)
+	if err != nil {
+		return Todo{}, err
+	}
+	cleanURL, err := NormalizeTodoLinkURL(input.URL)
+	if err != nil {
+		return Todo{}, err
+	}
+	originalURL := ""
+	if input.OriginalURL != "" {
+		originalURL, err = NormalizeTodoLinkURL(input.OriginalURL)
+		if err != nil {
+			return Todo{}, err
+		}
+	}
+	link := TodoLink{URL: cleanURL, Kind: strings.TrimSpace(input.Kind), Title: strings.TrimSpace(input.Title), Relation: strings.TrimSpace(input.Relation)}
+	if link.Kind == "" {
+		link.Kind = InferTodoLinkKind(cleanURL)
+	}
+	var result Todo
+	err = service.Mutate(func(transaction *Transaction) error {
+		todo, err := transaction.Todo(todoID)
+		if err != nil {
+			return linkTodoNotFound(todoID, err)
+		}
+		originalIndex := -1
+		for index, existing := range todo.Links {
+			if existing.URL == originalURL {
+				originalIndex = index
+			}
+			if existing.URL == cleanURL && existing.URL != originalURL {
+				return application.NewError(application.CodeConflict, "该地址已关联，请编辑已有条目")
+			}
+		}
+		if originalURL != "" {
+			if originalIndex < 0 {
+				return application.NewError(application.CodeNotFound, "原关联已不存在，请刷新后重试")
+			}
+			todo.Links[originalIndex] = link
+		} else {
+			todo.Links = append(todo.Links, link)
+		}
+		result = *todo
+		result.Links = append([]TodoLink(nil), todo.Links...)
+		return nil
+	})
+	if err != nil {
+		return Todo{}, linkApplicationError("save todo link", err)
+	}
+	return result, nil
 }
 
 // AddLink owns URL safety, kind inference and the idempotent update-or-insert
@@ -151,6 +221,8 @@ func (service Service) RemoveLink(ctx context.Context, call application.Call, in
 			}
 			result.Removed = link
 			todo.Links = append(todo.Links[:index], todo.Links[index+1:]...)
+			result.Todo = *todo
+			result.Todo.Links = append([]TodoLink(nil), todo.Links...)
 			return nil
 		}
 		appErr := application.NewError(application.CodeNotFound, fmt.Sprintf("link not found on todo %s", todo.ID))
@@ -206,8 +278,9 @@ func InferTodoLinkKind(raw string) string {
 		return ""
 	}
 	path := strings.ToLower(parsed.Path)
+	host := strings.ToLower(parsed.Hostname())
 	switch {
-	case strings.Contains(path, "merge_requests") || strings.Contains(path, "/pull/"):
+	case strings.Contains(path, "merge_requests") || strings.Contains(path, "/pull/") || strings.Contains(path, "/codereview/"):
 		return "mr"
 	case strings.Contains(path, "/cr/") || strings.Contains(path, "change-request"):
 		return "cr"
@@ -215,6 +288,12 @@ func InferTodoLinkKind(raw string) string {
 		return "pipeline"
 	case strings.Contains(path, "workitem") || strings.Contains(path, "/issues/"):
 		return "workitem"
+	case strings.Contains(path, "/release/") || strings.Contains(path, "/releases/") || strings.Contains(path, "/deploy/"):
+		return "release"
+	case host == "yuque.com" || strings.HasSuffix(host, ".yuque.com") ||
+		host == "alidocs.dingtalk.com" || host == "docs.google.com" ||
+		strings.HasSuffix(path, ".pdf") || strings.Contains(path, "/docs/"):
+		return "document"
 	default:
 		return ""
 	}

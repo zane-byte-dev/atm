@@ -26,6 +26,8 @@ final class TodoIPCTests: XCTestCase {
     }
 
     func testTodoMethodVocabularyAndRequestsHaveNoArgvEscapeHatch() throws {
+        XCTAssertEqual(ATMTodoIPCCommand.advice.arguments, ["_ipc", "todo.advice"])
+        XCTAssertEqual(ATMTodoIPCCommand.advice.timeout, 60)
         XCTAssertEqual(ATMTodoIPCCommand.list.arguments, ["_ipc", "todo.list"])
         XCTAssertEqual(ATMTodoIPCCommand.show.arguments, ["_ipc", "todo.show"])
         XCTAssertEqual(ATMTodoIPCCommand.document.arguments, ["_ipc", "todo.doc"])
@@ -82,6 +84,66 @@ final class TodoIPCTests: XCTestCase {
         for forbidden in ["argv", "action", "timeout", "model", "executor"] {
             XCTAssertNil(refine[forbidden], "refine unexpectedly exposed \(forbidden)")
         }
+    }
+
+    @MainActor
+    func testAdvicePersistsOnlyCommentBaselineAndRestoresItOnNextStore() async throws {
+        let suite = "atm-advice-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let response = #"""
+        {"envelope_version":1,"protocol_version":1,"request_id":"advice","verb":"todo.advice","data":{
+          "todo_id":"t7","checked_at":"2026-09-03T01:00:00Z","summary":"CR 最新状态","reviews":[{
+            "url":"https://code.alibaba-inc.com/a/b/codereview/7","repo":"a/b","mr_id":7,"title":"Review",
+            "state":"merged","status_label":"已合并","suggestion":"核对后可完成任务。","severity":"success",
+            "comment_count":1,"unresolved_count":0,"comments":[{"id":81,"author":"Reviewer","text":"Private review content","created_at":"2026-09-02T01:00:00Z"}],
+            "baseline":{"url":"https://code.alibaba-inc.com/a/b/codereview/7","checked_at":"2026-09-03T01:00:00Z","comment_ids":[81]},"errors":[]
+          }]
+        }}
+        """#
+        let (runner, directory, requestURL) = try capturingRunner(stdout: response)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = ATMDataStore(adviceDefaults: defaults, makeTodoIPCClient: { ATMTodoIPCClient(runner: runner) })
+        store.loadAdvice(for: "t7")
+        await waitUntil { !store.loadingAdviceTodoIDs.contains("t7") }
+        let review = try XCTUnwrap(store.adviceByTodoID["t7"]?.reviews.first)
+        XCTAssertEqual(review.state, "merged")
+        XCTAssertNil(review.newCommentCount)
+        XCTAssertEqual(review.commentCount, 1)
+        XCTAssertEqual(review.messageTitle, "CR 7 · 已合并")
+        XCTAssertTrue(review.evidence(checkedAt: "2026-09-03T01:00:00Z").contains("首次查询"))
+        XCTAssertNil(store.adviceErrorByTodoID["t7"])
+        store.loadAdvice(for: "t7")
+        XCTAssertFalse(store.loadingAdviceTodoIDs.contains("t7"), "dashboard ticks should reuse the current message")
+        let initial = try object(Data(contentsOf: requestURL))
+        XCTAssertEqual(initial["todo_id"] as? String, "t7")
+        XCTAssertEqual((initial["previous"] as? [Any])?.count, 0)
+        let saved = try XCTUnwrap(defaults.data(forKey: "atm.todoAdvice.baselines.v1.t7"))
+        XCTAssertFalse(String(decoding: saved, as: UTF8.self).contains("Private review content"))
+        XCTAssertEqual(try JSONDecoder().decode([ATMTodoAdviceBaseline].self, from: saved).first?.commentIDs, [81])
+
+        let (nextRunner, nextDirectory, nextRequestURL) = try capturingRunner(stdout: response)
+        defer { try? FileManager.default.removeItem(at: nextDirectory) }
+        let nextStore = ATMDataStore(adviceDefaults: defaults, makeTodoIPCClient: { ATMTodoIPCClient(runner: nextRunner) })
+        nextStore.loadAdvice(for: "t7")
+        await waitUntil { !nextStore.loadingAdviceTodoIDs.contains("t7") }
+        let nextRequest = try object(Data(contentsOf: nextRequestURL))
+        let previous = try XCTUnwrap(nextRequest["previous"] as? [[String: Any]])
+        XCTAssertEqual(previous.first?["comment_ids"] as? [Int], [81])
+
+        let failure = #"{"envelope_version":1,"protocol_version":1,"request_id":"failed","verb":"todo.advice","error":{"code":"unavailable","message":"offline","retryable":true}}"#
+        let (failedRunner, failedDirectory, _) = try capturingRunner(stdout: failure)
+        defer { try? FileManager.default.removeItem(at: failedDirectory) }
+        let failedStore = ATMDataStore(adviceDefaults: defaults, makeTodoIPCClient: { ATMTodoIPCClient(runner: failedRunner) })
+        failedStore.loadAdvice(for: "t7")
+        await waitUntil { !failedStore.loadingAdviceTodoIDs.contains("t7") }
+        XCTAssertNotNil(failedStore.adviceErrorByTodoID["t7"])
+        XCTAssertEqual(defaults.data(forKey: "atm.todoAdvice.baselines.v1.t7"), saved)
+        failedStore.loadAdvice(for: "t7")
+        XCTAssertFalse(failedStore.loadingAdviceTodoIDs.contains("t7"), "failed automatic checks must also be throttled")
+        failedStore.loadAdvice(for: "t7", force: true)
+        XCTAssertTrue(failedStore.loadingAdviceTodoIDs.contains("t7"), "manual refresh bypasses the throttle")
+        await waitUntil { !failedStore.loadingAdviceTodoIDs.contains("t7") }
     }
 
     @MainActor
@@ -177,6 +239,30 @@ final class TodoIPCTests: XCTestCase {
         XCTAssertNil(request["argv"])
     }
 
+    @MainActor
+    func testDataStoreCompletesWithNoPromptAndOptionalNote() async throws {
+        for status in ["open", "in_progress", "review"] {
+            for note: String? in [nil, "", "完成", "  已核对交付结果  "] {
+                let response = #"{"envelope_version":1,"protocol_version":1,"request_id":"ipc-todo-done","verb":"todo.done","data":{"id":"t8","title":"One-click completion","priority":"P2","status":"done","created":"2026-08-20"}}"#
+                let (runner, directory, requestURL) = try capturingRunner(stdout: response)
+                defer { try? FileManager.default.removeItem(at: directory) }
+                let store = ATMDataStore(makeTodoIPCClient: { ATMTodoIPCClient(runner: runner) })
+                let todo = try JSONDecoder().decode(ATMTodo.self, from: Data("""
+                {"id":"t8","title":"One-click completion","priority":"P2","status":"\(status)","created":"2026-08-20"}
+                """.utf8))
+
+                store.perform(.complete, on: todo, completionReason: note)
+                await waitUntil { !store.isActing }
+
+                let request = try object(Data(contentsOf: requestURL))
+                XCTAssertEqual(request["todo_id"] as? String, "t8")
+                XCTAssertEqual(request["reason"] as? String, note ?? "")
+                XCTAssertEqual(store.allTodos.first?.status, "done")
+                XCTAssertNil(store.errorMessage)
+            }
+        }
+    }
+
     /// Lifecycle over typed IPC, against the real Go binary. These five used to be
     /// fork/exec argv; what has to hold now is that each transition actually lands
     /// in the database, that Work's human-acceptance and confirmation rules still
@@ -218,7 +304,7 @@ final class TodoIPCTests: XCTestCase {
             executable: executable, verb: "todo.done", home: home,
             input: encoder.encode(ATMTodoDoneRequest(
                 todoID: created.id,
-                reason: "关键路径与 IPC 生命周期回归已验证通过"
+                reason: ""
             ))
         )
         XCTAssertEqual(done.status, 0, done.stderr)
