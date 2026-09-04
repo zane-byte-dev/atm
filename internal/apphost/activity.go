@@ -62,12 +62,27 @@ type SessionStatus struct {
 	Source       string                `json:"source"`
 	GeneratedAt  string                `json:"generated_at"`
 	MissingIndex bool                  `json:"missing_index"`
-	Health       store.SyncHealth      `json:"health"`
+	Health       SyncHealth            `json:"health"`
 	Agents       []ActivityAgent       `json:"agents"`
 	Projects     []string              `json:"projects"`
 	Bindings     []work.BindingContext `json:"bindings"`
 	Presence     *presence.Snapshot    `json:"presence,omitempty"`
 	AgentHooks   bool                  `json:"agent_hooks"`
+}
+
+type SyncHealth struct {
+	Scope             string  `json:"scope"`
+	Status            string  `json:"status"`
+	RunStatus         string  `json:"run_status"`
+	SchemaVersion     int     `json:"schema_version"`
+	IndexedSessions   int     `json:"indexed_sessions"`
+	RetainedSessions  int     `json:"retained_sessions"`
+	LastAttemptAt     *string `json:"last_attempt_at"`
+	LastSuccessAt     *string `json:"last_success_at"`
+	AgeSeconds        *int64  `json:"age_seconds"`
+	StaleAfterSeconds int64   `json:"stale_after_seconds"`
+	LastError         string  `json:"last_error"`
+	LastSyncedFiles   int     `json:"last_synced_files"`
 }
 
 type UsageInput struct {
@@ -80,16 +95,28 @@ type CachedQuotaInput struct {
 }
 
 type CachedQuotaWindow struct {
-	Agent         string            `json:"agent"`
-	WindowMinutes int               `json:"window_minutes"`
-	UsedPercent   float64           `json:"used_percent"`
-	ResetsAt      int64             `json:"resets_at"`
-	ObservedAt    string            `json:"observed_at"`
-	Stale         bool              `json:"stale"`
-	ResetElapsed  bool              `json:"reset_elapsed"`
-	Source        string            `json:"source,omitempty"`
-	Plan          string            `json:"plan,omitempty"`
-	Trend         *store.QuotaTrend `json:"trend,omitempty"`
+	Agent         string      `json:"agent"`
+	WindowMinutes int         `json:"window_minutes"`
+	UsedPercent   float64     `json:"used_percent"`
+	ResetsAt      int64       `json:"resets_at"`
+	ObservedAt    string      `json:"observed_at"`
+	Stale         bool        `json:"stale"`
+	ResetElapsed  bool        `json:"reset_elapsed"`
+	Source        string      `json:"source,omitempty"`
+	Plan          string      `json:"plan,omitempty"`
+	Trend         *QuotaTrend `json:"trend,omitempty"`
+}
+
+type QuotaTrend struct {
+	Agent           string  `json:"agent"`
+	WindowMinutes   int     `json:"window_minutes"`
+	PercentPerHour  float64 `json:"percent_per_hour"`
+	Samples         int     `json:"samples"`
+	SpanMinutes     int     `json:"span_minutes"`
+	FromPercent     float64 `json:"from_percent"`
+	ToPercent       float64 `json:"to_percent"`
+	FullAt          int64   `json:"full_at,omitempty"`
+	FullBeforeReset bool    `json:"full_before_reset"`
 }
 
 type CachedQuota struct {
@@ -259,10 +286,11 @@ func activityStatus(ctx context.Context) (SessionStatus, error) {
 		return result, unavailable(err)
 	}
 	defer db.Close()
-	result.Health, err = store.ReadSyncHealth(db, store.SyncScopeAll, time.Now(), store.DefaultSyncStaleAfter)
+	health, err := store.ReadSyncHealth(db, store.SyncScopeAll, time.Now(), store.DefaultSyncStaleAfter)
 	if err != nil {
 		return result, unavailable(err)
 	}
+	result.Health = syncHealthDTO(health)
 	bindings, err := store.ListActiveTodoSessionBindings()
 	if err != nil {
 		return result, unavailable(err)
@@ -431,7 +459,7 @@ func (h *Host) cachedQuota(ctx context.Context, input CachedQuotaInput) (CachedQ
 			if window.WindowMinutes <= 0 {
 				continue
 			}
-			next := CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: agentQuota.Source, Plan: agentQuota.Plan, Trend: window.Trend}
+			next := CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: agentQuota.Source, Plan: agentQuota.Plan, Trend: quotaTrendDTO(window.Trend)}
 			if existing, ok := index[agent][window.WindowMinutes]; ok {
 				prior, _ := time.Parse(time.RFC3339, result.Windows[existing].ObservedAt)
 				if !observed.Before(prior) {
@@ -458,6 +486,26 @@ func (h *Host) cachedQuota(ctx context.Context, input CachedQuotaInput) (CachedQ
 		return result.Windows[i].WindowMinutes < result.Windows[j].WindowMinutes
 	})
 	return result, nil
+}
+
+func syncHealthDTO(value store.SyncHealth) SyncHealth {
+	return SyncHealth{
+		Scope: value.Scope, Status: value.Status, RunStatus: value.RunStatus, SchemaVersion: value.SchemaVersion,
+		IndexedSessions: value.IndexedSessions, RetainedSessions: value.RetainedSessions,
+		LastAttemptAt: value.LastAttemptAt, LastSuccessAt: value.LastSuccessAt, AgeSeconds: value.AgeSeconds,
+		StaleAfterSeconds: value.StaleAfterSeconds, LastError: value.LastError, LastSyncedFiles: value.LastSyncedFiles,
+	}
+}
+
+func quotaTrendDTO(value *store.QuotaTrend) *QuotaTrend {
+	if value == nil {
+		return nil
+	}
+	return &QuotaTrend{
+		Agent: value.Agent, WindowMinutes: value.WindowMinutes, PercentPerHour: value.PercentPerHour,
+		Samples: value.Samples, SpanMinutes: value.SpanMinutes, FromPercent: value.FromPercent,
+		ToPercent: value.ToPercent, FullAt: value.FullAt, FullBeforeReset: value.FullBeforeReset,
+	}
 }
 
 func activityText(value string, limit int) string {

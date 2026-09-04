@@ -249,3 +249,18 @@ func TestConfigureDataDirCannotRedirectFixtureToAnotherDatabase(t *testing.T) {
 		t.Fatalf("unrelated database changed: %q %v", untouched, err)
 	}
 }
+
+func TestUnavailableKeepsInfrastructureCauseOutOfPublicJSON(t *testing.T) {
+	cause := errors.New("open /private/account/atm.db: permission denied")
+	err := unavailable(cause)
+	if !errors.Is(err, cause) || !errors.Is(err, application.ErrUnavailable) {
+		t.Fatalf("error did not retain cause and category: %v", err)
+	}
+	encoded, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	if strings.Contains(string(encoded), "/private/account") || strings.Contains(string(encoded), "permission denied") {
+		t.Fatalf("public error leaked infrastructure detail: %s", encoded)
+	}
+}

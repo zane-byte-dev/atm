@@ -12,11 +12,12 @@ import (
 	"unicode"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/contract"
 )
 
 const (
 	MaxTodoImages     = 10
-	MaxTodoImageBytes = int64(10 * 1024 * 1024)
+	MaxTodoImageBytes = contract.MaxTodoImageBytes
 )
 
 var todoImageTypes = map[string]string{

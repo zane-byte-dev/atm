@@ -58,21 +58,23 @@ type browserSession struct {
 }
 
 type Server struct {
-	info         Instance
-	options      Options
-	http         *http.Server
-	listener     net.Listener
-	lock         *os.File
-	controlToken string
-	cookieName   string
-	mu           sync.Mutex
-	tickets      map[string]time.Time
-	sessions     map[string]browserSession
-	done         chan struct{}
-	closeOnce    sync.Once
-	serveErr     error
-	events       *eventBroker
-	devUI        http.Handler
+	info          Instance
+	options       Options
+	http          *http.Server
+	listener      net.Listener
+	lock          *os.File
+	controlToken  string
+	cookieName    string
+	mu            sync.Mutex
+	tickets       map[string]time.Time
+	sessions      map[string]browserSession
+	done          chan struct{}
+	closeOnce     sync.Once
+	serveErr      error
+	events        *eventBroker
+	fingerprintMu sync.Mutex
+	fingerprints  map[string]string
+	devUI         http.Handler
 }
 
 func Start(options Options) (*Server, error) {

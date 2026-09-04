@@ -187,6 +187,39 @@ func TestChangeTrackerHashesSameLengthEditsAndAtomicReplacement(t *testing.T) {
 	}
 }
 
+func TestWorkspaceHashReusesUnchangedContentDigest(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "note.md")
+	if err := os.WriteFile(path, []byte("alpha"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	state := &workspaceHashState{files: map[string]workspaceHashFile{}}
+	first, err := hashWorkspaceFilesIncremental(context.Background(), root, state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.contentReads != 1 {
+		t.Fatalf("initial content reads = %d, want 1", state.contentReads)
+	}
+	second, err := hashWorkspaceFilesIncremental(context.Background(), root, state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != first || state.contentReads != 1 {
+		t.Fatalf("unchanged scan = %q/%d, want %q/1", second, state.contentReads, first)
+	}
+	if err := os.WriteFile(path, []byte("bravo"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	third, err := hashWorkspaceFilesIncremental(context.Background(), root, state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third == second || state.contentReads != 2 {
+		t.Fatalf("changed scan = %q/%d, want a new digest and 2 reads", third, state.contentReads)
+	}
+}
+
 func TestWorkspaceHashNeverFollowsOutsideSymlinks(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

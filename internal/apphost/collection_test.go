@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/application"
-	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
@@ -65,11 +64,11 @@ func TestCollectionSourceManagementUsesRegisteredConnectorWithoutExecutingIt(t *
 	}
 	db.Close()
 	body := `{"connector":"fixture","kind":"group","external_id":"explicit-source","name":"First","enabled":true,"strategy":"tasks","priority":"P1"}`
-	created := collectionTestCall(t, h, "collect.source.save", body).(collector.SaveSourceResult)
+	created := collectionTestCall(t, h, "collect.source.save", body).(CollectionSourceResult)
 	if created.Source.ID == "" || created.Source.Name != "First" {
 		t.Fatalf("create=%+v", created)
 	}
-	edited := collectionTestCall(t, h, "collect.source.save", `{"connector":"fixture","kind":"group","external_id":"explicit-source","name":"Edited","enabled":false,"strategy":"observe","decision_unit":"message","interval_minutes":30,"priority":"P2"}`).(collector.SaveSourceResult)
+	edited := collectionTestCall(t, h, "collect.source.save", `{"connector":"fixture","kind":"group","external_id":"explicit-source","name":"Edited","enabled":false,"strategy":"observe","decision_unit":"message","interval_minutes":30,"priority":"P2"}`).(CollectionSourceResult)
 	if edited.Source.ID != created.Source.ID || edited.Source.Name != "Edited" || edited.Source.Enabled || edited.Source.Strategy != "observe" || edited.Source.IntervalMinutes != 30 {
 		t.Fatalf("edit=%+v", edited)
 	}
@@ -86,7 +85,7 @@ func TestCollectionSourceManagementUsesRegisteredConnectorWithoutExecutingIt(t *
 	if _, err := h.callCollection(context.Background(), webCall(), "collect.source.delete", json.RawMessage(fmt.Sprintf(`{"source_id":%q}`, created.Source.ID))); !errors.Is(err, application.ErrInvalidArgument) {
 		t.Fatalf("unconfirmed deletion accepted: %v", err)
 	}
-	deleted := collectionTestCall(t, h, "collect.source.delete", fmt.Sprintf(`{"source_id":%q,"confirmed":true}`, created.Source.ID)).(collector.DeleteSourceResult)
+	deleted := collectionTestCall(t, h, "collect.source.delete", fmt.Sprintf(`{"source_id":%q,"confirmed":true}`, created.Source.ID)).(CollectionSourceResult)
 	if deleted.Source.ID != created.Source.ID {
 		t.Fatalf("delete=%+v", deleted)
 	}

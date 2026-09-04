@@ -95,6 +95,23 @@ type ListResult struct {
 	DocumentExists map[string]bool
 }
 
+// ListPageInput is the bounded scalar list contract used by resident UIs. It
+// intentionally excludes Query: Markdown full-text search still uses List until
+// it has its own durable index.
+type ListPageInput struct {
+	Status  string
+	Project string
+	Limit   int
+	Offset  int
+}
+
+type ListPageResult struct {
+	Todos    []Todo
+	Total    int
+	Counts   map[string]int
+	Projects []string
+}
+
 type DocInput struct {
 	TodoID     string `json:"todo_id,omitempty"`
 	Initialize bool   `json:"initialize,omitempty"`
@@ -273,6 +290,27 @@ func (service Service) List(ctx context.Context, call application.Call, input Li
 		documents[todo.ID] = todoDocumentExists(todo.ID)
 	}
 	return ListResult{Kind: ListKindWorking, Todos: filtered, DocumentExists: documents}, nil
+}
+
+func (service Service) ListPage(ctx context.Context, call application.Call, input ListPageInput) (ListPageResult, error) {
+	if _, err := validateReadCall(ctx, call); err != nil {
+		return ListPageResult{}, err
+	}
+	status, _, archived, err := normalizeListStatus(input.Status)
+	if err != nil {
+		return ListPageResult{}, err
+	}
+	if archived {
+		status = "archived"
+	}
+	if input.Offset < 0 || input.Limit < 1 || input.Limit > 200 {
+		return ListPageResult{}, readInvalidArgument("limit must be 1–200 and offset non-negative", "limit", input.Limit)
+	}
+	page, err := store.ReadTodoPage(ctx, store.TodoPageQuery{Status: status, Project: input.Project, Limit: input.Limit, Offset: input.Offset})
+	if err != nil {
+		return ListPageResult{}, readApplicationError("load todo page", err)
+	}
+	return ListPageResult{Todos: page.Todos, Total: page.Total, Counts: page.Counts, Projects: page.Projects}, nil
 }
 
 func (service Service) Doc(ctx context.Context, call application.Call, input DocInput) (DocResult, error) {

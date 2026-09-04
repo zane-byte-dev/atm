@@ -40,7 +40,7 @@ func projectCompanionQuotaCache(result *CompanionQuota, cache background.QuotaCa
 			window.Plan = boundedCompanionText(value.Plan, 80)
 			for _, cachedWindow := range value.Windows() {
 				if cachedWindow.WindowMinutes == window.WindowMinutes {
-					window.Trend = projectCompanionQuotaTrend(cachedWindow.Trend)
+					window.Trend = projectCompanionQuotaTrend(quotaTrendDTO(cachedWindow.Trend))
 					break
 				}
 			}

@@ -8,14 +8,14 @@ import (
 	"strings"
 
 	"github.com/zane-byte-dev/atm/internal/application"
-	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/contract"
 )
 
 // Upload is a typed byte-upload edge. Authentication, origin, CSRF and the
 // database write gate must run before parsing a request or invoking it.
 type Upload func(context.Context, application.Call, string, string, string, []byte) (any, error)
 
-const MaxImageUploadRequestBytes = store.MaxTodoImageBytes + 32*1024
+const MaxImageUploadRequestBytes = contract.MaxTodoImageBytes + 32*1024
 
 // ParseTodoImageUpload reads exactly one file and one optimistic precondition.
 // It never creates multipart temporary files or accepts a server-side path.
@@ -65,9 +65,9 @@ func ParseTodoImageUpload(w http.ResponseWriter, r *http.Request) (etag, name st
 			}
 			seenFile = true
 			name = disposition["filename"]
-			data, err = io.ReadAll(io.LimitReader(part, store.MaxTodoImageBytes+1))
+			data, err = io.ReadAll(io.LimitReader(part, contract.MaxTodoImageBytes+1))
 			part.Close()
-			if err != nil || int64(len(data)) > store.MaxTodoImageBytes {
+			if err != nil || int64(len(data)) > contract.MaxTodoImageBytes {
 				return bad("image exceeds the 10 MB limit")
 			}
 		default:

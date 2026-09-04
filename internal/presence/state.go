@@ -9,13 +9,16 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/agentevent"
-	"github.com/zane-byte-dev/atm/internal/dashboard"
 )
 
 func digest(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
 }
+
+// ResultKey converts potentially sensitive result text into a stable change
+// token before it enters the presence projection.
+func ResultKey(value string) string { return digest(value) }
 
 func clipped(value string, limit int) string {
 	value = strings.TrimSpace(value)
@@ -373,22 +376,6 @@ func (r *Runtime) Merge(sessions []Session) {
 	}
 	r.base, r.primed = next, true
 	r.signalChange()
-}
-
-func (r *Runtime) MergeLiveStatus(status dashboard.LiveStatus) {
-	sessions := make([]Session, 0, min(len(status.Sessions), MaxSessions))
-	for _, row := range status.Sessions {
-		if len(sessions) == MaxSessions {
-			break
-		}
-		state := row.ActivityState
-		var resultKey string
-		if value := strings.TrimSpace(row.LatestResult); value != "" {
-			resultKey = digest(value)
-		}
-		sessions = append(sessions, Session{ID: row.SessionID, SessionID: row.SessionID, ResumeID: row.ResumeID, Source: SourceForTool(row.Tool), Tool: row.Tool, Project: row.Project, CWD: row.CWD, State: state, ResultKey: resultKey})
-	}
-	r.Merge(sessions)
 }
 
 func (r *Runtime) hookForLocked(session Session, cwdCounts map[string]int, now time.Time) (string, hookState, bool) {

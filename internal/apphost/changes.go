@@ -11,22 +11,43 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+)
+
+const (
+	workspaceContentVerifyEvery = time.Minute
 )
 
 // ChangeTracker keeps one connection for PRAGMA data_version. Comparing values
 // from different pooled connections would miss other-process commits.
 type ChangeTracker struct {
-	mu   sync.Mutex
-	dir  string
-	db   *sql.DB
-	conn *sql.Conn
+	mu    sync.Mutex
+	dir   string
+	db    *sql.DB
+	conn  *sql.Conn
+	files map[string]*workspaceHashState
 }
 
-func NewChangeTracker(dataDir string) *ChangeTracker { return &ChangeTracker{dir: dataDir} }
+type workspaceHashFile struct {
+	info   fs.FileInfo
+	digest [sha256.Size]byte
+}
+
+type workspaceHashState struct {
+	files        map[string]workspaceHashFile
+	signature    string
+	lastVerified time.Time
+	contentReads uint64
+}
+
+func NewChangeTracker(dataDir string) *ChangeTracker {
+	return &ChangeTracker{dir: dataDir, files: map[string]*workspaceHashState{}}
+}
 func (tracker *ChangeTracker) Close() {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
@@ -38,6 +59,7 @@ func (tracker *ChangeTracker) Close() {
 		_ = tracker.db.Close()
 		tracker.db = nil
 	}
+	tracker.files = nil
 }
 
 func (tracker *ChangeTracker) Fingerprints(ctx context.Context, domains []string) (map[string]string, error) {
@@ -99,7 +121,7 @@ func (tracker *ChangeTracker) Fingerprints(ctx context.Context, domains []string
 			paths = []string{"runtime/quota.json"}
 		}
 		for _, path := range paths {
-			signature, err := hashWorkspaceFiles(ctx, filepath.Join(tracker.dir, path))
+			signature, err := tracker.hashWorkspaceFiles(ctx, filepath.Join(tracker.dir, path))
 			if err != nil {
 				return nil, err
 			}
@@ -110,11 +132,38 @@ func (tracker *ChangeTracker) Fingerprints(ctx context.Context, domains []string
 	return result, nil
 }
 
+func (tracker *ChangeTracker) hashWorkspaceFiles(ctx context.Context, root string) (string, error) {
+	now := time.Now()
+	state := tracker.files[root]
+	if state == nil {
+		state = &workspaceHashState{files: map[string]workspaceHashFile{}}
+		tracker.files[root] = state
+	}
+	verifyContent := state.lastVerified.IsZero() || now.Sub(state.lastVerified) >= workspaceContentVerifyEvery
+	signature, err := hashWorkspaceFilesIncremental(ctx, root, state, verifyContent)
+	if err != nil {
+		return "", err
+	}
+	state.signature = signature
+	if verifyContent {
+		state.lastVerified = now
+	}
+	return signature, nil
+}
+
 // Only known workspace roots are examined. Symlinks are represented, never
 // followed. Hashing content also catches same-length writes and atomic replace.
 func hashWorkspaceFiles(ctx context.Context, root string) (string, error) {
+	return hashWorkspaceFilesIncremental(ctx, root, &workspaceHashState{files: map[string]workspaceHashFile{}}, true)
+}
+
+func hashWorkspaceFilesIncremental(ctx context.Context, root string, state *workspaceHashState, verifyContent bool) (string, error) {
 	hash := sha256.New()
-	var paths []string
+	type workspacePath struct {
+		path string
+		info fs.FileInfo
+	}
+	var paths []workspacePath
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -132,7 +181,7 @@ func hashWorkspaceFiles(ctx context.Context, root string) (string, error) {
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			fmt.Fprintf(hash, "symlink:%s\n", path)
+			paths = append(paths, workspacePath{path: path})
 			return nil
 		}
 		if !entry.Type().IsRegular() {
@@ -141,38 +190,59 @@ func hashWorkspaceFiles(ctx context.Context, root string) (string, error) {
 		if strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), ".lock") {
 			return nil
 		}
-		paths = append(paths, path)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		paths = append(paths, workspacePath{path: path, info: info})
 		return nil
 	})
 	if err != nil {
 		return "", err
 	}
-	sort.Strings(paths)
+	sort.Slice(paths, func(i, j int) bool { return paths[i].path < paths[j].path })
+	base := filepath.Dir(root)
+	anchor, err := os.OpenRoot(base)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) && len(paths) == 0 {
+			return fmt.Sprintf("%x", hash.Sum(nil)), nil
+		}
+		return "", err
+	}
+	defer anchor.Close()
 	buffer := make([]byte, 32*1024)
-	for _, path := range paths {
+	next := make(map[string]workspaceHashFile, len(paths))
+	for _, item := range paths {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
+		if item.info == nil {
+			digest := sha256.Sum256([]byte("symlink:" + item.path))
+			next[item.path] = workspaceHashFile{digest: digest}
+			fmt.Fprintf(hash, "%s\x00%x\x00", item.path, digest)
+			continue
+		}
+		cached, reusable := state.files[item.path]
+		reusable = reusable && !verifyContent && sameWorkspaceFileInfo(cached.info, item.info)
+		if reusable {
+			next[item.path] = cached
+			fmt.Fprintf(hash, "%s\x00%x\x00", item.path, cached.digest)
+			continue
+		}
 		// Root.Open prevents a replaced parent directory from escaping the
 		// data root between traversal and opening the file.
-		anchor, err := os.OpenRoot(filepath.Dir(root))
+		relative, err := filepath.Rel(base, item.path)
 		if err != nil {
-			return "", err
-		}
-		relative, err := filepath.Rel(filepath.Dir(root), path)
-		if err != nil {
-			anchor.Close()
 			return "", err
 		}
 		file, err := anchor.Open(relative)
-		anchor.Close()
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(hash, "%s\x00", path)
+		contentHash := sha256.New()
 		for {
 			if err = ctx.Err(); err != nil {
 				break
@@ -180,7 +250,7 @@ func hashWorkspaceFiles(ctx context.Context, root string) (string, error) {
 			var count int
 			count, err = file.Read(buffer)
 			if count > 0 {
-				hash.Write(buffer[:count])
+				contentHash.Write(buffer[:count])
 			}
 			if err == io.EOF {
 				err = nil
@@ -190,11 +260,31 @@ func hashWorkspaceFiles(ctx context.Context, root string) (string, error) {
 				break
 			}
 		}
+		info, statErr := file.Stat()
 		file.Close()
 		if err != nil {
 			return "", err
 		}
-		hash.Write([]byte{0})
+		if statErr != nil {
+			return "", statErr
+		}
+		var digest [sha256.Size]byte
+		copy(digest[:], contentHash.Sum(nil))
+		state.contentReads++
+		next[item.path] = workspaceHashFile{info: info, digest: digest}
+		fmt.Fprintf(hash, "%s\x00%x\x00", item.path, digest)
 	}
+	state.files = next
 	return fmt.Sprintf("%x", hash.Sum(nil)), nil
+}
+
+func sameWorkspaceFileInfo(left, right fs.FileInfo) bool {
+	if left == nil || right == nil {
+		return false
+	}
+	return left.Size() == right.Size() &&
+		left.Mode() == right.Mode() &&
+		left.ModTime().Equal(right.ModTime()) &&
+		os.SameFile(left, right) &&
+		reflect.DeepEqual(left.Sys(), right.Sys())
 }

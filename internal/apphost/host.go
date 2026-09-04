@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -123,14 +122,21 @@ type Image struct {
 	URL       string `json:"url"`
 }
 
+type TodoLink struct {
+	URL      string `json:"url"`
+	Kind     string `json:"kind,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Relation string `json:"relation,omitempty"`
+}
+
 type TodoView struct {
 	TodoSummary
-	Description  string           `json:"description"`
-	Links        []store.TodoLink `json:"links"`
-	Images       []Image          `json:"images"`
-	Closed       *string          `json:"closed"`
-	ClosedReason *string          `json:"closed_reason"`
-	Creator      string           `json:"creator,omitempty"`
+	Description  string     `json:"description"`
+	Links        []TodoLink `json:"links"`
+	Images       []Image    `json:"images"`
+	Closed       *string    `json:"closed"`
+	ClosedReason *string    `json:"closed_reason"`
+	Creator      string     `json:"creator,omitempty"`
 }
 
 type ListResult struct {
@@ -175,6 +181,22 @@ func (h *Host) ListTodos(ctx context.Context, call application.Call, input ListI
 		return ListResult{}, invalid("invalid todo status")
 	}
 	result := ListResult{Items: []TodoSummary{}, Limit: input.Limit, Offset: input.Offset, Projects: []string{}, Counts: map[string]int{"all": 0, "open": 0, "in_progress": 0, "review": 0, "done": 0, "archived": 0}}
+	if strings.TrimSpace(input.Query) == "" {
+		page, err := h.work.ListPage(ctx, call, work.ListPageInput{Status: status, Project: input.Project, Limit: input.Limit, Offset: input.Offset})
+		if err != nil {
+			if errors.Is(err, store.ErrDatabaseMissing) {
+				return result, nil
+			}
+			return ListResult{}, err
+		}
+		result.Total, result.Counts, result.Projects = page.Total, page.Counts, page.Projects
+		for _, todo := range page.Todos {
+			item := summary(todo)
+			item.Archived = status == "archived"
+			result.Items = append(result.Items, item)
+		}
+		return result, nil
+	}
 	listed, err := h.work.List(ctx, call, work.ListInput{Status: "all"})
 	if err != nil {
 		if errors.Is(err, store.ErrDatabaseMissing) {
@@ -281,7 +303,10 @@ func summary(todo work.Todo) TodoSummary {
 }
 
 func view(todo work.Todo) TodoView {
-	result := TodoView{TodoSummary: summary(todo), Description: todo.Description, Links: append([]store.TodoLink{}, todo.Links...), Images: []Image{}, Closed: todo.Closed, ClosedReason: todo.ClosedReason, Creator: todo.Creator}
+	result := TodoView{TodoSummary: summary(todo), Description: todo.Description, Links: []TodoLink{}, Images: []Image{}, Closed: todo.Closed, ClosedReason: todo.ClosedReason, Creator: todo.Creator}
+	for _, link := range todo.Links {
+		result.Links = append(result.Links, TodoLink{URL: link.URL, Kind: link.Kind, Title: link.Title, Relation: link.Relation})
+	}
 	for _, image := range todo.Images {
 		id := base64.RawURLEncoding.EncodeToString([]byte(todo.ID + "/" + image.StoredName))
 		result.Images = append(result.Images, Image{ID: id, Name: image.Name, MediaType: image.MediaType, SizeBytes: image.SizeBytes, URL: "/api/v1/attachments/" + id})
@@ -365,5 +390,5 @@ func invalid(message string) error {
 	return application.NewError(application.CodeInvalidArgument, message)
 }
 func unavailable(cause error) error {
-	return application.WrapError(application.CodeUnavailable, fmt.Sprintf("local data unavailable: %v", cause), cause)
+	return application.WrapError(application.CodeUnavailable, "local data is temporarily unavailable", cause)
 }

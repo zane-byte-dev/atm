@@ -72,7 +72,22 @@ func (h *Host) RefreshPresence(ctx context.Context) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		live.MergeLiveStatus(status)
+		sessions := make([]presence.Session, 0, min(len(status.Sessions), presence.MaxSessions))
+		for _, row := range status.Sessions {
+			if len(sessions) == presence.MaxSessions {
+				break
+			}
+			var resultKey string
+			if value := strings.TrimSpace(row.LatestResult); value != "" {
+				resultKey = presence.ResultKey(value)
+			}
+			sessions = append(sessions, presence.Session{
+				ID: row.SessionID, SessionID: row.SessionID, ResumeID: row.ResumeID,
+				Source: presence.SourceForTool(row.Tool), Tool: row.Tool, Project: row.Project,
+				CWD: row.CWD, State: row.ActivityState, ResultKey: resultKey,
+			})
+		}
+		live.Merge(sessions)
 		return nil
 	})
 }

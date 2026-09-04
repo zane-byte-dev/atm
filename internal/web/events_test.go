@@ -162,6 +162,27 @@ func TestEventBrokerBoundsSlowSubscribersAndClosesPromptly(t *testing.T) {
 	broker.publish([]string{"todos"})
 }
 
+func TestLocalInvalidationRebaselinesBeforePolling(t *testing.T) {
+	value := "before"
+	server := &Server{
+		events: newEventBroker("baseline"),
+		options: Options{Fingerprints: func(context.Context, []string) (map[string]string, error) {
+			return map[string]string{"todos": value}, nil
+		}},
+	}
+	defer server.events.close()
+	server.Invalidate("todos")
+	changed, err := server.refreshFingerprintChanges(context.Background(), []string{"todos"})
+	if err != nil || len(changed) != 0 {
+		t.Fatalf("unchanged poll after local invalidation = %v, %v", changed, err)
+	}
+	value = "external"
+	changed, err = server.refreshFingerprintChanges(context.Background(), []string{"todos"})
+	if err != nil || !reflect.DeepEqual(changed, []string{"todos"}) {
+		t.Fatalf("external change after baseline = %v, %v", changed, err)
+	}
+}
+
 func eventStream(t *testing.T, server *Server, cookie *http.Cookie, last string) (*http.Response, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

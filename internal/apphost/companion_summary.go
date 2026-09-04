@@ -193,7 +193,7 @@ func runtimeCachedQuota(cache background.QuotaCache, now time.Time) CachedQuota 
 			if window == nil || window.WindowMinutes <= 0 {
 				continue
 			}
-			result.Windows = append(result.Windows, CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: value.Source, Plan: value.Plan, Trend: window.Trend})
+			result.Windows = append(result.Windows, CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: value.Source, Plan: value.Plan, Trend: quotaTrendDTO(window.Trend)})
 		}
 	}
 	return result
@@ -436,7 +436,7 @@ func projectCompanionQuota(value CachedQuota) CompanionQuota {
 	return result
 }
 
-func projectCompanionQuotaTrend(value *store.QuotaTrend) *CompanionQuotaTrend {
+func projectCompanionQuotaTrend(value *QuotaTrend) *CompanionQuotaTrend {
 	if value == nil || !finiteCompanionNumber(value.PercentPerHour) || !finiteCompanionNumber(value.FromPercent) || !finiteCompanionNumber(value.ToPercent) {
 		return nil
 	}

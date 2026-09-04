@@ -7,11 +7,15 @@ import (
 	"io"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/contract"
 )
 
 // Call is an explicit method whitelist, not reflection over services. Unknown
 // request fields fail closed, including actor/origin and arbitrary path fields.
 func (h *Host) Call(ctx context.Context, call application.Call, method string, input json.RawMessage, idempotencyKey string) (any, error) {
+	if _, ok := contract.LookupWorkspaceMethod(method); !ok {
+		return nil, application.NewError(application.CodeNotFound, "unknown API method")
+	}
 	switch method {
 	case "todo.list":
 		return invoke(input, func(value ListInput) (any, error) { return h.ListTodos(ctx, call, value) })
@@ -60,7 +64,7 @@ func (h *Host) Call(ctx context.Context, call application.Call, method string, i
 	case "day.snapshot", "day.show", "day.ledger", "settings.get", "settings.preferences.save", "settings.business.save", "settings.credential.save", "settings.credential.delete":
 		return h.callWorkspaceSettings(ctx, call, method, input)
 	default:
-		return nil, application.NewError(application.CodeNotFound, "unknown API method")
+		return nil, application.NewError(application.CodeInternal, "registered API method is not implemented")
 	}
 }
 

@@ -150,14 +150,47 @@ func (b *eventBroker) domains() []string {
 	return result
 }
 func (server *Server) Invalidate(domains ...string) {
-	if server.events != nil {
-		server.events.publish(domains)
+	if server.events == nil {
+		return
 	}
+	// A successful in-process mutation is already the invalidation clients need.
+	// Rebaseline its durable fingerprints before publishing so the poller does
+	// not emit the same change again two seconds later. Failure is harmless: the
+	// poller will conservatively publish a second event.
+	if server.options.Fingerprints != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		_, _ = server.refreshFingerprintChanges(ctx, domains)
+		cancel()
+	}
+	server.events.publish(domains)
+}
+
+func (server *Server) refreshFingerprintChanges(ctx context.Context, domains []string) ([]string, error) {
+	server.fingerprintMu.Lock()
+	defer server.fingerprintMu.Unlock()
+	values, err := server.options.Fingerprints(ctx, domains)
+	if err != nil {
+		return nil, err
+	}
+	if server.fingerprints == nil {
+		server.fingerprints = map[string]string{}
+	}
+	var changed []string
+	for _, domain := range domains {
+		value, ok := values[domain]
+		if !ok {
+			continue
+		}
+		if old, exists := server.fingerprints[domain]; !exists || old != value {
+			changed = append(changed, domain)
+		}
+		server.fingerprints[domain] = value
+	}
+	return changed, nil
 }
 func (server *Server) watchChanges() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
-	previous := map[string]string{}
 	for {
 		select {
 		case <-server.events.done:
@@ -169,21 +202,14 @@ func (server *Server) watchChanges() {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-		values, err := server.options.Fingerprints(ctx, domains)
+		changed, err := server.refreshFingerprintChanges(ctx, domains)
 		cancel()
 		if err != nil {
 			continue
 		}
-		var changed []string
-		for _, d := range domains {
-			if value, ok := values[d]; ok {
-				if old, exists := previous[d]; !exists || old != value {
-					changed = append(changed, d)
-				}
-				previous[d] = value
-			}
-		}
-		server.Invalidate(changed...)
+		// Publish directly: calling Invalidate would re-read the fingerprints that
+		// this scan just established.
+		server.events.publish(changed)
 	}
 }
 func (server *Server) serveEvents(w http.ResponseWriter, r *http.Request, session browserSession) {

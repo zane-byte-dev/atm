@@ -331,6 +331,68 @@ func TestGuardManagementAdaptersDoNotReachConfigOrFilesystem(t *testing.T) {
 	})
 }
 
+func TestWebTransportDoesNotDependOnPersistence(t *testing.T) {
+	root, module := repository(t)
+	imports := scanProductionImports(t, root)
+	storeImport := module + "/internal/store"
+
+	assertNoImports(t, imports, func(item sourceImport) string {
+		if withinPackageDir(item.packageDir, "web") && importWithin(item.path, storeImport) {
+			return fmt.Sprintf("%s exposes persistence through Web transport import %q", item.file, item.path)
+		}
+		return ""
+	})
+}
+
+func TestPresenceProjectionDoesNotDependOnDashboard(t *testing.T) {
+	root, module := repository(t)
+	imports := scanProductionImports(t, root)
+	dashboardImport := module + "/internal/dashboard"
+
+	assertNoImports(t, imports, func(item sourceImport) string {
+		if withinPackageDir(item.packageDir, "presence") && importWithin(item.path, dashboardImport) {
+			return fmt.Sprintf("%s couples the presence domain to dashboard projection %q", item.file, item.path)
+		}
+		return ""
+	})
+}
+
+func TestServeServiceAdapterDoesNotOwnLaunchAgentState(t *testing.T) {
+	root, module := repository(t)
+	imports := scanProductionImports(t, root)
+	executionLockImport := module + "/internal/executionlock"
+
+	assertNoImports(t, imports, func(item sourceImport) string {
+		if item.file != "internal/cmd/serve_service.go" {
+			return ""
+		}
+		switch {
+		case item.path == "encoding/xml" || item.path == "crypto/sha256" || item.path == "encoding/hex":
+			return fmt.Sprintf("%s owns LaunchAgent plan or plist mechanics through %q", item.file, item.path)
+		case importWithin(item.path, executionLockImport):
+			return fmt.Sprintf("%s owns LaunchAgent lifecycle locking through %q", item.file, item.path)
+		default:
+			return ""
+		}
+	})
+}
+
+func TestCollectionAdapterDoesNotReachPersistence(t *testing.T) {
+	root, module := repository(t)
+	imports := scanProductionImports(t, root)
+	storeImport := module + "/internal/store"
+
+	assertNoImports(t, imports, func(item sourceImport) string {
+		if item.file != "internal/apphost/collection.go" {
+			return ""
+		}
+		if item.path == "database/sql" || importWithin(item.path, storeImport) {
+			return fmt.Sprintf("%s bypasses collector.QueryService through %q", item.file, item.path)
+		}
+		return ""
+	})
+}
+
 func assertNoImports(t *testing.T, imports []sourceImport, violation func(sourceImport) string) {
 	t.Helper()
 	var violations []string

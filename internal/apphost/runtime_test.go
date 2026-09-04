@@ -156,10 +156,6 @@ func TestConfigWritersFailFastWithoutBlockingOtherReads(t *testing.T) {
 			return err
 		},
 		func() error { _, err := h.saveWorkspaceCredential(context.Background(), webCall(), nil); return err },
-		func() error {
-			_, err := h.callCollection(context.Background(), webCall(), "collect.item.read", json.RawMessage(`{"item_id":"ci_0000000000000000","read":true}`))
-			return err
-		},
 	}
 	for i, check := range checks {
 		result := make(chan error, 1)
@@ -172,6 +168,19 @@ func TestConfigWritersFailFastWithoutBlockingOtherReads(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatalf("writer %d queued behind job", i)
 		}
+	}
+	collectionWrite := make(chan error, 1)
+	go func() {
+		_, err := h.callCollection(context.Background(), webCall(), "collect.item.read", json.RawMessage(`{"item_id":"ci_0000000000000000","read":true}`))
+		collectionWrite <- err
+	}()
+	select {
+	case err := <-collectionWrite:
+		if errors.Is(err, application.ErrBusy) {
+			t.Fatalf("collection write incorrectly shared the config writer gate: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("collection write queued behind config-bound background work")
 	}
 	settingsRead := make(chan error, 1)
 	go func() { _, err := h.WorkspaceSettings(context.Background(), webCall()); settingsRead <- err }()
