@@ -13,6 +13,7 @@ import (
 
 type AddDependencyInput struct {
 	TodoID       string `json:"todo_id"`
+	ExpectedETag string `json:"expected_etag,omitempty"`
 	DependencyID string `json:"dependency_id"`
 }
 
@@ -24,6 +25,7 @@ type AddDependencyResult struct {
 
 type RemoveDependencyInput struct {
 	TodoID       string `json:"todo_id"`
+	ExpectedETag string `json:"expected_etag,omitempty"`
 	DependencyID string `json:"dependency_id"`
 }
 
@@ -71,6 +73,9 @@ func (service Service) AddDependency(
 		todo, findErr := transaction.Todo(todoID)
 		if findErr != nil {
 			return dependencyTodoNotFound("todo_id", todoID, findErr)
+		}
+		if err := checkExpectedTodo(call, *todo, input.ExpectedETag); err != nil {
+			return err
 		}
 		if todoID == dependencyID {
 			return dependencyInvalidArgument(
@@ -142,6 +147,9 @@ func (service Service) RemoveDependency(
 		todo, findErr := transaction.Todo(todoID)
 		if findErr != nil {
 			return dependencyTodoNotFound("todo_id", todoID, findErr)
+		}
+		if err := checkExpectedTodo(call, *todo, input.ExpectedETag); err != nil {
+			return err
 		}
 		result.Removed, findErr = store.RemoveTodoDependency(transaction.Todos(), todoID, dependencyID)
 		if findErr != nil {

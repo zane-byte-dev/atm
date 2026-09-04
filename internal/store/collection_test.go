@@ -85,6 +85,45 @@ func TestCollectionStoreKeepsSourcesCheckpointsAndAuditIdempotent(t *testing.T) 
 	}
 }
 
+func TestReconcileInterruptedCollectionRunsOnlyClosesRunningRows(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, run := range []CollectionRun{
+		{ID: "stale", Connector: "test", SourceID: "source", Status: "running", StartedAt: 10},
+		{ID: "done", Connector: "test", SourceID: "source", Status: "succeeded", StartedAt: 9, FinishedAt: 11},
+	} {
+		if err := SaveCollectionRun(db, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	changed, err := ReconcileInterruptedCollectionRuns(db, 20)
+	if err != nil || changed != 1 {
+		t.Fatalf("reconcile changed=%d err=%v", changed, err)
+	}
+	runs, err := ListCollectionRuns(db, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]CollectionRun{}
+	for _, run := range runs {
+		byID[run.ID] = run
+	}
+	if got := byID["stale"]; got.Status != "failed" || got.FinishedAt != 20 || got.FailedCount != 1 || got.Error == "" {
+		t.Fatalf("stale run was not closed: %+v", got)
+	}
+	if got := byID["done"]; got.Status != "succeeded" || got.FinishedAt != 11 {
+		t.Fatalf("terminal run changed: %+v", got)
+	}
+	changed, err = ReconcileInterruptedCollectionRuns(db, 30)
+	if err != nil || changed != 0 {
+		t.Fatalf("reconcile was not idempotent: changed=%d err=%v", changed, err)
+	}
+}
+
 func TestCollectionReadStateCountsOnlyActionableResults(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()

@@ -1,225 +1,202 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {
-  createDraftStore,
-  getDraft,
-  readStorageNotice,
-  removeDraftIfUnchanged,
-  saveDraft,
-} from '../src/drafts.ts'
-import type { Draft } from '../src/types.ts'
+import { createDraftStore, createDraftSession, readStorageNotice } from '../src/drafts.ts'
+import { applyMergeReview, buildMergeReview, freshDraft } from '../src/editor-state.ts'
+import type { Draft, TodoDetail } from '../src/types.ts'
 
 class MemoryStorage {
   values = new Map<string, string>()
   maximumLength = Infinity
-
-  getItem(key: string): string | null {
+  get length() {
+    return this.values.size
+  }
+  key(index: number) {
+    return [...this.values.keys()][index] ?? null
+  }
+  getItem(key: string) {
     return this.values.get(key) ?? null
   }
-
-  setItem(key: string, value: string): void {
-    if (value.length > this.maximumLength) {
+  setItem(key: string, value: string) {
+    if (value.length > this.maximumLength)
       throw new DOMException('Storage quota exceeded', 'QuotaExceededError')
-    }
     this.values.set(key, value)
   }
-
-  removeItem(key: string): void {
+  removeItem(key: string) {
     this.values.delete(key)
   }
-
-  copy(): MemoryStorage {
-    const storage = new MemoryStorage()
-    storage.values = new Map(this.values)
-    return storage
-  }
 }
-
 function draft(title: string): Draft {
   return {
     title,
     description: '未提交内容',
     project: 'atm',
     priority: 'P2',
-    etag: 'etag-1',
-    operationID: title,
+    etag: 'v1',
+    operationID: 'same-create-operation',
+    base: { title: '初始标题', description: '', project: 'atm', priority: 'P2' },
   }
 }
 
-test('the same object key belongs to each tab independently', async () => {
-  const a = createDraftStore(new MemoryStorage())
-  const b = createDraftStore(new MemoryStorage())
-  await a.saveDraft('todo:t42', draft('标签页 A'))
-  assert.equal(await b.getDraft('todo:t42'), undefined)
-  await b.saveDraft('todo:t42', draft('标签页 B'))
-
-  assert.deepEqual(await a.getDraft('todo:t42'), draft('标签页 A'))
-  assert.deepEqual(await b.getDraft('todo:t42'), draft('标签页 B'))
-  await a.saveDraft('todo:t42')
-  assert.equal(await a.getDraft('todo:t42'), undefined)
-  assert.deepEqual(await b.getDraft('todo:t42'), draft('标签页 B'))
-})
-
-test('reopening the editor or refreshing with the same tab storage restores its draft', async () => {
+test('editors in different tabs keep independent durable records for the same task', async () => {
   const storage = new MemoryStorage()
-  const original: Draft = {
-    ...draft('刷新后恢复'),
-    base: { title: '编辑前标题', description: '编辑前描述', project: 'atm', priority: 'P1' },
+  const a = createDraftStore(storage, 'editor-a')
+  const b = createDraftStore(storage, 'editor-b')
+  await a.saveDraft('todo:t42', draft('窗口 A'))
+  await b.saveDraft('todo:t42', draft('窗口 B'))
+  assert.deepEqual(await a.getDraft('todo:t42'), draft('窗口 A'))
+  assert.deepEqual(await b.getDraft('todo:t42'), draft('窗口 B'))
+  assert.equal((await a.listDrafts('todo:t42')).records.length, 2)
+  await a.removeDraftIfUnchanged('todo:t42', draft('窗口 A'))
+  assert.deepEqual(await b.getDraft('todo:t42'), draft('窗口 B'))
+})
+
+test('closed-tab and browser restart recovery is explicit and preserves source, baseline, and idempotency identity', async () => {
+  const storage = new MemoryStorage()
+  const old = createDraftStore(storage, 'closed-tab')
+  await old.saveDraft('new-todo', draft('关闭前内容'))
+  const restarted = createDraftStore(storage, 'new-browser-document')
+  assert.equal(await restarted.getDraft('new-todo'), undefined)
+  const recoveries = await restarted.listDrafts('new-todo')
+  assert.equal(recoveries.records.length, 1)
+  const recovered = recoveries.records[0].draft
+  assert.deepEqual(recovered, draft('关闭前内容'))
+  await restarted.saveDraft('new-todo', recovered)
+  await restarted.saveDraft('new-todo', { ...recovered, title: '恢复后修改' })
+  assert.deepEqual(await old.getDraft('new-todo'), draft('关闭前内容'))
+  assert.equal((await restarted.getDraft('new-todo'))?.operationID, 'same-create-operation')
+  await restarted.removeDraftIfUnchanged('new-todo', { ...recovered, title: '恢复后修改' })
+  assert.deepEqual(await old.getDraft('new-todo'), draft('关闭前内容'))
+})
+
+test('two tabs restoring the same creation draft cannot overwrite each other or alter create identity', async () => {
+  const storage = new MemoryStorage()
+  const source = createDraftStore(storage, 'source')
+  await source.saveDraft('new-todo', draft('原稿'))
+  const a = createDraftStore(storage, 'restored-a')
+  const b = createDraftStore(storage, 'restored-b')
+  const snapshot = (await source.listDrafts('new-todo')).records[0].draft
+  await a.saveDraft('new-todo', { ...snapshot, title: 'A 的修改' })
+  await b.saveDraft('new-todo', { ...snapshot, title: 'B 的修改' })
+  await a.saveDraft('new-todo')
+  assert.equal((await b.getDraft('new-todo'))?.title, 'B 的修改')
+  assert.equal((await b.getDraft('new-todo'))?.operationID, snapshot.operationID)
+  assert.equal((await source.getDraft('new-todo'))?.title, '原稿')
+})
+
+test('an old response cannot delete a later snapshot from its own editor', async () => {
+  const store = createDraftStore(new MemoryStorage(), 'same-editor')
+  const submitted = draft('提交时的内容')
+  await store.saveDraft('todo:t42', submitted)
+  const newer = { ...submitted, description: '响应前继续输入' }
+  await store.saveDraft('todo:t42', newer)
+  assert.equal(await store.removeDraftIfUnchanged('todo:t42', submitted), false)
+  assert.deepEqual(await store.getDraft('todo:t42'), newer)
+  assert.equal(await store.removeDraftIfUnchanged('todo:t42', newer), true)
+  assert.equal(await store.removeDraftIfUnchanged('todo:t42', newer), true)
+})
+
+test('restored ETag and baseline detect remote conflicts instead of rebasing silently', async () => {
+  const original: TodoDetail = {
+    todo: {
+      id: 't1',
+      title: '原始标题',
+      description: '原始说明',
+      priority: 'P2',
+      project: 'atm',
+      created: '2026-09-03',
+      status: 'open',
+    },
+    etag: 'v1',
   }
-  await createDraftStore(storage).saveDraft('todo:t42', original)
-
-  const reopenedEditor = createDraftStore(storage)
-  assert.deepEqual(await reopenedEditor.getDraft('todo:t42'), original)
-  const refreshedPage = createDraftStore(storage)
-  assert.deepEqual(await refreshedPage.getDraft('todo:t42'), original)
-})
-
-test('duplicating a tab copies its initial draft without sharing later edits or deletions', async () => {
-  const storageA = new MemoryStorage()
-  const a = createDraftStore(storageA)
-  await a.saveDraft('todo:t42', draft('复制时的草稿'))
-  const b = createDraftStore(storageA.copy())
-  assert.deepEqual(await b.getDraft('todo:t42'), draft('复制时的草稿'))
-
-  await b.saveDraft('todo:t42')
-  assert.equal(await b.getDraft('todo:t42'), undefined)
-  assert.deepEqual(await a.getDraft('todo:t42'), draft('复制时的草稿'))
-
-  await b.saveDraft('todo:t42', draft('复制页的新内容'))
-  await a.saveDraft('todo:t42', draft('原页的新内容'))
-  assert.deepEqual(await b.getDraft('todo:t42'), draft('复制页的新内容'))
-  assert.deepEqual(await a.getDraft('todo:t42'), draft('原页的新内容'))
-})
-
-test('storage read, write and deletion failures reject instead of reporting success', async () => {
-  const error = new DOMException('Storage access denied', 'SecurityError')
-  const unavailable = () => {
-    throw error
+  const local = { ...freshDraft(original, '', 'persisted-operation'), title: '本地标题' }
+  const storage = new MemoryStorage()
+  await createDraftStore(storage, 'old').saveDraft('todo:t1', local)
+  const recovered = (await createDraftStore(storage, 'new').listDrafts('todo:t1')).records[0].draft
+  const latest = {
+    ...original,
+    todo: { ...original.todo, title: '远程标题', description: '远程说明' },
+    etag: 'v2',
   }
-  const store = createDraftStore({
-    getItem: unavailable,
-    setItem: unavailable,
-    removeItem: unavailable,
-  })
-  await assert.rejects(store.getDraft('todo:t42'), error)
-  await assert.rejects(store.saveDraft('todo:t42', draft('不能保存')), error)
-  await assert.rejects(store.saveDraft('todo:t42'), error)
-  await assert.rejects(store.removeDraftIfUnchanged('todo:t42', draft('不能清理')), error)
+  const review = buildMergeReview(recovered, latest)
+  assert.equal(recovered.etag, 'v1')
+  assert.throws(() => applyMergeReview(recovered, review, {}), /冲突字段/)
+  const merged = applyMergeReview(recovered, review, { title: 'local' })
+  assert.equal(merged.title, '本地标题')
+  assert.equal(merged.description, '远程说明')
+  assert.equal(merged.etag, 'v2')
+  assert.equal(merged.operationID, 'persisted-operation')
 })
 
-test('denied access to browser sessionStorage rejects the public Promise APIs', async () => {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'sessionStorage')
-  const error = new DOMException('Session storage is disabled', 'SecurityError')
-  Object.defineProperty(globalThis, 'sessionStorage', {
+test('quota and deletion failures preserve the last persisted draft and reject', async () => {
+  const storage = new MemoryStorage()
+  const store = createDraftStore(storage, 'editor')
+  const previous = draft('已保存')
+  await store.saveDraft('todo:t42', previous)
+  storage.maximumLength = 500
+  await assert.rejects(
+    store.saveDraft('todo:t42', { ...previous, description: '新'.repeat(1000) }),
+    { name: 'QuotaExceededError' },
+  )
+  assert.deepEqual(await store.getDraft('todo:t42'), previous)
+  const remove = storage.removeItem
+  storage.removeItem = () => {
+    throw new Error('Unable to remove')
+  }
+  await assert.rejects(store.removeDraftIfUnchanged('todo:t42', previous), /Unable to remove/)
+  assert.deepEqual(await store.getDraft('todo:t42'), previous)
+  storage.removeItem = remove
+})
+
+test('damaged records are reported and retained without hiding valid recovery records', async () => {
+  const storage = new MemoryStorage()
+  const invalid = 'atm-workspace:draft:v2:todo%3At42:damaged'
+  storage.values.set(invalid, '{')
+  const store = createDraftStore(storage, 'valid')
+  await store.saveDraft('todo:t42', draft('有效草稿'))
+  const listing = await store.listDrafts('todo:t42')
+  assert.equal(listing.damaged, 1)
+  assert.equal(listing.records.length, 1)
+  assert.equal(storage.getItem(invalid), '{')
+  await assert.rejects(createDraftStore(storage, 'damaged').getDraft('todo:t42'))
+})
+
+test('unavailable persistent storage rejects public APIs rather than claiming a saved draft', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+  const error = new DOMException('Storage disabled', 'SecurityError')
+  Object.defineProperty(globalThis, 'localStorage', {
     configurable: true,
     get() {
       throw error
     },
   })
   try {
-    await assert.rejects(getDraft('todo:t42'), error)
-    await assert.rejects(saveDraft('todo:t42', draft('不能保存')), error)
-    await assert.rejects(saveDraft('todo:t42'), error)
-    await assert.rejects(removeDraftIfUnchanged('todo:t42', draft('不能清理')), error)
+    const session = createDraftSession('test')
+    await assert.rejects(session.listDrafts('todo:t42'), error)
+    await assert.rejects(session.getDraft('todo:t42'), error)
+    await assert.rejects(session.saveDraft('todo:t42', draft('保留在编辑器')), error)
+    await assert.rejects(session.removeDraftIfUnchanged('todo:t42', draft('保留在编辑器')), error)
   } finally {
-    if (descriptor) Object.defineProperty(globalThis, 'sessionStorage', descriptor)
-    else Reflect.deleteProperty(globalThis, 'sessionStorage')
+    if (descriptor) Object.defineProperty(globalThis, 'localStorage', descriptor)
+    else Reflect.deleteProperty(globalThis, 'localStorage')
   }
 })
 
-test('a quota error preserves the previously saved draft', async () => {
+test('recovery is sorted by last update and scoped to the requested task', async () => {
   const storage = new MemoryStorage()
-  const store = createDraftStore(storage)
-  const previous = draft('已保存内容')
-  await store.saveDraft('todo:t42', previous)
-  storage.maximumLength = 500
-
-  await assert.rejects(
-    store.saveDraft('todo:t42', { ...previous, description: '新'.repeat(1000) }),
-    { name: 'QuotaExceededError' },
+  await createDraftStore(storage, 'a', () => '2026-09-03T01:00:00Z').saveDraft(
+    'todo:t1',
+    draft('早'),
   )
-  assert.deepEqual(await store.getDraft('todo:t42'), previous)
-})
-
-test('a failed deletion preserves the draft and reports the failure', async () => {
-  const storage = new MemoryStorage()
-  const previous = draft('待删除的草稿')
-  await createDraftStore(storage).saveDraft('todo:t42', previous)
-  const store = createDraftStore({
-    getItem: (key) => storage.getItem(key),
-    setItem: (key, value) => storage.setItem(key, value),
-    removeItem: () => {
-      throw new Error('Unable to remove draft')
-    },
-  })
-
-  await assert.rejects(store.saveDraft('todo:t42'), /Unable to remove draft/)
-  await assert.rejects(store.removeDraftIfUnchanged('todo:t42', previous), /Unable to remove draft/)
-  assert.deepEqual(await store.getDraft('todo:t42'), previous)
-})
-
-test('an earlier save response cannot remove a newer editor draft in the same tab', async () => {
-  const storage = new MemoryStorage()
-  const firstEditor = createDraftStore(storage)
-  const submitted = draft('已提交，响应尚未返回')
-  await firstEditor.saveDraft('todo:t42', submitted)
-
-  const reopenedEditor = createDraftStore(storage)
-  const newer = { ...submitted, description: '重新打开编辑器后输入的新内容' }
-  await reopenedEditor.saveDraft('todo:t42', newer)
-
-  assert.equal(await firstEditor.removeDraftIfUnchanged('todo:t42', submitted), false)
-  assert.deepEqual(await reopenedEditor.getDraft('todo:t42'), newer)
-})
-
-test('a matching submitted snapshot can be removed and an absent draft is already clear', async () => {
-  const store = createDraftStore(new MemoryStorage())
-  const submitted = draft('已提交快照')
-  await store.saveDraft('todo:t42', submitted)
-
-  assert.equal(await store.removeDraftIfUnchanged('todo:t42', { ...submitted }), true)
-  assert.equal(await store.getDraft('todo:t42'), undefined)
-  assert.equal(await store.removeDraftIfUnchanged('todo:t42', submitted), true)
-})
-
-test('malformed or incomplete saved drafts reject without overwriting their source', async () => {
-  const invalidDrafts = [
-    '{',
-    'null',
-    '{}',
-    JSON.stringify({ ...draft('缺少操作 ID'), operationID: null }),
-  ]
-  for (const base of [
-    null,
-    {},
-    { title: '损坏的基线', description: '', project: '', priority: 2 },
-  ]) {
-    invalidDrafts.push(JSON.stringify({ ...draft('基线损坏'), base }))
-  }
-  for (const invalid of invalidDrafts) {
-    const storage = new MemoryStorage()
-    storage.values.set('atm-workspace:tab-draft:v1:todo:t42', invalid)
-    await assert.rejects(createDraftStore(storage).getDraft('todo:t42'))
-    assert.equal(storage.values.get('atm-workspace:tab-draft:v1:todo:t42'), invalid)
-  }
-})
-
-test('legacy origin-wide drafts are neither imported nor removed', async () => {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'indexedDB')
-  Object.defineProperty(globalThis, 'indexedDB', {
-    configurable: true,
-    get() {
-      throw new Error('Legacy IndexedDB must remain untouched')
-    },
-  })
-  try {
-    const store = createDraftStore(new MemoryStorage())
-    assert.equal(await store.getDraft('todo:t42'), undefined)
-    await store.saveDraft('todo:t42', draft('当前标签页'))
-    await store.saveDraft('todo:t42')
-    assert.match(readStorageNotice(), /旧版本的共享草稿不会自动恢复，原数据仍保留/)
-  } finally {
-    if (descriptor) Object.defineProperty(globalThis, 'indexedDB', descriptor)
-    else Reflect.deleteProperty(globalThis, 'indexedDB')
-  }
+  await createDraftStore(storage, 'b', () => '2026-09-03T02:00:00Z').saveDraft(
+    'todo:t1',
+    draft('晚'),
+  )
+  await createDraftStore(storage, 'c').saveDraft('todo:t2', draft('其他任务'))
+  assert.deepEqual(
+    (await createDraftStore(storage, 'reader').listDrafts('todo:t1')).records.map(
+      (record) => record.draft.title,
+    ),
+    ['晚', '早'],
+  )
+  assert.match(readStorageNotice(), /关闭标签页或重启后仍可/)
 })

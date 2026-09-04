@@ -1,9 +1,12 @@
 package knowledge
 
 import (
+	"context"
+
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/zane-byte-dev/atm/internal/executionlock"
 	"io/fs"
 	"net/url"
 	"os"
@@ -38,6 +41,12 @@ type EditDocumentInput struct {
 }
 
 func Add(dataDir string, input AddDocumentInput) (*Document, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	input.Title = strings.TrimSpace(input.Title)
 	input.Content = strings.TrimSpace(input.Content)
 	if input.Title == "" || input.Content == "" {
@@ -82,6 +91,12 @@ func Add(dataDir string, input AddDocumentInput) (*Document, error) {
 // File-backed imports are written to their canonical source and re-imported so
 // ATM never creates a divergent editable copy.
 func Update(dataDir, documentID, content string) (*Document, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	content = strings.TrimSpace(content)
 	if strings.TrimSpace(documentID) == "" || content == "" {
 		return nil, fmt.Errorf("knowledge document id and content must not be empty")
@@ -108,6 +123,12 @@ func Update(dataDir, documentID, content string) (*Document, error) {
 // External imported source files are intentionally preserved; only ATM's
 // managed copy is removed.
 func Delete(dataDir, documentID string) (*Document, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	documentID = strings.TrimSpace(documentID)
 	if documentID == "" {
 		return nil, fmt.Errorf("knowledge document id must not be empty")
@@ -152,6 +173,12 @@ func Delete(dataDir, documentID string) (*Document, error) {
 // Edit updates document metadata, preserving the document identity. Renaming a
 // file-backed document also updates its canonical source Markdown title.
 func Edit(dataDir, documentID string, input EditDocumentInput) (*Document, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	documentID = strings.TrimSpace(documentID)
 	if documentID == "" {
 		return nil, fmt.Errorf("knowledge document id must not be empty")
@@ -389,6 +416,12 @@ func normalizedKnowledgeTitle(value string) string {
 }
 
 func Import(dataDir, sourcePath string, template AddDocumentInput) ([]Document, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	canonical, err := filepath.Abs(sourcePath)
 	if err != nil {
 		return nil, err

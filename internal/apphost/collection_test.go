@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
@@ -51,6 +52,48 @@ func seedCollection(t *testing.T) (store.CollectionSource, []store.CollectionIte
 		t.Fatal(err)
 	}
 	return source, items
+}
+
+func TestCollectionSourceManagementUsesRegisteredConnectorWithoutExecutingIt(t *testing.T) {
+	h := testHost(t)
+	before := config.CollectionConnectors
+	t.Cleanup(func() { config.CollectionConnectors = before })
+	config.CollectionConnectors = map[string]config.CollectionConnectorConfig{"fixture": {Command: "/this-command-must-never-run"}}
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	body := `{"connector":"fixture","kind":"group","external_id":"explicit-source","name":"First","enabled":true,"strategy":"tasks","priority":"P1"}`
+	created := collectionTestCall(t, h, "collect.source.save", body).(collector.SaveSourceResult)
+	if created.Source.ID == "" || created.Source.Name != "First" {
+		t.Fatalf("create=%+v", created)
+	}
+	edited := collectionTestCall(t, h, "collect.source.save", `{"connector":"fixture","kind":"group","external_id":"explicit-source","name":"Edited","enabled":false,"strategy":"observe","decision_unit":"message","interval_minutes":30,"priority":"P2"}`).(collector.SaveSourceResult)
+	if edited.Source.ID != created.Source.ID || edited.Source.Name != "Edited" || edited.Source.Enabled || edited.Source.Strategy != "observe" || edited.Source.IntervalMinutes != 30 {
+		t.Fatalf("edit=%+v", edited)
+	}
+	for _, input := range []string{`{"connector":"missing","kind":"group","external_id":"source","enabled":true}`, `{"connector":"fixture","kind":"group","external_id":"source","enabled":true,"command":"sh"}`, `{"connector":"fixture","kind":"group","external_id":"source","enabled":true,"knowledge_collection":"../outside"}`} {
+		if _, err := h.callCollection(context.Background(), webCall(), "collect.source.save", json.RawMessage(input)); err == nil {
+			t.Fatalf("accepted unsafe source: %s", input)
+		}
+	}
+	agent := webCall()
+	agent.Actor.Kind = application.ActorAgent
+	if _, err := h.callCollection(context.Background(), agent, "collect.source.save", json.RawMessage(body)); !errors.Is(err, application.ErrForbidden) {
+		t.Fatalf("agent changed source: %v", err)
+	}
+	if _, err := h.callCollection(context.Background(), webCall(), "collect.source.delete", json.RawMessage(fmt.Sprintf(`{"source_id":%q}`, created.Source.ID))); !errors.Is(err, application.ErrInvalidArgument) {
+		t.Fatalf("unconfirmed deletion accepted: %v", err)
+	}
+	deleted := collectionTestCall(t, h, "collect.source.delete", fmt.Sprintf(`{"source_id":%q,"confirmed":true}`, created.Source.ID)).(collector.DeleteSourceResult)
+	if deleted.Source.ID != created.Source.ID {
+		t.Fatalf("delete=%+v", deleted)
+	}
+	overview := collectionTestCall(t, h, "collect.overview", `{}`).(CollectionOverviewResult)
+	if len(overview.Sources) != 0 {
+		t.Fatal("deleted source still listed")
+	}
 }
 
 func collectionTestCall(t *testing.T, h *Host, method, input string) any {

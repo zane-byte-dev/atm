@@ -12,10 +12,12 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 )
 
-// rebuildableTables hold the derived session mirror: every row in them came from
-// an agent's own transcript files and `atm sync` puts it back. Emptying them is
+// rebuildableTables hold the derived session mirror. External Agent rows come
+// from transcript files and `atm sync` puts them back. Clearing those rows is
 // what keeps a backup small enough to be worth taking regularly — on a real
 // database they are the overwhelming majority of the bytes.
+// ATM's own built-in model sessions and usage have no transcript to rebuild;
+// clearRebuildable preserves that subset of sessions/usage/usage_events.
 //
 // Everything not listed here is treated as this database's own record and is
 // carried into the backup. That direction matters: a table added later is
@@ -32,8 +34,8 @@ var rebuildableTables = []string{
 	"usage_events",
 }
 
-// RebuildableTables lists the tables a backup carries empty, so the command
-// layer can tell the user what restoring will not bring back until the next sync.
+// RebuildableTables lists tables whose external Agent mirror rows are pruned.
+// The built-in ATM accounting subset survives even in these tables.
 func RebuildableTables() []string {
 	out := append([]string(nil), rebuildableTables...)
 	sort.Strings(out)
@@ -163,9 +165,16 @@ func clearRebuildable(dbPath string) error {
 		return err
 	}
 	defer db.Close()
-	// Order does not matter: openNoMigrate leaves foreign_keys at SQLite's default
-	// of off, so each DELETE stands alone, and if they were on, the ON DELETE
-	// CASCADE from messages to sessions would remove the same rows anyway.
+	// Ancient schemas must remain exportable even if they do not yet represent
+	// built-in sessions. The surviving IDs stay in sessions while usage tables
+	// are pruned, so no connection-scoped temporary table is needed.
+	var builtinColumns int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('sessions')
+		WHERE name IN ('id','agent')`).Scan(&builtinColumns); err != nil {
+		return err
+	}
+	// openNoMigrate leaves foreign_keys at SQLite's default of off. Independently
+	// prune each mirror table, preserving ATM's irreplaceable accounting rows.
 	for _, table := range rebuildableTables {
 		exists, err := tableExists(db, table)
 		if err != nil {
@@ -176,7 +185,20 @@ func clearRebuildable(dbPath string) error {
 		if !exists {
 			continue
 		}
-		if _, err := db.Exec(`DELETE FROM ` + table); err != nil {
+		query := `DELETE FROM ` + table
+		var args []any
+		if builtinColumns == 2 {
+			switch table {
+			case "sessions":
+				query += ` WHERE COALESCE(agent,'')<>?`
+				args = []any{BuiltinAgent}
+			case "usage", "usage_events":
+				query += ` WHERE NOT EXISTS (SELECT 1 FROM sessions
+					WHERE sessions.id=` + table + `.session_id AND sessions.agent=?)`
+				args = []any{BuiltinAgent}
+			}
+		}
+		if _, err := db.Exec(query, args...); err != nil {
 			return fmt.Errorf("prune %s from snapshot: %w", table, err)
 		}
 	}

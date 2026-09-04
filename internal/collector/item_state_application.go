@@ -177,6 +177,11 @@ func (service Service) DeleteItems(
 			"deleting collection items requires confirmation", "confirmed", false,
 		)
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return DeleteItemsResult{}, itemStateError("delete collection items", err)
+	}
+	defer lock.Close()
 	db, err := store.Open()
 	if err != nil {
 		return DeleteItemsResult{}, itemStateError("delete collection items", err)

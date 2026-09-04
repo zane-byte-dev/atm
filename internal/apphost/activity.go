@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/background"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/dashboard"
+	"github.com/zane-byte-dev/atm/internal/presence"
 	"github.com/zane-byte-dev/atm/internal/session"
 	"github.com/zane-byte-dev/atm/internal/store"
 	"github.com/zane-byte-dev/atm/internal/work"
@@ -63,6 +66,8 @@ type SessionStatus struct {
 	Agents       []ActivityAgent       `json:"agents"`
 	Projects     []string              `json:"projects"`
 	Bindings     []work.BindingContext `json:"bindings"`
+	Presence     *presence.Snapshot    `json:"presence,omitempty"`
+	AgentHooks   bool                  `json:"agent_hooks"`
 }
 
 type UsageInput struct {
@@ -75,13 +80,16 @@ type CachedQuotaInput struct {
 }
 
 type CachedQuotaWindow struct {
-	Agent         string  `json:"agent"`
-	WindowMinutes int     `json:"window_minutes"`
-	UsedPercent   float64 `json:"used_percent"`
-	ResetsAt      int64   `json:"resets_at"`
-	ObservedAt    string  `json:"observed_at"`
-	Stale         bool    `json:"stale"`
-	ResetElapsed  bool    `json:"reset_elapsed"`
+	Agent         string            `json:"agent"`
+	WindowMinutes int               `json:"window_minutes"`
+	UsedPercent   float64           `json:"used_percent"`
+	ResetsAt      int64             `json:"resets_at"`
+	ObservedAt    string            `json:"observed_at"`
+	Stale         bool              `json:"stale"`
+	ResetElapsed  bool              `json:"reset_elapsed"`
+	Source        string            `json:"source,omitempty"`
+	Plan          string            `json:"plan,omitempty"`
+	Trend         *store.QuotaTrend `json:"trend,omitempty"`
 }
 
 type CachedQuota struct {
@@ -104,11 +112,19 @@ func (h *Host) callActivity(ctx context.Context, call application.Call, method s
 	case "session.show":
 		return invoke(input, func(value SessionShowInput) (any, error) { return activityShow(ctx, value) })
 	case "session.status":
-		return invoke(input, func(struct{}) (any, error) { return activityStatus(ctx) })
+		return invoke(input, func(struct{}) (any, error) {
+			result, err := activityStatus(ctx)
+			_, live := h.attachedRuntime()
+			if live != nil {
+				snapshot := live.Snapshot()
+				result.Presence, result.AgentHooks = &snapshot, true
+			}
+			return result, err
+		})
 	case "usage.snapshot":
 		return invoke(input, func(value UsageInput) (any, error) { return activityUsage(ctx, call, value) })
 	case "quota.cached":
-		return invoke(input, func(value CachedQuotaInput) (any, error) { return activityQuota(ctx, value) })
+		return invoke(input, func(value CachedQuotaInput) (any, error) { return h.cachedQuota(ctx, value) })
 	default:
 		return nil, application.NewError(application.CodeNotFound, "unknown activity API method")
 	}
@@ -345,6 +361,9 @@ func activityQuota(ctx context.Context, input CachedQuotaInput) (CachedQuota, er
 		return result, unavailable(err)
 	}
 	defer db.Close()
+	if err := store.BoundReadWait(ctx, db, 200*time.Millisecond); err != nil {
+		return result, unavailable(err)
+	}
 	var exists int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'quota_history'`).Scan(&exists); err != nil {
 		return result, unavailable(err)
@@ -371,6 +390,74 @@ func activityQuota(ctx context.Context, input CachedQuotaInput) (CachedQuota, er
 		result.Windows = append(result.Windows, item)
 	}
 	return result, rows.Err()
+}
+
+func (h *Host) cachedQuota(ctx context.Context, input CachedQuotaInput) (CachedQuota, error) {
+	result, err := activityQuota(ctx, input)
+	if err != nil {
+		return result, err
+	}
+	// This is only the explicitly produced runtime cache. A page read never
+	// starts a quota provider, and historical windows stay as a fallback for
+	// agents omitted by a targeted refresh.
+	cache, err := background.ReadQuotaCache(h.dataDir)
+	if err != nil {
+		return result, nil
+	}
+	now := time.Now().UTC()
+	index := make(map[string]map[int]int)
+	for i, window := range result.Windows {
+		if index[window.Agent] == nil {
+			index[window.Agent] = make(map[int]int)
+		}
+		index[window.Agent][window.WindowMinutes] = i
+	}
+	agents := make([]string, 0, len(cache.Snapshot.Agents))
+	for agent := range cache.Snapshot.Agents {
+		agents = append(agents, agent)
+	}
+	sort.Strings(agents)
+	used := false
+	for _, agent := range agents {
+		if input.Agent != "" && input.Agent != agent {
+			continue
+		}
+		observed, err := time.Parse(time.RFC3339, cache.UpdatedAtFor(agent))
+		if err != nil || observed.After(now.Add(time.Minute)) {
+			continue
+		}
+		agentQuota := cache.Snapshot.Agents[agent]
+		for _, window := range agentQuota.Windows() {
+			if window.WindowMinutes <= 0 {
+				continue
+			}
+			next := CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: agentQuota.Source, Plan: agentQuota.Plan, Trend: window.Trend}
+			if existing, ok := index[agent][window.WindowMinutes]; ok {
+				prior, _ := time.Parse(time.RFC3339, result.Windows[existing].ObservedAt)
+				if !observed.Before(prior) {
+					result.Windows[existing] = next
+					used = true
+				}
+			} else if len(result.Windows) < 100 {
+				if index[agent] == nil {
+					index[agent] = make(map[int]int)
+				}
+				index[agent][window.WindowMinutes] = len(result.Windows)
+				result.Windows = append(result.Windows, next)
+				used = true
+			}
+		}
+	}
+	if used {
+		result.Source = "runtime_quota_cache"
+	}
+	sort.Slice(result.Windows, func(i, j int) bool {
+		if result.Windows[i].Agent != result.Windows[j].Agent {
+			return result.Windows[i].Agent < result.Windows[j].Agent
+		}
+		return result.Windows[i].WindowMinutes < result.Windows[j].WindowMinutes
+	})
+	return result, nil
 }
 
 func activityText(value string, limit int) string {

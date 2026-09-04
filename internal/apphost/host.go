@@ -13,28 +13,45 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/background"
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/dashboard"
+	"github.com/zane-byte-dev/atm/internal/presence"
 	"github.com/zane-byte-dev/atm/internal/store"
 	"github.com/zane-byte-dev/atm/internal/work"
 )
 
 type Host struct {
-	Version      string
-	gate         sync.RWMutex
-	effectsMu    sync.Mutex
-	work         work.Service
-	effects      work.EffectExecutor
-	dataDir      string
-	databasePath string
-	configPath   string
+	Version            string
+	gate               sync.RWMutex
+	configRevision     string
+	configRevisionErr  error
+	effectsMu          sync.Mutex
+	work               work.Service
+	effects            work.EffectExecutor
+	dataDir            string
+	databasePath       string
+	configPath         string
+	runtimeMu          sync.RWMutex
+	jobs               *background.Manager
+	presence           *presence.Runtime
+	presenceLoader     func(context.Context, string) (dashboard.LiveStatus, error)
+	quickUsageMu       sync.Mutex
+	quickUsageAt       time.Time
+	quickUsageCache    CompanionTodayUsage
+	configRefreshError string
 }
 
 func New(version string) *Host {
 	store.SetStrictReadOnly(true)
-	return &Host{Version: version, work: work.Default,
+	host := &Host{Version: version, work: work.Default,
 		dataDir: config.AtmDir, databasePath: config.AtmDB, configPath: config.ConfigPath}
+	host.configRevision, host.configRevisionErr = config.Default.ReloadRevision()
+	host.restoreDataPaths()
+	return host
 }
 
 // restoreDataPaths pins this resident host to its startup database. A config
@@ -66,11 +83,7 @@ func ConfigureDataDir(path string) error {
 	config.AtmDir, config.AtmDB, config.ConfigPath = absolute, filepath.Join(absolute, "atm.db"), filepath.Join(absolute, "config.json")
 	// main may already have loaded the default account config. Do not inherit
 	// registries or project aliases when selecting an isolated data directory.
-	config.Pricing, config.Subscriptions, config.ProjectAliases = nil, nil, nil
-	config.CollectionConnectors, config.QuotaProviders = nil, nil
-	config.Guard = config.GuardConfig{}
-	config.OwnerName = ""
-	config.GrokLiveQuota, config.CollectionEnabled, config.TodoRefineOnAdd = false, false, false
+	config.ResetBusinessDefaults()
 	config.LoadConfig()
 	config.AtmDir, config.AtmDB, config.ConfigPath = absolute, filepath.Join(absolute, "atm.db"), filepath.Join(absolute, "config.json")
 	store.SetStrictReadOnly(true)

@@ -23,6 +23,7 @@ const (
 	EffectTodoWaiting            EffectKind = "todo_waiting"
 	EffectTodoStarted            EffectKind = "todo_started"
 	EffectTodoUpdated            EffectKind = "todo_updated"
+	EffectTodoProgress           EffectKind = "todo_progress"
 	EffectTodoRefined            EffectKind = "todo_refined"
 	EffectTodoClosed             EffectKind = "todo_closed"
 	EffectTodoAwakened           EffectKind = "todo_awakened"

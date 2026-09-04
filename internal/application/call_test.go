@@ -15,7 +15,9 @@ func TestActorKindAndOriginValidity(t *testing.T) {
 		t.Error("unknown actor kind is valid")
 	}
 
-	for _, origin := range []Origin{OriginCLI, OriginIPC, OriginController, OriginHook} {
+	for _, origin := range []Origin{
+		OriginCLI, OriginIPC, OriginWeb, OriginNativeControl, OriginController, OriginHook,
+	} {
 		if !origin.Valid() {
 			t.Errorf("Origin(%q).Valid() = false", origin)
 		}

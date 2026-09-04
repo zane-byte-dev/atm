@@ -285,7 +285,7 @@ func (service Service) DeleteSource(
 	call application.Call,
 	input DeleteSourceInput,
 ) (DeleteSourceResult, error) {
-	_, sourceID, err := validateSourceMutation(ctx, call, input.SourceID)
+	ctx, sourceID, err := validateSourceMutation(ctx, call, input.SourceID)
 	if err != nil {
 		return DeleteSourceResult{}, err
 	}
@@ -294,6 +294,11 @@ func (service Service) DeleteSource(
 			"deleting a collection source requires confirmation", "confirmed", false,
 		)
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return DeleteSourceResult{}, sourceUnavailable("delete collection source", err)
+	}
+	defer lock.Close()
 	db, source, err := openExistingSource(sourceID, "delete collection source")
 	if err != nil {
 		return DeleteSourceResult{}, err

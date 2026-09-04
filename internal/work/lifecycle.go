@@ -39,9 +39,10 @@ type CloseResult struct {
 }
 
 type WakeInput struct {
-	TodoID string `json:"todo_id"`
-	Status string `json:"status,omitempty"`
-	Reason string `json:"reason"`
+	TodoID       string `json:"todo_id"`
+	ExpectedETag string `json:"expected_etag,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Reason       string `json:"reason"`
 }
 
 type WakeResult struct {
@@ -350,6 +351,9 @@ func (service Service) Wake(ctx context.Context, call application.Call, input Wa
 		todo, err := transaction.Todo(input.TodoID)
 		if err != nil {
 			return lifecycleTodoNotFound(input.TodoID, err)
+		}
+		if err := checkExpectedTodo(call, *todo, input.ExpectedETag); err != nil {
+			return err
 		}
 		if todo.Status != store.TodoStatusInProgress || (todo.WakeCondition == "" && todo.ReviewAt == "") {
 			pending, pendingErr := transaction.pendingEffects(todo.ID)

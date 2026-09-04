@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +34,14 @@ func (h *Host) callWorkspaceSettings(ctx context.Context, call application.Call,
 		return invoke(input, func(value WorkspacePreferencesInput) (any, error) {
 			return h.SaveWorkspacePreferences(ctx, call, value)
 		})
+	case "settings.business.save":
+		return invoke(input, func(value WorkspaceBusinessInput) (any, error) { return h.SaveWorkspaceBusiness(ctx, call, value) })
+	case "settings.credential.save":
+		return invoke(input, func(value config.CredentialSaveInput) (any, error) {
+			return h.saveWorkspaceCredential(ctx, call, &value)
+		})
+	case "settings.credential.delete":
+		return invoke(input, func(struct{}) (any, error) { return h.saveWorkspaceCredential(ctx, call, nil) })
 	default:
 		return nil, application.NewError(application.CodeNotFound, "unknown API method")
 	}
@@ -300,18 +309,25 @@ type WorkspacePreferencesInput struct {
 	OwnerName string `json:"owner_name"`
 }
 
+type WorkspaceBusinessInput struct {
+	Revision string `json:"revision"`
+	config.SettingsPatch
+}
+
 type WorkspacePreferences struct {
-	GrokLiveQuota                  bool `json:"grok_live_quota"`
-	CollectionEnabled              bool `json:"collection_enabled"`
-	CollectionIntervalMinutes      int  `json:"collection_interval_minutes"`
-	CollectionLookbackMinutes      int  `json:"collection_lookback_minutes"`
-	CollectionMessageRetentionDays int  `json:"collection_message_retention_days"`
-	TodoRefineOnAdd                bool `json:"todo_refine_on_add"`
+	GrokLiveQuota                  bool   `json:"grok_live_quota"`
+	CollectionEnabled              bool   `json:"collection_enabled"`
+	CollectionIntervalMinutes      int    `json:"collection_interval_minutes"`
+	CollectionLookbackMinutes      int    `json:"collection_lookback_minutes"`
+	CollectionMessageRetentionDays int    `json:"collection_message_retention_days"`
+	TodoRefineOnAdd                bool   `json:"todo_refine_on_add"`
+	TodoRefinePrompt               string `json:"todo_refine_prompt"`
 }
 
 type WorkspaceModel struct {
 	Name                 string `json:"name"`
 	Source               string `json:"source"`
+	BaseURL              string `json:"base_url"`
 	CredentialConfigured bool   `json:"credential_configured"`
 	CredentialStatus     string `json:"credential_status"`
 }
@@ -346,6 +362,7 @@ type WorkspaceSync struct {
 }
 
 type WorkspaceSettings struct {
+	Revision    string               `json:"revision"`
 	OwnerName   string               `json:"owner_name"`
 	Timezone    string               `json:"timezone"`
 	Preferences WorkspacePreferences `json:"preferences"`
@@ -356,21 +373,43 @@ type WorkspaceSettings struct {
 }
 
 func (h *Host) WorkspaceSettings(ctx context.Context, call application.Call) (WorkspaceSettings, error) {
-	h.gate.RLock()
-	defer h.gate.RUnlock()
 	if err := validate(ctx, call); err != nil {
 		return WorkspaceSettings{}, err
 	}
+	// Refresh opportunistically when no operation has pinned the current
+	// configuration. While a background job is running, serve the exact cached
+	// snapshot it uses instead of making the settings page return a transient
+	// 503 for the duration of the job.
+	if h.gate.TryLock() {
+		defer h.gate.Unlock()
+		revision, err := config.Default.ReloadRevision()
+		h.restoreDataPaths()
+		if err != nil {
+			h.configRevisionErr = err
+			return WorkspaceSettings{}, workspaceSettingsReadError("settings could not be read", err)
+		}
+		h.configRevision, h.configRevisionErr = revision, nil
+		return h.workspaceSettings(ctx)
+	}
+	h.gate.RLock()
+	defer h.gate.RUnlock()
 	return h.workspaceSettings(ctx)
 }
 
 func (h *Host) workspaceSettings(ctx context.Context) (WorkspaceSettings, error) {
+	if h.configRevisionErr != nil {
+		return WorkspaceSettings{}, workspaceSettingsReadError("settings could not be read", h.configRevisionErr)
+	}
+	if h.configRevision == "" {
+		return WorkspaceSettings{}, workspaceSettingsReadError("settings could not be read", errors.New("configuration revision is unavailable"))
+	}
 	result := WorkspaceSettings{
+		Revision:  h.configRevision,
 		OwnerName: config.OwnerName, Timezone: workspaceLocation().String(),
-		Preferences: WorkspacePreferences{GrokLiveQuota: config.GrokLiveQuota, CollectionEnabled: config.CollectionEnabled, CollectionIntervalMinutes: config.CollectionIntervalMinutes, CollectionLookbackMinutes: config.CollectionLookbackMinutes, CollectionMessageRetentionDays: config.CollectionMessageRetentionDays, TodoRefineOnAdd: config.TodoRefineOnAdd},
-		Model:       WorkspaceModel{Name: config.TextModelName, Source: config.TextModelSource, CredentialStatus: "missing"},
+		Preferences: WorkspacePreferences{GrokLiveQuota: config.GrokLiveQuota, CollectionEnabled: config.CollectionEnabled, CollectionIntervalMinutes: config.CollectionIntervalMinutes, CollectionLookbackMinutes: config.CollectionLookbackMinutes, CollectionMessageRetentionDays: config.CollectionMessageRetentionDays, TodoRefineOnAdd: config.TodoRefineOnAdd, TodoRefinePrompt: config.TodoRefinePrompt},
+		Model:       WorkspaceModel{Name: config.TextModelName, Source: config.TextModelSource, BaseURL: safeModelBaseURL(config.TextModelBaseURL), CredentialStatus: "missing"},
 		Providers:   []WorkspaceProvider{},
-		Runtime:     WorkspaceRuntime{Mode: "workspace", Version: h.Version},
+		Runtime:     h.workspaceRuntime(),
 		Sync:        WorkspaceSync{Status: "never", RunStatus: "never"},
 	}
 	credential, err := config.Default.CredentialStatus()
@@ -411,8 +450,90 @@ func (h *Host) workspaceSettings(ctx context.Context) (WorkspaceSettings, error)
 	return result, ctx.Err()
 }
 
+func safeModelBaseURL(value string) string {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return ""
+	}
+	return value
+}
+
+func (h *Host) SaveWorkspaceBusiness(ctx context.Context, call application.Call, input WorkspaceBusinessInput) (WorkspaceSettings, error) {
+	if !h.gate.TryLock() {
+		return WorkspaceSettings{}, configBusy()
+	}
+	defer h.gate.Unlock()
+	if err := validateWrite(ctx, call); err != nil {
+		return WorkspaceSettings{}, err
+	}
+	if len(input.Revision) != 64 {
+		return WorkspaceSettings{}, invalid("settings revision is required")
+	}
+	if input.OwnerName != nil {
+		name := strings.TrimSpace(*input.OwnerName)
+		if name == "" || utf8.RuneCountInString(name) > 80 || strings.IndexFunc(name, unicode.IsControl) >= 0 {
+			return WorkspaceSettings{}, invalid("owner_name must contain 1–80 characters without control characters")
+		}
+		input.OwnerName = &name
+	}
+	for _, bounded := range []struct {
+		value *int
+		max   int
+	}{{input.CollectionIntervalMinutes, 1440}, {input.CollectionLookbackMinutes, 10080}, {input.CollectionMessageRetentionDays, 3650}} {
+		if bounded.value != nil && (*bounded.value < 0 || *bounded.value > bounded.max) {
+			return WorkspaceSettings{}, invalid("collection schedule or retention is outside the supported range")
+		}
+	}
+	for _, value := range []*string{input.TextModelBaseURL, input.TextModelName, input.TextModelSource} {
+		if value != nil && (len(*value) > 2000 || strings.IndexFunc(*value, unicode.IsControl) >= 0) {
+			return WorkspaceSettings{}, invalid("model settings contain an invalid value")
+		}
+	}
+	if input.TextModelBaseURL != nil && safeModelBaseURL(strings.TrimSpace(*input.TextModelBaseURL)) == "" {
+		return WorkspaceSettings{}, invalid("model endpoint must be an HTTP(S) URL without embedded credentials, query or fragment")
+	}
+	defer h.restoreDataPaths()
+	if err := config.Default.ApplyRevision(input.Revision, input.SettingsPatch); err != nil {
+		return WorkspaceSettings{}, err
+	}
+	revision, err := config.Default.ReloadRevision()
+	h.restoreDataPaths()
+	if err != nil {
+		h.configRevisionErr = err
+		return WorkspaceSettings{}, workspaceSettingsReadError("settings could not be read", err)
+	}
+	h.configRevision, h.configRevisionErr = revision, nil
+	return h.workspaceSettings(ctx)
+}
+
+func (h *Host) saveWorkspaceCredential(ctx context.Context, call application.Call, input *config.CredentialSaveInput) (config.CredentialStatus, error) {
+	if !h.gate.TryLock() {
+		return config.CredentialStatus{}, configBusy()
+	}
+	defer h.gate.Unlock()
+	if err := validateWrite(ctx, call); err != nil {
+		return config.CredentialStatus{}, err
+	}
+	var result config.CredentialStatus
+	var err error
+	if input == nil {
+		result, err = config.Default.DeleteCredential()
+	} else {
+		result, err = config.Default.SaveCredential(*input)
+	}
+	if err != nil {
+		if errors.Is(err, application.ErrInvalidArgument) {
+			return config.CredentialStatus{}, err
+		}
+		return config.CredentialStatus{}, workspaceSettingsReadError("model credential could not be saved", err)
+	}
+	return result, nil
+}
+
 func (h *Host) SaveWorkspacePreferences(ctx context.Context, call application.Call, input WorkspacePreferencesInput) (WorkspaceSettings, error) {
-	h.gate.Lock()
+	if !h.gate.TryLock() {
+		return WorkspaceSettings{}, configBusy()
+	}
 	defer h.gate.Unlock()
 	if err := validate(ctx, call); err != nil {
 		return WorkspaceSettings{}, err
@@ -432,6 +553,12 @@ func (h *Host) SaveWorkspacePreferences(ctx context.Context, call application.Ca
 	if _, err := config.Default.Set("owner_name", name); err != nil {
 		return WorkspaceSettings{}, workspaceSettingsReadError("personal preference could not be saved", err)
 	}
+	revision, err := config.Default.ReloadRevision()
 	h.restoreDataPaths()
+	if err != nil {
+		h.configRevisionErr = err
+		return WorkspaceSettings{}, workspaceSettingsReadError("settings could not be read", err)
+	}
+	h.configRevision, h.configRevisionErr = revision, nil
 	return h.workspaceSettings(ctx)
 }

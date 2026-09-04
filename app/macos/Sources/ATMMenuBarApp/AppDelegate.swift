@@ -2,11 +2,29 @@ import AppKit
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var statusBarController: StatusBarController?
+    private var transitionController: ATMLegacyTransitionController?
+    private var legacyLease: ATMLegacyRuntimeLease?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // First thing: whether the previous run ended cleanly can only be answered
         // before anything else touches the marker.
         ATMLog.recordStartup()
+        // This must precede StatusBarController: its stored properties eagerly
+        // construct ATMDataStore. A stopped Go instance still owns the backend.
+        if ATMRuntimeHandover.mode != .legacy {
+            NSApp.setActivationPolicy(.accessory)
+            transitionController = ATMLegacyTransitionController(mode: ATMRuntimeHandover.mode)
+            return
+        }
+        // Go takes the same lifetime lease before starting presence or jobs.
+        // Lock before constructing Store, then recheck the persisted selection.
+        legacyLease = try? ATMLegacyRuntimeLease(directory: ATMRuntimeHandover.dataDirectory)
+        guard legacyLease != nil, ATMRuntimeHandover.mode == .legacy else {
+            legacyLease = nil
+            NSApp.setActivationPolicy(.accessory)
+            transitionController = ATMLegacyTransitionController(mode: .web)
+            return
+        }
         NSApp.setActivationPolicy(.regular)
         // Must happen before any window opens: the Edit menu is what makes
         // ⌘V / ⌘C / ⌘X / ⌘A / ⌘Z work inside the app's text fields.
@@ -59,11 +77,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     func applicationWillTerminate(_ notification: Notification) {
         statusBarController?.stop()
+        transitionController?.stop()
+        legacyLease = nil
         ATMLog.recordCleanExit()
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { statusBarController?.openDesktop() }
+        if !flag { statusBarController?.openDesktop(); transitionController?.openWeb() }
         return true
     }
 

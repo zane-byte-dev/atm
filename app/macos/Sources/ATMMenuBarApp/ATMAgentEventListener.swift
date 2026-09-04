@@ -54,6 +54,8 @@ final class ATMAgentEventListener {
     private let onEvent: @Sendable (ATMAgentEvent) -> Void
     private let onGuardRequest: @Sendable (ATMGuardRequest) -> Void
     private var listenDescriptor: Int32 = -1
+    private var ownershipLock: Int32 = -1
+    private var socketIdentity: (dev_t, ino_t)?
     private var acceptSource: DispatchSourceRead?
     private var connections: [Int32: ATMAgentEventConnection] = [:]
 
@@ -73,6 +75,7 @@ final class ATMAgentEventListener {
     var socketPath: String { path }
 
     func start() throws {
+        guard listenDescriptor < 0 else { return }
         guard path.utf8.count <= Self.maximumPathLength else {
             throw StartError.pathTooLong(path)
         }
@@ -86,11 +89,46 @@ final class ATMAgentEventListener {
             attributes: [.posixPermissions: 0o700]
         )
 
-        // A socket file left behind by a previous run would make bind fail with
-        // EADDRINUSE even though nothing is listening. Removing it is safe: a
-        // live listener in another process keeps working on its own descriptor,
-        // and hooks fail closed (they exit 0 silently) if they lose the path.
-        unlink(path)
+        // Shared with Go; never unlink a path owned by another runtime. The
+        // AppDelegate separately owns presence.lock before constructing Store.
+        let lock = open(path + ".lock", O_RDWR | O_CREAT | O_NOFOLLOW, 0o600)
+        guard lock >= 0 else { throw StartError.bindFailed(path: path, errno: errno) }
+        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else {
+            close(lock)
+            throw StartError.bindFailed(path: path, errno: EADDRINUSE)
+        }
+        ownershipLock = lock
+        var started = false
+        defer { if !started { removeOwnedSocket(); releaseOwnershipLock() } }
+
+        var existing = stat()
+        if lstat(path, &existing) == 0 {
+            guard (existing.st_mode & S_IFMT) == S_IFSOCK else {
+                throw StartError.bindFailed(path: path, errno: EEXIST)
+            }
+            let probe = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard probe >= 0 else { throw StartError.socketFailed(errno: errno) }
+            setNonBlocking(probe)
+            var address = sockaddr_un()
+            address.sun_family = sa_family_t(AF_UNIX)
+            address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+            withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+                buffer.copyBytes(from: Array(path.utf8)); buffer[path.utf8.count] = 0
+            }
+            let connected = withUnsafePointer(to: &address) { ptr in
+                ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.connect(probe, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            }
+            let code = errno
+            close(probe)
+            guard connected != 0, code == ECONNREFUSED else {
+                throw StartError.bindFailed(path: path, errno: EADDRINUSE)
+            }
+            var current = stat()
+            guard lstat(path, &current) == 0, existing.st_dev == current.st_dev, existing.st_ino == current.st_ino else {
+                throw StartError.bindFailed(path: path, errno: EADDRINUSE)
+            }
+            unlink(path)
+        }
 
         let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
         guard descriptor >= 0 else { throw StartError.socketFailed(errno: errno) }
@@ -120,13 +158,15 @@ final class ATMAgentEventListener {
             close(descriptor)
             throw StartError.bindFailed(path: path, errno: code)
         }
+        var identity = stat()
+        if lstat(path, &identity) == 0 { socketIdentity = (identity.st_dev, identity.st_ino) }
 
         chmod(path, 0o600)
 
         guard listen(descriptor, 16) == 0 else {
             let code = errno
             close(descriptor)
-            unlink(path)
+            removeOwnedSocket()
             throw StartError.listenFailed(errno: code)
         }
 
@@ -136,6 +176,7 @@ final class ATMAgentEventListener {
         source.setCancelHandler { close(descriptor) }
         acceptSource = source
         source.resume()
+        started = true
     }
 
     func stop() {
@@ -148,11 +189,28 @@ final class ATMAgentEventListener {
             }
             connections.removeAll()
         }
-        unlink(path)
+        removeOwnedSocket()
+        releaseOwnershipLock()
     }
 
     deinit {
         acceptSource?.cancel()
+        removeOwnedSocket()
+        releaseOwnershipLock()
+    }
+
+    private func removeOwnedSocket() {
+        guard ownershipLock >= 0, let identity = socketIdentity else { return }
+        var current = stat()
+        if lstat(path, &current) == 0, current.st_dev == identity.0, current.st_ino == identity.1 { unlink(path) }
+        socketIdentity = nil
+    }
+
+    private func releaseOwnershipLock() {
+        guard ownershipLock >= 0 else { return }
+        flock(ownershipLock, LOCK_UN)
+        close(ownershipLock)
+        ownershipLock = -1
     }
 
     private func acceptPending() {

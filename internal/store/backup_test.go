@@ -62,6 +62,60 @@ func TestSnapshotKeepsOwnRecordsAndDropsRebuildable(t *testing.T) {
 	}
 }
 
+func TestSnapshotPreservesBuiltinAccountingAndExecutionReceipts(t *testing.T) {
+	db := openTempDB(t)
+	calls := []BuiltinModelCall{
+		{Task: "collection", Model: "fixture-model", InputTokens: 100, CacheHitTokens: 20, OutputTokens: 10, TS: 123, OK: true},
+		{Task: "todo-refine", Model: "fixture-model", InputTokens: 50, OutputTokens: 5, TS: 124, OK: false},
+	}
+	if err := RecordBuiltinUsage(db, "atm-runtime-job", calls); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO sessions (id,short_id,agent,project,file_path,created_ts,last_ts) VALUES ('external','ext','codex','','/fixture',1,2)`,
+		`INSERT INTO usage (session_id,model,input_tokens) VALUES ('external','fixture-model',200)`,
+		`INSERT INTO usage_events (session_id,model,ts,input_tokens) VALUES ('external','fixture-model',1,200)`,
+		`INSERT INTO background_jobs (id,idempotency_key,payload_hash,kind,status,request_json,result_json,created_at) VALUES ('job-id','key','hash','collect.run','running','{}','{}',1)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := filepath.Join(t.TempDir(), "snapshot.db")
+	if err := SnapshotOwnRecords(snapshot); err != nil {
+		t.Fatal(err)
+	}
+	copied, err := openNoMigrate(snapshot, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copied.Close()
+	var sessions, events, input, cache, jobs int
+	if err := copied.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if err := copied.QueryRow(`SELECT COUNT(*),SUM(input_tokens),SUM(cache_read_tokens) FROM usage_events`).Scan(&events, &input, &cache); err != nil {
+		t.Fatal(err)
+	}
+	if err := copied.QueryRow(`SELECT COUNT(*) FROM background_jobs`).Scan(&jobs); err != nil {
+		t.Fatal(err)
+	}
+	if sessions != 1 || events != 2 || input != 130 || cache != 20 || jobs != 1 {
+		t.Fatalf("snapshot: sessions=%d events=%d input=%d cache=%d jobs=%d", sessions, events, input, cache, jobs)
+	}
+	// A journal that was copied just before its unlink can replay after restore.
+	// Stable IDs must replace exactly this operation without counting it twice.
+	if err := RecordBuiltinUsage(copied, "atm-runtime-job", calls); err != nil {
+		t.Fatal(err)
+	}
+	if err := copied.QueryRow(`SELECT COUNT(*),SUM(input_tokens) FROM usage_events`).Scan(&events, &input); err != nil {
+		t.Fatal(err)
+	}
+	if events != 2 || input != 130 {
+		t.Fatalf("restored journal replay: events=%d input=%d", events, input)
+	}
+}
+
 func TestSnapshotRefusesExistingDestination(t *testing.T) {
 	openTempDB(t)
 	existing := filepath.Join(t.TempDir(), "snapshot.db")

@@ -2,8 +2,11 @@ package collector
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
@@ -71,6 +74,9 @@ func (service Service) Snapshot(
 		return Snapshot{}, sourceUnavailable("load collection snapshot", err)
 	}
 	defer db.Close()
+	if err := reconcileInterruptedRunsForSnapshot(ctx, db); err != nil {
+		return Snapshot{}, sourceUnavailable("reconcile collection snapshot", err)
+	}
 	overview, err := store.LoadCollectionOverview(db, limit)
 	if err != nil {
 		return Snapshot{}, sourceUnavailable("load collection snapshot", err)
@@ -89,6 +95,27 @@ func (service Service) Snapshot(
 		Messages:           messages,
 		CollectionOverview: overview,
 	}, nil
+}
+
+// reconcileInterruptedRunsForSnapshot makes a crashed run converge on the next
+// overview read. A live collector holds the same OS lock, in which case the
+// short attempt is skipped and its running row remains visible as it should.
+func reconcileInterruptedRunsForSnapshot(ctx context.Context, db *sql.DB) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+	defer cancel()
+	lock, err := acquireCollectionLock(lockCtx)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil
+		}
+		return err
+	}
+	defer lock.Close()
+	_, err = store.ReconcileInterruptedCollectionRuns(db, time.Now().In(config.Loc).Unix())
+	return err
 }
 
 func (service Service) connectorHealth(overview store.CollectionOverview) []ConnectorHealth {

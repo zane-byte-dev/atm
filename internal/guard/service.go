@@ -154,6 +154,10 @@ const (
 type DecisionResult struct {
 	Approval Approval        `json:"approval"`
 	Outcome  DecisionOutcome `json:"outcome"`
+	// Replayed reports that the requested decision had already been durably
+	// recorded. It is derived from the approval state, so it survives process
+	// restarts and does not depend on an in-memory request cache.
+	Replayed bool `json:"replayed"`
 }
 
 type OperationMeta struct {
@@ -173,7 +177,6 @@ func (service Service) List(ctx context.Context, call application.Call, input Li
 		return ListResult{}, meta, err
 	}
 	defer db.Close()
-
 	approvals, err := store.ListApprovals(db, statuses, service.unixNow(), input.Limit)
 	if err != nil {
 		return ListResult{}, meta, unavailableGuard("list gated actions", err)
@@ -208,16 +211,15 @@ func (service Service) Show(ctx context.Context, call application.Call, input Sh
 // Decide applies the human-only approval policy and owns the entire persisted
 // transition. It preserves the gate ownership boundary: an original caller
 // still inside its declared deadline runs the approved command, while the
-// service may claim and execute it exactly once after that deadline.
+// service may claim and execute it exactly once after that deadline. The
+// persisted decision itself is also the idempotency record: retrying the same
+// approve/deny is safe across restarts, while reversing it remains a conflict.
 func (service Service) Decide(ctx context.Context, call application.Call, input DecisionInput) (DecisionResult, error) {
 	if err := validateGuardCall(ctx, call); err != nil {
 		return DecisionResult{}, err
 	}
-	// `_ipc` is intentionally replayable from a terminal and currently carries
-	// no proof that ATM.app, rather than an Agent, launched it. Never turn its
-	// convenient human@ipc presentation identity into Guard authority. A future
-	// App decision method needs an authenticated local capability before this
-	// policy can admit OriginIPC.
+	// `_ipc`, browser, and native-control identities do not prove that a person is
+	// present at the Guard prompt. Decisions remain restricted to the CLI edge.
 	if call.Actor.Kind != application.ActorHuman || call.Actor.Origin != application.OriginCLI {
 		err := application.NewError(application.CodeForbidden, "only a human at the Guard CLI edge may approve or deny a gated action")
 		err.Details = map[string]any{
@@ -252,63 +254,163 @@ func (service Service) Decide(ctx context.Context, call application.Call, input 
 	if approval == nil {
 		return DecisionResult{}, notFoundApproval(input.ID)
 	}
-	if approval.Status == ApprovalRunning {
-		return DecisionResult{}, conflictGuard(fmt.Sprintf(
-			"approval %s is already executing; check the target yourself with `atm guard show %s`",
-			input.ID, input.ID), input.ID, approval.Status, nil)
+	if approval.Status != ApprovalPending {
+		return service.replayDecision(ctx, db, *approval, input, now)
 	}
 
 	if !input.Approve {
 		if err := store.DenyApproval(db, input.ID, now, input.DecidedBy, input.Reason); err != nil {
-			return DecisionResult{}, decisionStoreError(input.ID, approval.Status, err)
+			return service.recoverDecisionRace(ctx, db, input, now, approval.Status, err)
 		}
-		return service.loadDecision(db, input.ID, OutcomeDenied, now)
+		return service.loadDecision(db, input.ID, OutcomeDenied, now, false)
 	}
 
 	if err := store.ApproveApproval(db, input.ID, now, input.DecidedBy, input.Reason); err != nil {
-		return DecisionResult{}, decisionStoreError(input.ID, approval.Status, err)
+		return service.recoverDecisionRace(ctx, db, input, now, approval.Status, err)
 	}
-	if !input.Run {
-		return service.loadDecision(db, input.ID, OutcomeApproved, now)
+	approved, err := store.GetApproval(db, input.ID, now)
+	if err != nil {
+		return DecisionResult{}, unavailableGuard("read Guard decision", err)
+	}
+	if approved == nil {
+		return DecisionResult{}, notFoundApproval(input.ID)
+	}
+	return service.continueApproved(ctx, db, *approved, input.Run, now, false)
+}
+
+// replayDecision interprets a durable state reached by an earlier equivalent
+// request. A matching decision succeeds without replacing its audit fields. An
+// opposite decision is rejected even if the earlier execution is still running
+// or has already completed.
+func (service Service) replayDecision(
+	ctx context.Context,
+	db *sql.DB,
+	approval Approval,
+	input DecisionInput,
+	now int64,
+) (DecisionResult, error) {
+	switch approval.Status {
+	case ApprovalDenied:
+		if !input.Approve {
+			return service.loadDecision(db, approval.ID, OutcomeDenied, now, true)
+		}
+	case ApprovalApproved:
+		if input.Approve {
+			return service.continueApproved(ctx, db, approval, input.Run, now, true)
+		}
+	case ApprovalRunning:
+		if input.Approve {
+			// The durable claim prevents a second execution, but it cannot prove
+			// whether the external effect finished. Keep the long-standing explicit
+			// conflict instead of turning an unknown outcome into reported success.
+			return DecisionResult{}, conflictGuard(fmt.Sprintf(
+				"approval %s is already executing; check the target yourself with `atm guard show %s`",
+				approval.ID, approval.ID), approval.ID, approval.Status, nil)
+		}
+	case ApprovalDone:
+		if input.Approve {
+			return service.loadCompletedDecision(db, approval.ID, now, true)
+		}
+	}
+
+	desired := ApprovalDenied
+	if input.Approve {
+		desired = ApprovalApproved
+	}
+	return DecisionResult{}, conflictGuard(fmt.Sprintf(
+		"approval %s is already %s and cannot be changed to %s",
+		approval.ID, approval.Status, desired), approval.ID, approval.Status, nil)
+}
+
+// recoverDecisionRace distinguishes a concurrent equivalent decision from a
+// persistence failure. This matters when two authenticated clients retry at
+// nearly the same time: one transition wins, and the other observes it as a
+// replay instead of receiving a false conflict.
+func (service Service) recoverDecisionRace(
+	ctx context.Context,
+	db *sql.DB,
+	input DecisionInput,
+	now int64,
+	previousStatus string,
+	cause error,
+) (DecisionResult, error) {
+	approval, err := store.GetApproval(db, input.ID, now)
+	if err != nil {
+		return DecisionResult{}, unavailableGuard("read concurrent Guard decision", err)
+	}
+	if approval != nil && approval.Status != ApprovalPending {
+		return service.replayDecision(ctx, db, *approval, input, now)
+	}
+	return DecisionResult{}, decisionStoreError(input.ID, previousStatus, cause)
+}
+
+func (service Service) continueApproved(
+	ctx context.Context,
+	db *sql.DB,
+	approval Approval,
+	run bool,
+	now int64,
+	replayed bool,
+) (DecisionResult, error) {
+	if !run {
+		return service.loadDecision(db, approval.ID, OutcomeApproved, now, replayed)
 	}
 	if approval.GateOwnsExecution(now) {
-		return service.loadDecision(db, input.ID, OutcomeApprovedGateRun, now)
+		return service.loadDecision(db, approval.ID, OutcomeApprovedGateRun, now, replayed)
 	}
 	if approval.StdinPiped {
 		return DecisionResult{}, conflictGuard(fmt.Sprintf(
 			"approval %s was given input on a pipe, which cannot be reproduced; it is approved but must be re-run by whoever composed it",
-			input.ID), input.ID, ApprovalApproved, nil)
+			approval.ID), approval.ID, ApprovalApproved, nil)
 	}
-	if err := service.executor.Validate(ctx, *approval); err != nil {
-		return DecisionResult{}, forbiddenDeferredExecution(input.ID, err)
+	if err := service.executor.Validate(ctx, approval); err != nil {
+		return DecisionResult{}, forbiddenDeferredExecution(approval.ID, err)
 	}
 	if err := guardContextError(ctx); err != nil {
 		return DecisionResult{}, err
 	}
-	if err := store.ClaimApprovalRun(db, input.ID, service.runner, service.pid()); err != nil {
+	if err := store.ClaimApprovalRun(db, approval.ID, service.runner, service.pid()); err != nil {
 		if errors.Is(err, store.ErrApprovalRunClaimLost) {
-			// The waiting gate may wake and win the only execution claim between the
-			// ownership check and this update. Its result is then authoritative.
-			return service.loadDecision(db, input.ID, OutcomeApprovedGateRun, now)
+			// Another owner won the one durable execution claim. Reloading the row
+			// makes a concurrent retry return running/done without re-executing.
+			current, readErr := store.GetApproval(db, approval.ID, now)
+			if readErr != nil {
+				return DecisionResult{}, unavailableGuard("read claimed Guard execution", readErr)
+			}
+			if current == nil {
+				return DecisionResult{}, notFoundApproval(approval.ID)
+			}
+			return service.replayDecision(ctx, db, *current, DecisionInput{
+				ID: approval.ID, Approve: true, Run: run,
+			}, now)
 		}
 		return DecisionResult{}, unavailableGuard("claim gated action execution", err)
 	}
 
-	execution := service.executor.Execute(ctx, *approval)
-	if err := store.FinishApproval(db, input.ID, execution.ExitCode, execution.Output); err != nil {
+	execution := service.executor.Execute(ctx, approval)
+	if err := store.FinishApproval(db, approval.ID, execution.ExitCode, execution.Output); err != nil {
 		return DecisionResult{}, unavailableGuard("record gated action outcome", err)
 	}
-	result, err := service.loadDecision(db, input.ID, OutcomeApprovedAndRan, now)
+	return service.loadCompletedDecision(db, approval.ID, now, replayed)
+}
+
+func (service Service) loadCompletedDecision(
+	db *sql.DB,
+	id string,
+	now int64,
+	replayed bool,
+) (DecisionResult, error) {
+	result, err := service.loadDecision(db, id, OutcomeApprovedAndRan, now, replayed)
 	if err != nil {
 		return DecisionResult{}, err
 	}
-	if execution.ExitCode != 0 {
+	if result.Approval.ExitCode != nil && *result.Approval.ExitCode != 0 {
 		appErr := application.NewError(application.CodeUnavailable, fmt.Sprintf(
-			"approved, but %s exited %d", approval.Tool, execution.ExitCode))
+			"approved, but %s exited %d", result.Approval.Tool, *result.Approval.ExitCode))
 		appErr.Details = map[string]any{
-			"approval_id": input.ID,
-			"tool":        approval.Tool,
-			"exit_code":   execution.ExitCode,
+			"approval_id": id,
+			"tool":        result.Approval.Tool,
+			"exit_code":   *result.Approval.ExitCode,
 		}
 		return result, appErr
 	}
@@ -339,7 +441,13 @@ func (service Service) unixNow() int64 {
 	return service.now().In(config.Loc).Unix()
 }
 
-func (service Service) loadDecision(db *sql.DB, id string, outcome DecisionOutcome, now int64) (DecisionResult, error) {
+func (service Service) loadDecision(
+	db *sql.DB,
+	id string,
+	outcome DecisionOutcome,
+	now int64,
+	replayed bool,
+) (DecisionResult, error) {
 	approval, err := store.GetApproval(db, id, now)
 	if err != nil {
 		return DecisionResult{}, unavailableGuard("read Guard decision", err)
@@ -347,7 +455,7 @@ func (service Service) loadDecision(db *sql.DB, id string, outcome DecisionOutco
 	if approval == nil {
 		return DecisionResult{}, notFoundApproval(id)
 	}
-	return DecisionResult{Approval: *approval, Outcome: outcome}, nil
+	return DecisionResult{Approval: *approval, Outcome: outcome, Replayed: replayed}, nil
 }
 
 func parseApprovalStatuses(value string) ([]string, error) {

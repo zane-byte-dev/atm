@@ -75,7 +75,8 @@ import (
 // invocation ledger: command paths and stable outcome classes are observable,
 // while arguments, error messages, working directories and user content are not
 // representable in the schema. v55 records immutable Todo creation responses so
-// a retried Web request cannot create a second Todo or return later edits.
+// a retried Web request cannot create a second Todo or return later edits. v56
+// adds durable background execution receipts and domain change revisions.
 //
 // Keep the minimum at 21 while those upgrade steps exist; after the live database
 // has been upgraded, raise this to SchemaVersion and delete the steps. Note what a
@@ -84,7 +85,7 @@ import (
 // but todos, memory and knowledge are this database's own records and have
 // nowhere to rebuild from.
 const (
-	SchemaVersion        = 55
+	SchemaVersion        = 56
 	minUpgradableVersion = 21
 )
 
@@ -98,6 +99,8 @@ const datePattern = `[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]`
 // caller's transaction; see bootstrapSchema for why that matters.
 func createSchema(tx *sql.Tx) error {
 	statements := []string{
+		backgroundJobsSchema,
+		`CREATE INDEX idx_background_jobs_created ON background_jobs(created_at DESC)`,
 		// --- agent session mirror: derived data, rebuilt by `atm sync` ---
 		`CREATE TABLE sync_state (
 			file_path    TEXT PRIMARY KEY,
@@ -851,5 +854,5 @@ func createSchema(tx *sql.Tx) error {
 			return fmt.Errorf("create schema: %w", err)
 		}
 	}
-	return nil
+	return InstallWorkspaceChangeTracking(tx)
 }

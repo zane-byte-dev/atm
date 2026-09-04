@@ -314,6 +314,10 @@ func loadConfigFile() {
 	if json.Unmarshal(data, &cfg) != nil {
 		return
 	}
+	applyFileConfig(cfg)
+}
+
+func applyFileConfig(cfg FileConfig) {
 	if cfg.Timezone != "" {
 		loc, err := time.LoadLocation(cfg.Timezone)
 		if err == nil {

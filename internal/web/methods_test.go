@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/application"
@@ -61,5 +62,132 @@ func TestOtherWorkspacesKeepAuthenticationAndUpgradeBoundary(t *testing.T) {
 	}
 	if dispatched != len(reads) {
 		t.Fatalf("blocked operations reached services: calls=%d", dispatched)
+	}
+}
+
+func TestWorkspaceMethodWriteDomains(t *testing.T) {
+	tests := []struct {
+		method  string
+		write   bool
+		domains []string
+	}{
+		{"todo.list", false, nil},
+		{"todo.show", false, nil},
+		{"todo.doc", false, nil},
+		{"todo.dependency.list", false, nil},
+		{"jobs.list", false, nil},
+		{"jobs.show", false, nil},
+		{"presence.snapshot", false, nil},
+		{"session.list", false, nil},
+		{"session.search", false, nil},
+		{"session.show", false, nil},
+		{"session.status", false, nil},
+		{"usage.snapshot", false, nil},
+		{"quota.cached", false, nil},
+		{"knowledge.catalog", false, nil},
+		{"knowledge.query", false, nil},
+		{"knowledge.document.get", false, nil},
+		{"memory.recall", false, nil},
+		{"memory.get", false, nil},
+		{"collect.overview", false, nil},
+		{"collect.items", false, nil},
+		{"collect.item.show", false, nil},
+		{"collect.history", false, nil},
+		{"day.snapshot", false, nil},
+		{"day.show", false, nil},
+		{"day.ledger", false, nil},
+		{"settings.get", false, nil},
+
+		{"todo.create", true, []string{"todos"}},
+		{"todo.update", true, []string{"todos"}},
+		{"todo.start", true, []string{"todos"}},
+		{"todo.done", true, []string{"todos"}},
+		{"todo.archive", true, []string{"todos"}},
+		{"todo.restore", true, []string{"todos"}},
+		{"todo.plan.set", true, []string{"todos"}},
+		{"todo.progress.append", true, []string{"todos"}},
+		{"todo.dependency.add", true, []string{"todos"}},
+		{"todo.dependency.remove", true, []string{"todos"}},
+		{"todo.wait.update", true, []string{"todos"}},
+		{"todo.wake", true, []string{"todos"}},
+		{"jobs.run", true, []string{"jobs"}},
+		{"jobs.cancel", true, []string{"jobs"}},
+		{"knowledge.document.create", true, []string{"knowledge"}},
+		{"knowledge.document.update", true, []string{"knowledge"}},
+		{"knowledge.collection.create", true, []string{"knowledge"}},
+		{"memory.create", true, []string{"memory"}},
+		{"memory.supersede", true, []string{"memory"}},
+		{"collect.item.read", true, []string{"collection"}},
+		{"collect.item.archive", true, []string{"collection"}},
+		{"collect.source.enabled", true, []string{"collection"}},
+		{"collect.source.muted", true, []string{"collection"}},
+		{"collect.source.save", true, []string{"collection"}},
+		{"collect.source.delete", true, []string{"collection"}},
+		{"settings.preferences.save", true, []string{"settings"}},
+		{"settings.business.save", true, []string{"settings"}},
+		{"settings.credential.save", true, []string{"settings"}},
+		{"settings.credential.delete", true, []string{"settings"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.method, func(t *testing.T) {
+			known, write := workspaceMethodAccess(test.method)
+			if !known || write != test.write {
+				t.Fatalf("access = known %v, write %v; want true, %v", known, write, test.write)
+			}
+			if got := workspaceWriteDomains(test.method); !reflect.DeepEqual(got, test.domains) {
+				t.Fatalf("domains = %v, want %v", got, test.domains)
+			}
+		})
+	}
+
+	if known, write := workspaceMethodAccess("undeclared.method"); known || write {
+		t.Fatalf("undeclared method access = known %v, write %v", known, write)
+	}
+	if domains := workspaceWriteDomains("undeclared.method"); domains != nil {
+		t.Fatalf("undeclared method domains = %v, want nil", domains)
+	}
+}
+
+func TestWorkspaceMutationPublishesOnlyAfterSuccessfulWrites(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		dispatchErr error
+		wantStatus  int
+		wantDomains []string
+	}{
+		{name: "successful write", method: "todo.update", wantStatus: http.StatusOK, wantDomains: []string{"todos"}},
+		{name: "failed write", method: "todo.update", dispatchErr: application.NewError(application.CodeConflict, "stale edit"), wantStatus: http.StatusConflict},
+		{name: "successful read", method: "todo.list", wantStatus: http.StatusOK},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := startTestServer(t, func(context.Context, application.Call, string, json.RawMessage, string) (any, error) {
+				return map[string]bool{"ok": true}, test.dispatchErr
+			})
+			server.events = newEventBroker(server.info.InstanceID)
+			cookie, csrf := connectBrowser(t, server)
+			request := browserRequest(server, http.MethodPost, "/api/v1/"+test.method, "{}", cookie, csrf)
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
+			}
+
+			server.events.mu.Lock()
+			history := append([]changeEvent(nil), server.events.history...)
+			server.events.mu.Unlock()
+			if len(test.wantDomains) == 0 {
+				if len(history) != 0 {
+					t.Fatalf("published after %s: %+v", test.name, history)
+				}
+				return
+			}
+			if len(history) != 1 || history[0].Kind != "resource.changed" || !reflect.DeepEqual(history[0].Domains, test.wantDomains) {
+				t.Fatalf("published = %+v, want one event for %v", history, test.wantDomains)
+			}
+		})
 	}
 }

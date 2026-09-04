@@ -250,12 +250,14 @@ final class ATMGlobalHotKeyManager: ObservableObject {
     private var refs: [ATMHotKeyAction: EventHotKeyRef] = [:]
     private var eventHandler: EventHandlerRef?
     private var defaultsObserver: NSObjectProtocol?
+    private var allowedActions = Set(ATMHotKeyAction.allCases)
 
     func registration(for action: ATMHotKeyAction) -> Registration {
         registrations[action] ?? .off
     }
 
-    func start() {
+    func start(allowedActions: Set<ATMHotKeyAction> = Set(ATMHotKeyAction.allCases)) {
+        self.allowedActions = allowedActions
         installEventHandler()
         apply()
         // The setting is written through @AppStorage, which does not notify
@@ -291,6 +293,11 @@ final class ATMGlobalHotKeyManager: ObservableObject {
     /// conflict cannot turn into a registration loop.
     func apply() {
         for action in ATMHotKeyAction.allCases {
+            guard allowedActions.contains(action) else {
+                unregister(action)
+                registrations[action] = .off
+                continue
+            }
             guard let binding = action.binding else { continue }
             guard binding.isEnabled else {
                 unregister(action)
@@ -329,6 +336,7 @@ final class ATMGlobalHotKeyManager: ObservableObject {
     }
 
     private func register(_ action: ATMHotKeyAction, _ hotKey: ATMHotKey, requireModifiers: Bool = true) {
+        guard allowedActions.contains(action) else { return }
         unregister(action)
         if requireModifiers, !hotKey.isValid {
             registrations[action] = .off

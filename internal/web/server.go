@@ -28,14 +28,25 @@ const MaxRequestBytes = 2 * 1024 * 1024
 
 type Dispatch func(context.Context, application.Call, string, json.RawMessage, string) (any, error)
 type Attachment func(context.Context, application.Call, string) (string, string, error)
+type NativeControl func(context.Context, application.Call, string, json.RawMessage) (any, error)
 
 type Options struct {
-	DataDir    string
-	Version    string
-	Port       int
-	Assets     fs.FS
-	Dispatch   Dispatch
-	Attachment Attachment
+	DataDir       string
+	Version       string
+	Port          int
+	Assets        fs.FS
+	DevUI         string
+	Dispatch      Dispatch
+	Attachment    Attachment
+	Fingerprints  Fingerprints
+	Upload        Upload
+	Capabilities  func() map[string]bool
+	Companion     func(context.Context, json.RawMessage, bool) (any, error)
+	NativeControl NativeControl
+	// BeforeUnlock stops background writers before the instance lock is released.
+	BeforeUnlock func(context.Context) error
+	// StartRuntime is called under the instance lock, before accepting HTTP.
+	StartRuntime func(Instance, func(...string)) (func(context.Context) error, error)
 	// AllowWrites enables only the explicit mutation methods in methods.go.
 	AllowWrites         bool
 	DataUpgradeRequired bool
@@ -60,17 +71,29 @@ type Server struct {
 	done         chan struct{}
 	closeOnce    sync.Once
 	serveErr     error
+	events       *eventBroker
+	devUI        http.Handler
 }
 
 func Start(options Options) (*Server, error) {
 	if options.Port < 0 || options.Port > 65535 {
 		return nil, errors.New("port must be between 0 and 65535")
 	}
-	if options.Assets == nil {
+	var devUI http.Handler
+	if options.DevUI != "" {
+		var err error
+		devUI, err = newDevProxy(options.DevUI)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if options.Assets == nil && devUI == nil {
 		return nil, errors.New("this ATM build has no Web assets; install a full release or run make build")
 	}
-	if _, err := fs.Stat(options.Assets, "index.html"); err != nil {
-		return nil, fmt.Errorf("ATM Web assets are missing index.html: %w", err)
+	if devUI == nil {
+		if _, err := fs.Stat(options.Assets, "index.html"); err != nil {
+			return nil, fmt.Errorf("ATM Web assets are missing index.html: %w", err)
+		}
 	}
 	dataDir, err := canonicalDataDir(options.DataDir, true)
 	if err != nil {
@@ -99,12 +122,20 @@ func Start(options Options) (*Server, error) {
 		listener.Close()
 		return fail(err)
 	}
+	mode := "workspace"
+	if options.StartRuntime != nil {
+		mode = "go"
+	}
 	server := &Server{
-		info:    Instance{SchemaVersion: 1, PID: os.Getpid(), InstanceID: instanceID, Origin: "http://" + listener.Addr().String(), Version: options.Version, DataDir: dataDir, Mode: "workspace", StartedAt: time.Now().UTC().Format(time.RFC3339)},
+		devUI:   devUI,
+		info:    Instance{SchemaVersion: 1, PID: os.Getpid(), InstanceID: instanceID, Origin: "http://" + listener.Addr().String(), Version: options.Version, DataDir: dataDir, Mode: mode, StartedAt: time.Now().UTC().Format(time.RFC3339)},
 		options: options, listener: listener, lock: lock, controlToken: controlToken,
 		cookieName: "atm_session_" + instanceID[:12], tickets: map[string]time.Time{}, sessions: map[string]browserSession{}, done: make(chan struct{}),
 	}
 	server.http = &http.Server{Handler: server, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
+	if options.Fingerprints != nil {
+		server.events = newEventBroker(instanceID)
+	}
 	if err := writePrivateFile(filepath.Join(runtimeDir, "control.token"), []byte(controlToken+"\n")); err != nil {
 		listener.Close()
 		return fail(err)
@@ -113,6 +144,22 @@ func Start(options Options) (*Server, error) {
 		listener.Close()
 		os.Remove(filepath.Join(runtimeDir, "control.token"))
 		return fail(err)
+	}
+	if options.StartRuntime != nil {
+		cleanup, err := options.StartRuntime(server.info, server.Invalidate)
+		if err != nil {
+			if server.events != nil {
+				server.events.close()
+			}
+			listener.Close()
+			os.Remove(filepath.Join(runtimeDir, "control.token"))
+			os.Remove(filepath.Join(runtimeDir, "server.json"))
+			return fail(err)
+		}
+		server.options.BeforeUnlock = cleanup
+	}
+	if server.events != nil {
+		go server.watchChanges()
 	}
 	go func() {
 		err := server.http.Serve(listener)
@@ -141,10 +188,38 @@ func (server *Server) Wait(ctx context.Context) error {
 
 func (server *Server) Close() {
 	server.closeOnce.Do(func() {
+		if server.events != nil {
+			server.events.close()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := server.http.Shutdown(ctx); err != nil {
+		drainErr := server.http.Shutdown(ctx)
+		if drainErr != nil {
 			_ = server.http.Close()
+		}
+		if server.options.BeforeUnlock != nil {
+			runtimeCtx, runtimeCancel := context.WithTimeout(context.Background(), 25*time.Second)
+			defer runtimeCancel()
+			if err := server.options.BeforeUnlock(runtimeCtx); err != nil {
+				server.mu.Lock()
+				server.serveErr = err
+				server.mu.Unlock()
+				// The executable exits on this error. Until the OS has terminated
+				// every worker, retain the flock and metadata: a timeout is not
+				// proof that the old process has stopped writing.
+				close(server.done)
+				return
+			}
+		}
+		if drainErr != nil {
+			// Closing a connection does not wait for an in-flight mutation to
+			// finish its filesystem projection. Keep ownership until process
+			// exit when the graceful HTTP drain budget was exhausted.
+			server.mu.Lock()
+			server.serveErr = drainErr
+			server.mu.Unlock()
+			close(server.done)
+			return
 		}
 		// We hold the instance lock until request handlers finish. Never unlink
 		// server.lock: another process may already be waiting on that inode.
@@ -195,6 +270,9 @@ func (server *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+	if server.devUI != nil {
+		w.Header().Set("Content-Security-Policy", devContentSecurityPolicy(server.info.Origin))
+	}
 	if r.Host != strings.TrimPrefix(server.info.Origin, "http://") {
 		server.fail(w, 403, "forbidden", "unrecognized ATM host")
 		return
@@ -204,7 +282,7 @@ func (server *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			server.fail(w, 405, "invalid_argument", "method not allowed")
 			return
 		}
-		server.respond(w, 200, map[string]any{"status": "ok", "mode": "workspace", "version": server.info.Version})
+		server.respond(w, 200, map[string]any{"status": "ok", "mode": server.info.Mode, "version": server.info.Version})
 		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/api/") {
@@ -256,16 +334,27 @@ func (server *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/api/v1/bootstrap" && r.Method == http.MethodGet {
-		server.respond(w, 200, map[string]any{"version": server.info.Version, "instance_id": server.info.InstanceID, "mode": "workspace", "csrf_token": session.csrf, "capabilities": map[string]any{
+		capabilities := map[string]any{
 			"todo_write": server.options.AllowWrites, "workspace_write": server.options.AllowWrites,
 			"data_upgrade_required": server.options.DataUpgradeRequired,
 			"workspaces":            []string{"tasks", "collection", "agents", "knowledge", "usage", "ai-day", "settings"},
-			"sse":                   false, "poll_interval_ms": 5000, "background_sync": false, "agent_hooks": false,
-			"collection_run": false, "models": false, "attachments_upload": false,
-		}})
+			"sse":                   server.events != nil, "poll_interval_ms": 5000, "background_sync": false, "agent_hooks": false,
+			"collection_run": false, "models": false, "runtime_jobs": false, "attachments_upload": server.options.AllowWrites && server.options.Upload != nil,
+		}
+		if server.options.Capabilities != nil {
+			runtimeCapabilities := server.options.Capabilities()
+			for _, name := range []string{"background_sync", "agent_hooks", "collection_run", "models", "runtime_jobs"} {
+				capabilities[name] = server.options.AllowWrites && runtimeCapabilities[name]
+			}
+		}
+		server.respond(w, 200, map[string]any{"version": server.info.Version, "instance_id": server.info.InstanceID, "mode": server.info.Mode, "csrf_token": session.csrf, "capabilities": capabilities})
 		return
 	}
 	call := application.Call{RequestID: ipc.NewRequestID(), Actor: application.Actor{Kind: application.ActorHuman, Origin: application.OriginWeb}}
+	if r.URL.Path == "/api/v1/events" {
+		server.serveEvents(w, r, session)
+		return
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1/attachments/") && r.Method == http.MethodGet {
 		server.serveAttachment(w, r, call)
 		return
@@ -276,6 +365,10 @@ func (server *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	if !server.browserOriginAllowed(r, true) || !sameSecret(r.Header.Get("X-ATM-CSRF"), session.csrf) {
 		server.fail(w, 403, "forbidden", "invalid browser request origin or CSRF token")
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/tasks/") && strings.HasSuffix(r.URL.Path, "/images") {
+		server.serveImageUpload(w, r, call)
 		return
 	}
 	method := strings.TrimPrefix(r.URL.Path, "/api/v1/")
@@ -309,6 +402,9 @@ func (server *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		server.applicationError(w, call.RequestID, err)
 		return
+	}
+	if write {
+		server.Invalidate(workspaceWriteDomains(method)...)
 	}
 	server.respondID(w, 200, call.RequestID, data, nil)
 }
@@ -377,9 +473,50 @@ func (server *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 		server.fail(w, 403, "forbidden", "invalid local control capability")
 		return
 	}
+	nativeMethod, nativeRoute := nativeControlMethod(r.URL.Path)
+	if nativeRoute && r.Method != http.MethodPost {
+		server.fail(w, 405, "invalid_argument", "method not allowed")
+		return
+	}
 	if r.Method == http.MethodPost {
 		body, ok := readJSONBody(w, r)
 		if !ok {
+			return
+		}
+		if r.URL.Path == "/api/v1/control/companion" || r.URL.Path == "/api/v1/control/companion/ack" {
+			if server.options.Companion == nil {
+				server.fail(w, 503, "unavailable", "native companion runtime is unavailable")
+				return
+			}
+			data, err := server.options.Companion(r.Context(), body, strings.HasSuffix(r.URL.Path, "/ack"))
+			if err != nil {
+				server.applicationError(w, ipc.NewRequestID(), err)
+				return
+			}
+			server.respond(w, 200, data)
+			return
+		}
+		if nativeRoute {
+			if server.options.NativeControl == nil {
+				server.fail(w, 503, "unavailable", "native control runtime is unavailable")
+				return
+			}
+			if nativeControlWrites(nativeMethod) && !server.options.AllowWrites {
+				message := "this workspace is read-only"
+				if server.options.DataUpgradeRequired {
+					message += "; stop the workspace and run atm serve migrate to back up and upgrade its database"
+				}
+				server.fail(w, 403, "forbidden", message)
+				return
+			}
+			requestID := ipc.NewRequestID()
+			call := application.Call{RequestID: requestID, Actor: application.Actor{Kind: application.ActorHuman, Origin: application.OriginNativeControl}}
+			data, err := server.options.NativeControl(r.Context(), call, nativeMethod, body)
+			if err != nil {
+				server.applicationError(w, requestID, err)
+				return
+			}
+			server.respondID(w, 200, requestID, data, nil)
 			return
 		}
 		if err := decodeStrict(body, &struct{}{}); err != nil {
@@ -415,6 +552,19 @@ func (server *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 	default:
 		server.fail(w, 404, "not_found", "unknown control method")
 	}
+}
+
+func nativeControlMethod(path string) (string, bool) {
+	switch path {
+	case "/api/v1/control/session/sync":
+		return "session.sync", true
+	default:
+		return "", false
+	}
+}
+
+func nativeControlWrites(method string) bool {
+	return method == "session.sync"
 }
 
 func readJSONBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, bool) {
@@ -501,6 +651,10 @@ func (server *Server) serveAttachment(w http.ResponseWriter, r *http.Request, ca
 }
 
 func (server *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
+	if server.devUI != nil {
+		server.devUI.ServeHTTP(w, r)
+		return
+	}
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		server.fail(w, 405, "invalid_argument", "method not allowed")
 		return

@@ -30,6 +30,10 @@ type ServiceOptions struct {
 	SyncAll   func(*sql.DB) (int, error)
 	SyncAgent func(*sql.DB, string) (int, error)
 	Sampler   QuotaSampler
+	// Context-aware ports let a runtime stop waiting for another process's job
+	// during shutdown. Legacy ports above remain supported for existing embedders.
+	SyncAllContext   func(context.Context, *sql.DB) (int, error)
+	SyncAgentContext func(context.Context, *sql.DB, string) (int, error)
 	// IndexExists reports whether the index file is on disk. Separate from
 	// OpenRead because the answer decides whether to open at all, and separate
 	// from a plain bool because "not there yet" and "there but unreadable" are
@@ -44,8 +48,8 @@ type Service struct {
 	now         func() time.Time
 	openRead    func() (*sql.DB, error)
 	openWrite   func() (*sql.DB, error)
-	syncAll     func(*sql.DB) (int, error)
-	syncAgent   func(*sql.DB, string) (int, error)
+	syncAll     func(context.Context, *sql.DB) (int, error)
+	syncAgent   func(context.Context, *sql.DB, string) (int, error)
 	sampler     QuotaSampler
 	indexExists func() (bool, error)
 }
@@ -62,11 +66,21 @@ func NewService(options ServiceOptions) Service {
 	if options.OpenWrite == nil {
 		options.OpenWrite = store.Open
 	}
-	if options.SyncAll == nil {
-		options.SyncAll = store.SyncAll
+	if options.SyncAllContext == nil {
+		options.SyncAllContext = store.SyncAllContext
+		if options.SyncAll != nil {
+			options.SyncAllContext = func(_ context.Context, db *sql.DB) (int, error) {
+				return options.SyncAll(db)
+			}
+		}
 	}
-	if options.SyncAgent == nil {
-		options.SyncAgent = store.SyncAgent
+	if options.SyncAgentContext == nil {
+		options.SyncAgentContext = store.SyncAgentContext
+		if options.SyncAgent != nil {
+			options.SyncAgentContext = func(_ context.Context, db *sql.DB, agent string) (int, error) {
+				return options.SyncAgent(db, agent)
+			}
+		}
 	}
 	if options.Sampler == nil {
 		options.Sampler = quota.Default
@@ -84,7 +98,7 @@ func NewService(options ServiceOptions) Service {
 	}
 	return Service{
 		now: options.Now, openRead: options.OpenRead, openWrite: options.OpenWrite,
-		syncAll: options.SyncAll, syncAgent: options.SyncAgent,
+		syncAll: options.SyncAllContext, syncAgent: options.SyncAgentContext,
 		sampler: options.Sampler, indexExists: options.IndexExists,
 	}
 }
@@ -122,9 +136,9 @@ func (service Service) Run(
 
 	var result RunResult
 	if agent != "" {
-		result.SyncedFiles, err = service.syncAgent(db, agent)
+		result.SyncedFiles, err = service.syncAgent(ctx, db, agent)
 	} else {
-		result.SyncedFiles, err = service.syncAll(db)
+		result.SyncedFiles, err = service.syncAll(ctx, db)
 	}
 	if err != nil {
 		return RunResult{}, unavailable("sync sessions", err)
@@ -208,7 +222,7 @@ func (service Service) Status(
 	}
 	defer db.Close()
 	if input.Sync {
-		if _, err := service.syncAll(db); err != nil {
+		if _, err := service.syncAll(ctx, db); err != nil {
 			return StatusReport{}, unavailable("sync before reading freshness", err)
 		}
 	}

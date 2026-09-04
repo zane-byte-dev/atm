@@ -29,11 +29,13 @@ web-build: web-deps
 build: web-build
 	mkdir -p "$(BIN_DIR)"
 	go build -trimpath -tags webui -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(APP)" ./cmd/atm
+	@if [ "$$(uname -s)" = Darwin ]; then ./scripts/codesign-local.sh "$(BIN_DIR)/$(APP)"; fi
 
 # This path deliberately has no frontend dependency and works without Node.js.
 build-cli:
 	mkdir -p "$(BIN_DIR)"
 	go build -trimpath -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(APP)" ./cmd/atm
+	@if [ "$$(uname -s)" = Darwin ]; then ./scripts/codesign-local.sh "$(BIN_DIR)/$(APP)"; fi
 
 install: build
 	@if [ "$$(readlink /usr/local/bin/$(APP))" = "$(abspath $(BIN_DIR))/$(APP)" ]; then \

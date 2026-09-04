@@ -1,7 +1,10 @@
 package knowledge
 
 import (
+	"context"
+
 	"fmt"
+	"github.com/zane-byte-dev/atm/internal/executionlock"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,6 +35,12 @@ type DeleteCollectionResult struct {
 }
 
 func CreateCollection(dataDir, id string, input EditCollectionInput) (*CollectionInfo, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	id, err := requireCollection("knowledge collection id", id)
 	if err != nil {
 		return nil, err
@@ -70,6 +79,12 @@ func CreateCollection(dataDir, id string, input EditCollectionInput) (*Collectio
 }
 
 func EditCollection(dataDir, id string, input EditCollectionInput) (*CollectionInfo, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	id, err := requireCollection("knowledge collection id", id)
 	if err != nil {
 		return nil, err
@@ -107,6 +122,12 @@ func EditCollection(dataDir, id string, input EditCollectionInput) (*CollectionI
 }
 
 func RenameCollection(dataDir, id, newID string) (*CollectionInfo, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	id, err := requireCollection("knowledge collection id", id)
 	if err != nil {
 		return nil, err
@@ -173,6 +194,12 @@ func RenameCollection(dataDir, id, newID string) (*CollectionInfo, error) {
 }
 
 func DeleteCollection(dataDir, id string, options DeleteCollectionOptions) (*DeleteCollectionResult, error) {
+	mutationLock, lockErr := executionlock.Acquire(context.Background(), dataDir, "knowledge")
+	if lockErr != nil {
+		return nil, lockErr
+	}
+	defer mutationLock.Close()
+
 	id, err := requireCollection("knowledge collection id", id)
 	if err != nil {
 		return nil, err

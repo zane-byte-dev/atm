@@ -40,6 +40,8 @@ func (executor localWorkEffectExecutor) ApplyWorkEffect(event workapp.Effect) er
 		return syncWorkEffectDocument(todo, "after start")
 	case workapp.EffectTodoUpdated:
 		return syncWorkEffectDocument(todo, "after update")
+	case workapp.EffectTodoProgress:
+		return workapp.ApplyProgressEffect(event)
 	case workapp.EffectTodoRefined:
 		if _, err := store.EnsureTodoDoc(&todo); err != nil {
 			return fmt.Errorf("materialize refined todo document %s: %w", todo.ID, err)

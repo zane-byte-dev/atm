@@ -41,6 +41,12 @@ func guardServiceCall(kind application.ActorKind) application.Call {
 	}
 }
 
+func nativeGuardServiceCall(kind application.ActorKind) application.Call {
+	call := guardServiceCall(kind)
+	call.Actor.Origin = application.OriginNativeControl
+	return call
+}
+
 func withGuardServiceStore(t *testing.T) {
 	t.Helper()
 	oldDir, oldDB := config.AtmDir, config.AtmDB
@@ -167,6 +173,33 @@ func TestServiceDecisionRejectsReplayableIPCIdentity(t *testing.T) {
 	}
 }
 
+func TestServiceDecisionRejectsWebAndNativeControl(t *testing.T) {
+	withGuardServiceStore(t)
+	created := createServiceApproval(t, 0)
+	executor := &fakeDeferredExecutor{}
+	service := guardTestService(executor)
+	calls := []application.Call{
+		{
+			RequestID: "web-human",
+			Actor:     application.Actor{Kind: application.ActorHuman, Origin: application.OriginWeb},
+		},
+		nativeGuardServiceCall(application.ActorHuman),
+		nativeGuardServiceCall(application.ActorAgent),
+		nativeGuardServiceCall(application.ActorController),
+	}
+	for _, call := range calls {
+		_, err := service.Decide(context.Background(), call, DecisionInput{
+			ID: created.ID, Approve: true, Run: true,
+		})
+		if !errors.Is(err, application.ErrForbidden) {
+			t.Fatalf("%s@%s decision error = %v, want forbidden", call.Actor.Kind, call.Actor.Origin, err)
+		}
+	}
+	if len(executor.validated) != 0 || len(executor.executed) != 0 {
+		t.Fatal("an unauthorized decision reached the executor")
+	}
+}
+
 func TestServiceDenyPersistsAuditWithoutExecutor(t *testing.T) {
 	withGuardServiceStore(t)
 	created := createServiceApproval(t, 0)
@@ -231,6 +264,86 @@ func TestServiceApprovalClaimsAndRecordsFakeExecution(t *testing.T) {
 	}
 	if len(executor.validated) != 1 || len(executor.executed) != 1 {
 		t.Fatalf("executor calls validate=%d execute=%d", len(executor.validated), len(executor.executed))
+	}
+}
+
+func TestServiceApprovalRetryAcrossRestartRunsExactlyOnce(t *testing.T) {
+	withGuardServiceStore(t)
+	created := createServiceApproval(t, 0)
+	executor := &fakeDeferredExecutor{result: ExecutionResult{Output: "sent"}}
+	input := DecisionInput{ID: created.ID, Approve: true, Run: true, DecidedBy: "panel"}
+
+	first, err := guardTestService(executor).Decide(
+		context.Background(), guardServiceCall(application.ActorHuman), input,
+	)
+	if err != nil {
+		t.Fatalf("first approve: %v", err)
+	}
+	if first.Replayed || first.Outcome != OutcomeApprovedAndRan || first.Approval.Status != ApprovalDone {
+		t.Fatalf("first decision = %#v", first)
+	}
+
+	// A new Service value models a process restart: idempotency comes entirely
+	// from the stored decision and execution claim.
+	retry, err := guardTestService(executor).Decide(
+		context.Background(), guardServiceCall(application.ActorHuman), input,
+	)
+	if err != nil {
+		t.Fatalf("retry approve: %v", err)
+	}
+	if !retry.Replayed || retry.Outcome != OutcomeApprovedAndRan || retry.Approval.Status != ApprovalDone {
+		t.Fatalf("retry decision = %#v", retry)
+	}
+	if len(executor.validated) != 1 || len(executor.executed) != 1 {
+		t.Fatalf("executor calls after retry validate=%d execute=%d, want 1/1", len(executor.validated), len(executor.executed))
+	}
+
+	_, err = guardTestService(executor).Decide(
+		context.Background(), guardServiceCall(application.ActorHuman),
+		DecisionInput{ID: created.ID, Approve: false},
+	)
+	if !errors.Is(err, application.ErrConflict) {
+		t.Fatalf("opposite denial error = %v, want conflict", err)
+	}
+}
+
+func TestServiceDenialRetryAcrossRestartPreservesOriginalAudit(t *testing.T) {
+	withGuardServiceStore(t)
+	created := createServiceApproval(t, 0)
+	executor := &fakeDeferredExecutor{}
+	call := guardServiceCall(application.ActorHuman)
+
+	first, err := guardTestService(executor).Decide(context.Background(), call, DecisionInput{
+		ID: created.ID, Approve: false, Reason: "内容不对", DecidedBy: "panel",
+	})
+	if err != nil {
+		t.Fatalf("first denial: %v", err)
+	}
+	if first.Replayed || first.Outcome != OutcomeDenied {
+		t.Fatalf("first denial = %#v", first)
+	}
+
+	retry, err := guardTestService(executor).Decide(context.Background(), call, DecisionInput{
+		ID: created.ID, Approve: false, Reason: "retry must not replace audit", DecidedBy: "other",
+	})
+	if err != nil {
+		t.Fatalf("retry denial: %v", err)
+	}
+	if !retry.Replayed || retry.Outcome != OutcomeDenied || retry.Approval.Status != ApprovalDenied {
+		t.Fatalf("retry denial = %#v", retry)
+	}
+	if retry.Approval.Reason != "内容不对" || retry.Approval.DecidedBy != "panel" {
+		t.Fatalf("retry replaced audit: by=%q reason=%q", retry.Approval.DecidedBy, retry.Approval.Reason)
+	}
+	if len(executor.validated) != 0 || len(executor.executed) != 0 {
+		t.Fatal("a denial reached the executor")
+	}
+
+	_, err = guardTestService(executor).Decide(context.Background(), call, DecisionInput{
+		ID: created.ID, Approve: true, Run: true,
+	})
+	if !errors.Is(err, application.ErrConflict) {
+		t.Fatalf("opposite approval error = %v, want conflict", err)
 	}
 }
 

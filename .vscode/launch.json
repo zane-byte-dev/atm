@@ -19,6 +19,26 @@
             "target": "ATMMenuBarApp",
             "configuration": "release",
             "preLaunchTask": "swift: Build Release ATMMenuBarApp (app/macos)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:atm}/app/menubar",
+            "name": "Debug ATMCompanion (app/menubar)",
+            "target": "ATMCompanion",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug ATMCompanion (app/menubar)"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:atm}/app/menubar",
+            "name": "Release ATMCompanion (app/menubar)",
+            "target": "ATMCompanion",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release ATMCompanion (app/menubar)"
         }
     ]
 }

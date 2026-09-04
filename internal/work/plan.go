@@ -28,12 +28,14 @@ const (
 
 type SetPlanInput struct {
 	TodoID       string     `json:"todo_id,omitempty"`
+	ExpectedETag string     `json:"expected_etag,omitempty"`
 	BaseRevision int64      `json:"base_revision"`
 	Explanation  string     `json:"explanation,omitempty"`
 	Items        []PlanItem `json:"items"`
 }
 
 type SetPlanResult struct {
+	Todo    Todo         `json:"todo"`
 	Plan    PlanSnapshot `json:"plan"`
 	Changed bool         `json:"changed"`
 }
@@ -81,6 +83,9 @@ func (service Service) SetPlan(ctx context.Context, call application.Call, input
 			return planNotFound(todoID, err)
 		}
 		todo = *currentTodo
+		if err := checkExpectedTodo(call, todo, input.ExpectedETag); err != nil {
+			return err
+		}
 
 		latest, err := transaction.state.LatestTodoPlanRevision(todo.ID)
 		if err != nil {
@@ -91,7 +96,7 @@ func (service Service) SetPlan(ctx context.Context, call application.Call, input
 			if err != nil {
 				return readApplicationError("decode latest todo plan", err)
 			}
-			result = SetPlanResult{Plan: plan, Changed: false}
+			result = SetPlanResult{Todo: cloneTodo(todo), Plan: plan, Changed: false}
 			return nil
 		}
 		currentRevision := int64(0)
@@ -128,6 +133,7 @@ func (service Service) SetPlan(ctx context.Context, call application.Call, input
 			return readApplicationError("append todo plan revision", err)
 		}
 		result = SetPlanResult{
+			Todo:    cloneTodo(todo),
 			Plan:    planSnapshotFromParts(revision, snapshot),
 			Changed: true,
 		}

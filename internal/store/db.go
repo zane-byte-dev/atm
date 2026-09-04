@@ -60,7 +60,11 @@ func OpenReadOnly() (*sql.DB, error) {
 		return nil, err
 	}
 	base := (&url.URL{Scheme: "file", Path: config.AtmDB}).String()
-	db, err := openReadOnlyDSN(base + "?mode=ro&_pragma=query_only(1)")
+	// WAL recovery and checkpoint transitions can briefly hold an exclusive
+	// lock even for a read. Match the writer's bounded busy wait on every pooled
+	// connection instead of turning that transition into SQLITE_BUSY_RECOVERY.
+	// busy_timeout is connection-local: it neither writes nor migrates the DB.
+	db, err := openReadOnlyDSN(base + "?mode=ro&_pragma=busy_timeout(5000)&_pragma=query_only(1)")
 	if err == nil {
 		return db, nil
 	}
@@ -74,7 +78,7 @@ func OpenReadOnly() (*sql.DB, error) {
 	// Caveat: immutable=1 ignores the -wal file, so it can serve data from before
 	// the most recent (un-checkpointed) commit. Callers in this mode may observe
 	// slightly stale todos/bindings until the next checkpoint.
-	immutableDB, immutableErr := openReadOnlyDSN(base + "?mode=ro&immutable=1&_pragma=query_only(1)")
+	immutableDB, immutableErr := openReadOnlyDSN(base + "?mode=ro&immutable=1&_pragma=busy_timeout(5000)&_pragma=query_only(1)")
 	if immutableErr == nil {
 		return immutableDB, nil
 	}
@@ -298,6 +302,11 @@ func migrate(db *sql.DB) error {
 				return err
 			}
 			version = 55
+		case 55:
+			if err := migrateV55ToV56(db); err != nil {
+				return err
+			}
+			version = 56
 		default:
 			return fmt.Errorf("missing migration from schema v%d", version)
 		}

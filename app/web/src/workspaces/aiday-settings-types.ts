@@ -123,6 +123,7 @@ export type DayLedger = {
   }[]
 }
 export type WorkspaceSettings = {
+  revision: string
   owner_name: string
   timezone: string
   preferences: {
@@ -132,10 +133,12 @@ export type WorkspaceSettings = {
     collection_lookback_minutes: number
     collection_message_retention_days: number
     todo_refine_on_add: boolean
+    todo_refine_prompt: string
   }
   model: {
     name: string
     source: string
+    base_url: string
     credential_configured: boolean
     credential_status: 'configured' | 'missing' | 'unavailable'
   }

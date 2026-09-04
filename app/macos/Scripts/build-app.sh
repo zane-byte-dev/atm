@@ -9,7 +9,11 @@ ICON_SOURCE="$ROOT_DIR/Resources/AppIcon.png"
 ICONSET_DIR="$ROOT_DIR/.build/AppIcon.iconset"
 ICON_FILE="$ROOT_DIR/.build/AppIcon.icns"
 
-swift build --package-path "$ROOT_DIR" -c release
+SWIFT_BUILD_FLAGS=()
+if [[ "${ATM_SWIFTPM_DISABLE_SANDBOX:-0}" == "1" ]]; then
+    SWIFT_BUILD_FLAGS+=(--disable-sandbox)
+fi
+swift build --package-path "$ROOT_DIR" -c release "${SWIFT_BUILD_FLAGS[@]}"
 
 rm -rf "$ICONSET_DIR"
 mkdir -p "$ICONSET_DIR"
@@ -33,6 +37,6 @@ cp -R "$RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/"
 cp "$ICON_FILE" "$APP_DIR/Contents/Resources/AppIcon.icns"
 cp "$ROOT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
 chmod +x "$APP_DIR/Contents/MacOS/ATM"
-codesign --force --deep --sign - "$APP_DIR"
+"$ROOT_DIR/../../scripts/codesign-local.sh" --deep "$APP_DIR"
 
 echo "$APP_DIR"

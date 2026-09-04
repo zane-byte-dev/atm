@@ -160,9 +160,18 @@ func TestWorkspaceSettingsRedactsCredentialsCommandsAndDiagnostics(t *testing.T)
 	})
 	const secret = "DO-NOT-SERIALIZE-THIS"
 	config.TextModelName, config.TextModelSource = "test-model", "test-provider"
-	config.TextModelBaseURL, config.TodoRefinePrompt = "https://user:"+secret+"@example.test/?token="+secret, secret
+	config.TextModelBaseURL, config.TodoRefinePrompt = "https://user:"+secret+"@example.test/?token="+secret, "Refine using the owner’s project conventions"
 	config.QuotaProviders = map[string]config.QuotaProviderConfig{"team-quota": {Command: "/private/" + secret, Args: []string{secret}}}
 	config.CollectionConnectors = map[string]config.CollectionConnectorConfig{"team-chat": {Command: secret, LoginCommand: secret}}
+	// Resident settings read the file revision and its matching effective
+	// values; seed the persisted fixture rather than stale package globals.
+	settingsFile, err := json.Marshal(config.FileConfig{TextModelName: config.TextModelName, TextModelSource: config.TextModelSource, TextModelBaseURL: config.TextModelBaseURL, TodoRefinePrompt: config.TodoRefinePrompt, QuotaProviders: config.QuotaProviders, CollectionConnectors: config.CollectionConnectors})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.ConfigPath, settingsFile, 0600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(config.CredentialsPath(), []byte(`{"deepseek_api_key":"`+secret+`"}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +195,7 @@ func TestWorkspaceSettingsRedactsCredentialsCommandsAndDiagnostics(t *testing.T)
 		t.Fatalf("settings=%+v err=%v", settings, err)
 	}
 	encoded, _ := json.Marshal(settings)
-	for _, forbidden := range []string{secret, config.AtmDir, "api_key", "base_url", "command", "args", "login", "guard", "last_error", "refine_prompt"} {
+	for _, forbidden := range []string{secret, config.AtmDir, "api_key", "command", "args", "login", "guard", "last_error"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("settings exposed %q: %s", forbidden, encoded)
 		}
@@ -279,5 +288,71 @@ func TestWorkspacePersonalPreferenceKeepsStartupDataDirectory(t *testing.T) {
 	entries, err := os.ReadDir(otherDir)
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("saving a preference wrote into the other data directory: %v, %v", entries, err)
+	}
+}
+
+func TestWorkspaceBusinessSettingsRevisionPinnedPathsAndWriteOnlyCredentials(t *testing.T) {
+	h := testHost(t)
+	beforeName, beforeURL, beforePrompt := config.OwnerName, config.TextModelBaseURL, config.TodoRefinePrompt
+	beforeEnabled, beforeInterval := config.CollectionEnabled, config.CollectionIntervalMinutes
+	t.Cleanup(func() {
+		config.OwnerName, config.TextModelBaseURL, config.TodoRefinePrompt = beforeName, beforeURL, beforePrompt
+		config.CollectionEnabled, config.CollectionIntervalMinutes = beforeEnabled, beforeInterval
+	})
+	other := t.TempDir()
+	raw, _ := json.Marshal(map[string]any{"owner_name": "Initial", "data_dir": other, "future_private_setting": map[string]string{"token": "preserve"}})
+	if err := os.WriteFile(config.ConfigPath, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, call := context.Background(), webCall()
+	snapshot, err := h.WorkspaceSettings(ctx, call)
+	if err != nil || len(snapshot.Revision) != 64 {
+		t.Fatalf("snapshot=%+v err=%v", snapshot, err)
+	}
+	name, urlValue, prompt := "Changed", "https://models.example.test/v1", "Keep project details"
+	enabled, interval := true, 15
+	input := WorkspaceBusinessInput{Revision: snapshot.Revision, SettingsPatch: config.SettingsPatch{OwnerName: &name, TextModelBaseURL: &urlValue, TodoRefinePrompt: &prompt, CollectionEnabled: &enabled, CollectionIntervalMinutes: &interval}}
+	saved, err := h.SaveWorkspaceBusiness(ctx, call, input)
+	if err != nil || saved.OwnerName != name || saved.Model.BaseURL != urlValue || saved.Preferences.TodoRefinePrompt != prompt || !saved.Preferences.CollectionEnabled || saved.Preferences.CollectionIntervalMinutes != interval {
+		t.Fatalf("saved=%+v err=%v", saved, err)
+	}
+	if config.AtmDir != h.dataDir || config.AtmDB != h.databasePath || config.ConfigPath != h.configPath {
+		t.Fatal("settings redirected authenticated workspace")
+	}
+	if _, err := h.SaveWorkspaceBusiness(ctx, call, input); !errors.Is(err, application.ErrConflict) {
+		t.Fatalf("stale settings accepted: %v", err)
+	}
+	agent := call
+	agent.Actor.Kind = application.ActorAgent
+	if _, err := h.SaveWorkspaceBusiness(ctx, agent, input); !errors.Is(err, application.ErrForbidden) {
+		t.Fatalf("agent changed settings: %v", err)
+	}
+	for _, body := range []string{`{"revision":"` + saved.Revision + `","data_dir":"/private"}`, `{"revision":"` + saved.Revision + `","collection_connectors":{"x":{"command":"sh"}}}`, `{"revision":"` + saved.Revision + `","guard":{"enabled":false}}`} {
+		if _, err := h.callWorkspaceSettings(ctx, call, "settings.business.save", json.RawMessage(body)); !errors.Is(err, application.ErrInvalidArgument) {
+			t.Fatalf("unsafe field accepted: %s %v", body, err)
+		}
+	}
+	const secret = "key-DO-NOT-ECHO"
+	status, err := h.saveWorkspaceCredential(ctx, call, &config.CredentialSaveInput{APIKey: secret})
+	if err != nil || !status.Configured {
+		t.Fatalf("credential=%+v %v", status, err)
+	}
+	saved, err = h.WorkspaceSettings(ctx, call)
+	encoded, _ := json.Marshal(saved)
+	if err != nil || !saved.Model.CredentialConfigured || strings.Contains(string(encoded), secret) {
+		t.Fatalf("credential leaked or absent: %s %v", encoded, err)
+	}
+	if _, err := os.Stat(filepath.Join(other, config.CredentialsFileName)); !os.IsNotExist(err) {
+		t.Fatalf("credential wrote to unpinned data dir: %v", err)
+	}
+	if _, err := h.saveWorkspaceCredential(ctx, call, nil); err != nil {
+		t.Fatal(err)
+	}
+	content, _ := os.ReadFile(config.ConfigPath)
+	if !strings.Contains(string(content), "preserve") {
+		t.Fatal("unrelated config lost")
+	}
+	if entries, _ := os.ReadDir(other); len(entries) != 0 {
+		t.Fatalf("other directory mutated: %+v", entries)
 	}
 }

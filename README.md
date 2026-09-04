@@ -3,8 +3,9 @@
 给人用的 AI 管理面板。看 AI 都在干什么、干得怎么样、花了多少钱。
 
 本地优先、单机单用户：它读各家 AI CLI 已经写在你硬盘上的会话记录，索引成一个能查、能统计、
-能挂待办的库。日常界面正从 macOS 主窗口迁到本机浏览器：Web 提供任务、收集、Agent、知识、统计、
-AI Day 和设置七个工作区，后台同步与采集暂由 macOS App 承担。它不代理你和 AI 的对话，停掉它也不影响任何会话。
+能挂待办的库。日常主界面是本机浏览器：Web 提供任务、收集、Agent、知识、统计、AI Day 和设置七个工作区，
+Go 服务负责后台同步、采集、Hook 与通知路由；菜单栏和全局语音是可选的独立 App。它不代理你和 AI 的对话，
+停掉它也不影响任何会话。
 
 ATM 会索引可能包含源码、提示词、模型回复和个人信息的本地数据。公开使用或参与开发前请读
 [隐私与数据处理](PRIVACY.md)、[安全报告流程](SECURITY.md)和[贡献指南](CONTRIBUTING.md)；
@@ -33,7 +34,7 @@ make install    # npm ci、构建 Web、嵌入 Go，再安装到 /usr/local/bin
 ```
 
 完整构建和后续发布包把页面嵌入同一个 `atm` 二进制，运行时无需 Node.js。本次 Web 迁移尚未发版，
-体验任务工作区请从当前源码构建。已有数据库可先只读预览，启用写入前按下面的说明显式备份升级。
+体验当前工作区请从源码构建。已有数据库可先只读预览，启用写入和后台接管前按下面的说明显式备份升级。
 
 ## 上手
 
@@ -61,30 +62,35 @@ atm serve stop           # 停止同一数据目录的实例
 未授权的地址不会获得业务数据。服务在终端前台运行，关闭浏览器不会停止它，`Ctrl-C` 或 `serve stop`
 才会退出。
 
-当前页面支持任务搜索、状态/项目筛选、分页、详情与进展阅读，以及新建、编辑、开始、人工完成、归档和
-恢复。编辑草稿保存在各标签页独立的 `sessionStorage`，刷新/切页可恢复，多个页面彼此隔离；关闭标签页后的恢复不保证。
-并发编辑会提示冲突，创建重试使用持久化幂等记录。已有图片附件可读，
-上传仍使用 CLI。页面在前台每 5 秒轮询，并在重新聚焦时刷新。
+Web 提供任务生命周期、计划/依赖/等待、图片上传、AI 整理，知识文档原地编辑与共享记忆、采集来源管理、
+会话检索、用量与 AI Day，以及业务设置和五种主题。任务与知识草稿按编辑器隔离保存在浏览器，关闭后可显式恢复；
+并发编辑有版本检查，创建与后台执行保留幂等身份。页面通过按域 SSE 更新，CLI 变化在有订阅时每 2 秒检查。
 
-侧栏还提供收集来源与条目、Agent 会话和对话、知识与共享记忆、用量统计与缓存额度、AI Day 历史、
-个人设置。各工作区按需加载，读取现有本机索引，详细操作范围见开发说明。
+升级后的 `serve` 默认负责自动同步、按配置采集、AI Day、Agent Hook 和通知路由；状态每 8 秒回补，
+关闭网页或退出菜单栏都不会停止后台。只需页面实例时用 `--background=false`，该参数不关闭当前 schema 的业务写入。
+手动同步、采集、重建、额度刷新和 AI 整理通过有记录的后台执行完成，可查看结果或取消。
 
-这一阶段 `serve` 尚未接管自动同步、外部采集、Agent hook 和系统通知；使用这些后台能力时继续运行
-原 macOS App。Web 的任务操作保留文档与回调处理，桌面通知由现有 App 展示。SSE、后台自启动、与 Go 同源的 Vite HMR、独立菜单栏和语音 App
-都还在迁移计划中。路线见[技术方案](docs/design/local-web-runtime.md)，开发步骤见
-[`app/web/README.md`](app/web/README.md)。
+macOS 可使用用户级登录服务：
 
-**切换现有数据**：现有 schema 54 数据库首次通过 `serve --open` 打开时只读，不会自动升级。准备启用
-任务写入时，按以下顺序操作：
+```sh
+atm serve install --print       # 预览配置
+atm serve install              # 安装并启动当前完整二进制
+atm serve --open                # 打开已运行实例
+atm serve uninstall            # 取消登录服务，保留数据
+```
 
-1. 执行 `atm serve stop`，退出旧 macOS App，并暂停其他 ATM 写入。该命令不会自动退出 App。
-2. 让日用 CLI、Web 和 macOS App 配置的 CLI 使用同一份新二进制。
-3. 用新二进制执行 `atm serve migrate`。它先将升级前备份写到数据目录的 `backups/`，备份成功后才升级
-   至 schema 55；备份失败则不迁移。保存命令打印的备份路径。
-4. 执行 `atm serve --open` 重新打开工作区，再恢复 macOS App 的后台功能。
+[ATM Menu](app/menubar/README.md) 使用普通 macOS 菜单，展示服务状态、今日 Token、当前任务与缓存额度摘要，并提供 Web、新增任务、同步及自身设置入口。[ATM Voice](app/voice/README.md) 独立提供全局语音，
+不依赖 Go 服务。构建步骤、旧偏好导入和测试边界见 [Web 开发说明](app/web/README.md)；架构见
+[技术方案](docs/design/local-web-runtime.md)。代码已实现这些入口，真实日用切换和新 App 的系统权限验收需另外完成。
 
-使用自定义数据目录时，以上 `serve` 命令均传入相同的 `--data-dir`。新建空工作区无需迁移。旧 schema 54
-二进制不能直接打开升级后的库；回退前应停止所有写入、另存新库，再恢复升级前备份，保留备份之后的修改。
+**切换现有数据**：schema 54/55 旧库打开时只读，不自动升级或接管后台。停止 Web，退出旧 macOS App，
+暂停写入并等旧工作结束；让日用 CLI 和所有调用方使用同一份支持 schema 56 的完整二进制，然后执行
+`atm serve migrate`。它先备份到数据目录的 `backups/`，成功后才升级。保存备份路径，再使用
+`atm serve --open` 或 `atm serve install` 接管；不要重新开启旧 App 的后台调度。
+
+自定义数据目录在每条 `serve` 命令中传相同的 `--data-dir`。新建空工作区无需迁移。旧版二进制不能直接打开升级后的库；
+回退前停止写入并另存新数据，再恢复升级前备份，保留备份之后的修改。`serve stop` 会卸载当前登录会话的托管 job，
+保留 plist；`serve uninstall` 才移除登录配置，两者都保留 Go owner 标记，避免旧 App 意外恢复调度。
 
 ## 命令
 
@@ -140,8 +146,8 @@ atm day export > ai-day.json                      # 导出全部衍生数据（�
 ```
 
 AI Day 在本机把会话镜像归一化为不含原文的事件，按最近 30 个有效日生成每日唯一结果。完整的数据模型、
-12 枚徽章、评分规则与隐私行为见 [AI Day 说明](docs/ai-day.md)。日常查看、纠正、来源与隐私管理由
-macOS App 提供；公开 CLI 只保留人工修复、诊断和数据导出，不镜像 App 的每个动作。
+12 枚徽章、评分规则与隐私行为见 [AI Day 说明](docs/ai-day.md)。Web 提供日常查看和显式重建；
+公开 CLI 保留人工修复、来源诊断和数据导出。更细的纠正与隐私管理仍可参考该说明，不把每个内部动作开放成 Web API。
 
 **知识与记忆**
 
@@ -157,7 +163,7 @@ atm memory remember <内容>               # 记一条
 ```bash
 atm collect status                       # 健康状态、来源、处理记录
 atm collect source add --connector slack --kind channel --id C123 --project atm
-atm collect enable                       # 开启 App 常驻期间的后台自动收集
+atm collect enable                       # 开启 Go 服务常驻期间的后台自动收集
 atm collect run                          # 立即增量收集一次（也是登录失效后恢复的方式）
 atm collect item save <item-id>          # 确认后把收集结论保存为知识
 atm collect item read <item-id>          # 标记一条收集结果已读
@@ -172,8 +178,8 @@ atm collect source unmute <source-id>    # 恢复通知
 
 连接器的登录过期后，ATM 会停手而不是每个周期重试一遍：后台对这个连接器静默 30 分钟，
 同一轮里第一个来源失败就跳过它的兄弟来源（它们共用刚失败的那份凭证）。连接器可以在
-`~/.atm/config.json` 里声明 `login_command`，CLI 会把它打印在状态行上，App 的横幅和通知
-上会多一个「重新登录」按钮——ATM 自己不会去跑它，登录要人扫码。
+`~/.atm/config.json` 里声明 `login_command`，CLI 会把它打印在状态行上，收集页面显示登录问题。
+ATM 自己不会执行登录命令，登录由人完成后再重试采集。
 
 **外发动作闸门**（默认不安装）
 
@@ -194,9 +200,9 @@ atm guard rule remove dws doc-write      # 删掉自己加的
 atm guard forget mytool                  # 忘掉一个注册过的 CLI（先 uninstall）
 ```
 
-也可以在 App 的**「设置 → 外发闸门」**里做同样的事：每个 CLI 一张卡片，显示是否真的拦住了
+保留的旧 macOS App 曾在**「设置 → 外发闸门」**提供对应操作：每个 CLI 一张卡片，显示是否真的拦住了
 （被覆盖 / 被 PATH 绕过会明确标出来）、路径可以填或用文件选择器挑、规则有开关和删除，
-底下有个表单加新规则。不在 PATH 上的 CLI（比如 `dws`）只能在这里或用 `--bin` 给出绝对路径。
+底下有个表单加新规则。当前 Web 不开放 Guard 审批或工具安装；不在 PATH 上的 CLI（比如 `dws`）用 `--bin` 给出绝对路径。
 
 拦的是「会被别人看到」的动作——发钉钉消息、催 MR 评审人、推 ATA 群——读操作完全不碰。装闸门之前
 先 `atm backup`，装完跑一次 `atm guard status`：**PATH 上有同名两份时装错那份等于没装**，`status`
@@ -209,25 +215,28 @@ atm guard forget mytool                  # 忘掉一个注册过的 CLI（先 un
 - `--json` — JSON 输出（list、search、status、show、stats 等均支持）
 - `--sync` — 查询前显式同步会话源；查询默认只读，不会修改数据库
 
-## macOS 菜单栏 App
+## 可选 macOS App
 
-当前 macOS App 常驻显示今日 Token 和「需要你 N」，主窗口提供任务、收集、Agent、知识、统计和 AI Day 六个
-工作区。会话详情的「对话」支持摘要、时序、完整三种读法；收集工作区把钉钉等外部来源的消息分类成
-Todo 或待确认结论。新 Todo、Todo 补充和未保存结论会作为未读收集结果持续提醒，打开后标为已读；
-结论由用户明确保存到知识库，并可重试、纠错与撤销。
+主工作区运行在浏览器。两个独立原生工具按需构建和使用：
 
-```bash
-app/macos/Scripts/build-app.sh
-open app/macos/dist/ATM.app
+```sh
+app/menubar/Scripts/build-app.sh
+open "app/menubar/dist/ATM Menu.app"
+app/voice/Scripts/build-app.sh
+open "app/voice/dist/ATM Voice.app"
 ```
 
-开发与路径配置见 [`app/macos/README.md`](app/macos/README.md)。Web 迁移期间保留现有 App；轻量菜单栏
-伴随 App 和全局语音工具的独立拆分尚未交付。
+[ATM Menu](app/menubar/README.md) 只连接 Go 的有界本机控制接口。点击状态项打开普通系统菜单；
+菜单展示服务状态、今日 Token、当前任务和缓存额度摘要，把详情跳转到 Web，也可要求 Go 排队同步。它不直接扫描数据库、同步会话或运行采集，也不提供 Guard 决策入口。[ATM Voice](app/voice/README.md) 管理自己的快捷键、模型与权限，
+退出 ATM 服务后仍可使用。各自提供旧偏好的白名单导入，新 bundle 的系统权限必须实际授权。
+
+旧 [`app/macos`](app/macos/README.md) 主界面源码作为回退与迁移参考保留，已有性能修复不删除；
+新产品的构建不依赖它。不要让旧版后台和 Go 服务同时接管同一数据目录。
 
 ## 通知
 
-Agent 卡住等你时，ATM 发一条系统通知，点击直接跳到它所在的终端；Agent 继续往下走之后通知自动撤回。
-菜单栏同时显示「需要你 N」，不看通知也能一眼扫到。
+Agent 卡住等你时，Go 记录需要关注的状态，并交给可用显示渠道。ATM Menu 获得通知权限后负责稳定 ID 的通知显示和撤回；
+Agent 继续执行时更新状态。没有伴随 App 时可降级为普通本机横幅，备用横幅不保证撤回。
 
 **通知只在装了 hook 之后才有**——不装的话 ATM 只能猜，而 Agent 卡在工具授权那一刻根本不会写下任何
 文字（[为什么](docs/internals.md#通知与-hook)）。
@@ -241,7 +250,7 @@ atm agent hook uninstall          # 原样摘掉
 装的都是只上报的 hook，不拦工具调用、不替你做授权决定，且只增删 ATM 自己那几条配置。
 Qoder 装完要重启才生效；Pi 需要手动复制
 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 到 `~/.pi/agent/extensions/`。
-也可以在 App 的「设置 → 通知」里一键安装。
+Web 不提供 Hook 安装或权限审批，安装状态通过上述 CLI 检查。
 
 [外发动作闸门](#命令)的通知是另一类：它**自带「批准并发送 / 拒绝」两个按钮**，可以直接在通知上做决定，
 不用打开窗口；快速面板顶部也会列出待授权的那几条，带正文和同样两个按钮。请求被决定或过期后通知自动撤回。
@@ -310,10 +319,9 @@ Qoder 装完要重启才生效；Pi 需要手动复制
 
 - macOS / Linux 支持默认数据源路径自动检测；所有数据源路径可通过 `~/.atm/config.json` 覆盖
 - `atm session clip` 支持 macOS `pbcopy`、Linux `wl-copy`/`xclip`/`xsel`、Windows `clip`
-- todo 人向通知支持 macOS `terminal-notifier`/`osascript` 和 Linux `notify-send`：新建、待验收
-  （submit/review）、完成都会提醒；`--json` 同样发送；缺少通知命令时静默跳过，不影响任务状态。
-  菜单栏 App 在刷新时也会对外部新建/进入待验收发原生通知。设 `ATM_SKIP_LOCAL_NOTIFICATION=1`
-  可关闭 CLI 本地通知
+- todo 人向通知包括新建、待验收和完成；`--json` 同样发送，通知失败不影响任务状态。
+  已由 Go 接管时 CLI 转交同一个通知渠道，Menu 按稳定 ID 显示；未接管的独立 CLI 使用 macOS
+  `terminal-notifier`/`osascript` 或 Linux `notify-send`。设 `ATM_SKIP_LOCAL_NOTIFICATION=1` 可关闭 CLI 通知。
 - 外发动作闸门只支持 macOS / Linux：它靠 `exec` 替换当前进程，装的 shim 也是 POSIX shell 脚本。
   Windows 上 `atm guard install` 直接报错而不是装一个半能用的东西
 - 想再加一层保险，可以在 `~/.claude/settings.json` 的 `permissions.deny` 里加
@@ -331,13 +339,30 @@ make dist       # 嵌入页面后跨平台编译（darwin/linux × amd64/arm64�
 make clean      # 清理二进制和前端构建产物
 ```
 
-`build` 与 `build-cli` 默认写入同一产物，按需选择其中一种。开发验证使用仓库内的其他产物名称，保留
-正在使用的 CLI，也避免 macOS 对临时目录中可执行文件的限制：
+`build` 与 `build-cli` 默认写入同一产物，按需选择其中一种。开发验证使用仓库内的独立目录，保留
+可执行文件名 `atm`，既不覆盖正在使用的 CLI，也兼容按可执行文件名授权的本机安全策略：
+
+macOS 构建会优先使用钥匙串中的 Apple Development 身份，避免本机安全策略拦截临时签名；没有开发
+证书时回退到 ad hoc 签名。需要固定身份时设置 `ATM_CODESIGN_IDENTITY`，CLI 与三个 App 构建脚本使用
+同一选择规则。
 
 ```bash
-NPM_CONFIG_CACHE=/private/tmp/atm-web-npm-cache make build APP=atm-web
-bin/atm-web serve --data-dir /private/tmp/atm-web-data --port 0 --open
+NPM_CONFIG_CACHE=/private/tmp/atm-web-npm-cache make build BIN_DIR=bin/atm-web
+bin/atm-web/atm serve --data-dir /private/tmp/atm-web-data --port 0 --open
 ```
+
+调整页面时可启用 Go 同源的 Vite 热更新。在一个终端运行 `npm run dev --prefix app/web`，另一个
+终端运行：
+
+```sh
+mkdir -p bin/atm-web-dev
+go build -o bin/atm-web-dev/atm ./cmd/atm
+./scripts/codesign-local.sh bin/atm-web-dev/atm
+bin/atm-web-dev/atm serve --data-dir /private/tmp/atm-web-dev-data --port 47322 --dev-ui http://127.0.0.1:5173 --open
+```
+
+浏览器使用 Go 打开的地址；页面和 HMR 经过同源代理，API 鉴权保持生效。开发模式无需预先构建 `dist`。
+发布前仍需运行完整构建，且不传 `--dev-ui`。详见 [Web 开发说明](app/web/README.md#go-同源热更新)。
 
 `--data-dir` 只用于 `serve` 及其子命令，不修改 HOME；写入测试应使用空目录或脱敏副本。上述 npm 缓存
 路径也适用于默认缓存存在权限问题的开发环境。GoReleaser 会先执行同一套前端安装和构建，再用 `webui`

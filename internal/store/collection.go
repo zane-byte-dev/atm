@@ -480,6 +480,25 @@ func SaveCollectionRun(db *sql.DB, run CollectionRun) error {
 	return err
 }
 
+// ReconcileInterruptedCollectionRuns closes rows whose process disappeared
+// before it could write a terminal result. Callers must hold the cross-process
+// collection execution lock: a healthy collector legitimately owns a running
+// row and must never be mistaken for crash residue.
+func ReconcileInterruptedCollectionRuns(db *sql.DB, finishedAt int64) (int64, error) {
+	if finishedAt <= 0 {
+		finishedAt = time.Now().In(config.Loc).Unix()
+	}
+	result, err := db.Exec(`UPDATE collection_runs SET
+		status='failed', finished_at=?,
+		failed_count=CASE WHEN failed_count<1 THEN 1 ELSE failed_count END,
+		error=CASE WHEN error='' THEN 'previous collection run was interrupted before completion' ELSE error END
+		WHERE status='running'`, finishedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func PutCollectionItem(db *sql.DB, item CollectionItem) (CollectionItem, bool, error) {
 	now := time.Now().In(config.Loc).Unix()
 	if item.ID == "" {

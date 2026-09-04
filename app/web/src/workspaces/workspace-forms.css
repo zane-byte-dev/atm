@@ -1,0 +1,239 @@
+.workspace-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.workspace-jobs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.workspace-jobs:empty {
+  display: none;
+}
+.workspace-job {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--muted);
+}
+.workspace-job > div {
+  min-width: 0;
+  flex: 1;
+}
+.workspace-job strong {
+  margin-right: 10px;
+  color: var(--text);
+  font-weight: 550;
+}
+.workspace-job p {
+  margin: 5px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--danger);
+}
+.workspace-job.failed,
+.workspace-job.interrupted {
+  border-color: var(--danger-line);
+}
+.workspace-job-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.workspace-jobs-history {
+  margin-top: 12px;
+}
+.workspace-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.workspace-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.workspace-form label,
+.workspace-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.workspace-form input:not([type='checkbox']),
+.workspace-form select,
+.workspace-form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+}
+.workspace-form textarea {
+  resize: vertical;
+  min-height: 84px;
+}
+.workspace-form input:disabled,
+.workspace-form select:disabled,
+.workspace-form textarea:disabled {
+  opacity: 0.7;
+}
+.workspace-form .workspace-check {
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.workspace-check span {
+  display: grid;
+  gap: 5px;
+}
+.workspace-check small,
+.workspace-form-hint {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  margin: 0;
+}
+.workspace-form-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+.workspace-form-footer > span {
+  flex: 1;
+  color: var(--muted);
+  font-size: 12px;
+}
+.workspace-form-confirm {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--danger-line);
+  border-radius: 8px;
+  background: var(--danger-soft);
+}
+.workspace-form-confirm p {
+  margin: 0;
+  line-height: 1.6;
+}
+.workspace-conflict {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--warning-line);
+  background: var(--warning-soft);
+  padding: 14px;
+  border-radius: 9px;
+}
+.workspace-conflict p {
+  margin: 0;
+  line-height: 1.6;
+}
+.workspace-conflict details {
+  max-height: 360px;
+  overflow: auto;
+}
+.workspace-conflict pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+}
+.collection-heading > .workspace-actions {
+  justify-content: flex-end;
+}
+.collection-new-source {
+  margin-top: 10px;
+  width: 100%;
+}
+.collection-source-editor {
+  padding: 4px 0;
+}
+.collection-source-editor h2 {
+  margin: 0;
+}
+.collection-source-editor .workspace-form-grid {
+  grid-template-columns: 1fr;
+}
+.collection-detail .workspace-jobs {
+  margin-bottom: 14px;
+}
+.knowledge-edit-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (max-width: 700px) {
+  .workspace-form-grid {
+    grid-template-columns: 1fr;
+  }
+  .workspace-job {
+    align-items: flex-start;
+  }
+  .workspace-actions .button {
+    flex-shrink: 0;
+  }
+}
+
+.workspace-job small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.workspace-form > h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+.workspace-form .as-card {
+  margin-bottom: 0;
+}
+
+.workspace-form .as-inline-error {
+  margin: 0;
+  color: var(--danger);
+  line-height: 1.6;
+}
+
+.native-preferences-import {
+  margin-top: 24px;
+}
+.workspace-import-preview {
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--line);
+  background: var(--hover);
+  border-radius: var(--panel-radius);
+  padding: 16px;
+}
+.workspace-import-preview small {
+  overflow-wrap: anywhere;
+}
+.activity-usage-filters {
+  flex-wrap: wrap;
+}
+.activity-usage-filters label {
+  min-width: 0;
+}
+.activity-usage-filters select {
+  max-width: 220px;
+}

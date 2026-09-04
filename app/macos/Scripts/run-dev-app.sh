@@ -40,7 +40,7 @@ cp -R "$RESOURCE_BUNDLE" "$APP_DIR/Contents/Resources/"
 cp "$ICON_FILE" "$APP_DIR/Contents/Resources/AppIcon.icns"
 cp "$ROOT_DIR/Resources/DebugInfo.plist" "$APP_DIR/Contents/Info.plist"
 chmod +x "$APP_DIR/Contents/MacOS/ATMMenuBarApp"
-codesign --force --deep --sign - "$APP_DIR"
+"$ROOT_DIR/../../scripts/codesign-local.sh" --deep "$APP_DIR"
 
 echo "Packaged $APP_DIR ($BUILD_CONFIGURATION)"
 if [[ "${ATM_BUILD_ONLY:-0}" == "1" ]]; then

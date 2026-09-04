@@ -1,5 +1,11 @@
 # ATM for macOS
 
+> 迁移状态（2026-09）：日用主界面改为 Go 服务提供的 [Web 工作区](../web/README.md)。原生新产品分别位于 [ATM Menu](../menubar/README.md) 与 [ATM Voice](../voice/README.md)，可独立构建；本目录保留旧工作区和性能修复作为迁移验收/回退来源，不是新产品的构建依赖。下方为旧产品说明，包含历史能力描述。
+>
+> 更新后的旧 App 在构造 Store/Hook 前检查 `runtime/presence-owner.json` 或本域的 `ATMRuntimeOwner=go`。Go 曾接管后，即使服务已停止也不会重新启动旧任务扫描、同步或采集。旧模式与 Go 持有同一 `runtime/presence.lock`，监听器还持有 socket 同名 `.lock`；只清理自己的 socket inode。`ATM_VOICE_ONLY=1` 仅用于沿用旧权限的临时语音过渡，不初始化 Store/Hook，并且只注册语音热键。不要同时启用旧语音与新 Voice 的相同热键。
+>
+> `Scripts/export-web-preferences.swift [--dev]` 只把知识/来源顺序及用量筛选白名单输出为版本化 JSON，供 Web 外观设置中的文件导入使用。它不包含秘密、运行令牌、语音权限或业务正文。新服务接管验收完成前，不删除旧源代码或旧模型。
+
 ATM 的原生 macOS 桌面应用。主窗口提供任务搜索与筛选、Markdown 详情、编辑、
 外部需求收集、
 Agent 活跃监视器、知识工作台，以及配额与 Token/会话用量分析。用量页顶部“额度”按 Agent 展示
@@ -183,8 +189,8 @@ SenseVoice 的模型不在启动时预加载：推理只发生在松手那一刻
 贴完还原，但只在期间没有别人写过才还原——处理粘贴时自己往剪贴板写东西的应用，现在才是它的主人。
 模拟按键需要辅助功能权限，没有时不算失败而是降级：文字留在剪贴板上，浮层写「缺少辅助功能权限，
 按 ⌘V 贴上」，并且刻意不还原剪贴板快照——那一刻剪贴板是刚说的那段话的唯一副本。这条降级路径不是
-可选的：产物是 ad-hoc 签名，每次重新构建代码标识都会变，已授权的辅助功能条目随之失效，所以「权限
-突然没了」在开发期是常态。检查权限用的是不带提示参数的 `AXIsProcessTrusted()`——带提示的那个会弹一
+可选的：没有开发证书时构建脚本会回退到 ad hoc 签名，重新构建可能使已授权的辅助功能条目失效。
+检查权限用的是不带提示参数的 `AXIsProcessTrusted()`——带提示的那个会弹一
 个抢焦点的模态框，正好把要粘贴进去的应用挤到后面；申请权限的入口放在设置里，那里打断人是没关系的。
 
 设置 → 语音管快捷键、引擎与模型下载、识别语言（一个选择同时映射 Apple 的 `Locale` 和 SenseVoice 的
@@ -275,7 +281,8 @@ app/macos/Scripts/build-app.sh
 open app/macos/dist/ATM.app
 ```
 
-产物使用 ad-hoc 签名，适合本机使用。正式分发时应替换为 Developer ID 签名和公证流程。
+构建脚本优先使用钥匙串中的 Apple Development 身份，没有时回退到 ad hoc；可用
+`ATM_CODESIGN_IDENTITY` 显式指定。正式分发时仍需 Developer ID 签名和公证流程。
 
 ## 设计来源
 

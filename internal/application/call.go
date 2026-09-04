@@ -26,22 +26,27 @@ func (kind ActorKind) Valid() bool {
 }
 
 // Origin identifies the adapter through which a use case was invoked. It is
-// kept separate from ActorKind: for example, a human action in the desktop app
-// has ActorHuman with OriginIPC.
+// kept separate from ActorKind: for example, a human action admitted through
+// the authenticated native-control capability has ActorHuman with
+// OriginNativeControl.
 type Origin string
 
 const (
-	OriginCLI        Origin = "cli"
-	OriginIPC        Origin = "ipc"
-	OriginWeb        Origin = "web"
-	OriginController Origin = "controller"
-	OriginHook       Origin = "hook"
+	OriginCLI Origin = "cli"
+	OriginIPC Origin = "ipc"
+	OriginWeb Origin = "web"
+	// OriginNativeControl is reserved for adapters that have authenticated the
+	// per-instance native control capability. Merely reaching a local IPC or HTTP
+	// transport is not enough to derive this origin.
+	OriginNativeControl Origin = "native_control"
+	OriginController    Origin = "controller"
+	OriginHook          Origin = "hook"
 )
 
 // Valid reports whether origin is one of the stable application origins.
 func (origin Origin) Valid() bool {
 	switch origin {
-	case OriginCLI, OriginIPC, OriginWeb, OriginController, OriginHook:
+	case OriginCLI, OriginIPC, OriginWeb, OriginNativeControl, OriginController, OriginHook:
 		return true
 	default:
 		return false

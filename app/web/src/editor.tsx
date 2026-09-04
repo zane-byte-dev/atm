@@ -4,7 +4,8 @@ import { Check, Clock3, LoaderCircle } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ApiError, call, errorText } from './api'
-import { getDraft, readStorageNotice, removeDraftIfUnchanged, saveDraft } from './drafts'
+import { createDraftSession, readStorageNotice } from './drafts'
+import type { DraftRecord } from './drafts'
 import {
   applyMergeReview,
   buildMergeReview,
@@ -15,12 +16,14 @@ import {
   unresolvedFields,
 } from './editor-state'
 import type { MergeChoices, MergeReview } from './editor-state'
-import type { Draft, Todo, TodoDetail } from './types'
+import type { Draft, Todo, TodoDetail, OperationWarning } from './types'
+import { TaskImageUpload } from './task-images'
+import type { TaskImageUploadHandle } from './task-images'
 
 export type EditorProps = {
   initial?: TodoDetail
   onClose: () => void
-  onSaved: (id: string) => void
+  onSaved: (id: string, warnings?: OperationWarning[]) => void
   onBusyChange?: (busy: boolean) => void
   defaultProject?: string
 }
@@ -47,11 +50,18 @@ export function Editor({
     freshDraft(original.current, defaultProject, crypto.randomUUID()),
   )
   const draftRef = useRef(draft)
+  const [draftSession] = useState(() => createDraftSession())
+  const [recoveries, setRecoveries] = useState<DraftRecord[]>([])
+  const [recoveryPending, setRecoveryPending] = useState(false)
+  const [damagedDrafts, setDamagedDrafts] = useState(0)
   const [ready, setReady] = useState(false)
   const readyRef = useRef(false)
   const [restored, setRestored] = useState(false)
   const [storageState, setStorageState] = useState<StorageState>('loading')
   const [preview, setPreview] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [imageTodo, setImageTodo] = useState(original.current?.todo)
+  const imageUpload = useRef<TaskImageUploadHandle>(null)
   const [merge, setMerge] = useState<MergeReview>()
   const [choices, setChoices] = useState<MergeChoices>({})
   const [conflictLocked, setConflictLocked] = useState(false)
@@ -62,6 +72,7 @@ export function Editor({
   const [separateCreation, setSeparateCreation] = useState(false)
   const [savedWithDraft, setSavedWithDraft] = useState<string>()
   const persistenceBlocked = useRef(false)
+  const dirty = useRef(false)
   const completed = useRef(false)
   const alive = useRef(true)
   const writeSequence = useRef(0)
@@ -76,9 +87,14 @@ export function Editor({
     setDraft(next)
   }
   const persist = (value: Draft) => {
+    if (!dirty.current) {
+      setStorageState('saved')
+      return Promise.resolve()
+    }
     const sequence = ++writeSequence.current
     setStorageState('saving')
-    return saveDraft(key, value)
+    return draftSession
+      .saveDraft(key, value)
       .then(() => {
         if (alive.current && sequence === writeSequence.current) setStorageState('saved')
       })
@@ -90,23 +106,14 @@ export function Editor({
   useEffect(() => {
     let active = true
     alive.current = true
-    getDraft(key)
-      .then((value) => {
+    draftSession
+      .listDrafts(key)
+      .then(({ records, damaged }) => {
         if (!active) return
-        if (value) {
-          const current = original.current
-          // Old drafts without a baseline can only inherit one at the same ETag.
-          const restoredDraft =
-            current && !value.base && value.etag === current.etag
-              ? { ...value, base: fieldsFromDetail(current) }
-              : value
-          replaceDraft(restoredDraft)
-          setRestored(true)
-          if (current && restoredDraft.etag !== current.etag) {
-            setMerge(buildMergeReview(restoredDraft, current))
-            setConflictLocked(true)
-          }
-        }
+        setRecoveries(records)
+        setDamagedDrafts(damaged)
+        setRecoveryPending(records.length > 0)
+        persistenceBlocked.current = records.length > 0
       })
       .catch(() => {
         if (!active) return
@@ -122,9 +129,10 @@ export function Editor({
         }
       })
     const flush = () => {
-      if (!readyRef.current || completed.current || persistenceBlocked.current) return
-      // sessionStorage writes synchronously, including during pagehide.
-      void saveDraft(key, draftRef.current).catch(() => {
+      if (!readyRef.current || !dirty.current || completed.current || persistenceBlocked.current)
+        return
+      // Each editor writes its own localStorage record synchronously during pagehide.
+      void draftSession.saveDraft(key, draftRef.current).catch(() => {
         if (alive.current) setStorageState('failed')
       })
     }
@@ -161,6 +169,7 @@ export function Editor({
         controller.signal,
       )
       if (!alive.current || controller.signal.aborted) return
+      setImageTodo(result.todo)
       setMerge(buildMergeReview(draftRef.current, result))
       setChoices({})
     } catch (error) {
@@ -180,7 +189,7 @@ export function Editor({
         priority: submitted.priority,
         project: submitted.project.trim(),
       }
-      const result = await call<{ todo: Todo; etag: string }>(
+      const result = await call<{ todo: Todo; etag: string; warnings?: OperationWarning[] }>(
         current ? 'todo.update' : 'todo.create',
         current ? { ...payload, todo_id: current.todo.id, expected_etag: submitted.etag } : payload,
         undefined,
@@ -193,7 +202,7 @@ export function Editor({
       // request is in flight. Its newer draft must survive the old response.
       if (alive.current) {
         try {
-          draftRemoved = await removeDraftIfUnchanged(key, submitted)
+          draftRemoved = await draftSession.removeDraftIfUnchanged(key, submitted)
         } catch {
           /* Keep the draft and report below. */
         }
@@ -210,9 +219,10 @@ export function Editor({
       await Promise.all([
         query.invalidateQueries({ queryKey: ['todos'] }),
         query.invalidateQueries({ queryKey: ['todo', result.todo.id] }),
+        query.invalidateQueries({ queryKey: ['runtime-jobs'] }),
       ])
       if (!alive.current) return
-      if (result.draftRemoved) onSaved(result.todo.id)
+      if (result.draftRemoved) onSaved(result.todo.id, result.warnings)
       else {
         setStorageState('failed')
         setSavedWithDraft(result.todo.id)
@@ -220,8 +230,8 @@ export function Editor({
     },
   })
   useEffect(() => {
-    onBusyChange?.(mutation.isPending)
-  }, [mutation.isPending, onBusyChange])
+    onBusyChange?.(mutation.isPending || uploading)
+  }, [mutation.isPending, uploading, onBusyChange])
   useEffect(
     () => () => {
       onBusyChange?.(false)
@@ -229,21 +239,64 @@ export function Editor({
     [onBusyChange],
   )
 
-  const disabled = !ready || mutation.isPending || conflictLocked || !!savedWithDraft
+  const disabled =
+    !ready ||
+    recoveryPending ||
+    mutation.isPending ||
+    uploading ||
+    conflictLocked ||
+    !!savedWithDraft
   const submit = () => {
     if (!disabled && draftRef.current.title.trim() && !creationConflict && !completed.current)
       mutation.mutate({ ...draftRef.current })
   }
   const patch = (next: Partial<Draft>) => {
+    dirty.current = true
     replaceDraft({ ...draftRef.current, ...next })
     mutation.reset()
     setMerged(false)
   }
   const unresolved = merge ? unresolvedFields(merge, choices) : []
+  const recover = (value?: Draft) => {
+    if (value) {
+      dirty.current = true
+      const current = original.current
+      const restoredDraft =
+        current && !value.base && value.etag === current.etag
+          ? { ...value, base: fieldsFromDetail(current) }
+          : value
+      replaceDraft(restoredDraft)
+      setRestored(true)
+      if (current && restoredDraft.etag !== current.etag) {
+        setMerge(buildMergeReview(restoredDraft, current))
+        setConflictLocked(true)
+      }
+    }
+    persistenceBlocked.current = false
+    setRecoveryPending(false)
+    void persist(draftRef.current)
+  }
 
   return (
     <form
       className="editor"
+      onPaste={(event) => {
+        const files = Array.from(event.clipboardData.files)
+        if (files.length && imageUpload.current && !disabled) {
+          event.preventDefault()
+          imageUpload.current.add(files)
+        }
+      }}
+      onDragOver={(event) => {
+        if (imageUpload.current && event.dataTransfer.types.includes('Files'))
+          event.preventDefault()
+      }}
+      onDrop={(event) => {
+        if (event.dataTransfer.files.length && imageUpload.current && !disabled) {
+          event.preventDefault()
+          imageUpload.current.add(Array.from(event.dataTransfer.files))
+        }
+      }}
       onSubmit={(event) => {
         event.preventDefault()
         submit()
@@ -255,10 +308,42 @@ export function Editor({
         }
       }}
     >
+      {recoveryPending && (
+        <section className="draft-recovery" aria-label="恢复未提交草稿">
+          <h3>发现未提交的草稿</h3>
+          <p>选择一份继续编辑。每份草稿独立保存，恢复不会影响其他窗口。</p>
+          <div className="draft-recovery-list">
+            {recoveries.map((record) => (
+              <div className="draft-recovery-row" key={record.id}>
+                <div>
+                  <strong>{record.draft.title || '未命名任务'}</strong>
+                  <span>
+                    {record.updatedAt
+                      ? new Date(record.updatedAt).toLocaleString()
+                      : '旧版本标签页草稿'}{' '}
+                    · {record.draft.description.length} 字
+                  </span>
+                </div>
+                <button className="button" type="button" onClick={() => recover(record.draft)}>
+                  恢复副本
+                </button>
+              </div>
+            ))}
+          </div>
+          <button className="text-button" type="button" onClick={() => recover()}>
+            开始新草稿，保留已有内容
+          </button>
+        </section>
+      )}
+      {damagedDrafts > 0 && (
+        <p className="notice" role="status">
+          有 {damagedDrafts} 份草稿无法读取，原始记录已保留，其余草稿仍可使用。
+        </p>
+      )}
       {restored && (
         <div className="draft-banner">
           <Clock3 size={14} />
-          <span>已恢复此标签页未提交的草稿</span>
+          <span>已恢复草稿副本，原草稿仍保留</span>
           <button
             type="button"
             disabled={disabled}
@@ -277,12 +362,13 @@ export function Editor({
       )}
       {storageState === 'failed' && !savedWithDraft && (
         <div className="notice" role="alert" style={{ display: 'block' }}>
-          <p>无法读取或保存此标签页的草稿。刷新页面可能丢失当前内容，请先提交或复制。</p>
+          <p>无法读取或保存浏览器草稿。刷新或关闭页面可能丢失当前内容，请先提交或复制。</p>
           <button
             type="button"
             disabled={mutation.isPending}
             onClick={() => {
               persistenceBlocked.current = false
+              dirty.current = true
               void persist(draftRef.current)
             }}
           >
@@ -294,9 +380,9 @@ export function Editor({
         <div className="notice" role="status" style={{ display: 'block' }}>
           <p>
             任务 {savedWithDraft}{' '}
-            已保存。此标签页还留有草稿（内容已变化或浏览器无法清理），再次编辑时请核对恢复的内容。
+            已保存。浏览器还留有草稿（内容已变化或浏览器无法清理），再次编辑时请核对恢复的内容。
           </p>
-          <button type="button" onClick={() => onSaved(savedWithDraft)}>
+          <button type="button" onClick={() => onSaved(savedWithDraft, mutation.data?.warnings)}>
             打开已保存任务
           </button>
         </div>
@@ -361,12 +447,31 @@ export function Editor({
           rows={12}
         />
       )}
+      {imageTodo && !recoveryPending && !conflictLocked ? (
+        <TaskImageUpload
+          ref={imageUpload}
+          todo={imageTodo}
+          etag={draft.etag}
+          onBusyChange={setUploading}
+          onConflict={() => void loadLatest()}
+          onUploaded={(result) => {
+            setImageTodo(result.todo)
+            replaceDraft({ ...draftRef.current, etag: result.etag })
+          }}
+        />
+      ) : (
+        !original.current && (
+          <p className="task-upload-status">创建任务后可以添加图片，支持拖入和粘贴。</p>
+        )
+      )}
       <div className="editor-helper">
         <span aria-live="polite">
           {storageState === 'failed'
             ? '草稿保存不可用'
             : storageState === 'saved'
-              ? '草稿保存在此标签页'
+              ? dirty.current
+                ? '草稿已保存在浏览器'
+                : '修改后自动保存草稿'
               : storageState === 'saving'
                 ? '正在保存草稿…'
                 : '正在检查草稿…'}
@@ -375,10 +480,7 @@ export function Editor({
       </div>
       <details style={{ fontSize: 12, marginBottom: 16 }}>
         <summary>草稿保存范围</summary>
-        <p>
-          {readStorageNotice()}{' '}
-          复制标签页会复制当时的草稿，之后各页独立保存；复制的创建草稿仍对应同一次创建。
-        </p>
+        <p>{readStorageNotice()} 恢复的创建草稿仍对应同一次创建，重试不会重复新建任务。</p>
       </details>
       {mutation.error && !creationConflict && <Notice error={mutation.error} />}
       {conflictLocked && (
@@ -558,7 +660,7 @@ export function Editor({
           type="button"
           className="button subtle"
           onClick={onClose}
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || uploading}
         >
           取消
         </button>

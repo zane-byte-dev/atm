@@ -44,6 +44,23 @@ export type SessionDetail = Omit<SessionSummary, 'short_id' | 'created_at' | 'q_
   limit: number
 }
 export type SessionStatus = {
+  agent_hooks?: boolean
+  presence?: {
+    owner: string
+    active_count: number
+    attention_count: number
+    last_event_at?: string
+    sessions: {
+      id: string
+      session_id?: string
+      resume_id?: string
+      source: string
+      state: string
+      hook_backed: boolean
+      attention?: { reason: string; tool?: string; text?: string }
+      updated_at: string
+    }[]
+  }
   source: string
   generated_at: string
   missing_index: boolean
@@ -133,6 +150,10 @@ export type UsageSnapshot = {
   ranges: Record<string, UsageRange>
   day_stats: DayStats[]
   hour_stats: DayStats[]
+  model_day_stats?: (MetricFields & { date: string; model: string; client: string })[]
+  model_hour_stats?: (MetricFields & { date: string; model: string; client: string })[]
+  project_day_stats?: (MetricFields & { date: string; project: string; client: string })[]
+  project_hour_stats?: (MetricFields & { date: string; project: string; client: string })[]
 }
 export type CachedQuota = {
   source: string

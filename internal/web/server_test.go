@@ -284,6 +284,39 @@ func TestInstanceControlAndExclusiveOwnership(t *testing.T) {
 	}
 }
 
+func TestInstanceReportsRuntimeMode(t *testing.T) {
+	started := false
+	server, err := Start(Options{
+		DataDir: t.TempDir(), Version: "test", Port: 0,
+		Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>ATM</title>")}},
+		StartRuntime: func(info Instance, _ func(...string)) (func(context.Context) error, error) {
+			started = true
+			if info.Mode != "go" {
+				t.Fatalf("runtime received mode %q", info.Mode)
+			}
+			return func(context.Context) error { return nil }, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(server.Close)
+	if !started || server.Info().Mode != "go" {
+		t.Fatalf("runtime mode = %q, started=%v", server.Info().Mode, started)
+	}
+	w := httptest.NewRecorder()
+	server.ServeHTTP(w, httptest.NewRequest(http.MethodGet, server.info.Origin+"/healthz", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"mode":"go"`) {
+		t.Fatalf("health mode = %d %s", w.Code, w.Body.String())
+	}
+	cookie, _ := connectBrowser(t, server)
+	w = httptest.NewRecorder()
+	server.ServeHTTP(w, browserRequest(server, http.MethodGet, "/api/v1/bootstrap", "", cookie, ""))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"mode":"go"`) {
+		t.Fatalf("bootstrap mode = %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestControlRequiresCapabilityAndInstanceIdentity(t *testing.T) {
 	server := startTestServer(t, nil)
 	for _, test := range []struct{ token, instance, origin string }{{"", server.info.InstanceID, ""}, {server.controlToken, "wrong", ""}, {server.controlToken, server.info.InstanceID, server.info.Origin}} {

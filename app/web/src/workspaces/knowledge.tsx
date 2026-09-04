@@ -28,6 +28,9 @@ import type {
   MemoryHit,
 } from './knowledge-types'
 import './knowledge.css'
+import './workspace-forms.css'
+import { useNativePreferences } from './native-preferences-react'
+import { nativeOrdered } from './native-preferences'
 
 type RoutePatch = Record<string, string | undefined>
 const statusLabels: Record<string, string> = { active: '有效', draft: '草稿', archived: '已归档' }
@@ -45,6 +48,7 @@ const splitValues = (value: string) => [
 export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
   const [params, setParams] = useSearchParams()
   const queryClient = useQueryClient()
+  const nativePreferences = useNativePreferences()
   const memoryTab = params.get('tab') === 'memory'
   const collection = params.get('collection') || ''
   const documentID = params.get('document') || ''
@@ -107,6 +111,10 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
     queryFn: ({ signal }) => call<MemoryHit>('memory.get', { memory_id: memoryID }, signal),
     enabled: memoryTab && !!memoryID,
   })
+  const orderedCollections = nativeOrdered(
+    catalog.data || [],
+    nativePreferences.knowledge_collection_order,
+  )
   const activeCollection = catalog.data?.find((item) => item.id === collection)
   const total = (catalog.data || []).reduce((sum, item) => sum + item.document_count, 0)
   const closeEditor = () => route({ compose: undefined })
@@ -271,7 +279,7 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
               {catalog.error && (
                 <Notice error={catalog.error} retry={() => void catalog.refetch()} />
               )}
-              {(catalog.data || []).map((item) => (
+              {orderedCollections.map((item) => (
                 <button
                   type="button"
                   key={item.id}
@@ -501,8 +509,8 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
                 })
               }}
             />
-          ) : !memoryTab && (compose === 'document' || compose === 'copy') ? (
-            compose === 'copy' && !document.data ? (
+          ) : !memoryTab && (compose === 'document' || compose === 'copy' || compose === 'edit') ? (
+            (compose === 'copy' || compose === 'edit') && !document.data ? (
               <DetailRequest
                 pending={document.isPending}
                 error={document.error}
@@ -510,10 +518,11 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
               />
             ) : (
               <DocumentComposer
-                key={`document:${compose}:${collection}:${compose === 'copy' ? documentID : ''}`}
-                collections={catalog.data || []}
+                key={`document:${compose}:${collection}:${compose === 'copy' || compose === 'edit' ? documentID : ''}`}
+                collections={orderedCollections}
                 collection={collection}
-                original={compose === 'copy' ? document.data : undefined}
+                original={compose === 'copy' || compose === 'edit' ? document.data : undefined}
+                editing={compose === 'edit'}
                 onBusy={setBusy}
                 onClose={closeEditor}
                 onSaved={onCreatedDocument}
@@ -567,6 +576,7 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
                   document={document.data}
                   writable={writable}
                   onCopy={() => route({ compose: 'copy' })}
+                  onEdit={() => route({ compose: 'edit' })}
                 />
               )}
             </>
@@ -653,10 +663,12 @@ function DocumentDetail({
   document,
   writable,
   onCopy,
+  onEdit,
 }: {
   document: KnowledgeDocument
   writable: boolean
   onCopy: () => void
+  onEdit: () => void
 }) {
   const meta = document.metadata
   return (
@@ -671,10 +683,18 @@ function DocumentDetail({
       <div className="knowledge-document-actions">
         <span>更新于 {formatDate(meta.updatedAt)}</span>
         {writable && (
-          <button type="button" className="button subtle" onClick={onCopy}>
-            <Copy size={14} />
-            创建副本
-          </button>
+          <div className="knowledge-edit-actions">
+            {document.editable && (
+              <button type="button" className="button subtle" onClick={onEdit}>
+                <Pencil size={14} />
+                编辑文档
+              </button>
+            )}
+            <button type="button" className="button subtle" onClick={onCopy}>
+              <Copy size={14} />
+              创建副本
+            </button>
+          </div>
         )}
       </div>
       <Tags values={meta.tags} />
@@ -715,8 +735,10 @@ function DocumentDetail({
           )}
         </dl>
       </details>
-      {writable && (
-        <p className="knowledge-detail-note">需要调整内容时，可创建副本；原文与来源文档会保留。</p>
+      {writable && !document.editable && (
+        <p className="knowledge-detail-note">
+          此文档来自外部来源。可以创建副本进行编辑，保留来源原文。
+        </p>
       )}
     </article>
   )
@@ -791,6 +813,8 @@ type ContentDraft = {
   id: string
   name: string
   description: string
+  status: string
+  etag: string
 }
 const emptyDraft: ContentDraft = {
   title: '',
@@ -803,45 +827,87 @@ const emptyDraft: ContentDraft = {
   id: '',
   name: '',
   description: '',
+  status: 'active',
+  etag: '',
 }
 
-// Each label keeps an independent draft in this browser tab. Restore only the
-// known string fields; malformed storage never becomes a request payload.
+// A document instance owns its own record. Recovering another tab's draft
+// copies it, so saving here never destroys another editor's unsubmitted work.
+const draftOwner = crypto.randomUUID()
+type RecoverableDraft = { key: string; draft: ContentDraft; savedAt: number }
+function parseDraft(raw: string): { draft: ContentDraft; savedAt: number } | undefined {
+  try {
+    const parsed = JSON.parse(raw)
+    const value = parsed?.draft || parsed
+    if (!value || typeof value.content !== 'string' || typeof value.title !== 'string') return
+    const draft = { ...emptyDraft }
+    for (const key of Object.keys(emptyDraft) as (keyof ContentDraft)[]) {
+      if (typeof value[key] === 'string') draft[key] = value[key]
+    }
+    return {
+      draft,
+      savedAt:
+        typeof parsed.savedAt === 'number' &&
+        Number.isFinite(parsed.savedAt) &&
+        parsed.savedAt > 0 &&
+        parsed.savedAt < 8640000000000000
+          ? parsed.savedAt
+          : 0,
+    }
+  } catch {
+    return
+  }
+}
 function useKnowledgeDraft(key: string, initial: Partial<ContentDraft>) {
-  const storageKey = `atm.web.knowledge.draft.v1:${key}`
+  const prefix = `atm.web.knowledge.draft.v2:${key}:`
+  const storageKey = `${prefix}${draftOwner}`
   const [storageError, setStorageError] = useState(false)
-  const restored = useRef(false)
+  const [restored, setRestored] = useState(false)
   const completed = useRef(false)
   const persistenceBlocked = useRef(false)
+  const [candidates, setCandidates] = useState<RecoverableDraft[]>(() => {
+    const result: RecoverableDraft[] = []
+    try {
+      for (let index = 0; index < localStorage.length; index++) {
+        const item = localStorage.key(index)
+        if (item?.startsWith(prefix) && item !== storageKey) {
+          const parsed = parseDraft(localStorage.getItem(item) || '')
+          if (parsed) result.push({ key: item, ...parsed })
+        }
+      }
+      const legacyKey = `atm.web.knowledge.draft.v1:${key.replace(/^copy:/, 'document:')}`
+      const legacy = parseDraft(sessionStorage.getItem(legacyKey) || '')
+      if (legacy) result.push({ key: `session:${legacyKey}`, ...legacy })
+    } catch {
+      /* The editable form remains available without storage. */
+    }
+    return result.sort((a, b) => b.savedAt - a.savedAt).slice(0, 10)
+  })
   const [draft, setDraft] = useState<ContentDraft>(() => {
     try {
-      const raw = sessionStorage.getItem(storageKey)
+      const raw = localStorage.getItem(storageKey)
       if (raw) {
-        const parsed = JSON.parse(raw)
-        if (parsed && Object.keys(emptyDraft).every((field) => typeof parsed[field] === 'string')) {
-          restored.current = true
-          return {
-            ...emptyDraft,
-            ...Object.fromEntries(Object.keys(emptyDraft).map((field) => [field, parsed[field]])),
-          }
-        }
+        const parsed = parseDraft(raw)
+        if (parsed) return parsed.draft
         persistenceBlocked.current = true
       }
     } catch {
-      // A damaged/unreadable draft must not be overwritten by the empty form.
       persistenceBlocked.current = true
     }
     return { ...emptyDraft, ...initial }
   })
   const draftRef = useRef(draft)
   draftRef.current = draft
+  const lastStored = useRef('')
   const persist = (value: ContentDraft) => {
     if (completed.current || persistenceBlocked.current) {
       if (persistenceBlocked.current) setStorageError(true)
       return
     }
     try {
-      sessionStorage.setItem(storageKey, JSON.stringify(value))
+      const serialized = JSON.stringify({ draft: value, savedAt: Date.now() })
+      localStorage.setItem(storageKey, serialized)
+      lastStored.current = serialized
       setStorageError(false)
     } catch {
       setStorageError(true)
@@ -853,8 +919,6 @@ function useKnowledgeDraft(key: string, initial: Partial<ContentDraft>) {
   const patch = (value: Partial<ContentDraft>) => {
     const next = { ...draftRef.current, ...value }
     draftRef.current = next
-    // The input event persists synchronously, including immediately before a
-    // route change or pagehide; a queued React effect is not the only copy.
     persist(next)
     setDraft(next)
   }
@@ -862,33 +926,78 @@ function useKnowledgeDraft(key: string, initial: Partial<ContentDraft>) {
     persistenceBlocked.current = false
     persist(draftRef.current)
   }
-  const clear = () => {
-    completed.current = true
+  const recover = (candidate: RecoverableDraft) => {
+    patch(candidate.draft)
+    setCandidates([])
+    setRestored(true)
+  }
+  const discard = (candidate: RecoverableDraft) => {
     try {
-      if (sessionStorage.getItem(storageKey) === JSON.stringify(draft))
-        sessionStorage.removeItem(storageKey)
+      if (candidate.key.startsWith('session:')) sessionStorage.removeItem(candidate.key.slice(8))
+      else localStorage.removeItem(candidate.key)
+      setCandidates((previous) => previous.filter((item) => item.key !== candidate.key))
     } catch {
       setStorageError(true)
     }
   }
-  return { draft, patch, clear, rebuildDraft, storageError, restored: restored.current }
+  const clear = () => {
+    completed.current = true
+    try {
+      if (localStorage.getItem(storageKey) === lastStored.current)
+        localStorage.removeItem(storageKey)
+    } catch {
+      setStorageError(true)
+    }
+  }
+  return { draft, patch, clear, rebuildDraft, storageError, restored, candidates, recover, discard }
 }
-
 function ComposerFeedback({
   restored,
   storageError,
   rebuildDraft,
+  candidates,
+  recover,
+  discard,
 }: {
   restored: boolean
   storageError: boolean
   rebuildDraft: () => void
+  candidates: RecoverableDraft[]
+  recover: (candidate: RecoverableDraft) => void
+  discard: (candidate: RecoverableDraft) => void
 }) {
   return (
     <>
-      {restored && <p className="knowledge-draft-banner">已恢复此标签页未提交的草稿。</p>}
+      {restored && <p className="knowledge-draft-banner">已恢复之前的草稿，原草稿保留为备份。</p>}
+      {!!candidates.length && (
+        <details className="workspace-conflict">
+          <summary>发现 {candidates.length} 份未提交草稿</summary>
+          {candidates.map((candidate) => (
+            <div key={candidate.key}>
+              <p>
+                {candidate.draft.title ||
+                  candidate.draft.name ||
+                  candidate.draft.content.slice(0, 80) ||
+                  '未命名草稿'}
+                {candidate.savedAt
+                  ? ` · ${formatDate(new Date(candidate.savedAt).toISOString())}`
+                  : ''}
+              </p>
+              <div className="workspace-actions">
+                <button type="button" className="button" onClick={() => recover(candidate)}>
+                  恢复这份草稿
+                </button>
+                <button type="button" className="text-button" onClick={() => discard(candidate)}>
+                  删除这份草稿
+                </button>
+              </div>
+            </div>
+          ))}
+        </details>
+      )}
       {storageError && (
         <div className="notice" role="alert">
-          <span>无法读取或保存此标签页的草稿，离开页面前请复制当前内容。</span>
+          <span>无法读取或保存浏览器草稿，离开页面前请复制当前内容。</span>
           <button type="button" onClick={rebuildDraft}>
             用当前内容重建草稿
           </button>
@@ -897,6 +1006,7 @@ function ComposerFeedback({
     </>
   )
 }
+
 function ComposerFooter({
   pending,
   disabled,
@@ -912,7 +1022,7 @@ function ComposerFooter({
 }) {
   return (
     <div className="knowledge-composer-footer">
-      <span>{storageError ? '草稿保存不可用' : '草稿保存在此标签页'}</span>
+      <span>{storageError ? '草稿保存不可用' : '草稿保存在此浏览器，关闭后可恢复'}</span>
       <button type="button" className="button subtle" disabled={pending} onClick={onClose}>
         取消
       </button>
@@ -966,27 +1076,40 @@ function DocumentComposer({
   collections,
   collection,
   original,
+  editing = false,
   ...props
 }: {
   collections: KnowledgeCollection[]
   collection: string
   original?: KnowledgeDocument
+  editing?: boolean
 } & ComposerProps<KnowledgeDocument>) {
-  const draftState = useKnowledgeDraft(`document:${original?.metadata.id || collection || 'new'}`, {
-    title: original ? `${original.metadata.title}（副本）` : '',
-    content: original?.content || '',
-    collection: original?.collection || collection || collections[0]?.id || '',
-    tags: original?.metadata.tags?.join(', ') || '',
-    domains: original?.metadata.domains?.join(', ') || '',
-    projects: original?.metadata.projects?.join(', ') || '',
-  })
+  const draftState = useKnowledgeDraft(
+    `${editing ? 'edit' : original ? 'copy' : 'document'}:${original?.metadata.id || collection || 'new'}`,
+    {
+      title: original
+        ? editing
+          ? original.metadata.title
+          : `${original.metadata.title}（副本）`
+        : '',
+      etag: editing ? original?.etag || '' : '',
+      status: original?.metadata.status || 'active',
+      content: original?.content || '',
+      collection: original?.collection || collection || collections[0]?.id || '',
+      tags: original?.metadata.tags?.join(', ') || '',
+      domains: original?.metadata.domains?.join(', ') || '',
+      projects: original?.metadata.projects?.join(', ') || '',
+    },
+  )
   const { draft, patch } = draftState
   const mutation = useMutation({
     mutationFn: () =>
-      call<KnowledgeDocument>('knowledge.document.create', {
+      call<KnowledgeDocument>(editing ? 'knowledge.document.update' : 'knowledge.document.create', {
+        ...(editing
+          ? { document_id: original?.metadata.id, etag: draft.etag, status: draft.status }
+          : { collection: draft.collection }),
         title: draft.title.trim(),
         content: draft.content,
-        collection: draft.collection,
         tags: splitValues(draft.tags),
         domains: splitValues(draft.domains),
         projects: splitValues(draft.projects),
@@ -997,6 +1120,10 @@ function DocumentComposer({
       await props.onSaved(result)
     },
   })
+  const latest = useMutation({
+    mutationFn: () =>
+      call<KnowledgeDocument>('knowledge.document.get', { document_id: original?.metadata.id }),
+  })
   useEffect(() => {
     props.onBusy(mutation.isPending)
     return () => props.onBusy(false)
@@ -1006,11 +1133,16 @@ function DocumentComposer({
       className="knowledge-composer"
       onSubmit={(event) => {
         event.preventDefault()
-        if (!mutation.isPending) mutation.mutate()
+        if (!mutation.isPending && (!editing || (original?.editable && draft.etag)))
+          mutation.mutate()
       }}
     >
-      <h2>{original ? '创建文档副本' : '新建知识文档'}</h2>
-      <p>将正文与元数据保存到所选知识集合。</p>
+      <h2>{editing ? '编辑知识文档' : original ? '创建文档副本' : '新建知识文档'}</h2>
+      <p>
+        {editing
+          ? '保存正文与元数据；其他位置的修改会在保存时检查。'
+          : '将正文与元数据保存到所选知识集合。'}
+      </p>
       <ComposerFeedback {...draftState} />
       <label>
         标题
@@ -1029,7 +1161,7 @@ function DocumentComposer({
         <select
           value={draft.collection}
           required
-          disabled={mutation.isPending}
+          disabled={mutation.isPending || editing}
           onChange={(event) => patch({ collection: event.target.value })}
         >
           <option value="">选择一个集合</option>
@@ -1040,6 +1172,20 @@ function DocumentComposer({
           ))}
         </select>
       </label>
+      {editing && (
+        <label>
+          状态
+          <select
+            value={draft.status}
+            disabled={mutation.isPending}
+            onChange={(event) => patch({ status: event.target.value })}
+          >
+            <option value="active">有效</option>
+            <option value="draft">草稿</option>
+            <option value="archived">已归档</option>
+          </select>
+        </label>
+      )}
       <ContentField
         content={draft.content}
         onChange={(content) => patch({ content })}
@@ -1074,17 +1220,67 @@ function DocumentComposer({
           />
         </label>
       </div>
-      {mutation.error && <Notice error={mutation.error} />}
+      {editing && mutation.error instanceof ApiError && mutation.error.status === 409 ? (
+        <div className="workspace-conflict" role="alert">
+          <p>
+            这篇文档已在其他地方修改。当前草稿已保留，请读取最新文档，将需要的内容合并到上方编辑区。
+          </p>
+          {!latest.data && (
+            <button
+              type="button"
+              className="button"
+              disabled={latest.isPending}
+              onClick={() => latest.mutate()}
+            >
+              读取最新文档
+            </button>
+          )}
+          {latest.error && <p>{errorText(latest.error)}</p>}
+          {latest.data && (
+            <>
+              <details open>
+                <summary>最新文档：{latest.data.metadata.title}</summary>
+                <p>
+                  状态：{statusLabels[latest.data.metadata.status] || latest.data.metadata.status} ·
+                  标签：{latest.data.metadata.tags?.join('、') || '无'} · 领域：
+                  {latest.data.metadata.domains?.join('、') || '无'} · 项目：
+                  {latest.data.metadata.projects?.join('、') || '无'}
+                </p>
+                <Markdown text={latest.data.content || '无正文'} />
+              </details>
+              <button
+                type="button"
+                className="button"
+                disabled={!latest.data.editable}
+                onClick={() => {
+                  patch({ etag: latest.data!.etag })
+                  mutation.reset()
+                  latest.reset()
+                }}
+              >
+                已核对并合并，继续编辑
+              </button>
+              {!latest.data.editable && <p>最新文档由外部来源维护，请创建副本后编辑。</p>}
+            </>
+          )}
+        </div>
+      ) : mutation.error ? (
+        <Notice error={mutation.error} />
+      ) : null}
+      {editing && !original?.editable && (
+        <p className="knowledge-detail-note">此文档不支持原地修改，请返回文档后创建副本。</p>
+      )}
       <ComposerFooter
         storageError={draftState.storageError}
         pending={mutation.isPending}
         disabled={
+          (editing && (!original?.editable || !draft.etag)) ||
           !draft.title.trim() ||
           !draft.content.trim() ||
           !collections.some((item) => item.id === draft.collection)
         }
         onClose={props.onClose}
-        label="创建文档"
+        label={editing ? '保存文档' : '创建文档'}
       />
     </form>
   )

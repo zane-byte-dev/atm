@@ -103,7 +103,13 @@ func notifyCopy(t *store.Todo, event string) (title, subtitle, body string) {
 }
 
 func notifyTodoEvent(t *store.Todo, event string) {
+	if skipLocalNotification() {
+		return
+	}
 	title, subtitle, msg := notifyCopy(t, event)
+	if forwardTodoNotification(t, event, title, subtitle, msg) {
+		return
+	}
 	postLocalBanner(title, subtitle, msg, "todo show "+t.ID)
 }
 

@@ -73,6 +73,22 @@ func runBackupTo(t *testing.T, target string) {
 func TestBackupRestoreRoundTrip(t *testing.T) {
 	withTempAtmDir(t)
 	seedBackupSource(t)
+	accounting, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordBuiltinUsage(accounting, "atm-backup-fixture", []store.BuiltinModelCall{{Task: "collection", Model: "fixture", InputTokens: 25, OutputTokens: 5, TS: 123, OK: true}}); err != nil {
+		t.Fatal(err)
+	}
+	accounting.Close()
+	pendingPath := filepath.Join("model-usage-pending", "pending-job.jsonl")
+	if err := os.MkdirAll(filepath.Join(config.AtmDir, "model-usage-pending"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	pending := []byte("{\"Task\":\"collection\",\"Model\":\"fixture\",\"InputTokens\":10,\"TS\":124}\n")
+	if err := os.WriteFile(filepath.Join(config.AtmDir, pendingPath), pending, 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	archive := filepath.Join(t.TempDir(), "backup.tar.gz")
 	runBackupTo(t, archive)
@@ -107,14 +123,21 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		t.Fatalf("todo image metadata did not survive: rows=%d err=%v", imageRows, err)
 	}
 
-	// The session mirror is derived, so it must come back empty rather than
-	// missing — a missing table would break the first command that reads it.
+	// External sessions are rebuildable; ATM's own accounting has no transcript
+	// and must survive alongside a pending journal from an interrupted job.
 	var sessions int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessions); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sessions WHERE agent<>'atm'`).Scan(&sessions); err != nil {
 		t.Fatalf("restored database cannot read sessions: %v", err)
 	}
 	if sessions != 0 {
 		t.Fatalf("restore brought back %d session row(s); sync should own them", sessions)
+	}
+	var builtinInput int
+	if err := db.QueryRow(`SELECT input_tokens FROM usage WHERE session_id='atm-backup-fixture'`).Scan(&builtinInput); err != nil || builtinInput != 25 {
+		t.Fatalf("builtin accounting: input=%d err=%v", builtinInput, err)
+	}
+	if restored, err := os.ReadFile(filepath.Join(fresh, pendingPath)); err != nil || string(restored) != string(pending) {
+		t.Fatalf("pending accounting journal not restored: %q %v", restored, err)
 	}
 
 	for _, path := range []string{

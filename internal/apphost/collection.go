@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/background"
 	"github.com/zane-byte-dev/atm/internal/collector"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -101,9 +102,12 @@ type CollectionHistoryResult struct {
 
 func (h *Host) callCollection(ctx context.Context, call application.Call, method string, input json.RawMessage) (any, error) {
 	write := method == "collect.item.read" || method == "collect.item.archive" ||
-		method == "collect.source.enabled" || method == "collect.source.muted"
+		method == "collect.source.enabled" || method == "collect.source.muted" ||
+		method == "collect.source.save" || method == "collect.source.delete"
 	if write {
-		h.gate.Lock()
+		if !h.gate.TryLock() {
+			return nil, configBusy()
+		}
 		defer h.gate.Unlock()
 		if err := validateWrite(ctx, call); err != nil {
 			return nil, err
@@ -117,7 +121,25 @@ func (h *Host) callCollection(ctx context.Context, call application.Call, method
 	}
 	switch method {
 	case "collect.overview":
-		return invoke(input, func(struct{}) (any, error) { return collectionOverview() })
+		return invoke(input, func(struct{}) (any, error) {
+			result, err := collectionOverview()
+			jobs, _ := h.attachedRuntime()
+			if jobs != nil {
+				result.WorkerOwned, result.WorkerStatus = true, "idle"
+				if !result.Enabled {
+					result.WorkerStatus = "disabled"
+				}
+				if recent, jobErr := jobs.List(ctx, 30); jobErr == nil {
+					for _, job := range recent {
+						if (job.Kind == background.CollectionRun || job.Kind == background.CollectionReprocess) && !job.Terminal() {
+							result.WorkerStatus = "running"
+							break
+						}
+					}
+				}
+			}
+			return result, err
+		})
 	case "collect.items":
 		return invoke(input, func(value CollectionListInput) (any, error) { return collectionItems(ctx, value) })
 	case "collect.item.show":
@@ -151,6 +173,33 @@ func (h *Host) callCollection(ctx context.Context, call application.Call, method
 				return nil, invalid("muted is required")
 			}
 			return changeCollectionSource(ctx, call, value.SourceID, *value.Muted, true)
+		})
+	case "collect.source.save":
+		return invoke(input, func(value collector.SaveSourceInput) (any, error) {
+			if len(value.ExternalID) > 2000 || len(value.Name) > 500 || len(value.Project) > 500 || len(value.ExcludePattern) > 2000 || len(value.Instruction) > 16000 {
+				return nil, invalid("source fields exceed their supported size")
+			}
+			if value.KnowledgeCollection != "" && !managedCollectionID(value.KnowledgeCollection) {
+				return nil, invalid("invalid knowledge collection ID")
+			}
+			db, err := collectionWriteDB(ctx)
+			if err != nil {
+				return nil, err
+			}
+			db.Close()
+			return (collector.Service{}).SaveSource(ctx, call, value)
+		})
+	case "collect.source.delete":
+		return invoke(input, func(value collector.DeleteSourceInput) (any, error) {
+			if !collectionID(value.SourceID, "cs_") || !value.Confirmed {
+				return nil, invalid("source_id and explicit deletion confirmation are required")
+			}
+			db, err := collectionWriteDB(ctx)
+			if err != nil {
+				return nil, err
+			}
+			db.Close()
+			return (collector.Service{}).DeleteSource(ctx, call, value)
 		})
 	default:
 		return nil, application.NewError(application.CodeNotFound, "unknown collection API method")

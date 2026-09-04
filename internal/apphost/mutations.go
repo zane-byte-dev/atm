@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/background"
 	"github.com/zane-byte-dev/atm/internal/work"
 )
 
@@ -34,9 +35,16 @@ type DoneInput struct {
 	Reason string `json:"reason,omitempty"`
 }
 type MutationResult struct {
-	Todo     TodoView `json:"todo"`
-	ETag     string   `json:"etag"`
-	Replayed bool     `json:"replayed,omitempty"`
+	Todo          TodoView          `json:"todo"`
+	ETag          string            `json:"etag"`
+	Replayed      bool              `json:"replayed,omitempty"`
+	RefinementJob *background.Job   `json:"refinement_job,omitempty"`
+	Warnings      []MutationWarning `json:"warnings,omitempty"`
+}
+
+type MutationWarning struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 func validateWrite(ctx context.Context, call application.Call) error {
@@ -62,7 +70,9 @@ func (h *Host) CreateTodo(ctx context.Context, call application.Call, input Crea
 	if err != nil {
 		return MutationResult{}, err
 	}
-	return MutationResult{Todo: view(result.Todo), ETag: work.TodoETag(result.Todo), Replayed: result.Replayed}, nil
+	saved := MutationResult{Todo: view(result.Todo), ETag: work.TodoETag(result.Todo), Replayed: result.Replayed}
+	h.enqueueCreatedRefinement(ctx, call, input.IdempotencyKey, &saved)
+	return saved, nil
 }
 
 func (h *Host) UpdateTodo(ctx context.Context, call application.Call, input UpdateInput) (MutationResult, error) {

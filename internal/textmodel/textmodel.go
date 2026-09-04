@@ -219,7 +219,7 @@ func runRecorded(
 	record.call.DurationMS = time.Since(record.call.StartedAt).Milliseconds()
 	// 只记真的发出去了的请求。任务名不认、没配 key 这些根本没到网络层，也没花钱，
 	// 记下来只会把「调用了多少次模型」搅浑。
-	if sink := Sink; sink != nil && record.attempted {
+	if sink := sinkFor(ctx); sink != nil && record.attempted {
 		sink(record.call)
 	}
 	return data, err

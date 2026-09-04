@@ -93,12 +93,20 @@ func (service Service) RunDue(ctx context.Context, sourceID string) (RunReport, 
 }
 
 func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (RunReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if service.Extractor == nil {
 		return RunReport{}, fmt.Errorf("collector extractor is required")
 	}
 	if service.RegistryError != nil {
 		return RunReport{}, service.RegistryError
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return RunReport{}, err
+	}
+	defer lock.Close()
 	if service.Connectors == nil && service.Fetcher == nil {
 		registry, err := DefaultRegistry()
 		if err != nil {
@@ -114,6 +122,12 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 		return RunReport{}, err
 	}
 	defer db.Close()
+	// Holding the process-shared lock proves no healthy collector can still own
+	// a running ledger row. Close crash residue before deciding what is due; this
+	// changes only local audit state and never replays connector/model work.
+	if _, err := store.ReconcileInterruptedCollectionRuns(db, service.Now().Unix()); err != nil {
+		return RunReport{}, err
+	}
 	sources, err := store.ListCollectionSources(db, "", true)
 	if err != nil {
 		return RunReport{}, err
@@ -155,6 +169,9 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 	}
 	errors := []string{}
 	for _, source := range sources {
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
 		if block, ok := blocked[source.Connector]; ok {
 			block.SkippedSources++
 			blocked[source.Connector] = block
@@ -762,6 +779,11 @@ func (service Service) reprocessItem(ctx context.Context, itemID string) (store.
 	if service.Extractor == nil {
 		return store.CollectionItem{}, application.NewError(application.CodeUnavailable, "collector extractor is required")
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return store.CollectionItem{}, err
+	}
+	defer lock.Close()
 	db, err := store.Open()
 	if err != nil {
 		return store.CollectionItem{}, err

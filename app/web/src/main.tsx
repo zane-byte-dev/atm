@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   BrowserRouter,
+  Link,
   useNavigate,
+  useLocation,
   useParams,
   useSearchParams,
   Routes,
@@ -14,6 +16,7 @@ import {
   QueryClientProvider,
   useMutation,
   useQuery,
+  useQueries,
   useQueryClient,
 } from '@tanstack/react-query'
 import {
@@ -30,6 +33,7 @@ import {
   Folder,
   Inbox,
   LayoutGrid,
+  List as ListIcon,
   LoaderCircle,
   Pencil,
   Plus,
@@ -40,7 +44,17 @@ import {
 import { ApiError, bootstrap, call, errorText, reconnect } from './api'
 import { Editor, Markdown, Notice } from './editor'
 import { AppShell, workspaces } from './workspace-shell'
-import type { Bootstrap, Todo, TodoDetail, TodoList } from './types'
+import { useLiveUpdates } from './live-updates'
+import { TaskPlanEditor, TaskProgressForm, TaskRelationships } from './task-operations'
+import { TaskImageUpload } from './task-images'
+import { TaskRefine } from './task-refine'
+import {
+  consumeNewTaskRequest,
+  readTaskLayout,
+  updateTaskLayout,
+  type TaskLayout,
+} from './task-navigation'
+import type { Bootstrap, Todo, TodoDetail, TodoList, OperationWarning } from './types'
 import './style.css'
 import './themes.css'
 import './theme'
@@ -84,9 +98,16 @@ const navItems = [
   { key: 'done', label: '已完成', icon: CircleCheck },
   { key: 'archived', label: '归档', icon: Archive },
 ]
+const boardColumns = [
+  { key: 'open', label: '待开始' },
+  { key: 'in_progress', label: '工作中' },
+  { key: 'review', label: '待验收' },
+  { key: 'done', label: '已完成' },
+] as const
 
 function App() {
   const [boot, setBoot] = useState<Bootstrap>()
+  useLiveUpdates(boot)
   const [failure, setFailure] = useState<unknown>()
   useEffect(() => {
     bootstrap().then(setBoot).catch(setFailure)
@@ -196,7 +217,7 @@ function ModulePage({
   children: React.ReactNode
 }) {
   return (
-    <AppShell boot={boot} current={path}>
+    <AppShell boot={boot}>
       <div className="module-host" key={path}>
         <WorkspaceErrorBoundary key={path}>
           <React.Suspense fallback={<Loading text="正在打开工作区…" />}>{children}</React.Suspense>
@@ -234,6 +255,7 @@ function Workspace({ boot }: { boot: Bootstrap }) {
   const { id } = useParams()
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
+  const layout = readTaskLayout(params)
   const status = params.get('status') ?? ''
   const project = params.get('project') ?? ''
   const search = params.get('q') ?? ''
@@ -265,6 +287,12 @@ function Workspace({ boot }: { boot: Bootstrap }) {
     setEditing(false)
   }, [id])
   useEffect(() => {
+    const request = consumeNewTaskRequest(params, canWrite)
+    if (!request) return
+    if (request.open) setNewTask(true)
+    setParams(request.params, { replace: true })
+  }, [canWrite, params, setParams])
+  useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
@@ -275,15 +303,37 @@ function Workspace({ boot }: { boot: Bootstrap }) {
     return () => document.removeEventListener('keydown', handler)
   }, [])
   const list = useQuery({
-    queryKey: ['todos', status, project, debounced, page],
+    queryKey: ['todos', layout, layout === 'kanban' ? '' : status, project, debounced, page],
     queryFn: ({ signal }) =>
       call<TodoList>(
         'todo.list',
-        { status, project, query: debounced, limit: 60, offset: page * 60 },
+        {
+          status: layout === 'kanban' ? '' : status,
+          project,
+          query: debounced,
+          limit: layout === 'kanban' ? 200 : 60,
+          offset: layout === 'kanban' ? 0 : page * 60,
+        },
         signal,
       ),
     refetchInterval: 5000,
     refetchIntervalInBackground: false,
+  })
+  const needsLaneQueries =
+    layout === 'kanban' && !!list.data && list.data.total > list.data.items.length
+  const laneQueries = useQueries({
+    queries: boardColumns.map(({ key }) => ({
+      queryKey: ['todos', 'kanban-lane', key, project, debounced],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        call<TodoList>(
+          'todo.list',
+          { status: key, project, query: debounced, limit: 200, offset: 0 },
+          signal,
+        ),
+      enabled: needsLaneQueries,
+      refetchInterval: 5000,
+      refetchIntervalInBackground: false,
+    })),
   })
   const detail = useQuery({
     queryKey: ['todo', id],
@@ -296,72 +346,73 @@ function Workspace({ boot }: { boot: Bootstrap }) {
     setPage(0)
     setEditing(false)
     const next = new URLSearchParams()
-    if (nextStatus) next.set('status', nextStatus)
+    if (layout === 'kanban') next.set('layout', 'kanban')
+    if (layout === 'list' && nextStatus) next.set('status', nextStatus)
     if (nextProject) next.set('project', nextProject)
     if (search) next.set('q', search)
     setParams(next)
   }
   const openTask = (todoID: string) =>
     navigate(`/tasks/${todoID}${params.size ? `?${params}` : ''}`)
+  const chooseLayout = (nextLayout: TaskLayout) => {
+    setPage(0)
+    setEditing(false)
+    setParams((current) => updateTaskLayout(current, nextLayout), { replace: true })
+  }
   const activeNav = navItems.find((item) => item.key === status) ?? navItems[0]
   const counts = list.data?.counts ?? {}
   const projects = list.data?.projects ?? []
+  const boardItems = needsLaneQueries
+    ? boardColumns.flatMap(
+        ({ key }, index) =>
+          laneQueries[index].data?.items ??
+          list.data?.items.filter((todo) => todo.status === key) ??
+          [],
+      )
+    : (list.data?.items ?? [])
+  const boardError = list.error ?? laneQueries.find((query) => query.error)?.error
+  const boardSupplementing = needsLaneQueries && laneQueries.some((query) => query.isPending)
+  const refreshTasks = () => {
+    void list.refetch()
+    if (needsLaneQueries) laneQueries.forEach((query) => void query.refetch())
+  }
   const hasSelection = !!id
 
   return (
-    <AppShell
-      boot={boot}
-      current="/tasks"
-      project={project}
-      className={hasSelection ? 'has-selection' : ''}
-      action={
-        canWrite && (
-          <button className="button primary new-task" onClick={() => setNewTask(true)}>
-            <Plus size={16} />
-            新建任务
-          </button>
-        )
-      }
-    >
+    <AppShell boot={boot} className={`${hasSelection ? 'has-selection' : ''} task-view-${layout}`}>
       <div className="content-columns">
-        <section className="task-column" aria-label="任务列表">
+        <section
+          className={`task-column ${layout === 'kanban' ? 'board-mode' : ''}`}
+          aria-label={layout === 'kanban' ? '任务工作板' : '任务列表'}
+        >
           <div className="list-heading">
-            <div>
-              <h1>
-                {project || activeNav.label}
-                <span>{list.data?.total ?? '—'}</span>
-              </h1>
-              <p>
-                {status === 'review'
-                  ? '看看已经完成、等待你确认的工作。'
-                  : status === 'archived'
-                    ? '保留的历史，随时可以找回来。'
-                    : '把注意力留给正在推进的事。'}
-              </p>
-            </div>
-            <button
-              className="icon-button"
-              title="刷新任务"
-              aria-label="刷新任务"
-              onClick={() => void list.refetch()}
-            >
-              <RefreshCw size={16} className={list.isFetching ? 'spin' : ''} />
-            </button>
-          </div>
-          <nav className="task-status-filters" aria-label="任务状态">
-            {navItems.map(({ key, label }) => (
+            <h1>
+              工作板
+              <span>{list.data?.total ?? '—'}</span>
+            </h1>
+            <div className="list-heading-actions">
+              <TaskLayoutSwitch layout={layout} onChange={chooseLayout} />
               <button
-                key={key}
-                aria-label={label}
-                aria-pressed={status === key}
-                className={status === key ? 'selected' : ''}
-                onClick={() => chooseFilter(key, project)}
+                className="icon-button"
+                title="刷新任务"
+                aria-label="刷新任务"
+                onClick={refreshTasks}
               >
-                {label}
-                <span>{counts[key || 'all'] ?? '—'}</span>
+                <RefreshCw
+                  size={16}
+                  className={
+                    list.isFetching || laneQueries.some((query) => query.isFetching) ? 'spin' : ''
+                  }
+                />
               </button>
-            ))}
-          </nav>
+              {canWrite && (
+                <button className="button primary new-task" onClick={() => setNewTask(true)}>
+                  <Plus size={15} />
+                  新建
+                </button>
+              )}
+            </div>
+          </div>
           <div className="search-box">
             <Search size={16} />
             <input
@@ -379,76 +430,82 @@ function Workspace({ boot }: { boot: Bootstrap }) {
               <kbd>⌘ K</kbd>
             )}
           </div>
-          {projects.length > 0 && (
-            <select
-              className="project-filter"
-              aria-label="筛选项目"
-              value={project}
-              onChange={(event) => chooseFilter(status, event.target.value)}
-            >
-              <option value="">全部项目</option>
-              {projects.map((name) => (
-                <option value={name} key={name}>
-                  {name}
-                </option>
-              ))}
-            </select>
-          )}
-          <div className="list-subheading">
-            <span>{search ? '搜索结果' : '最近创建'}</span>
-            <span className="list-total">{list.data ? `${list.data.items.length} 项` : ''}</span>
-          </div>
-          <div className="task-list">
-            {list.isPending && <Loading text="正在读取任务…" />}
-            {list.isError && <Notice error={list.error} retry={() => void list.refetch()} />}
-            {list.data?.items.map((todo) => (
-              <button
-                key={todo.id}
-                className={`task-row ${todo.id === id ? 'active' : ''}`}
-                onClick={() => openTask(todo.id)}
-                aria-current={todo.id === id ? 'true' : undefined}
+          <div className="task-filter-row">
+            {layout === 'list' && (
+              <select
+                className="task-status-select"
+                aria-label="筛选任务状态"
+                value={status}
+                onChange={(event) => chooseFilter(event.target.value, project)}
               >
-                <StatusIcon todo={todo} />
-                <div className="task-row-body">
-                  <div className="task-row-title">{todo.title}</div>
-                  <div className="task-row-meta">
-                    <span className="task-id">{todo.id}</span>
-                    {todo.project && (
-                      <>
-                        <span className="meta-dot">·</span>
-                        <span className="truncate">{todo.project}</span>
-                      </>
-                    )}
-                    <span className={`priority priority-${todo.priority.toLowerCase()}`}>
-                      {todo.priority}
-                    </span>
-                  </div>
-                  {todo.wake_condition && (
-                    <div className="row-waiting">
-                      <Clock3 size={11} />
-                      {todo.wake_condition}
-                    </div>
-                  )}
-                </div>
-              </button>
-            ))}
-            {list.data?.items.length === 0 && (
-              <div className="empty-list">
-                <Inbox size={27} strokeWidth={1.3} />
-                <h3>{search ? '没有找到相关任务' : '这里还没有任务'}</h3>
-                <p>
-                  {search ? '试试其他关键词，或者切换项目。' : '新建一个任务，开始整理下一步。'}
-                </p>
-                {canWrite && !search && (
-                  <button className="button" onClick={() => setNewTask(true)}>
-                    <Plus size={14} />
-                    新建任务
-                  </button>
-                )}
-              </div>
+                {navItems.map(({ key, label }) => (
+                  <option value={key} key={key}>
+                    {label} · {counts[key || 'all'] ?? '—'}
+                  </option>
+                ))}
+              </select>
+            )}
+            {projects.length > 0 && (
+              <select
+                className="project-filter"
+                aria-label="筛选项目"
+                value={project}
+                onChange={(event) => chooseFilter(status, event.target.value)}
+              >
+                <option value="">全部项目</option>
+                {projects.map((name) => (
+                  <option value={name} key={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
             )}
           </div>
-          {(page > 0 || (list.data?.total ?? 0) > (page + 1) * 60) && (
+          {layout === 'list' ? (
+            <>
+              <div className="list-subheading">
+                <span>{search ? '搜索结果' : project || activeNav.label}</span>
+                <span className="list-total">
+                  {list.data ? `${list.data.items.length} 项` : ''}
+                </span>
+              </div>
+              <div className="task-list">
+                {list.isPending && <Loading text="正在读取任务…" />}
+                {list.isError && <Notice error={list.error} retry={() => void list.refetch()} />}
+                {list.data?.items.map((todo) => (
+                  <TaskListRow
+                    key={todo.id}
+                    todo={todo}
+                    active={todo.id === id}
+                    onOpen={openTask}
+                  />
+                ))}
+                {list.data?.items.length === 0 && (
+                  <TaskEmpty
+                    search={search}
+                    canWrite={canWrite}
+                    onCreate={() => setNewTask(true)}
+                  />
+                )}
+              </div>
+            </>
+          ) : (
+            <TaskBoard
+              items={boardItems}
+              counts={counts}
+              activeID={id}
+              search={search}
+              loading={list.isPending}
+              supplementing={boardSupplementing}
+              error={boardError}
+              total={list.data?.total ?? 0}
+              onRetry={refreshTasks}
+              onOpen={openTask}
+              canWrite={canWrite}
+              onCreate={() => setNewTask(true)}
+            />
+          )}
+          {layout === 'list' && (page > 0 || (list.data?.total ?? 0) > (page + 1) * 60) && (
             <div className="pagination">
               <button disabled={!page} onClick={() => setPage((p) => p - 1)}>
                 上一页
@@ -463,88 +520,280 @@ function Workspace({ boot }: { boot: Bootstrap }) {
             </div>
           )}
         </section>
-        <section className="detail-column" aria-label="任务详情">
-          {!id ? (
-            <div className="welcome">
-              <div className="welcome-mark">
-                <FileText size={32} strokeWidth={1.2} />
-              </div>
-              <h2>选一件事，专注推进</h2>
-              <p>
-                从左侧选择任务，查看详情与进展。
-                <br />
-                你的工作，随时都能接着往下做。
-              </p>
-              <div className="welcome-hint">
-                <kbd>⌘ K</kbd>快速查找任务
-              </div>
-            </div>
-          ) : detail.isPending ? (
-            <Loading text="正在打开任务…" />
-          ) : detail.error ? (
-            <Notice error={detail.error} retry={() => void detail.refetch()} />
-          ) : (
-            detail.data && (
-              <>
-                <div className="detail-toolbar">
-                  <button
-                    className="icon-button back-list"
-                    aria-label="返回任务列表"
-                    onClick={() => navigate(`/tasks?${params}`)}
-                  >
-                    <ArrowLeft size={16} />
-                  </button>
-                  <span className="detail-id">
-                    <FileText size={14} />
-                    {id}
-                  </span>
-                  <div className="detail-actions">
-                    {canWrite && !editing && !detail.data.todo.archived && (
-                      <button className="button subtle" onClick={() => setEditing(true)}>
-                        <Pencil size={14} />
-                        编辑
-                      </button>
-                    )}
-                    <button
-                      className="icon-button"
-                      title="刷新详情"
-                      aria-label="刷新详情"
-                      onClick={() => void detail.refetch()}
-                    >
-                      <RefreshCw size={14} className={detail.isFetching ? 'spin' : ''} />
-                    </button>
-                  </div>
+        {(layout === 'list' || id) && (
+          <section className="detail-column" aria-label="任务详情">
+            {!id ? (
+              <div className="welcome">
+                <div className="welcome-mark">
+                  <FileText size={32} strokeWidth={1.2} />
                 </div>
-                {editing ? (
-                  <Editor
-                    key={id}
-                    initial={detail.data}
-                    onClose={() => setEditing(false)}
-                    onSaved={(todoID) => {
-                      setEditing(false)
-                      openTask(todoID)
-                    }}
-                  />
-                ) : (
-                  <TaskDetail data={detail.data} canWrite={canWrite} />
-                )}
-              </>
-            )
-          )}
-        </section>
+                <h2>选一件事，专注推进</h2>
+                <p>
+                  从左侧选择任务，查看详情与进展。
+                  <br />
+                  你的工作，随时都能接着往下做。
+                </p>
+                <div className="welcome-hint">
+                  <kbd>⌘ K</kbd>快速查找任务
+                </div>
+              </div>
+            ) : detail.isPending ? (
+              <Loading text="正在打开任务…" />
+            ) : detail.error ? (
+              <Notice error={detail.error} retry={() => void detail.refetch()} />
+            ) : (
+              detail.data && (
+                <>
+                  <div className="detail-toolbar">
+                    <button
+                      className="icon-button back-list"
+                      aria-label="返回任务列表"
+                      onClick={() => navigate(`/tasks?${params}`)}
+                    >
+                      <ArrowLeft size={16} />
+                    </button>
+                    <span className="detail-id">
+                      <FileText size={14} />
+                      {id}
+                    </span>
+                    <div className="detail-actions">
+                      {canWrite && !editing && !detail.data.todo.archived && (
+                        <button className="button subtle" onClick={() => setEditing(true)}>
+                          <Pencil size={14} />
+                          编辑
+                        </button>
+                      )}
+                      <button
+                        className="icon-button"
+                        title="刷新详情"
+                        aria-label="刷新详情"
+                        onClick={() => void detail.refetch()}
+                      >
+                        <RefreshCw size={14} className={detail.isFetching ? 'spin' : ''} />
+                      </button>
+                    </div>
+                  </div>
+                  {editing ? (
+                    <Editor
+                      key={id}
+                      initial={detail.data}
+                      onClose={() => setEditing(false)}
+                      onSaved={(todoID) => {
+                        setEditing(false)
+                        openTask(todoID)
+                      }}
+                    />
+                  ) : (
+                    <TaskDetail
+                      key={id}
+                      data={detail.data}
+                      canWrite={canWrite}
+                      canRefine={canWrite && boot.capabilities?.runtime_jobs === true}
+                    />
+                  )}
+                </>
+              )
+            )}
+          </section>
+        )}
       </div>
       {newTask && (
         <NewTaskDialog
           onClose={() => setNewTask(false)}
-          onSaved={(todoID) => {
+          onSaved={(todoID, warnings) => {
             setNewTask(false)
             setPage(0)
-            navigate(`/tasks/${todoID}`)
+            navigate(`/tasks/${todoID}${params.size ? `?${params}` : ''}`, {
+              state: { taskWarnings: warnings },
+            })
           }}
           defaultProject={project}
         />
       )}
     </AppShell>
+  )
+}
+
+function TaskLayoutSwitch({
+  layout,
+  onChange,
+}: {
+  layout: TaskLayout
+  onChange: (layout: TaskLayout) => void
+}) {
+  return (
+    <div className="task-layout-switch" role="group" aria-label="任务视图">
+      <button
+        type="button"
+        title="列表视图"
+        aria-label="列表视图"
+        aria-pressed={layout === 'list'}
+        onClick={() => onChange('list')}
+      >
+        <ListIcon size={15} />
+      </button>
+      <button
+        type="button"
+        title="看板视图"
+        aria-label="看板视图"
+        aria-pressed={layout === 'kanban'}
+        onClick={() => onChange('kanban')}
+      >
+        <LayoutGrid size={14} />
+      </button>
+    </div>
+  )
+}
+
+function TaskListRow({
+  todo,
+  active,
+  onOpen,
+}: {
+  todo: Todo
+  active: boolean
+  onOpen: (todoID: string) => void
+}) {
+  return (
+    <button
+      className={`task-row ${active ? 'active' : ''}`}
+      onClick={() => onOpen(todo.id)}
+      aria-current={active ? 'true' : undefined}
+    >
+      <StatusIcon todo={todo} />
+      <div className="task-row-body">
+        <div className="task-row-title">{todo.title}</div>
+        <div className="task-row-meta">
+          <span className="task-id">{todo.id}</span>
+          {todo.project && (
+            <>
+              <span className="meta-dot">·</span>
+              <span className="truncate">{todo.project}</span>
+            </>
+          )}
+          <span className={`priority priority-${todo.priority.toLowerCase()}`}>
+            {todo.priority}
+          </span>
+        </div>
+        {todo.wake_condition && (
+          <div className="row-waiting">
+            <Clock3 size={11} />
+            {todo.wake_condition}
+          </div>
+        )}
+      </div>
+    </button>
+  )
+}
+
+function TaskEmpty({
+  search,
+  canWrite,
+  onCreate,
+}: {
+  search: string
+  canWrite: boolean
+  onCreate: () => void
+}) {
+  return (
+    <div className="empty-list">
+      <Inbox size={27} strokeWidth={1.3} />
+      <h3>{search ? '没有找到相关任务' : '这里还没有任务'}</h3>
+      <p>{search ? '试试其他关键词，或者切换项目。' : '新建一个任务，开始整理下一步。'}</p>
+      {canWrite && !search && (
+        <button className="button" onClick={onCreate}>
+          <Plus size={14} />
+          新建任务
+        </button>
+      )}
+    </div>
+  )
+}
+
+function TaskBoard({
+  items,
+  counts,
+  activeID,
+  search,
+  loading,
+  supplementing,
+  error,
+  total,
+  onRetry,
+  onOpen,
+  canWrite,
+  onCreate,
+}: {
+  items: Todo[]
+  counts: Record<string, number>
+  activeID?: string
+  search: string
+  loading: boolean
+  supplementing: boolean
+  error: unknown
+  total: number
+  onRetry: () => void
+  onOpen: (todoID: string) => void
+  canWrite: boolean
+  onCreate: () => void
+}) {
+  if (loading) return <Loading text="正在读取工作板…" />
+  if (error && items.length === 0 && total === 0) return <Notice error={error} retry={onRetry} />
+  if (total === 0) return <TaskEmpty search={search} canWrite={canWrite} onCreate={onCreate} />
+  return (
+    <>
+      {error && <Notice error={error} retry={onRetry} />}
+      {total > items.length && (
+        <div className="task-board-limit" role="status">
+          {supplementing
+            ? `正在补齐各列，已显示 ${items.length} / ${total} 项…`
+            : `每列最多显示 200 项，当前共显示 ${items.length} / ${total} 项；可用项目或搜索缩小范围。`}
+        </div>
+      )}
+      <div className="task-board">
+        {boardColumns.map(({ key, label }) => {
+          const laneItems = items.filter((todo) => todo.status === key)
+          return (
+            <section className={`task-lane lane-${key}`} key={key} aria-label={label}>
+              <header className="task-lane-heading">
+                <span className={`task-lane-dot status-${key}`} />
+                <h2>{label}</h2>
+                <span>{counts[key] ?? laneItems.length}</span>
+              </header>
+              <div className="task-lane-list">
+                {laneItems.map((todo) => (
+                  <button
+                    key={todo.id}
+                    className={`task-card ${todo.id === activeID ? 'active' : ''}`}
+                    onClick={() => onOpen(todo.id)}
+                    aria-current={todo.id === activeID ? 'true' : undefined}
+                  >
+                    <div className="task-card-heading">
+                      <StatusIcon todo={todo} />
+                      <span className="task-card-title">{todo.title}</span>
+                    </div>
+                    <div className="task-row-meta">
+                      <span className="task-id">{todo.id}</span>
+                      {todo.project && <span className="truncate">{todo.project}</span>}
+                      <span className={`priority priority-${todo.priority.toLowerCase()}`}>
+                        {todo.priority}
+                      </span>
+                    </div>
+                    {todo.wake_condition && (
+                      <div className="row-waiting">
+                        <Clock3 size={11} />
+                        {todo.wake_condition}
+                      </div>
+                    )}
+                  </button>
+                ))}
+                {laneItems.length === 0 && <p className="task-lane-empty">暂无任务</p>}
+              </div>
+            </section>
+          )
+        })}
+      </div>
+    </>
   )
 }
 
@@ -568,11 +817,24 @@ function StatusIcon({ todo }: { todo: Todo }) {
   )
 }
 
-function TaskDetail({ data, canWrite }: { data: TodoDetail; canWrite: boolean }) {
+function TaskDetail({
+  data,
+  canWrite,
+  canRefine,
+}: {
+  data: TodoDetail
+  canWrite: boolean
+  canRefine: boolean
+}) {
   const todo = data.todo
+  const location = useLocation()
+  const [warnings, setWarnings] = useState<OperationWarning[]>(
+    () => location.state?.taskWarnings ?? [],
+  )
   const archived = todo.archived === true
   const query = useQueryClient()
   const [tab, setTab] = useState('description')
+  const [editingPlan, setEditingPlan] = useState(false)
   useEffect(() => setTab('description'), [todo.id])
   const document = useQuery({
     queryKey: ['doc', todo.id],
@@ -616,6 +878,19 @@ function TaskDetail({ data, canWrite }: { data: TodoDetail; canWrite: boolean })
           )}
         </div>
         <h2 className="task-title">{todo.title}</h2>
+        {warnings.length > 0 && (
+          <div className="notice" role="status">
+            <div>
+              <strong>任务已创建</strong>
+              {warnings.map((warning, index) => (
+                <p key={index}>{warning.message}</p>
+              ))}
+            </div>
+            <button type="button" onClick={() => setWarnings([])}>
+              知道了
+            </button>
+          </div>
+        )}
         <div className="properties">
           <span className="property-label">优先级</span>
           <span className={`priority priority-${todo.priority.toLowerCase()}`}>
@@ -630,6 +905,7 @@ function TaskDetail({ data, canWrite }: { data: TodoDetail; canWrite: boolean })
             </>
           )}
         </div>
+        {canRefine && !archived && <TaskRefine data={data} />}
         {todo.wake_condition && (
           <div className="waiting-banner">
             <Clock3 size={16} />
@@ -643,9 +919,9 @@ function TaskDetail({ data, canWrite }: { data: TodoDetail; canWrite: boolean })
           <div className="dependencies">
             <span>依赖任务</span>
             {todo.depends_on.map((dep) => (
-              <a key={dep} href={`/tasks/${dep}`}>
+              <Link key={dep} to={`/tasks/${dep}${location.search}`}>
                 {dep}
-              </a>
+              </Link>
             ))}
           </div>
         )}
@@ -662,12 +938,26 @@ function TaskDetail({ data, canWrite }: { data: TodoDetail; canWrite: boolean })
           >
             进展记录
           </button>
-          {data.latest_plan && (
+          {(data.latest_plan || (canWrite && !archived)) && (
             <button className={tab === 'plan' ? 'selected' : ''} onClick={() => setTab('plan')}>
-              执行计划<span>{data.latest_plan.items.length}</span>
+              执行计划<span>{data.latest_plan?.items.length ?? 0}</span>
             </button>
           )}
         </div>
+        {canWrite && !archived && tab === 'progress' && (
+          <TaskProgressForm key={todo.id} data={data} />
+        )}
+        {canWrite &&
+          !archived &&
+          tab === 'plan' &&
+          (editingPlan ? (
+            <TaskPlanEditor key={todo.id} data={data} onClose={() => setEditingPlan(false)} />
+          ) : (
+            <button className="button task-inline-action" onClick={() => setEditingPlan(true)}>
+              <Pencil size={14} />
+              {data.latest_plan ? '编辑计划' : '创建计划'}
+            </button>
+          ))}
         <div className="detail-body">
           {tab === 'description' ? (
             <>
@@ -737,6 +1027,12 @@ function TaskDetail({ data, canWrite }: { data: TodoDetail; canWrite: boolean })
                 ))}
             </div>
           </div>
+        )}
+        {tab === 'description' && canWrite && !archived && (
+          <TaskImageUpload todo={todo} etag={data.etag} />
+        )}
+        {tab === 'description' && (
+          <TaskRelationships data={data} canWrite={canWrite && !archived} />
         )}
         {action.error && <Notice error={action.error} />}
         {canWrite && (
@@ -808,7 +1104,7 @@ function NewTaskDialog({
   defaultProject,
 }: {
   onClose: () => void
-  onSaved: (id: string) => void
+  onSaved: (id: string, warnings?: OperationWarning[]) => void
   defaultProject: string
 }) {
   const dialog = useRef<HTMLDialogElement>(null)

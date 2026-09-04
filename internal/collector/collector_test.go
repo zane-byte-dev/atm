@@ -120,6 +120,55 @@ func withConnectorLoginCommand(t *testing.T, connector, command string) {
 
 const expiredLogin = "connector test fetch: dws returned an error: 未登录，请先执行 dws auth login"
 
+func TestSnapshotClosesCrashResidueOnlyWhenNoCollectorOwnsTheLock(t *testing.T) {
+	withCollectorStore(t)
+	source := addCollectorSource(t)
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveCollectionRun(db, store.CollectionRun{
+		ID: "crashed-run", Connector: source.Connector, SourceID: source.ID,
+		Status: "running", StartedAt: time.Now().Add(-time.Minute).Unix(),
+	}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	registry, err := NewRegistry(sourceFetchOnlyTestConnector{id: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := Service{Connectors: registry}
+	call := sourceApplicationCall(application.ActorHuman, application.OriginCLI)
+
+	lock, err := acquireCollectionLock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := service.Snapshot(context.Background(), call, SnapshotInput{})
+	if err != nil {
+		lock.Close()
+		t.Fatal(err)
+	}
+	if len(snapshot.Runs) != 1 || snapshot.Runs[0].Status != "running" {
+		lock.Close()
+		t.Fatalf("active collector row was reconciled: %+v", snapshot.Runs)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot, err = service.Snapshot(context.Background(), call, SnapshotInput{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Runs) != 1 || snapshot.Runs[0].Status != "failed" ||
+		snapshot.Runs[0].FinishedAt == 0 || !strings.Contains(snapshot.Runs[0].Error, "interrupted") {
+		t.Fatalf("crashed collector row did not converge: %+v", snapshot.Runs)
+	}
+}
+
 // An expired login belongs to the connector, not to the source that happened to
 // run first: every sibling is about to fail identically against the same
 // credential, and five copies of one message is how a real outage became noise.

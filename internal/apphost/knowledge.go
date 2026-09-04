@@ -57,16 +57,17 @@ type MemorySupersedeInput struct {
 }
 
 func (h *Host) callKnowledge(ctx context.Context, call application.Call, method string, input json.RawMessage) (any, error) {
-	write := method == "knowledge.document.create" || method == "knowledge.collection.create" || method == "memory.create" || method == "memory.supersede"
+	write := method == "knowledge.document.create" || method == "knowledge.document.update" || method == "knowledge.collection.create" || method == "memory.create" || method == "memory.supersede"
+	// Corpus writes have their own cross-process lock and memory replacements
+	// are transactional. This gate only pins resident configuration, so a long
+	// background job must not queue an exclusive writer and stall all readers.
+	h.gate.RLock()
+	defer h.gate.RUnlock()
 	if write {
-		h.gate.Lock()
-		defer h.gate.Unlock()
 		if err := validateWrite(ctx, call); err != nil {
 			return nil, err
 		}
 	} else {
-		h.gate.RLock()
-		defer h.gate.RUnlock()
 		if err := validate(ctx, call); err != nil {
 			return nil, err
 		}
@@ -117,7 +118,27 @@ func (h *Host) callKnowledge(ctx context.Context, call application.Call, method 
 			if err := knowledgeIdentity(value.DocumentID); err != nil {
 				return nil, err
 			}
-			return service.Get(ctx, value)
+			document, err := service.Get(ctx, value)
+			return knowledge.VersionDocument(document), err
+		})
+	case "knowledge.document.update":
+		return invoke(input, func(value knowledge.UpdateManagedInput) (any, error) {
+			if err := knowledgeIdentity(value.DocumentID); err != nil {
+				return nil, err
+			}
+			if value.Title != nil && !managedDocumentTitle(*value.Title) {
+				return nil, invalid("a visible document title of at most 1000 bytes is required")
+			}
+			var groups [][]string
+			for _, group := range []*[]string{value.Tags, value.Domains, value.Projects} {
+				if group != nil {
+					groups = append(groups, *group)
+				}
+			}
+			if err := knowledgeContent(value.Content, groups...); err != nil {
+				return nil, err
+			}
+			return knowledge.UpdateManaged(ctx, config.AtmDir, value)
 		})
 	case "knowledge.document.create":
 		return invoke(input, func(value KnowledgeCreateInput) (any, error) {

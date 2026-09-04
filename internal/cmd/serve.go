@@ -16,15 +16,19 @@ import (
 	"github.com/spf13/cobra"
 	webassets "github.com/zane-byte-dev/atm/app/web"
 	"github.com/zane-byte-dev/atm/internal/apphost"
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/executionlock"
 	"github.com/zane-byte-dev/atm/internal/store"
 	webapp "github.com/zane-byte-dev/atm/internal/web"
 )
 
 var (
-	servePort    int
-	serveOpen    bool
-	serveDataDir string
+	servePort       int
+	serveOpen       bool
+	serveDataDir    string
+	serveBackground bool
+	serveDevUI      string
 )
 
 var serveCmd = &cobra.Command{
@@ -33,9 +37,9 @@ var serveCmd = &cobra.Command{
 	Long: `Serve ATM's browser workspace on this Mac. The CLI continues to work independently.
 
 The workspace serves tasks, collection, Agent sessions, knowledge, usage,
-AI Day, and settings. It does not take over the macOS app's background sync,
-collection, Agent hook socket, or notifications. Keep the existing app running
-if you use those background features.
+AI Day, and settings. After a backed-up database upgrade, Go owns background
+sync, collection, Agent hooks, and notification routing. Quit the old macOS
+app before the first handover. Use --background=false for a viewer instance.
 
 Use --open to establish a browser connection. An existing workspace for the
 same data directory is reused. --data-dir selects an isolated ATM data directory
@@ -51,6 +55,8 @@ func init() {
 	serveCmd.PersistentFlags().IntVar(&servePort, "port", 47321, "loopback port (0 selects an available port)")
 	serveCmd.PersistentFlags().BoolVar(&serveOpen, "open", false, "open an authenticated browser page")
 	serveCmd.PersistentFlags().StringVar(&serveDataDir, "data-dir", "", "ATM data directory (default: configured directory)")
+	serveCmd.Flags().BoolVar(&serveBackground, "background", true, "own background jobs, Agent hooks, and notification routing")
+	serveCmd.Flags().StringVar(&serveDevUI, "dev-ui", "", "proxy a local Vite server (http://127.0.0.1:5173) for frontend HMR")
 	serveCmd.AddCommand(&cobra.Command{Use: "status", Short: "Show this data directory's running workspace", Args: cobra.NoArgs, RunE: runServeStatus})
 	serveCmd.AddCommand(&cobra.Command{Use: "stop", Short: "Gracefully stop this data directory's workspace", Args: cobra.NoArgs, RunE: runServeStop})
 	serveCmd.AddCommand(&cobra.Command{
@@ -87,7 +93,7 @@ func runServe(command *cobra.Command, args []string) error {
 		return nil
 	}
 	assets, err := webassets.Assets()
-	if err != nil {
+	if err != nil && serveDevUI == "" {
 		return err
 	}
 	database, err := readWorkspaceDatabase()
@@ -95,10 +101,21 @@ func runServe(command *cobra.Command, args []string) error {
 		return err
 	}
 	host := apphost.New(rootCmd.Version)
-	// The existing macOS app still owns desktop notifications in workspace
-	// mode. Keep all document/on_done projections without a second banner.
-	host.SetWorkEffects(localWorkEffectExecutor{NotifyTodo: func(*store.Todo, string) {}})
-	server, err := webapp.Start(webapp.Options{DataDir: config.AtmDir, Version: rootCmd.Version, Port: servePort, Assets: assets, Dispatch: host.Call, Attachment: host.Attachment, AllowWrites: !database.UpgradeRequired, DataUpgradeRequired: database.UpgradeRequired})
+	host.SetWorkEffects(localWorkEffectExecutor{NotifyTodo: notifyTodoEvent})
+	host.SetPresenceLoader(loadDashboardLiveStatus)
+	tracker := apphost.NewChangeTracker(config.AtmDir)
+	defer tracker.Close()
+	options := webapp.Options{DataDir: config.AtmDir, Version: rootCmd.Version, Port: servePort, Assets: assets, Dispatch: host.Call, Attachment: host.Attachment, AllowWrites: !database.UpgradeRequired, DataUpgradeRequired: database.UpgradeRequired,
+		DevUI:        serveDevUI,
+		Fingerprints: tracker.Fingerprints, Capabilities: host.RuntimeCapabilities, Companion: host.Companion, NativeControl: host.NativeControl,
+		Upload: func(ctx context.Context, call application.Call, id, etag, name string, data []byte) (any, error) {
+			return host.UploadTodoImage(ctx, call, apphost.UploadImageInput{TodoID: id, ExpectedETag: etag, Name: name, Data: data})
+		},
+	}
+	if serveBackground && !database.UpgradeRequired {
+		options.StartRuntime = workspaceRuntime(ctx, host)
+	}
+	server, err := webapp.Start(options)
 	if errors.Is(err, webapp.ErrAlreadyRunning) && serveOpen {
 		return openExistingWorkspace(ctx, config.AtmDir)
 	}
@@ -108,7 +125,11 @@ func runServe(command *cobra.Command, args []string) error {
 	defer server.Close()
 	cliCommandLongRunning.Store(true)
 	fmt.Fprintf(command.OutOrStdout(), "ATM workspace: %s\n", server.Info().Origin)
-	fmt.Fprintln(command.OutOrStdout(), "Mode: workspace; background sync and Agent hooks remain with the existing macOS app.")
+	if serveBackground && !database.UpgradeRequired {
+		fmt.Fprintln(command.OutOrStdout(), "Mode: Go runtime; background jobs, Agent hooks, and notifications are owned by this process.")
+	} else {
+		fmt.Fprintln(command.OutOrStdout(), "Mode: workspace viewer; background jobs are disabled.")
+	}
 	if database.UpgradeRequired {
 		fmt.Fprintf(command.OutOrStdout(), "Database v%d is read-only. Run atm serve stop, then atm serve migrate to back up and upgrade to v%d.\n", database.Version, store.SchemaVersion)
 	}
@@ -147,8 +168,14 @@ func runServeStop(command *cobra.Command, args []string) error {
 	if err := apphost.ConfigureDataDir(serveDataDir); err != nil {
 		return err
 	}
-	if err := webapp.Stop(commandContext(command), config.AtmDir); err != nil {
+	managed, err := stopManagedWorkspace(commandContext(command), config.AtmDir)
+	if err != nil {
 		return err
+	}
+	if !managed {
+		if err := webapp.Stop(commandContext(command), config.AtmDir); err != nil {
+			return err
+		}
 	}
 	if jsonOutput {
 		return json.NewEncoder(command.OutOrStdout()).Encode(map[string]bool{"stopping": true})
@@ -203,6 +230,18 @@ func runServeMigrate(command *cobra.Command, args []string) error {
 	}
 	result := serveMigrationResult{Database: config.AtmDB, ToSchema: store.SchemaVersion}
 	err = webapp.WithStoppedInstance(config.AtmDir, func() error {
+		// New CLI invocations use the same execution locks. Holding them keeps
+		// a complete sync/collection batch outside the backup/upgrade boundary.
+		syncLock, err := executionlock.Acquire(commandContext(command), config.AtmDir, "sync")
+		if err != nil {
+			return err
+		}
+		defer syncLock.Close()
+		collectionLock, err := executionlock.Acquire(commandContext(command), config.AtmDir, "collection")
+		if err != nil {
+			return err
+		}
+		defer collectionLock.Close()
 		// Read again under the instance lock: another migration may have completed
 		// since the initial check, or the database may have been replaced.
 		database, err := readWorkspaceDatabase()

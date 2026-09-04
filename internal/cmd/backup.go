@@ -50,6 +50,7 @@ var backupPaths = []string{
 	"connectors",
 	"knowledge",
 	"memory",
+	"model-usage-pending",
 	"native-hosts",
 	"pricing.json",
 	"providers",

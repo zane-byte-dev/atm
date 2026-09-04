@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router'
 import {
   ArrowRight,
@@ -22,7 +22,7 @@ import {
   UserRound,
   Zap,
 } from 'lucide-react'
-import { call, errorText } from '../api'
+import { call } from '../api'
 import { Notice } from '../editor'
 import { AppearanceSettings } from '../appearance-settings'
 import type { Bootstrap } from '../types'
@@ -36,6 +36,9 @@ import type {
   WorkspaceSettings as SettingsData,
 } from './aiday-settings-types'
 import './aiday-settings.css'
+import { RuntimeJobs, jobsEnabled } from './runtime-jobs'
+import { BusinessPreferences, ModelSettings } from './business-settings'
+import { NativePreferencesImport } from './native-preferences-import'
 
 const number = (value: number) => new Intl.NumberFormat('zh-CN').format(value)
 const compact = (value: number) =>
@@ -249,7 +252,7 @@ function BadgeMark({
   )
 }
 
-export function AIDayWorkspace({ boot: _boot }: { boot: Bootstrap }) {
+export function AIDayWorkspace({ boot }: { boot: Bootstrap }) {
   const [tab, setTab] = useState<'overview' | 'atlas' | 'ledger' | 'privacy'>('overview')
   const [range, setRange] = useState(() => rangeFor(30))
   const [draftRange, setDraftRange] = useState(range)
@@ -317,15 +320,29 @@ export function AIDayWorkspace({ boot: _boot }: { boot: Bootstrap }) {
           <h1>AI Day</h1>
           <p>回顾每日协作、使用习惯与成长记录。</p>
         </div>
-        <button
-          type="button"
-          className="button"
-          onClick={refresh}
-          disabled={snapshot.isFetching || detail.isFetching || ledger.isFetching}
-        >
-          <RefreshCw size={14} className={snapshot.isFetching ? 'spin' : ''} />
-          刷新
-        </button>
+        <div className="workspace-actions">
+          <RuntimeJobs
+            boot={boot}
+            kinds={['day.rebuild']}
+            actions={[
+              { label: '生成今天', input: { kind: 'day.rebuild', day: data?.today || localDay() } },
+              {
+                label: '重新生成所选日期',
+                disabled: !selectedDay,
+                input: { kind: 'day.rebuild', day: selectedDay },
+              },
+            ]}
+          />
+          <button
+            type="button"
+            className="button"
+            onClick={refresh}
+            disabled={snapshot.isFetching || detail.isFetching || ledger.isFetching}
+          >
+            <RefreshCw size={14} className={snapshot.isFetching ? 'spin' : ''} />
+            刷新
+          </button>
+        </div>
       </div>
       <div className="as-tabs" role="tablist" aria-label="AI Day 视图">
         {(
@@ -971,28 +988,12 @@ export function SettingsWorkspace({ boot }: { boot: Bootstrap }) {
       return next
     })
   }
-  const [owner, setOwner] = useState('')
-  const [dirty, setDirty] = useState(false)
-  const [saved, setSaved] = useState(false)
-  const client = useQueryClient()
   const settings = useQuery({
     queryKey: ['settings.get'],
     queryFn: ({ signal }) => call<SettingsData>('settings.get', {}, signal),
     staleTime: 30_000,
   })
   const data = settings.data
-  useEffect(() => {
-    if (data && !dirty) setOwner(data.owner_name)
-  }, [data, dirty])
-  const save = useMutation({
-    mutationFn: () => call<SettingsData>('settings.preferences.save', { owner_name: owner.trim() }),
-    onSuccess: (result) => {
-      client.setQueryData(['settings.get'], result)
-      setOwner(result.owner_name)
-      setDirty(false)
-      setSaved(true)
-    },
-  })
   const writable = boot.capabilities?.workspace_write === true
   const sectionItems = [
     { value: 'general', title: '通用偏好', subtitle: '个人信息与当前行为', icon: UserRound },
@@ -1041,7 +1042,10 @@ export function SettingsWorkspace({ boot }: { boot: Bootstrap }) {
         </nav>
         <div className="as-settings-content">
           {section === 'appearance' ? (
-            <AppearanceSettings />
+            <>
+              <AppearanceSettings />
+              <NativePreferencesImport />
+            </>
           ) : settings.isPending ? (
             <Loading />
           ) : settings.isError ? (
@@ -1049,168 +1053,8 @@ export function SettingsWorkspace({ boot }: { boot: Bootstrap }) {
           ) : (
             data && (
               <>
-                {section === 'general' && (
-                  <>
-                    <div className="as-section-title">
-                      <div>
-                        <h2>通用偏好</h2>
-                        <p>让任务和工作记录以你熟悉的方式呈现。</p>
-                      </div>
-                    </div>
-                    <div className="as-card">
-                      <div className="as-section-caption">
-                        <h3>个人信息</h3>
-                        <UserRound size={16} />
-                      </div>
-                      <form
-                        className="as-owner-form"
-                        onSubmit={(event) => {
-                          event.preventDefault()
-                          save.mutate()
-                        }}
-                      >
-                        <label htmlFor="settings-owner">如何称呼你</label>
-                        <p>用于显示任务中的“我”，不会改变历史任务的创建者。</p>
-                        <div>
-                          <input
-                            id="settings-owner"
-                            value={owner}
-                            placeholder="我"
-                            maxLength={80}
-                            disabled={!writable || save.isPending}
-                            onChange={(event) => {
-                              setOwner(event.target.value)
-                              setDirty(true)
-                              setSaved(false)
-                              save.reset()
-                            }}
-                          />
-                          <button
-                            type="submit"
-                            className="button primary"
-                            disabled={!writable || !dirty || !owner.trim() || save.isPending}
-                          >
-                            {save.isPending ? (
-                              <LoaderCircle size={14} className="spin" />
-                            ) : (
-                              <Check size={14} />
-                            )}
-                            保存昵称
-                          </button>
-                        </div>
-                        {saved && (
-                          <span className="as-save-status" role="status">
-                            <Check size={13} />
-                            昵称已保存
-                          </span>
-                        )}
-                        {save.isError && (
-                          <p className="as-inline-error" role="alert">
-                            {errorText(save.error)}
-                          </p>
-                        )}
-                        {!writable && <p className="as-muted">当前连接仅可查看设置。</p>}
-                      </form>
-                      <SettingRow title="统计时区" description="AI Day 和本机统计使用的时间范围">
-                        {data.timezone}
-                      </SettingRow>
-                    </div>
-                    <div className="as-card">
-                      <div className="as-section-caption">
-                        <h3>任务与自动整理</h3>
-                        <span>当前偏好</span>
-                      </div>
-                      <SettingRow
-                        title="创建任务后自动优化"
-                        description="由本机应用的任务创建流程使用"
-                      >
-                        <StatePill enabled={data.preferences.todo_refine_on_add} />
-                      </SettingRow>
-                      <SettingRow title="自动采集" description="消息整理与待办发现的总开关">
-                        <StatePill enabled={data.preferences.collection_enabled} />
-                      </SettingRow>
-                      <SettingRow title="采集间隔">
-                        {data.preferences.collection_interval_minutes} 分钟
-                      </SettingRow>
-                      <SettingRow title="采集回看范围">
-                        {data.preferences.collection_lookback_minutes} 分钟
-                      </SettingRow>
-                      <SettingRow title="消息保留期限">
-                        {data.preferences.collection_message_retention_days === 0
-                          ? '长期保留'
-                          : `${data.preferences.collection_message_retention_days} 天`}
-                      </SettingRow>
-                      <SettingRow
-                        title="Grok 实时额度"
-                        description="允许本机额度服务读取实时账单状态"
-                      >
-                        <StatePill enabled={data.preferences.grok_live_quota} />
-                      </SettingRow>
-                    </div>
-                    <p className="as-footnote">
-                      <CircleHelp size={14} />
-                      后台行为显示本机当前偏好，实际运行状态可在“运行与同步”中查看。
-                    </p>
-                  </>
-                )}
-                {section === 'model' && (
-                  <>
-                    <div className="as-section-title">
-                      <div>
-                        <h2>模型与连接</h2>
-                        <p>查看文本服务与已登记的连接。凭证仅显示配置状态。</p>
-                      </div>
-                    </div>
-                    <div className="as-card">
-                      <div className="as-model-heading">
-                        <span className="as-badge-mark">
-                          <Sparkles />
-                        </span>
-                        <div>
-                          <h3>{data.model.name || '未指定模型'}</h3>
-                          <p>{data.model.source || '未指定来源'}</p>
-                        </div>
-                        <span className="as-status">文本服务</span>
-                      </div>
-                      <SettingRow title="模型名称">{data.model.name || '未配置'}</SettingRow>
-                      <SettingRow title="来源名称">{data.model.source || '未配置'}</SettingRow>
-                      <SettingRow title="本地凭证" description="不显示或传输 API Key">
-                        {data.model.credential_status === 'unavailable' ? (
-                          <span className="as-muted">暂时无法读取状态</span>
-                        ) : (
-                          <StatePill
-                            enabled={data.model.credential_configured}
-                            on="已配置"
-                            off="未配置"
-                          />
-                        )}
-                      </SettingRow>
-                    </div>
-                    <div className="as-card">
-                      <div className="as-section-caption">
-                        <h3>外部连接</h3>
-                        <span>{data.providers.length} 项</span>
-                      </div>
-                      {data.providers.length === 0 ? (
-                        <p className="as-muted as-provider-empty">尚未登记采集连接或额度来源。</p>
-                      ) : (
-                        data.providers.map((provider) => (
-                          <SettingRow
-                            key={`${provider.kind}-${provider.name}`}
-                            title={provider.name}
-                            description={provider.kind === 'quota' ? '额度来源' : '消息采集连接'}
-                          >
-                            <StatePill enabled={provider.enabled} on="已登记" off="采集已关闭" />
-                          </SettingRow>
-                        ))
-                      )}
-                    </div>
-                    <p className="as-footnote">
-                      <ShieldCheck size={14} />
-                      连接凭证由本机管理。查看此页不会发起模型请求或测试连接。
-                    </p>
-                  </>
-                )}
+                {section === 'general' && <BusinessPreferences data={data} writable={writable} />}
+                {section === 'model' && <ModelSettings data={data} writable={writable} />}
                 {section === 'runtime' && (
                   <>
                     <div className="as-section-title">
@@ -1219,6 +1063,31 @@ export function SettingsWorkspace({ boot }: { boot: Bootstrap }) {
                         <p>当前工作台的能力，以及已有会话索引的更新情况。</p>
                       </div>
                     </div>
+                    <div className="as-card">
+                      <div className="as-section-caption">
+                        <h3>手动运行</h3>
+                        <span>按需执行与最近记录</span>
+                      </div>
+                      {!jobsEnabled(boot) && (
+                        <p className="workspace-form-hint">当前连接未启用手动运行。</p>
+                      )}
+                      <RuntimeJobs
+                        boot={boot}
+                        history
+                        kinds={[
+                          'session.sync',
+                          'collect.run',
+                          'collect.reprocess',
+                          'day.rebuild',
+                          'quota.refresh',
+                          'todo.refine',
+                        ]}
+                        actions={[
+                          { input: { kind: 'session.sync' } },
+                          { input: { kind: 'quota.refresh' } },
+                        ]}
+                      />
+                    </div>
                     <div className="as-runtime-banner">
                       <span className="as-runtime-icon">
                         <Layers3 size={25} />
@@ -1226,7 +1095,12 @@ export function SettingsWorkspace({ boot }: { boot: Bootstrap }) {
                       <div>
                         <span className="as-eyebrow">WORKSPACE</span>
                         <h3>浏览器工作台</h3>
-                        <p>后台同步、Agent Hook 与自动采集由本机应用负责。</p>
+                        <p>
+                          {data.runtime.background_sync
+                            ? '当前本地服务已启用后台同步。'
+                            : '当前本地服务未启用后台同步。'}
+                          各项能力见下方运行状态。
+                        </p>
                       </div>
                       <span className="as-status">{data.runtime.version}</span>
                     </div>
@@ -1265,7 +1139,7 @@ export function SettingsWorkspace({ boot }: { boot: Bootstrap }) {
                       </SettingRow>
                       {data.sync.has_error && (
                         <p className="as-inline-error">
-                          上次同步或索引读取未完成，请在本机应用中检查同步状态。
+                          上次同步或索引读取未完成，请查看手动运行记录或重试同步。
                         </p>
                       )}
                     </div>
@@ -1278,14 +1152,14 @@ export function SettingsWorkspace({ boot }: { boot: Bootstrap }) {
                         <StatePill
                           enabled={data.runtime.background_sync}
                           on="运行中"
-                          off="由本机应用负责"
+                          off="当前服务未启用"
                         />
                       </SettingRow>
                       <SettingRow title="自动采集">
                         <StatePill
                           enabled={data.runtime.collection}
                           on="运行中"
-                          off="由本机应用负责"
+                          off="当前服务未启用"
                         />
                       </SettingRow>
                       <SettingRow title="模型执行">
@@ -1295,7 +1169,7 @@ export function SettingsWorkspace({ boot }: { boot: Bootstrap }) {
                         <StatePill
                           enabled={data.runtime.agent_hooks}
                           on="运行中"
-                          off="由本机应用负责"
+                          off="当前服务未启用"
                         />
                       </SettingRow>
                     </div>

@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import ATMMenuBarApp
 
 /// Exercises the real socket, end to end across both languages: the Swift
@@ -115,7 +116,19 @@ final class AgentEventListenerIntegrationTests: XCTestCase {
         // A socket file with no listener behind it: bind would fail with
         // EADDRINUSE, so start() has to unlink it first. Without this the notch
         // would stay deaf after any hard crash until the user cleaned up by hand.
-        FileManager.default.createFile(atPath: socketPath, contents: Data())
+        let descriptor = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        withUnsafeMutableBytes(of: &address.sun_path) { bytes in
+            bytes.copyBytes(from: Array(socketPath.utf8)); bytes[socketPath.utf8.count] = 0
+        }
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(descriptor, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        close(descriptor) // leaves an actual stale socket, not an unrelated file
+        XCTAssertEqual(result, 0)
 
         let listener = ATMAgentEventListener(path: socketPath) { _ in }
         XCTAssertNoThrow(try listener.start())

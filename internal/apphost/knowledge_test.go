@@ -202,7 +202,7 @@ func TestKnowledgeCreateRequiresRegisteredCollectionAndPreservesOriginal(t *test
 		t.Fatal("new creation reused document identity")
 	}
 	actual, err := knowledgeRequest(t, h, "knowledge.document.get", knowledge.GetInput{DocumentID: original.Metadata.ID})
-	if err != nil || actual.(knowledge.Document).Content != "the first content" {
+	if err != nil || actual.(knowledge.VersionedDocument).Content != "the first content" {
 		t.Fatalf("original changed: %+v, %v", actual, err)
 	}
 	if _, err := os.Stat(config.AtmDB); !os.IsNotExist(err) {
@@ -241,7 +241,7 @@ func TestMemoryReplacementSingleWinnerAndHistory(t *testing.T) {
 		}
 		var appErr *application.Error
 		if !errors.As(err, &appErr) || (appErr.Code != application.CodeConflict && appErr.Code != application.CodeNotFound) {
-			t.Fatalf("unexpected replacement error: %v", err)
+			t.Fatalf("unexpected replacement error: %v (cause: %v)", err, errors.Unwrap(err))
 		}
 	}
 	if winners != 1 {

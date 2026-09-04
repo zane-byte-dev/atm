@@ -398,6 +398,21 @@ func TestFromHookRejectsUnusablePayloads(t *testing.T) {
 	}
 }
 
+func TestFromHookPreservesSubsecondEventTime(t *testing.T) {
+	now := time.Date(2026, 8, 3, 10, 0, 0, 345678901, time.UTC)
+	event, ok, err := FromHook(Input{
+		Source: SourceClaude,
+		Raw:    []byte(`{"hook_event_name":"UserPromptSubmit","session_id":"abc","cwd":"/w"}`),
+		Now:    now,
+	})
+	if err != nil || !ok {
+		t.Fatalf("FromHook = %+v, %v, %v", event, ok, err)
+	}
+	if event.At != "2026-08-03T10:00:00.345678901Z" {
+		t.Fatalf("at = %q, want the hook invocation's subsecond time", event.At)
+	}
+}
+
 func TestAttentionLifecycleKinds(t *testing.T) {
 	if !KindAttention.Valid() || Kind("nope").Valid() {
 		t.Error("Valid did not classify kinds correctly")

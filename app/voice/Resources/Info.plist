@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>ATM Voice</string>
+	<key>CFBundleExecutable</key>
+	<string>ATMVoice</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.zanebyte.atm.voice</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>ATM Voice</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.4</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>按住快捷键时录音并转成文字。SenseVoice 在本机识别；Apple Speech 是否使用网络取决于本机识别设置。</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>将语音转成文字。启用 Apple Speech 仅在本机识别后不会回退到网络识别。</string>
+</dict>
+</plist>

@@ -78,6 +78,9 @@ type DigestReport struct {
 // rewrites the same document instead of filing a second one — which is what makes
 // it safe to call on a timer while the day is still going.
 func (service Service) Digest(ctx context.Context, sourceID string, options DigestOptions) (DigestReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if service.Summarizer == nil {
 		return DigestReport{}, fmt.Errorf("collector summarizer is required")
 	}
@@ -89,6 +92,11 @@ func (service Service) Digest(ctx context.Context, sourceID string, options Dige
 	if err != nil {
 		return DigestReport{}, err
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return DigestReport{}, err
+	}
+	defer lock.Close()
 	date := day.Format("2006-01-02")
 	db, err := store.Open()
 	if err != nil {

@@ -34,14 +34,30 @@ func (h *Host) Call(ctx context.Context, call application.Call, method string, i
 		return invoke(input, func(value TodoInput) (any, error) { return h.ArchiveTodo(ctx, call, value) })
 	case "todo.restore":
 		return invoke(input, func(value TodoInput) (any, error) { return h.RestoreTodo(ctx, call, value) })
+	case "todo.plan.set":
+		return invoke(input, func(value PlanInput) (any, error) { return h.SetTodoPlan(ctx, call, value) })
+	case "todo.progress.append":
+		return invoke(input, func(value ProgressInput) (any, error) { return h.AppendTodoProgress(ctx, call, value) })
+	case "todo.dependency.add":
+		return invoke(input, func(value DependencyInput) (any, error) { return h.AddTodoDependency(ctx, call, value) })
+	case "todo.dependency.remove":
+		return invoke(input, func(value DependencyInput) (any, error) { return h.RemoveTodoDependency(ctx, call, value) })
+	case "todo.dependency.list":
+		return invoke(input, func(value TodoInput) (any, error) { return h.TodoDependencies(ctx, call, value) })
+	case "todo.wait.update":
+		return invoke(input, func(value WaitInput) (any, error) { return h.UpdateTodoWait(ctx, call, value) })
+	case "todo.wake":
+		return invoke(input, func(value WakeInput) (any, error) { return h.WakeTodo(ctx, call, value) })
+	case "jobs.run", "jobs.list", "jobs.show", "jobs.cancel", "presence.snapshot":
+		return h.CallRuntime(ctx, call, method, input, idempotencyKey)
 	case "session.list", "session.search", "session.show", "session.status", "usage.snapshot", "quota.cached":
 		return h.callActivity(ctx, call, method, input)
-	case "knowledge.catalog", "knowledge.query", "knowledge.document.get", "knowledge.document.create", "knowledge.collection.create",
+	case "knowledge.catalog", "knowledge.query", "knowledge.document.get", "knowledge.document.create", "knowledge.document.update", "knowledge.collection.create",
 		"memory.recall", "memory.get", "memory.create", "memory.supersede":
 		return h.callKnowledge(ctx, call, method, input)
-	case "collect.overview", "collect.items", "collect.item.show", "collect.history", "collect.item.read", "collect.item.archive", "collect.source.enabled", "collect.source.muted":
+	case "collect.overview", "collect.items", "collect.item.show", "collect.history", "collect.item.read", "collect.item.archive", "collect.source.enabled", "collect.source.muted", "collect.source.save", "collect.source.delete":
 		return h.callCollection(ctx, call, method, input)
-	case "day.snapshot", "day.show", "day.ledger", "settings.get", "settings.preferences.save":
+	case "day.snapshot", "day.show", "day.ledger", "settings.get", "settings.preferences.save", "settings.business.save", "settings.credential.save", "settings.credential.delete":
 		return h.callWorkspaceSettings(ctx, call, method, input)
 	default:
 		return nil, application.NewError(application.CodeNotFound, "unknown API method")

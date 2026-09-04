@@ -10,6 +10,7 @@ import (
 
 	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/executionlock"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -17,11 +18,12 @@ import (
 // service. Production uses the local SQLite store; tests can replace individual
 // ports without teaching a command handler about persistence.
 type ServiceOptions struct {
-	OpenRead  func() (*sql.DB, error)
-	OpenWrite func() (*sql.DB, error)
-	Sync      func(*sql.DB) (int, error)
-	Now       func() time.Time
-	Location  func() *time.Location
+	OpenRead    func() (*sql.DB, error)
+	OpenWrite   func() (*sql.DB, error)
+	Sync        func(*sql.DB) (int, error)
+	SyncContext func(context.Context, *sql.DB) (int, error)
+	Now         func() time.Time
+	Location    func() *time.Location
 }
 
 // Service owns AI Day use-case orchestration. The lower-level projection,
@@ -30,7 +32,7 @@ type ServiceOptions struct {
 type Service struct {
 	openRead  func() (*sql.DB, error)
 	openWrite func() (*sql.DB, error)
-	sync      func(*sql.DB) (int, error)
+	sync      func(context.Context, *sql.DB) (int, error)
 	now       func() time.Time
 	location  func() *time.Location
 }
@@ -45,8 +47,13 @@ func NewService(options ServiceOptions) Service {
 	if options.OpenWrite == nil {
 		options.OpenWrite = store.Open
 	}
-	if options.Sync == nil {
-		options.Sync = store.SyncAll
+	if options.SyncContext == nil {
+		options.SyncContext = store.SyncAllContext
+		if options.Sync != nil {
+			options.SyncContext = func(_ context.Context, db *sql.DB) (int, error) {
+				return options.Sync(db)
+			}
+		}
 	}
 	if options.Now == nil {
 		options.Now = time.Now
@@ -57,7 +64,7 @@ func NewService(options ServiceOptions) Service {
 	return Service{
 		openRead:  options.OpenRead,
 		openWrite: options.OpenWrite,
-		sync:      options.Sync,
+		sync:      options.SyncContext,
 		now:       options.Now,
 		location:  options.Location,
 	}
@@ -126,11 +133,12 @@ type DeleteInput struct {
 }
 
 func (service Service) Today(ctx context.Context, input TodayInput) (Result, OperationMeta, error) {
-	db, meta, err := service.openDatabase(false, input.Sync)
+	db, meta, lock, err := service.openProjectionDatabase(ctx, input.Sync)
 	if err != nil {
 		return Result{}, meta, err
 	}
 	defer db.Close()
+	defer lock.Close()
 
 	now, loc := service.now(), service.location()
 	summary, err := Refresh(ctx, db, now, loc, 30)
@@ -170,11 +178,12 @@ func (service Service) Rebuild(ctx context.Context, input RebuildInput) (Rebuild
 	if err != nil {
 		return RebuildSummary{}, OperationMeta{}, err
 	}
-	db, meta, err := service.openDatabase(false, input.Sync)
+	db, meta, lock, err := service.openProjectionDatabase(ctx, input.Sync)
 	if err != nil {
 		return RebuildSummary{}, meta, err
 	}
 	defer db.Close()
+	defer lock.Close()
 
 	summary, err := Rebuild(ctx, db, from, to, service.location())
 	if err != nil {
@@ -187,11 +196,12 @@ func (service Service) Dashboard(ctx context.Context, input DashboardInput) (Das
 	if input.Days < 1 || input.Days > 3650 {
 		return Dashboard{}, OperationMeta{}, invalidArgument("days must be between 1 and 3650", "days", input.Days)
 	}
-	db, meta, err := service.openDatabase(false, input.Sync)
+	db, meta, lock, err := service.openProjectionDatabase(ctx, input.Sync)
 	if err != nil {
 		return Dashboard{}, meta, err
 	}
 	defer db.Close()
+	defer lock.Close()
 
 	now, loc := service.now(), service.location()
 	summary, err := Refresh(ctx, db, now, loc, 30)
@@ -466,7 +476,30 @@ func (service Service) Delete(ctx context.Context, input DeleteInput) (DeleteSum
 	return summary, nil
 }
 
+// The projection lock covers all days in one refresh, including baseline and
+// award reads. Sync finishes (and releases its own lock) before this acquisition
+// so the two domains never hold each other's locks in opposite order.
+func (service Service) openProjectionDatabase(ctx context.Context, syncRequested bool) (*sql.DB, OperationMeta, *executionlock.Lock, error) {
+	db, meta, err := service.openDatabaseContext(ctx, false, syncRequested)
+	if err != nil {
+		return nil, meta, nil, err
+	}
+	lock, err := executionlock.AcquireDatabase(ctx, db, "aiday")
+	if err != nil {
+		db.Close()
+		return nil, meta, nil, unavailable("lock AI Day projection", err)
+	}
+	return db, meta, lock, nil
+}
+
 func (service Service) openDatabase(readOnly, syncRequested bool) (*sql.DB, OperationMeta, error) {
+	return service.openDatabaseContext(context.Background(), readOnly, syncRequested)
+}
+
+func (service Service) openDatabaseContext(ctx context.Context, readOnly, syncRequested bool) (*sql.DB, OperationMeta, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, OperationMeta{}, unavailable("open ATM database", err)
+	}
 	opener := service.openWrite
 	if readOnly && !syncRequested {
 		opener = service.openRead
@@ -477,7 +510,7 @@ func (service Service) openDatabase(readOnly, syncRequested bool) (*sql.DB, Oper
 	}
 	meta := OperationMeta{}
 	if syncRequested {
-		meta.SyncedFiles, err = service.sync(db)
+		meta.SyncedFiles, err = service.sync(ctx, db)
 		if err != nil {
 			db.Close()
 			return nil, OperationMeta{}, unavailable("sync AI Day sources", err)

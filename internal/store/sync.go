@@ -1,39 +1,73 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/zane-byte-dev/atm/internal/config"
+	"github.com/zane-byte-dev/atm/internal/executionlock"
 	"github.com/zane-byte-dev/atm/internal/parser"
 )
 
 func SyncAll(db *sql.DB) (int, error) {
+	return SyncAllContext(context.Background(), db)
+}
+
+// SyncAllContext shares one lock with single-agent refreshes and every process
+// using this index. The lock covers freshness reads, parsing, and all writes.
+func SyncAllContext(ctx context.Context, db *sql.DB) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lock, err := executionlock.AcquireDatabase(ctx, db, "sync")
+	if err != nil {
+		return 0, err
+	}
+	defer lock.Close()
 	return runTrackedSync(db, SyncScopeAll, func() (int, error) {
 		total := 0
 		for _, a := range parser.All() {
 			n, err := runTrackedSync(db, a.Name(), func() (int, error) {
-				return syncAgent(db, a)
+				return syncAgentContext(ctx, db, a)
 			})
 			if err != nil {
 				return total, err
 			}
 			total += n
 		}
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
 		return total, RepriceUsage(db)
 	})
 }
 
 func SyncAgent(db *sql.DB, agent string) (int, error) {
+	return SyncAgentContext(context.Background(), db, agent)
+}
+
+func SyncAgentContext(ctx context.Context, db *sql.DB, agent string) (int, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	a := parser.Get(agent)
 	if a == nil {
 		return 0, fmt.Errorf("unknown agent: %s", agent)
 	}
+	lock, err := executionlock.AcquireDatabase(ctx, db, "sync")
+	if err != nil {
+		return 0, err
+	}
+	defer lock.Close()
 	return runTrackedSync(db, agent, func() (int, error) {
-		n, err := syncAgent(db, a)
+		n, err := syncAgentContext(ctx, db, a)
 		if err != nil {
+			return n, err
+		}
+		if err := ctx.Err(); err != nil {
 			return n, err
 		}
 		// Rates are global, so a single-agent sync reprices everything too. See
@@ -51,6 +85,13 @@ type sourceVersioner interface {
 }
 
 func syncAgent(db *sql.DB, a parser.Agent) (int, error) {
+	return syncAgentContext(context.Background(), db, a)
+}
+
+func syncAgentContext(ctx context.Context, db *sql.DB, a parser.Agent) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	files := a.Discover()
 	agent := a.Name()
 
@@ -59,6 +100,9 @@ func syncAgent(db *sql.DB, a parser.Agent) (int, error) {
 	versioner, _ := a.(sourceVersioner)
 
 	for _, fp := range files {
+		if err := ctx.Err(); err != nil {
+			return synced, err
+		}
 		onDisk[fp] = true
 		var mtime, size int64
 		virtual := strings.Contains(fp, "://")
@@ -117,6 +161,9 @@ func syncAgent(db *sql.DB, a parser.Agent) (int, error) {
 		synced++
 	}
 
+	if err := ctx.Err(); err != nil {
+		return synced, err
+	}
 	if err := forgetRemovedSources(db, agent, onDisk); err != nil {
 		return synced, fmt.Errorf("forget removed %s sources: %w", agent, err)
 	}

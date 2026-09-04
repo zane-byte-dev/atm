@@ -14,8 +14,8 @@ import {
 import type { Bootstrap } from './types'
 
 export const workspaces = [
-  { path: '/tasks', label: '任务', icon: CheckCheck },
-  { path: '/collection', label: '收集', icon: Inbox },
+  { path: '/tasks', label: '工作板', icon: CheckCheck },
+  { path: '/collection', label: '收件箱', icon: Inbox },
   { path: '/agents', label: 'Agent', icon: Cpu },
   { path: '/knowledge', label: '知识', icon: BookOpen },
   { path: '/usage', label: '统计', icon: ChartNoAxesCombined },
@@ -25,20 +25,13 @@ export const workspaces = [
 
 export function AppShell({
   boot,
-  current,
   children,
-  action,
-  project,
   className = '',
 }: {
   boot: Bootstrap
-  current: (typeof workspaces)[number]['path']
   children: ReactNode
-  action?: ReactNode
-  project?: string
   className?: string
 }) {
-  const workspace = workspaces.find((item) => item.path === current)!
   return (
     <div className={`workspace ${className}`}>
       <aside className="sidebar">
@@ -48,7 +41,6 @@ export function AppShell({
             ATM<small>我的工作台</small>
           </span>
         </NavLink>
-        <div className="sidebar-label">工作空间</div>
         <nav aria-label="工作空间" className="workspace-navigation">
           {workspaces.map(({ path, label, icon: Icon }) => (
             <NavLink
@@ -69,35 +61,9 @@ export function AppShell({
             本机工作区
             <ShieldCheck size={13} />
           </div>
-          <div className="footer-detail">
-            数据保存在你的电脑上<span title={`ATM ${boot.version}`}>ATM</span>
-          </div>
         </div>
       </aside>
       <main className="main">
-        <header className="topbar">
-          <div className="breadcrumb">
-            <span>工作空间</span>
-            <span className="slash">/</span>
-            <strong>{workspace.label}</strong>
-            {project && (
-              <>
-                <span className="slash">/</span>
-                <span>{project}</span>
-              </>
-            )}
-          </div>
-          <div className="topbar-right">
-            <span className="today">
-              {new Intl.DateTimeFormat('zh-CN', {
-                month: 'long',
-                day: 'numeric',
-                weekday: 'long',
-              }).format(new Date())}
-            </span>
-            {action}
-          </div>
-        </header>
         {boot.capabilities?.data_upgrade_required === true && (
           <div className="upgrade-notice" role="status">
             <details>

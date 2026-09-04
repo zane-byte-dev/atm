@@ -66,13 +66,18 @@ func (service Service) Promote(
 	call application.Call,
 	input PromoteInput,
 ) (ItemResult, error) {
-	_, itemID, err := validateItemCall(ctx, call, input.ItemID)
+	ctx, itemID, err := validateItemCall(ctx, call, input.ItemID)
 	if err != nil {
 		return ItemResult{}, err
 	}
 	if err := validateItemCorrection(input.Correction, false); err != nil {
 		return ItemResult{}, err
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return ItemResult{}, itemApplicationError("promote", itemID, err)
+	}
+	defer lock.Close()
 	item, err := service.promoteItem(itemID, input.Correction)
 	if err != nil {
 		return ItemResult{}, itemApplicationError("promote", itemID, err)
@@ -85,13 +90,18 @@ func (service Service) Correct(
 	call application.Call,
 	input CorrectInput,
 ) (ItemResult, error) {
-	_, itemID, err := validateItemCall(ctx, call, input.ItemID)
+	ctx, itemID, err := validateItemCall(ctx, call, input.ItemID)
 	if err != nil {
 		return ItemResult{}, err
 	}
 	if err := validateItemCorrection(input.Correction, true); err != nil {
 		return ItemResult{}, err
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return ItemResult{}, itemApplicationError("correct", itemID, err)
+	}
+	defer lock.Close()
 	item, err := service.correctItem(itemID, input.Correction)
 	if err != nil {
 		return ItemResult{}, itemApplicationError("correct", itemID, err)
@@ -104,7 +114,7 @@ func (service Service) Revert(
 	call application.Call,
 	input RevertInput,
 ) (ItemResult, error) {
-	_, itemID, err := validateItemCall(ctx, call, input.ItemID)
+	ctx, itemID, err := validateItemCall(ctx, call, input.ItemID)
 	if err != nil {
 		return ItemResult{}, err
 	}
@@ -113,6 +123,11 @@ func (service Service) Revert(
 			"reverting a collection item requires confirmation", "confirmed", false,
 		)
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return ItemResult{}, itemApplicationError("revert", itemID, err)
+	}
+	defer lock.Close()
 	item, err := service.revertItem(itemID)
 	if err != nil {
 		return ItemResult{}, itemApplicationError("revert", itemID, err)
@@ -125,10 +140,15 @@ func (service Service) SaveConclusion(
 	call application.Call,
 	input SaveConclusionInput,
 ) (ItemResult, error) {
-	_, itemID, err := validateItemCall(ctx, call, input.ItemID)
+	ctx, itemID, err := validateItemCall(ctx, call, input.ItemID)
 	if err != nil {
 		return ItemResult{}, err
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return ItemResult{}, itemApplicationError("save conclusion", itemID, err)
+	}
+	defer lock.Close()
 	item, err := service.saveConclusion(itemID, strings.TrimSpace(input.Collection))
 	if err != nil {
 		return ItemResult{}, itemApplicationError("save conclusion", itemID, err)

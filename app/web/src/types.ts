@@ -1,3 +1,4 @@
+export type OperationWarning = { code: string; message: string }
 export type TodoStatus = 'open' | 'in_progress' | 'review' | 'done'
 export type Todo = {
   id: string
@@ -29,7 +30,11 @@ export type TodoList = {
 export type TodoDetail = {
   todo: Todo
   etag: string
-  latest_plan?: { explanation?: string; items: { step: string; status: string }[] }
+  latest_plan?: {
+    revision: number
+    explanation?: string
+    items: { step: string; status: string }[]
+  }
   sessions?: { session_id: string; agent?: string; summary?: string }[]
   summary?: { sessions: number; queries: number; tool_calls: number }
 }

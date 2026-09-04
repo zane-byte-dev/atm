@@ -26,6 +26,8 @@ export type KnowledgeDocumentRow = {
 }
 
 export type KnowledgeDocument = {
+  etag: string
+  editable: boolean
   metadata: {
     id: string
     title: string

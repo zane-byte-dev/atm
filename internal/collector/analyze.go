@@ -52,12 +52,20 @@ const (
 // collection must neither skip nor repeat work because of it.
 func (service Service) Analyze(ctx context.Context, sourceID string,
 	options AnalyzeOptions) (AnalyzeReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if service.Extractor == nil {
 		return AnalyzeReport{}, fmt.Errorf("collector extractor is required")
 	}
 	if service.RegistryError != nil {
 		return AnalyzeReport{}, service.RegistryError
 	}
+	lock, err := acquireCollectionLock(ctx)
+	if err != nil {
+		return AnalyzeReport{}, err
+	}
+	defer lock.Close()
 	if service.Now == nil {
 		service.Now = func() time.Time { return time.Now().In(config.Loc) }
 	}

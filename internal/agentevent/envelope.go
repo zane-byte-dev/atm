@@ -135,5 +135,10 @@ func truncate(value string) string {
 func isRuneStart(b byte) bool { return b&0xC0 != 0x80 }
 
 func timestamp(now time.Time) string {
-	return now.Format(time.RFC3339)
+	// Separate hook commands can be invoked during the same wall-clock second,
+	// and the presence socket reads separate connections concurrently. Keeping
+	// the caller's fractional seconds lets the receiver restore source order
+	// when goroutine scheduling delivers those commands out of order. RFC3339Nano
+	// is wire-compatible with the previous whole-second RFC3339 value.
+	return now.Format(time.RFC3339Nano)
 }
