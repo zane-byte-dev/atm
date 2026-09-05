@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -225,25 +226,29 @@ func TestBackupRefusesToOverwriteExistingArchive(t *testing.T) {
 	}
 }
 
-// TestRestoreRejectsNewerSchema guards the case where extraction would produce a
-// database this build misreads instead of refuses.
-func TestRestoreRejectsNewerSchema(t *testing.T) {
-	withTempAtmDir(t)
-	archive := filepath.Join(t.TempDir(), "future.tar.gz")
-	writeTestArchive(t, archive, backupManifest{
-		SchemaVersion: store.SchemaVersion + 1,
-		Database:      "atm.db",
-	}, map[string]string{"atm.db": "not a real database"})
+// TestRestoreRejectsMismatchedSchema guards both directions: without a migration
+// chain, neither an older nor a newer archive can safely replace current data.
+func TestRestoreRejectsMismatchedSchema(t *testing.T) {
+	for _, version := range []int{store.SchemaVersion - 1, store.SchemaVersion + 1} {
+		t.Run(fmt.Sprintf("v%d", version), func(t *testing.T) {
+			withTempAtmDir(t)
+			archive := filepath.Join(t.TempDir(), "mismatched.tar.gz")
+			writeTestArchive(t, archive, backupManifest{
+				SchemaVersion: version,
+				Database:      "atm.db",
+			}, map[string]string{"atm.db": "not a real database"})
 
-	err := runRestore(restoreCmd, []string{archive})
-	if err == nil {
-		t.Fatal("expected restore to reject an archive from a newer build")
-	}
-	if !strings.Contains(err.Error(), "upgrade atm") {
-		t.Fatalf("error does not tell the user what to do: %v", err)
-	}
-	if _, statErr := os.Stat(config.AtmDB); statErr == nil {
-		t.Fatal("restore wrote a database despite rejecting the archive")
+			err := runRestore(restoreCmd, []string{archive})
+			if err == nil {
+				t.Fatalf("expected restore to reject schema v%d", version)
+			}
+			if !strings.Contains(err.Error(), "matching atm build") {
+				t.Fatalf("error does not tell the user what to do: %v", err)
+			}
+			if _, statErr := os.Stat(config.AtmDB); statErr == nil {
+				t.Fatal("restore wrote a database despite rejecting the archive")
+			}
+		})
 	}
 }
 

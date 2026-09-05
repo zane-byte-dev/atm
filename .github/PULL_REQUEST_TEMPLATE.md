@@ -6,7 +6,8 @@ Describe the user-visible change and why it is needed.
 
 - [ ] `go test ./...`
 - [ ] `go vet ./...`
-- [ ] `swift test --package-path app/macos` when macOS code changes
+- [ ] `swift test --package-path app/menubar` when ATM Menu changes
+- [ ] `swift test --package-path app/voice` when VoxCaret changes
 - [ ] Documentation and privacy/security implications reviewed
 
 ## Compatibility

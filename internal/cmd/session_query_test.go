@@ -347,12 +347,15 @@ func TestSessionListPagesTheWholeIndexNewestFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	var rows []struct {
-		ID string `json:"id"`
+	var pagePayload struct {
+		Sessions []struct {
+			ID string `json:"id"`
+		} `json:"sessions"`
 	}
-	if err := json.Unmarshal([]byte(page), &rows); err != nil {
+	if err := json.Unmarshal([]byte(page), &pagePayload); err != nil {
 		t.Fatalf("decode page: %v\n%s", err, page)
 	}
+	rows := pagePayload.Sessions
 	if len(rows) != 1 || rows[0].ID != "cmd-session-full" {
 		t.Fatalf("newest page = %#v", rows)
 	}
@@ -363,10 +366,11 @@ func TestSessionListPagesTheWholeIndexNewestFirst(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	rows = nil
-	if err := json.Unmarshal([]byte(second), &rows); err != nil {
+	pagePayload.Sessions = nil
+	if err := json.Unmarshal([]byte(second), &pagePayload); err != nil {
 		t.Fatalf("decode second page: %v\n%s", err, second)
 	}
+	rows = pagePayload.Sessions
 	if len(rows) != 1 || rows[0].ID != "cmd-session-old" {
 		t.Fatalf("second page = %#v", rows)
 	}
@@ -388,7 +392,7 @@ func TestSessionListPagesTheWholeIndexNewestFirst(t *testing.T) {
 	}
 }
 
-func TestSessionListEnvelopeKeepsPaginationMetadata(t *testing.T) {
+func TestSessionListJSONAlwaysKeepsPaginationMetadata(t *testing.T) {
 	withIsolatedCommandEnv(t)
 	withCommandFlags(t)
 	seedCommandSession(t)
@@ -396,7 +400,6 @@ func TestSessionListEnvelopeKeepsPaginationMetadata(t *testing.T) {
 	jsonOutput = true
 	sessionListAllFlag = true
 	sessionListLimit = 1
-	sessionListEnvelope = true
 	out := captureStdout(t, func() {
 		if err := runList(listCmd, nil); err != nil {
 			t.Fatal(err)
@@ -417,6 +420,9 @@ func TestSessionListEnvelopeKeepsPaginationMetadata(t *testing.T) {
 		payload.Returned != 1 || len(payload.Sessions) != 1 {
 		t.Fatalf("list envelope = %#v", payload)
 	}
+	if listCmd.Flags().Lookup("envelope") != nil {
+		t.Fatal("session list still exposes the legacy --envelope switch")
+	}
 }
 
 func TestSessionExportFiltersPaginatesAndSupportsJSONL(t *testing.T) {
@@ -428,7 +434,6 @@ func TestSessionExportFiltersPaginatesAndSupportsJSONL(t *testing.T) {
 	exportQueryFlag = "deployment"
 	exportLimitFlag = 1
 	exportOffsetFlag = 1
-	exportEnvelopeFlag = true
 	out := captureStdout(t, func() {
 		if err := runExport(exportCmd, nil); err != nil {
 			t.Fatal(err)
@@ -447,9 +452,11 @@ func TestSessionExportFiltersPaginatesAndSupportsJSONL(t *testing.T) {
 		payload.Returned != 1 || len(payload.Messages) != 1 {
 		t.Fatalf("export envelope = %#v", payload)
 	}
+	if exportCmd.Flags().Lookup("envelope") != nil {
+		t.Fatal("session export still exposes the legacy --envelope switch")
+	}
 
 	exportFormatFlag = "jsonl"
-	exportEnvelopeFlag = false
 	exportOffsetFlag = 0
 	jsonl := captureStdout(t, func() {
 		if err := runExport(exportCmd, nil); err != nil {

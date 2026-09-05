@@ -1,5 +1,5 @@
 // Package work owns application-level Todo reads and lifecycle transactions.
-// CLI and desktop transports should express intent here instead of coordinating
+// CLI and Web transports should express intent here instead of coordinating
 // Todo, document, and Session binding persistence themselves.
 package work
 
@@ -40,19 +40,11 @@ func (transaction *Transaction) Todo(id string) (*store.Todo, error) {
 	return todo, nil
 }
 
-// ArchiveTodos and UnarchiveTodos move todos between the working set and cold
-// storage. The rows never leave the database, so archiving is reversible and IDs
-// stay taken.
+// ArchiveTodos and RestoreTodos move todos between the working set and cold
+// storage. The rows never leave the database, so archiving is reversible and
+// IDs stay taken.
 func (transaction *Transaction) ArchiveTodos(ids []string) ([]string, error) {
 	return transaction.state.ArchiveTodos(ids)
-}
-
-func (transaction *Transaction) TrashTodos(ids []string) ([]string, error) {
-	return transaction.state.TrashTodos(ids)
-}
-
-func (transaction *Transaction) UnarchiveTodos(ids []string) ([]string, error) {
-	return transaction.state.UnarchiveTodos(ids)
 }
 
 func (transaction *Transaction) RestoreTodos(ids []string) ([]string, error) {

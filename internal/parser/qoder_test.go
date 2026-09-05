@@ -126,6 +126,14 @@ func TestQoderParseFileKeepsLongUserPrompts(t *testing.T) {
 	if got.Usage.Model != "qoder-qwen-max" {
 		t.Errorf("model = %q", got.Usage.Model)
 	}
+	if len(got.UsageEvents) != 1 {
+		t.Fatalf("usage events = %#v, want one request-level event", got.UsageEvents)
+	}
+	event := got.UsageEvents[0]
+	if event.Fingerprint != "qoder:m2" || event.Model != "qoder-qwen-max" || event.TS != 120 ||
+		event.InputTokens != 300 || event.OutputTokens != 340 || event.CacheReadTokens != 900 {
+		t.Errorf("usage event = %#v", event)
+	}
 }
 
 // Base64-looking payloads are still skipped: they are stored blobs, not prose,
@@ -233,7 +241,7 @@ func seedQoderDBWithSubagents(t *testing.T, extra ...string) {
 		`INSERT INTO chat_message VALUES ('s1','sub-1','user','Investigate','','',115000)`,
 		`INSERT INTO chat_message VALUES ('s2','sub-1','assistant','Findings.',
 			'{"prompt_tokens":500,"completion_tokens":60,"cached_tokens":200}',
-			'{"model_key":"qwen-max"}',118000)`,
+			'{"model_key":"qwen-plus"}',118000)`,
 	}, extra...)
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {
@@ -273,6 +281,34 @@ func TestQoderParseFileRollsUpSubagentUsage(t *testing.T) {
 	}
 	if got.Usage.CacheReadTokens != 600 || got.Usage.RequestCount != 2 {
 		t.Errorf("cache/request rollup = %#v", got.Usage)
+	}
+	if len(got.UsageEvents) != 2 {
+		t.Fatalf("usage events = %#v, want root and delegated requests", got.UsageEvents)
+	}
+	events := make(map[string]UsageEvent, len(got.UsageEvents))
+	for _, event := range got.UsageEvents {
+		events[event.Fingerprint] = event
+	}
+	rootEvent, rootOK := events["qoder:r2"]
+	childEvent, childOK := events["qoder:s2"]
+	if !rootOK || rootEvent.TS != 120 || rootEvent.Model != "qoder-qwen-max" ||
+		rootEvent.InputTokens != 600 || rootEvent.OutputTokens != 100 || rootEvent.CacheReadTokens != 400 {
+		t.Errorf("root usage event = %#v, present=%v", rootEvent, rootOK)
+	}
+	if !childOK || childEvent.TS != 118 || childEvent.Model != "qoder-qwen-plus" ||
+		childEvent.InputTokens != 300 || childEvent.OutputTokens != 60 || childEvent.CacheReadTokens != 200 {
+		t.Errorf("delegated usage event = %#v, present=%v", childEvent, childOK)
+	}
+	// qoder:// sources are full-parsed on every sync. Message ids must therefore
+	// produce the same request fingerprints every time.
+	again := QoderParseFile("qoder://root-1")
+	if again == nil || len(again.UsageEvents) != 2 {
+		t.Fatalf("second parse usage events = %#v", again)
+	}
+	for _, event := range again.UsageEvents {
+		if prior, ok := events[event.Fingerprint]; !ok || prior != event {
+			t.Errorf("unstable event after reparse: %#v (prior %#v, present=%v)", event, prior, ok)
+		}
 	}
 	// Tokens roll up, transcript does not: reporting the child's prompts as the
 	// parent's would describe a conversation the user never had.
@@ -418,7 +454,7 @@ func TestDiscoverQoderCLICoversBothLayouts(t *testing.T) {
 
 // Live sessions have to carry the identifier Qoder's hook actually reports.
 // Both readers truncate the session id to eight characters for display, and the
-// hook payload carries the whole uuid — so without ResumeID the notch has
+// hook payload carries the whole uuid — so without ResumeID the activity feed has
 // nothing to join a `Stop` event onto and falls back to guessing completions
 // from the transcript, which is what made Qoder prompt on every poll.
 func TestQoderLiveSessionsExposeTheFullSessionID(t *testing.T) {

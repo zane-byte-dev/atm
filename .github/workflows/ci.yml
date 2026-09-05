@@ -72,5 +72,5 @@ jobs:
           cache: npm
           cache-dependency-path: app/web/package-lock.json
 
-      - name: Verify CLI, Web, macOS, migration, and release contracts
+      - name: Verify CLI, Web, native apps, and release contracts
         run: ./scripts/release-check.sh

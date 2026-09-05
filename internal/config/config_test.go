@@ -347,7 +347,7 @@ func TestTodoRefineOnAddDefaultsOffAndCanBeEnabled(t *testing.T) {
 	}
 	LoadConfig()
 	if !TodoRefineOnAdd {
-		t.Fatal("explicit true must turn desktop auto-refine on")
+		t.Fatal("explicit true must turn browser auto-refine on")
 	}
 	t.Setenv("ATM_TODO_REFINE_ON_ADD", "0")
 	LoadConfig()

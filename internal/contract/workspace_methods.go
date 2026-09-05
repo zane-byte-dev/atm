@@ -1,12 +1,11 @@
 package contract
 
 // WorkspaceMethod is the shared, transport-neutral capability catalog for the
-// resident workspace API. Adapters may enforce additional authentication and
-// upgrade gates, but they must not maintain a second method allowlist.
+// resident workspace API. Adapters may enforce additional authentication, but
+// they must not maintain a second method allowlist.
 type WorkspaceMethod struct {
-	Name    string
-	Write   bool
-	Domains []string
+	Name  string
+	Write bool
 }
 
 var workspaceMethods = func() map[string]WorkspaceMethod {
@@ -22,23 +21,23 @@ var workspaceMethods = func() map[string]WorkspaceMethod {
 	for _, name := range read {
 		result[name] = WorkspaceMethod{Name: name}
 	}
-	writes := map[string][]string{
-		"todos": {
+	writes := [][]string{
+		{
 			"todo.create", "todo.update", "todo.start", "todo.done", "todo.archive", "todo.restore",
 			"todo.plan.set", "todo.progress.append", "todo.dependency.add", "todo.dependency.remove", "todo.wait.update", "todo.wake",
 		},
-		"jobs":      {"jobs.run", "jobs.cancel"},
-		"knowledge": {"knowledge.document.create", "knowledge.document.update", "knowledge.collection.create"},
-		"memory":    {"memory.create", "memory.supersede"},
-		"collection": {
+		{"jobs.run", "jobs.cancel"},
+		{"knowledge.document.create", "knowledge.document.update", "knowledge.collection.create"},
+		{"memory.create", "memory.supersede"},
+		{
 			"collect.item.read", "collect.item.archive", "collect.source.enabled", "collect.source.muted",
 			"collect.source.save", "collect.source.delete",
 		},
-		"settings": {"settings.preferences.save", "settings.business.save", "settings.credential.save", "settings.credential.delete"},
+		{"settings.preferences.save", "settings.business.save", "settings.credential.save", "settings.credential.delete"},
 	}
-	for domain, names := range writes {
+	for _, names := range writes {
 		for _, name := range names {
-			result[name] = WorkspaceMethod{Name: name, Write: true, Domains: []string{domain}}
+			result[name] = WorkspaceMethod{Name: name, Write: true}
 		}
 	}
 	return result
@@ -49,6 +48,5 @@ func LookupWorkspaceMethod(name string) (WorkspaceMethod, bool) {
 	if !ok {
 		return WorkspaceMethod{}, false
 	}
-	method.Domains = append([]string(nil), method.Domains...)
 	return method, true
 }

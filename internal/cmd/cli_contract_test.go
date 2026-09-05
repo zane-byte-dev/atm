@@ -52,31 +52,17 @@ func TestTodoEditStatusErrorsPointToExplicitLifecycleCommands(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.status, func(t *testing.T) {
-			setCommandFlagForTest(t, todoEditCmd, "status", test.status)
+			flag := todoEditCmd.Flags().Lookup("status")
+			oldValue, oldChanged := todoEditStatusFlag, flag.Changed
+			t.Cleanup(func() {
+				todoEditStatusFlag = oldValue
+				flag.Changed = oldChanged
+			})
+			todoEditStatusFlag = test.status
+			flag.Changed = true
 			err := runTodoEdit(todoEditCmd, []string{"#T42"})
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("edit --status %s error = %v, want copyable %q", test.status, err, test.want)
-			}
-		})
-	}
-}
-
-func TestTodoBulkEditStatusErrorsPointToExplicitLifecycleCommands(t *testing.T) {
-	tests := []struct {
-		status string
-		want   string
-	}{
-		{status: "in_progress", want: "atm todo start t41"},
-		{status: "review", want: "atm todo submit t41"},
-		{status: "done", want: "atm todo bulk done t41 t42"},
-		{status: "archived", want: "atm todo archive t41 t42"},
-		{status: "waiting", want: "atm todo edit t41 --wake"},
-	}
-	for _, test := range tests {
-		t.Run(test.status, func(t *testing.T) {
-			err := validateBulkEditStatusCLI(test.status, []string{"#T41", "t42"})
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("bulk edit --status %s error = %v, want copyable %q", test.status, err, test.want)
 			}
 		})
 	}

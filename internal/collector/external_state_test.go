@@ -20,9 +20,9 @@ func TestSettledExternalStateSkipsModelAndTodoCreation(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "不应创建"}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		externalStateMessage(source, ExternalDispositionSettled, "not_pending_review"),
-	}, newest: 12_000}, Extractor: extractor, Now: tickingClock()}
+	}, newest: 12_000}), Extractor: extractor, Now: tickingClock()}
 
 	report, err := service.Run(context.Background(), source.ID)
 	if err != nil || report.Runs[0].IgnoredCount != 1 || report.Runs[0].CreatedCount != 0 {
@@ -50,9 +50,9 @@ func TestActionableExternalStateStillAllowsTodoCreation(t *testing.T) {
 	source := addCollectorSource(t)
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "评审 CR",
 		Summary: "仍待当前用户评审", ItemType: "follow_up", Confidence: 0.9}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		externalStateMessage(source, ExternalDispositionActionable, "pending_review"),
-	}, newest: 12_000}, Extractor: extractor, Now: tickingClock()}
+	}, newest: 12_000}), Extractor: extractor, Now: tickingClock()}
 
 	report, err := service.Run(context.Background(), source.ID)
 	if err != nil || report.Runs[0].CreatedCount != 1 || extractor.calls != 1 {
@@ -64,9 +64,9 @@ func TestUnknownExternalStateFailsClosedAndRetries(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "不应创建"}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		externalStateMessage(source, ExternalDispositionUnknown, "lookup_failed"),
-	}, newest: 12_000}, Extractor: extractor, Now: tickingClock()}
+	}, newest: 12_000}), Extractor: extractor, Now: tickingClock()}
 
 	report, err := service.Run(context.Background(), source.ID)
 	if err == nil || !strings.Contains(err.Error(), "state is unknown") ||

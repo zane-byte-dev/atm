@@ -380,7 +380,7 @@ func TestPiParseFilePreservesOrderAndUsageByModel(t *testing.T) {
 }
 
 // Pi's live rows name the session by an eight-character prefix for display,
-// while the notch extension reports the whole id. ResumeID is what carries the
+// while the activity extension reports the whole id. ResumeID is what carries the
 // untruncated one, and without it a Pi hook event can never be joined to the row
 // it describes — leaving the snapshot heuristic to prompt on its own.
 func TestPiLiveSessionsExposeTheFullSessionID(t *testing.T) {

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/store"
-	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
 func TestTodoSubmitEffectFailureRemainsPendingAndRetryRepairsIt(t *testing.T) {
@@ -84,63 +83,6 @@ func TestTodoSubmitEffectFailureRemainsPendingAndRetryRepairsIt(t *testing.T) {
 	}
 	if count := strings.Count(doc, "[submit] durable projection recovery"); count != 1 {
 		t.Fatalf("submit log count = %d\n%s", count, doc)
-	}
-}
-
-func TestTodoWaitEffectFailureCanRetryWithoutExplicitID(t *testing.T) {
-	withTempAtmDir(t)
-	oldJSON, oldWake, oldReview := jsonOutput, todoWaitWakeFlag, todoWaitReviewAtFlag
-	t.Cleanup(func() {
-		jsonOutput, todoWaitWakeFlag, todoWaitReviewAtFlag = oldJSON, oldWake, oldReview
-	})
-	jsonOutput = false
-	todoWaitWakeFlag = "external release"
-	todoWaitReviewAtFlag = ""
-	t.Setenv("ATM_SESSION_ID", "wait-outbox-session")
-	if err := seedTodos(store.Todo{
-		ID: "t1", Title: "Retry wait projection", Priority: "P1",
-		Status: store.TodoStatusInProgress, Created: store.Today(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.BindTodoSession(store.TodoSessionBinding{
-		SessionID: "wait-outbox-session", TodoID: "t1",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	docPath := store.TodoDocPath("t1")
-	if err := os.MkdirAll(docPath, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := runTodoWait(todoWaitCmd, nil); err == nil || !strings.Contains(err.Error(), "sync todo doc") {
-		t.Fatalf("first wait error = %v", err)
-	}
-	pending, err := store.ListPendingWorkEffects("t1")
-	if err != nil || len(pending) != 1 || pending[0].Kind != string(workapp.EffectTodoWaiting) ||
-		pending[0].AttemptCount != 1 {
-		t.Fatalf("pending wait effect = %+v, err=%v", pending, err)
-	}
-	stableID := pending[0].ID
-	if err := os.Remove(docPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := runTodoWait(todoWaitCmd, nil); err != nil {
-		t.Fatalf("retry wait: %v", err)
-	}
-	if pending, err = store.ListPendingWorkEffects("t1"); err != nil || len(pending) != 0 {
-		t.Fatalf("pending wait after retry = %+v, err=%v", pending, err)
-	}
-	db, err := store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var completedAt sql.NullInt64
-	if err := db.QueryRow(`SELECT completed_at FROM work_effect_outbox WHERE id=?`, stableID).Scan(&completedAt); err != nil {
-		t.Fatalf("read acknowledged wait effect: %v", err)
-	}
-	if !completedAt.Valid {
-		t.Fatal("repaired wait effect was not acknowledged")
 	}
 }
 

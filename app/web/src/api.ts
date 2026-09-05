@@ -95,7 +95,10 @@ export function uploadTaskImage<T>(todoID: string, file: File, etag: string, sig
   body.append('file', file)
   body.append('expected_etag', etag)
   return request<T>(`/api/v1/tasks/${encodeURIComponent(todoID)}/images`, {
-    method: 'POST', signal, headers: { 'X-ATM-CSRF': csrf }, body,
+    method: 'POST',
+    signal,
+    headers: { 'X-ATM-CSRF': csrf },
+    body,
   })
 }
 
@@ -106,7 +109,11 @@ export function errorText(error: unknown): string {
     typeof error.details.idempotency_key === 'string'
   )
     return '这次创建已经对应一个任务，当前内容与首次提交不同。请查看已创建的任务，或明确另存为新任务。'
-  if (error instanceof ApiError && error.status === 409 && ('expected_etag' in error.details || 'actual_etag' in error.details))
+  if (
+    error instanceof ApiError &&
+    error.status === 409 &&
+    ('expected_etag' in error.details || 'actual_etag' in error.details)
+  )
     return '这个任务已在其他地方修改。请查看最新内容，合并后再保存。'
   if (error instanceof ApiError && error.status === 401)
     return '连接已过期。请重新运行 atm serve --open 连接工作台。'

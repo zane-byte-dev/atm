@@ -92,8 +92,8 @@ func runGatedCommand(tool, realBin string, argv []string, match *guard.Match) er
 	// execution.
 	gateDeadline := now.Add(wait).Unix()
 
-	// Writable on purpose: this is the path that must run the v45 migration, and a
-	// read-only handle could not have created the request anyway.
+	// Writable on purpose: this path creates the approval request and later
+	// records its decision atomically.
 	db, err := store.Open()
 	if err != nil {
 		return guardBlocked(tool, argv, err)
@@ -160,7 +160,7 @@ func runGatedCommand(tool, realBin string, argv []string, match *guard.Match) er
 // waitForGuardDecision polls until somebody decides or the wait budget runs out.
 //
 // The handle is held across ticks rather than reopened: in WAL mode each query
-// takes its own read snapshot, so a decision written by the app in another
+// takes its own read snapshot, so a decision written by the browser in another
 // process is visible on the very next tick.
 func waitForGuardDecision(db *sql.DB, approval store.Approval, realBin string, argv []string,
 	wait time.Duration, pid int) error {
@@ -282,8 +282,8 @@ func guardFollowOutcome(db *sql.DB, approval store.Approval) error {
 	}
 }
 
-// notifyGuardRequest pushes the request to the app, and raises a local banner
-// itself only if the app is not there to raise one. Two banners for one decision
+// notifyGuardRequest pushes the request to the presence runtime, and raises a
+// local banner itself only if the runtime is not there to raise one. Two banners for one decision
 // is the failure mode being avoided.
 func notifyGuardRequest(approval store.Approval) {
 	envelope := agentevent.GuardEnvelope{

@@ -15,7 +15,7 @@ import (
 func init() {
 	statsCmd.Flags().IntVar(&statsDaysFlag, "days", 1, "number of days to look back (rolling window)")
 	statsCmd.Flags().StringVar(&statsRangeFlag, "range", "", "named window: today, yesterday, this_week, last_week, this_month, last_7_days, last_30_days")
-	statsCmd.Flags().StringVar(&statsByFlag, "by", "", "group by: model, model-day, model-hour, skill, session, session-usage, request, speed, day, hour, wrapped")
+	statsCmd.Flags().StringVar(&statsByFlag, "by", "", "group by: model, model-day, model-hour, skill, session, request, speed, day, hour, wrapped")
 	statsCmd.Flags().StringVar(&statsSessionFlag, "session", "", "filter request stats by session id")
 	statsCmd.MarkFlagsMutuallyExclusive("days", "range")
 	rootCmd.AddCommand(statsCmd)
@@ -64,8 +64,6 @@ func runStats(cmd *cobra.Command, args []string) error {
 		return runSkillStats(result)
 	case statsapp.GroupSession:
 		return runSessionStats(result)
-	case statsapp.GroupSessionUsage:
-		return runSessionUsageStats(result)
 	case statsapp.GroupRequest:
 		return runRequestStats(result)
 	case statsapp.GroupSpeed:
@@ -140,7 +138,8 @@ func runRequestStats(result statsapp.Result) error {
 		fmt.Printf("  %-16s %-11s %-12s %-24s %5s %8s %8s %8s %8.4f\n",
 			time.Unix(r.TS, 0).In(config.Loc).Format("01-02 15:04:05"),
 			r.Agent, r.SessionID, model, fmtRequestCount(calls),
-			fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), fmtTokens(r.CacheTokens), r.CostUSD)
+			fmtTokens(r.FreshInputTokens), fmtTokens(r.OutputTokens),
+			fmtTokens(r.CacheCreateTokens+r.CacheReadTokens), r.CostUSD)
 	}
 	if len(results) > 0 && result.Totals.Requests != len(results) {
 		fmt.Printf("\n  %d rows · %d model calls\n", len(results), result.Totals.Requests)
@@ -234,46 +233,6 @@ func fmtSeconds(seconds float64) string {
 
 func runSessionStats(result statsapp.Result) error {
 	results := result.Sessions
-	ok := statsSection(results, "Statistics by Session", result.Window.Label, 80, "No activity recorded.")
-	if !ok {
-		return nil
-	}
-
-	fmt.Printf("\n  %-3s %-10s %-16s %-16s %4s %8s %8s %8s %8s %5s\n",
-		"#", "Session", "Project", "Model", "Req", "Fresh", "Out", "Cache", "Cost($)", "%")
-	sep := strings.Repeat("-", 88)
-	fmt.Printf("  %s\n", sep)
-
-	for i, r := range results {
-		model := r.Model
-		if len(model) > 16 {
-			model = model[:16]
-		}
-		project := r.Project
-		if len(project) > 16 {
-			project = project[:16]
-		}
-		fmt.Printf("  %-3d %-10s %-16s %-16s %4d %8s %8s %8s %8.2f %4.0f%%\n",
-			i+1, r.ShortID, project, model, r.Queries,
-			fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens), fmtTokens(r.CacheTokens),
-			r.CostUSD, r.Share*100)
-	}
-	fmt.Printf("  %s\n", sep)
-	fmt.Printf("  %-3s %-10s %-16s %-16s %4d %8s %8s %8s %8.2f\n",
-		"", "Total", "", "", result.Totals.Queries,
-		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens),
-		fmtTokens(result.Totals.CacheTokens), result.Totals.CostUSD)
-
-	printSubscriptionSummary(result.Subscription)
-	printQualitySummary(result.Quality)
-	return nil
-}
-
-// runSessionUsageStats uses each request's event timestamp rather than the
-// session creation date. The desktop loads this independently when its Today
-// Sessions tab opens, so the default dashboard never pays for this aggregation.
-func runSessionUsageStats(result statsapp.Result) error {
-	results := result.SessionUsage
 	ok := statsSection(
 		results,
 		"Usage by Session",
@@ -300,13 +259,13 @@ func runSessionUsageStats(result statsapp.Result) error {
 		cache := result.CacheCreateTokens + result.CacheReadTokens
 		fmt.Printf("  %-3d %-10s %-16s %-16s %4d %8s %8s %8s %8.2f %4.0f%%\n",
 			index+1, result.ShortID, project, model, result.Requests,
-			fmtTokens(result.InputTokens), fmtTokens(result.OutputTokens), fmtTokens(cache),
+			fmtTokens(result.FreshInputTokens), fmtTokens(result.OutputTokens), fmtTokens(cache),
 			result.CostUSD, result.Share*100)
 	}
 	fmt.Printf("  %s\n", strings.Repeat("-", 94))
 	fmt.Printf("  %-3s %-10s %-16s %-16s %4d %8s %8s %8s %8.2f\n",
 		"", "Total", "", "", result.Totals.Requests,
-		fmtTokens(result.Totals.InputTokens), fmtTokens(result.Totals.OutputTokens),
+		fmtTokens(result.Totals.FreshInputTokens), fmtTokens(result.Totals.OutputTokens),
 		fmtTokens(result.Totals.CacheTokens), result.Totals.CostUSD)
 	printQualitySummary(result.Quality)
 	return nil
@@ -330,7 +289,7 @@ func runWrapped(result statsapp.Result) error {
 	fmt.Printf("  Sessions          %d\n", wrapped.Sessions)
 	fmt.Printf("  Queries           %d\n", wrapped.Queries)
 	fmt.Printf("  Tool Calls        %d\n", wrapped.ToolCalls)
-	fmt.Printf("  Tokens In         %s (legacy total input)\n", fmtTokens(wrapped.InputTokens))
+	fmt.Printf("  Fresh Input       %s\n", fmtTokens(wrapped.FreshInputTokens))
 	fmt.Printf("  Tokens Out        %s\n", fmtTokens(wrapped.OutputTokens))
 	fmt.Printf("  Active Days       %d / %d\n", wrapped.ActiveDays, wrapped.Days)
 	fmt.Printf("  Avg Cost/Day      $%.2f\n", wrapped.CostUSD/float64(wrapped.Days))
@@ -544,7 +503,7 @@ func runModelDayStats(result statsapp.Result) error {
 		"Date", "Client", "Model", "Sessions", "In", "Out", "Cost($)")
 	for _, r := range results {
 		fmt.Printf("  %-16s %-10s %-28s %8d %10s %10s %8s\n",
-			r.Date, r.Client, r.Model, r.Sessions, fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens),
+			r.Date, r.Client, r.Model, r.Sessions, fmtTokens(r.FreshInputTokens), fmtTokens(r.OutputTokens),
 			fmtCost(r.CostUSD, r.CostEstimated))
 	}
 	printEstimatedCostLegend(result.Totals.CostUSD, result.Totals.EstimatedCostUSD, result.Totals.AnyEstimated)
@@ -561,7 +520,7 @@ func runModelHourStats(result statsapp.Result) error {
 		"Hour", "Model", "Sessions", "In", "Out", "Cost($)")
 	for _, r := range results {
 		fmt.Printf("  %-18s %-28s %8d %10s %10s %8s\n",
-			r.Date, r.Model, r.Sessions, fmtTokens(r.InputTokens), fmtTokens(r.OutputTokens),
+			r.Date, r.Model, r.Sessions, fmtTokens(r.FreshInputTokens), fmtTokens(r.OutputTokens),
 			fmtCost(r.CostUSD, r.CostEstimated))
 	}
 	printEstimatedCostLegend(result.Totals.CostUSD, result.Totals.EstimatedCostUSD, result.Totals.AnyEstimated)

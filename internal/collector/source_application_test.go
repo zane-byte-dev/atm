@@ -239,7 +239,7 @@ func TestSourceApplicationReturnsTypedNotFound(t *testing.T) {
 	service := Service{}
 	_, err = service.SetSourceEnabled(
 		context.Background(),
-		sourceApplicationCall(application.ActorHuman, application.OriginIPC),
+		sourceApplicationCall(application.ActorHuman, application.OriginWeb),
 		SetSourceEnabledInput{SourceID: "cs_missing", Enabled: true},
 	)
 	if !errors.Is(err, application.ErrNotFound) {

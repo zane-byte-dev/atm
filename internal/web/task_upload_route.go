@@ -8,10 +8,6 @@ import (
 
 // Authentication and Origin/CSRF validation run before multipart parsing.
 func (server *Server) serveImageUpload(w http.ResponseWriter, r *http.Request, call application.Call) {
-	if !server.options.AllowWrites {
-		server.fail(w, 403, "forbidden", "this workspace is read-only")
-		return
-	}
 	if server.options.Upload == nil {
 		server.fail(w, 503, "unavailable", "image uploads are unavailable")
 		return

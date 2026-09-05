@@ -91,7 +91,7 @@ func TestTodoImagesRoundTripAndSurviveTrash(t *testing.T) {
 	}
 
 	if err := UpdateWorkState(func(state *WorkStateTx) error {
-		_, err := state.TrashTodos([]string{"t1"})
+		_, err := state.ArchiveTodos([]string{"t1"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -102,36 +102,5 @@ func TestTodoImagesRoundTripAndSurviveTrash(t *testing.T) {
 	}
 	if _, err := os.Stat(archived[0].Images[0].Path); err != nil {
 		t.Fatalf("trashed image missing: %v", err)
-	}
-}
-
-func TestMigrateV47ToV48AddsTodoImages(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DROP TABLE todo_images`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version=47`); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	db, err = Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	var version, tables int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='todo_images'`).Scan(&tables); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion || tables != 1 {
-		t.Fatalf("version=%d tables=%d", version, tables)
 	}
 }

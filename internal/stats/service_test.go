@@ -3,8 +3,8 @@ package stats
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
-	"math"
 	"path/filepath"
 	"testing"
 	"time"
@@ -111,6 +111,7 @@ func TestQueryRejectsInvalidInputsBeforeOpeningDatabase(t *testing.T) {
 		{name: "nil context", call: statsTestCall(), field: "context"},
 		{name: "invalid call", ctx: context.Background(), call: application.Call{}, field: "request_id"},
 		{name: "unknown group", ctx: context.Background(), call: statsTestCall(), input: Input{Group: "model-typo"}, field: "group"},
+		{name: "removed session alias", ctx: context.Background(), call: statsTestCall(), input: Input{Group: "session-usage"}, field: "group"},
 		{name: "unknown agent", ctx: context.Background(), call: statsTestCall(), input: Input{Agent: "robot"}, field: "agent"},
 		{name: "unknown range", ctx: context.Background(), call: statsTestCall(), input: Input{Range: "this_year"}, field: "range"},
 		{name: "range and days", ctx: context.Background(), call: statsTestCall(), input: Input{Range: "today", Days: 2}, field: "range"},
@@ -167,24 +168,89 @@ func TestQueryOwnsSyncAndClassifiesInfrastructureErrors(t *testing.T) {
 
 func TestAggregationsAreComputedInService(t *testing.T) {
 	project := projectResult([]store.StatsResult{
-		{Project: "atm", Sessions: 2, Queries: 3, ToolCalls: 4, InputTokens: 10, OutputTokens: 5, CostUSD: 1.5},
-		{Project: "other", Sessions: 1, Queries: 2, ToolCalls: 1, InputTokens: 4, OutputTokens: 2, CostUSD: 0.5},
+		{Project: "atm", Sessions: 2, Queries: 3, ToolCalls: 4, FreshInputTokens: 10, OutputTokens: 5, CostUSD: 1.5},
+		{Project: "other", Sessions: 1, Queries: 2, ToolCalls: 1, FreshInputTokens: 4, OutputTokens: 2, CostUSD: 0.5},
 	})
 	if project.Totals.Sessions != 3 || project.Totals.Queries != 5 || project.Totals.ToolCalls != 5 || project.Totals.CostUSD != 2 {
 		t.Fatalf("project totals = %+v", project.Totals)
 	}
 
 	sessions := sessionResult([]store.SessionStatsResult{
-		{ShortID: "a", InputTokens: 60, OutputTokens: 20, CacheTokens: 20},
-		{ShortID: "b", InputTokens: 20},
+		{ShortID: "a", FreshInputTokens: 60, OutputTokens: 20, TotalTokens: 100, Share: 5.0 / 6.0},
+		{ShortID: "b", FreshInputTokens: 20, TotalTokens: 20, Share: 1.0 / 6.0},
 	})
-	if math.Abs(sessions.Sessions[0].Share-(5.0/6.0)) > 0.0001 || math.Abs(sessions.Sessions[1].Share-(1.0/6.0)) > 0.0001 {
+	if sessions.Sessions[0].Share != 5.0/6.0 || sessions.Sessions[1].Share != 1.0/6.0 {
 		t.Fatalf("session shares = %+v", sessions.Sessions)
 	}
 
 	comparison := buildSubscriptionComparison(10, 5, map[string]float64{"Zed": 20, "Alpha": 10})
 	if comparison == nil || comparison.Plans[0].Name != "Alpha" || comparison.APIEquivalentMonthlyUSD != 60 || comparison.ValueRatio != 2 {
 		t.Fatalf("subscription comparison = %+v", comparison)
+	}
+}
+
+func TestEveryUsageProjectionAccumulatesEstimatedCostUSD(t *testing.T) {
+	const (
+		cost          = 11.5
+		estimatedCost = 2.25
+	)
+	tests := []struct {
+		name   string
+		totals Totals
+	}{
+		{name: "project", totals: projectResult([]store.StatsResult{{
+			CostUSD: cost, CostEstimated: true, EstimatedCostUSD: estimatedCost,
+		}}).Totals},
+		{name: "model", totals: modelResult([]store.ModelStatsResult{{
+			CostUSD: cost, CostEstimated: true, EstimatedCostUSD: estimatedCost,
+		}}).Totals},
+		{name: "model period", totals: modelPeriodResult([]store.ModelDayStatsResult{{
+			CostUSD: cost, CostEstimated: true, EstimatedCostUSD: estimatedCost,
+		}}).Totals},
+		{name: "session", totals: sessionResult([]store.SessionStatsResult{{
+			CostUSD: cost, CostEstimated: true, EstimatedCostUSD: estimatedCost,
+		}}).Totals},
+		{name: "request", totals: requestResult([]store.RequestStatsResult{{
+			CostUSD: cost, CostEstimated: true, EstimatedCostUSD: estimatedCost,
+		}}).Totals},
+		{name: "period", totals: periodResult([]store.DayStatsResult{{
+			CostUSD: cost, CostEstimated: true, EstimatedCostUSD: estimatedCost,
+		}}).Totals},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.totals.CostUSD != cost || test.totals.EstimatedCostUSD != estimatedCost || !test.totals.AnyEstimated {
+				t.Fatalf("totals = %+v", test.totals)
+			}
+		})
+	}
+}
+
+func TestUsageRowsMarshalOnlyCanonicalTokenFields(t *testing.T) {
+	result := requestResult([]store.RequestStatsResult{{
+		FreshInputTokens: 3, OutputTokens: 5, CacheCreateTokens: 7,
+		CacheReadTokens: 11, TotalInputTokens: 21, TotalTokens: 26,
+	}})
+	encoded, err := json.Marshal(result.Requests[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"fresh_input_tokens", "output_tokens", "cache_create_tokens",
+		"cache_read_tokens", "total_input_tokens", "total_tokens",
+	} {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("canonical JSON field %q missing from %s", field, encoded)
+		}
+	}
+	for _, alias := range []string{"input_tokens", "cache_tokens"} {
+		if _, ok := fields[alias]; ok {
+			t.Fatalf("legacy JSON alias %q remains in %s", alias, encoded)
+		}
 	}
 }
 
@@ -248,7 +314,7 @@ func TestDefaultServiceQueriesEveryProjection(t *testing.T) {
 	service.now = func() time.Time { return now }
 	for _, group := range []Group{
 		GroupProject, GroupModel, GroupModelDay, GroupModelHour, GroupSkill,
-		GroupSession, GroupSessionUsage, GroupRequest, GroupSpeed, GroupDay,
+		GroupSession, GroupRequest, GroupSpeed, GroupDay,
 		GroupHour, GroupWrapped,
 	} {
 		t.Run(string(group), func(t *testing.T) {

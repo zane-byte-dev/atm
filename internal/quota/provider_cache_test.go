@@ -194,7 +194,7 @@ func TestSaveQuotaProviderCacheLogsAWriteFailure(t *testing.T) {
 func TestLoadQuotaProviderCacheDiscardsUnusableEntries(t *testing.T) {
 	withTempAtmDir(t)
 	// Hand-edited or half-written files must degrade to "no placeholder", never
-	// to a card the App cannot place.
+	// to a card the browser cannot place.
 	data := []byte(`{"version":1,"providers":{"example":{"fetched_at":"2026-08-05T09:00:00Z",` +
 		`"cards":[{"id":"daily","agent":"","provider":"example","title":"Plan","metrics":[]}]}}}`)
 	if err := os.WriteFile(providerCachePath(), data, 0o600); err != nil {

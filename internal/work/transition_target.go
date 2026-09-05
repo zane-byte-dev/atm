@@ -19,10 +19,6 @@ var (
 		effectKind: EffectTodoSubmitted, currentStatus: store.TodoStatusReview,
 		unboundReason: "submit:review",
 	}
-	waitTransitionTarget = transitionTargetSpec{
-		effectKind: EffectTodoWaiting, currentStatus: store.TodoStatusInProgress,
-		unboundReason: "waiting",
-	}
 	doneTransitionTarget = transitionTargetSpec{
 		effectKind: EffectTodoClosed, currentStatus: store.TodoStatusDone,
 		unboundReason: store.TodoStatusDone,
@@ -30,8 +26,8 @@ var (
 )
 
 // resolveTransitionTodoID owns implicit target selection for bound Work
-// commands. A live binding is the normal path. After Submit/Wait has committed
-// and closed that binding, a retry may use the newest history row only when its
+// commands. A live binding is the normal path. After Submit has committed and
+// closed that binding, a retry may use the newest history row only when its
 // closure reason, the Todo's current lifecycle and a pending durable effect all
 // agree. Keeping this inside WorkStateTx makes the decision share the same
 // serialized snapshot as the transition that follows it.

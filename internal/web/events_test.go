@@ -3,7 +3,6 @@ package web
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +15,7 @@ import (
 
 func startEventTestServer(t *testing.T) *Server {
 	t.Helper()
-	server, err := Start(Options{DataDir: t.TempDir(), Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}}, Fingerprints: func(context.Context, []string) (map[string]string, error) { return map[string]string{}, nil }})
+	server, err := Start(Options{DataDir: t.TempDir(), Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}}, Fingerprints: func(context.Context, []string) (map[string]string, error) { return map[string]string{}, nil }, StartRuntime: testRuntime})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,9 +50,12 @@ func TestEventsRequireBrowserAuthenticationAndValidDomains(t *testing.T) {
 			}
 		})
 	}
-	server.mu.Lock()
-	server.sessions[cookie.Value] = browserSession{expires: time.Now().Add(-time.Second)}
-	server.mu.Unlock()
+	expired := browserSession{csrf: strings.Repeat("A", 43), issuedAt: time.Now().Add(-2 * time.Hour), expiresAt: time.Now().Add(-time.Hour)}
+	value, err := encodeBrowserSession(server.browserKey, expired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie.Value = value
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, browserRequest(server, "GET", "/api/v1/events?domains=todos", "", cookie, ""))
 	if response.Code != http.StatusUnauthorized {
@@ -61,79 +63,49 @@ func TestEventsRequireBrowserAuthenticationAndValidDomains(t *testing.T) {
 	}
 }
 
-func TestEventReplayIsScopedAndResetsForLostHistory(t *testing.T) {
+func TestEventBrokerCoalescesChangesAndResetsAfterDisconnect(t *testing.T) {
 	broker := newEventBroker("instance")
 	defer broker.close()
-	broker.publish([]string{"todos", "todos", "not-a-domain"})
-	broker.publish([]string{"sessions"})
-	broker.publish([]string{"todos", "knowledge"})
-	sub, replay := broker.subscribe([]string{"todos"}, "instance:1")
-	if sub == nil || len(replay) != 1 || replay[0].Sequence != 3 || replay[0].Kind != "resource.changed" {
-		t.Fatalf("replay=%+v", replay)
-	}
-	if !reflect.DeepEqual(replay[0].Domains, []string{"knowledge", "todos"}) {
-		t.Fatalf("domains=%v", replay[0].Domains)
-	}
-	broker.unsubscribe(sub)
-	for _, last := range []string{"", "foreign:2", "instance:999", "instance:invalid"} {
+	broker.publish()
+	broker.publish()
+	broker.publish()
+	for _, last := range []string{"", "foreign:2", "instance:1", "instance:999", "instance:invalid"} {
 		sub, initial := broker.subscribe([]string{"todos"}, last)
 		if sub == nil || len(initial) != 1 || initial[0].Kind != "reset" || initial[0].Sequence != 3 {
 			t.Fatalf("last=%q initial=%+v", last, initial)
 		}
 		broker.unsubscribe(sub)
 	}
-	for i := 0; i < 140; i++ {
-		broker.publish([]string{"todos"})
+	sub, initial := broker.subscribe([]string{"todos"}, "instance:3")
+	if sub == nil || len(initial) != 0 {
+		t.Fatalf("current subscriber initial=%+v", initial)
 	}
-	if len(broker.history) != 128 {
-		t.Fatalf("history length=%d", len(broker.history))
+	broker.publish()
+	broker.publish()
+	if len(sub.queue) != 1 {
+		t.Fatalf("coalesced queue length=%d, want 1", len(sub.queue))
 	}
-	sub, replay = broker.subscribe([]string{"todos"}, "instance:1")
-	if len(replay) != 1 || replay[0].Kind != "reset" {
-		t.Fatalf("lost history replay=%+v", replay)
-	}
-	broker.unsubscribe(sub)
-	lastRetained := broker.history[0].Sequence
-	sub, replay = broker.subscribe([]string{"todos"}, fmt.Sprintf("instance:%d", lastRetained-1))
-	if len(replay) != 128 || replay[0].Kind != "resource.changed" {
-		t.Fatalf("complete retained replay len=%d first=%+v", len(replay), replay)
+	event := <-sub.queue
+	if event.Kind != "reset" || event.Sequence != 4 {
+		t.Fatalf("queued event=%+v", event)
 	}
 	broker.unsubscribe(sub)
 }
 
-func TestEventBrokerBoundsSlowSubscribersAndClosesPromptly(t *testing.T) {
+func TestEventBrokerBoundsSubscribersAndClosesPromptly(t *testing.T) {
 	broker := newEventBroker("bounded")
 	slow, _ := broker.subscribe([]string{"todos"}, "bounded:0")
 	other, _ := broker.subscribe([]string{"sessions"}, "bounded:0")
 	for i := 0; i < 1000; i++ {
-		broker.publish([]string{"todos"})
+		broker.publish()
 	}
-	if len(slow.queue) != 16 {
+	if len(slow.queue) != 1 {
 		t.Fatalf("slow subscriber buffered %d events", len(slow.queue))
 	}
-	count := 0
-	drained := false
-	deadline := time.NewTimer(time.Second)
-	defer deadline.Stop()
-	for !drained {
-		select {
-		case _, ok := <-slow.queue:
-			if !ok {
-				drained = true
-			} else {
-				count++
-			}
-		case <-deadline.C:
-			t.Fatal("slow subscriber was not closed after overflowing its queue")
-		}
+	if len(other.queue) != 1 || len(broker.subs) != 2 {
+		t.Fatalf("workspace reset was not broadcast: other=%d subscribers=%d", len(other.queue), len(broker.subs))
 	}
-	if count != 16 || len(broker.subs) != 1 {
-		t.Fatalf("slow subscriber eviction: count=%d subscribers=%d", count, len(broker.subs))
-	}
-	if len(other.queue) != 0 {
-		t.Fatalf("unrelated subscriber received %d events", len(other.queue))
-	}
-	for i := 0; i < 31; i++ {
+	for i := 0; i < 30; i++ {
 		if sub, _ := broker.subscribe([]string{"todos"}, ""); sub == nil {
 			t.Fatalf("subscriber %d rejected early", i)
 		}
@@ -148,18 +120,13 @@ func TestEventBrokerBoundsSlowSubscribersAndClosesPromptly(t *testing.T) {
 	default:
 		t.Fatal("close did not signal watcher")
 	}
-	select {
-	case _, ok := <-other.queue:
-		if ok {
-			t.Fatal("close did not release active subscriber")
-		}
-	default:
-		t.Fatal("close left an idle subscriber waiting")
+	for range other.queue {
+		// A coalesced reset may already be buffered; closure must follow it.
 	}
 	if sub, _ := broker.subscribe([]string{"todos"}, ""); sub != nil {
 		t.Fatal("closed broker accepted subscriber")
 	}
-	broker.publish([]string{"todos"})
+	broker.publish()
 }
 
 func TestLocalInvalidationRebaselinesBeforePolling(t *testing.T) {
@@ -180,6 +147,39 @@ func TestLocalInvalidationRebaselinesBeforePolling(t *testing.T) {
 	changed, err = server.refreshFingerprintChanges(context.Background(), []string{"todos"})
 	if err != nil || !reflect.DeepEqual(changed, []string{"todos"}) {
 		t.Fatalf("external change after baseline = %v, %v", changed, err)
+	}
+}
+
+func TestFingerprintPollingCoversAllDomainsForACollectionSubscriber(t *testing.T) {
+	var requested []string
+	server := &Server{
+		events:       newEventBroker("all-domains"),
+		fingerprints: map[string]string{"settings": "before"},
+		options: Options{Fingerprints: func(_ context.Context, domains []string) (map[string]string, error) {
+			requested = append([]string(nil), domains...)
+			return map[string]string{"settings": "after"}, nil
+		}},
+	}
+	defer server.events.close()
+	sub, initial := server.events.subscribe([]string{"collection"}, "all-domains:0")
+	if sub == nil || len(initial) != 0 {
+		t.Fatalf("collection subscriber = %v, initial=%+v", sub, initial)
+	}
+	defer server.events.unsubscribe(sub)
+
+	if err := server.pollFingerprintChanges(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(requested, allEventDomains()) {
+		t.Fatalf("fingerprint domains = %v, want every event domain %v", requested, allEventDomains())
+	}
+	select {
+	case event := <-sub.queue:
+		if event.Kind != "reset" || event.Sequence != 1 {
+			t.Fatalf("settings change event = %+v", event)
+		}
+	default:
+		t.Fatal("settings change did not reset a collection-only subscriber")
 	}
 }
 
@@ -241,7 +241,7 @@ func TestEventsHTTPReplayAndServerCloseReleaseOpenStream(t *testing.T) {
 	defer cancel()
 	reader := bufio.NewReader(response.Body)
 	frame := readEventFrame(t, reader)
-	if !strings.Contains(frame, "id: "+server.info.InstanceID+":3\n") || !strings.Contains(frame, "event: resource.changed\n") || !strings.Contains(frame, `"domains":["todos"]`) {
+	if !strings.Contains(frame, "id: "+server.info.InstanceID+":3\n") || !strings.Contains(frame, "event: reset\n") || !strings.Contains(frame, `data: {}`) {
 		t.Fatalf("replayed frame=%s", frame)
 	}
 	started := time.Now()

@@ -13,9 +13,9 @@ import (
 func TestTodoBulkAdapterPreservesJSONAndDeliversDocumentEffect(t *testing.T) {
 	withTempAtmDir(t)
 	withHumanCLI(t)
-	oldJSON, oldProject, oldStatus, oldReason := jsonOutput, todoBulkProjectFlag, todoBulkStatusFlag, todoBulkReasonFlag
+	oldJSON, oldProject, oldReason := jsonOutput, todoBulkProjectFlag, todoBulkReasonFlag
 	t.Cleanup(func() {
-		jsonOutput, todoBulkProjectFlag, todoBulkStatusFlag, todoBulkReasonFlag = oldJSON, oldProject, oldStatus, oldReason
+		jsonOutput, todoBulkProjectFlag, todoBulkReasonFlag = oldJSON, oldProject, oldReason
 	})
 	todo := store.Todo{
 		ID: "t1", Title: "Move through bulk adapter", Priority: "P1", Status: store.TodoStatusOpen,
@@ -29,7 +29,6 @@ func TestTodoBulkAdapterPreservesJSONAndDeliversDocumentEffect(t *testing.T) {
 	}
 	jsonOutput = true
 	todoBulkProjectFlag = "atm"
-	todoBulkStatusFlag = ""
 	todoBulkReasonFlag = ""
 
 	var runErr error
@@ -63,11 +62,11 @@ func TestTodoBulkAdapterDerivesAgentDonePolicy(t *testing.T) {
 	withTempAtmDir(t)
 	withHumanCLI(t)
 	t.Setenv("CODEX_THREAD_ID", "bulk-agent-thread")
-	oldProject, oldStatus, oldReason := todoBulkProjectFlag, todoBulkStatusFlag, todoBulkReasonFlag
+	oldProject, oldReason := todoBulkProjectFlag, todoBulkReasonFlag
 	t.Cleanup(func() {
-		todoBulkProjectFlag, todoBulkStatusFlag, todoBulkReasonFlag = oldProject, oldStatus, oldReason
+		todoBulkProjectFlag, todoBulkReasonFlag = oldProject, oldReason
 	})
-	todoBulkProjectFlag, todoBulkStatusFlag, todoBulkReasonFlag = "", "", ""
+	todoBulkProjectFlag, todoBulkReasonFlag = "", ""
 	if err := seedTodos(store.Todo{
 		ID: "t1", Title: "Agent cannot accept", Priority: "P1", Status: store.TodoStatusReview, Created: store.Today(),
 	}); err != nil {

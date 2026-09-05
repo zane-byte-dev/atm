@@ -13,7 +13,7 @@ type RunInput struct {
 	DueOnly  bool   `json:"due_only,omitempty"`
 }
 
-// RunCollection is the typed application entry point shared by CLI and IPC.
+// RunCollection is the typed application entry point shared by CLI and Web.
 // The older Run and RunDue methods remain the domain execution primitives.
 func (service Service) RunCollection(
 	ctx context.Context,

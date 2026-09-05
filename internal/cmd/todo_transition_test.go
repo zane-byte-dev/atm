@@ -164,52 +164,43 @@ func TestTodoSubmitIgnoresObsoleteJSONWriteObstacles(t *testing.T) {
 	}
 }
 
-func TestStatusTransitionIgnoresObsoleteJSONWriteObstacles(t *testing.T) {
+func TestTodoEditStatusOpenUsesLifecycleTransition(t *testing.T) {
 	withTempAtmDir(t)
-	oldJSON, oldEditStatus := jsonOutput, todoEditStatusFlag
+	oldJSON, oldStatus := jsonOutput, todoEditStatusFlag
+	statusFlag := todoEditCmd.Flags().Lookup("status")
+	oldChanged := statusFlag.Changed
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
-		todoEditStatusFlag = oldEditStatus
+		todoEditStatusFlag = oldStatus
+		statusFlag.Changed = oldChanged
 	})
 	jsonOutput = false
-
+	todoEditStatusFlag = store.TodoStatusOpen
+	statusFlag.Changed = true
+	startTS := int64(10)
 	if err := seedTodos(store.Todo{
-		ID: "t1", Title: "Failure-safe transition", Priority: "P1",
-		Status: store.TodoStatusInProgress, Created: store.Today(),
+		ID: "t1", Title: "Return through lifecycle", Priority: "P1",
+		Status: store.TodoStatusInProgress, WakeCondition: "external release",
+		StartTS: &startTS, Created: store.Today(),
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.BindTodoSession(store.TodoSessionBinding{
-		SessionID: "failure-safe-session", TodoID: "t1",
-	}); err != nil {
+	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "return-open-session", TodoID: "t1"}); err != nil {
 		t.Fatal(err)
 	}
-	setCommandFlagForTest(t, todoEditCmd, "status", store.TodoStatusOpen)
 	if err := runTodoEdit(todoEditCmd, []string{"t1"}); err != nil {
-		t.Fatalf("edit through SQLite: %v", err)
-	}
-
-	binding, err := store.CurrentTodoBinding("failure-safe-session")
-	if err != nil {
 		t.Fatal(err)
-	}
-	if binding != nil {
-		t.Fatalf("active binding survived transition: %#v", binding)
-	}
-	history, err := store.ListTodoSessionBindings("t1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(history) != 1 || history[0].UnboundAt == nil || history[0].Reason != "status-style:open" {
-		t.Fatalf("structured binding audit = %#v", history)
 	}
 	todos, err := store.LoadTodosReadOnly()
 	if err != nil {
 		t.Fatal(err)
 	}
 	todo := store.FindTodo(todos, "t1")
-	if todo == nil || todo.Status != store.TodoStatusOpen {
-		t.Fatalf("persisted todo = %#v, want open", todo)
+	if todo == nil || todo.Status != store.TodoStatusOpen || todo.StartTS != nil || todo.WakeCondition != "" {
+		t.Fatalf("returned todo = %#v", todo)
+	}
+	if binding, err := store.CurrentTodoBinding("return-open-session"); err != nil || binding != nil {
+		t.Fatalf("binding after return-to-open = %#v, err=%v", binding, err)
 	}
 }
 

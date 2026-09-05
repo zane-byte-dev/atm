@@ -32,7 +32,7 @@ func TestReadQuickTodosBoundsLargeWorkingSetAndHydratesSelectedRows(t *testing.T
 		case 0:
 			status = TodoStatusReview
 		case 1:
-			status = TodoStatusBlocked
+			status = TodoStatusOpen
 		case 2:
 			reviewAt = today
 		case 3:
@@ -79,7 +79,7 @@ func TestReadQuickTodosBoundsLargeWorkingSetAndHydratesSelectedRows(t *testing.T
 		t.Fatal(err)
 	}
 	if got.Summary != (QuickTodoCounts{
-		Review: 2000, Blocked: 2000, Due: 2000,
+		Review: 2000, Due: 2000,
 		Working: 6000, PureWorking: 2000, Waiting: 2000,
 	}) {
 		t.Fatalf("summary=%+v", got.Summary)
@@ -121,11 +121,11 @@ func TestReadQuickTodosBoundsLargeWorkingSetAndHydratesSelectedRows(t *testing.T
 		}
 	}
 	if !overlap {
-		t.Fatal("bounded working and waiting pages unexpectedly had no legacy overlap")
+		t.Fatal("bounded working and waiting pages unexpectedly had no overlap")
 	}
 }
 
-func TestReadQuickTodosPreservesLegacyWorkingOverlap(t *testing.T) {
+func TestReadQuickTodosPreservesWorkingOverlap(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()
 	if err != nil {
@@ -183,7 +183,7 @@ func TestReadQuickTodosRanksBucketsBeforePriority(t *testing.T) {
 		{id: "t20", priority: "P2", status: TodoStatusReview, created: "2026-08-01"},
 		{id: "t50", priority: "P0", status: TodoStatusReview, created: "2026-09-01"},
 		{id: "t5", priority: "P0", status: TodoStatusReview, created: "2026-09-01"},
-		{id: "t2", priority: "P0", status: TodoStatusBlocked, created: "2026-08-01"},
+		{id: "t2", priority: "P0", status: TodoStatusInProgress, reviewAt: "2026-09-04", created: "2026-08-01"},
 		{id: "t3", priority: "P0", status: TodoStatusInProgress, reviewAt: "2026-09-04", created: "2026-08-01"},
 	} {
 		_, err := db.Exec(`INSERT INTO todos(id,position,title,priority,status,review_at,created)

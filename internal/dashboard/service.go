@@ -39,7 +39,7 @@ type currentProvider func(context.Context, application.Call, string) (*CurrentSe
 
 // Service orchestrates one coherent dashboard read. Its dependencies are ports
 // rather than Cobra callbacks, which keeps validation, concurrency and failure
-// classification identical for CLI and IPC.
+// classification identical for CLI and Web.
 type Service struct {
 	now         func() time.Time
 	live        LiveStatusProvider
@@ -524,9 +524,7 @@ func buildStatsQuality(projects []store.StatsResult, models []store.ModelStatsRe
 		if source != "" {
 			sources[source] = struct{}{}
 		}
-		if row.CostEstimated {
-			quality.EstimatedCostUSD += row.CostUSD
-		}
+		quality.EstimatedCostUSD += row.EstimatedCostUSD
 	}
 	for source := range sources {
 		quality.PricingSources = append(quality.PricingSources, source)
@@ -551,7 +549,7 @@ func buildWork(file *store.TodoFile, now time.Time) WorkView {
 	today := now.Format("2006-01-02")
 	view := WorkView{
 		GeneratedAt: now.Format(time.RFC3339), Open: []store.Todo{}, Working: []store.Todo{},
-		Waiting: []store.Todo{}, Review: []store.Todo{}, Blocked: []store.Todo{}, Due: []store.Todo{},
+		Waiting: []store.Todo{}, Review: []store.Todo{}, Due: []store.Todo{},
 	}
 	for _, todo := range file.Items {
 		if !store.TodoIsActive(todo) {
@@ -571,7 +569,7 @@ func buildWork(file *store.TodoFile, now time.Time) WorkView {
 			view.Open = append(view.Open, todo)
 		}
 	}
-	for _, todos := range [][]store.Todo{view.Working, view.Review, view.Blocked, view.Due, view.Waiting, view.Open} {
+	for _, todos := range [][]store.Todo{view.Working, view.Review, view.Due, view.Waiting, view.Open} {
 		sortWork(todos)
 	}
 	maintenance := 0
@@ -582,7 +580,7 @@ func buildWork(file *store.TodoFile, now time.Time) WorkView {
 	}
 	view.Summary = WorkSummary{
 		Open: len(view.Open), InProgress: len(view.Working), Waiting: len(view.Waiting),
-		Review: len(view.Review), Blocked: 0, Due: len(view.Due), Maintenance: maintenance,
+		Review: len(view.Review), Due: len(view.Due), Maintenance: maintenance,
 	}
 	return view
 }

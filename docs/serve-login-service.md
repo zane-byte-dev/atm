@@ -18,7 +18,7 @@
 /absolute/path/to/atm serve --data-dir ~/.atm --open
 ```
 
-配置保存到 `~/Library/LaunchAgents/com.atm.workspace.<数据目录摘要>.plist`，每个数据目录使用独立标签。启动参数是 `serve --background --data-dir <规范绝对路径> --port 47321`。它在登录后启动，退出后由 launchd 以至少 10 秒间隔重启。PATH 保留安装时的绝对目录，并补充常见 CLI 安装目录；没有从终端复制令牌或其他环境变量。
+配置保存到 `~/Library/LaunchAgents/com.atm.workspace.<数据目录摘要>.plist`，每个数据目录使用独立标签。启动参数是 `serve --data-dir <规范绝对路径> --port 47321`。`serve` 自身始终运行后台同步、采集、AI Day、Hook 和通知职责，不需要额外开关。它在登录后启动，退出后由 launchd 以至少 10 秒间隔重启。PATH 保留安装时的绝对目录，并补充常见 CLI 安装目录；没有从终端复制令牌或其他环境变量。
 
 plist 与 `<data-dir>/runtime/serve.stdout.log`、`serve.stderr.log` 的权限均为 `0600`。安装器拒绝符号链接、非普通文件及不属于 ATM 的同名 LaunchAgent。重复安装相同配置不会重启已有进程；更改路径或端口后重新安装会重新加载这个服务。升级同一路径下的 CLI 后，先 `serve stop` 再 `serve install` 可启用新构建。
 
@@ -31,6 +31,6 @@ plist 与 `<data-dir>/runtime/serve.stdout.log`、`serve.stderr.log` 的权限�
 /absolute/path/to/atm serve uninstall --data-dir ~/.atm
 ```
 
-卸载只停止对应服务并删除经过验证的 plist。数据库、文档、日志，以及 `runtime/presence-owner.json` 中的 Go 所有权记录都会保留；旧 macOS App 不会因此自动恢复后台工作或抢占 Agent Hook 接收器。二进制移动后，需要从新位置重新执行安装命令。
+卸载只停止对应服务并删除经过验证的 plist。数据库、文档、日志，以及 `runtime/presence-owner.json` 中的 Go 所有权记录都会保留。二进制移动后，需要从新位置重新执行安装命令。
 
-安装不会迁移数据库，也不会修复未配置的连接器或登录态；旧版本数据库应先通过 `atm serve migrate` 备份并升级。
+安装不会迁移数据库，也不会修复未配置的连接器或登录态。当前构建只接受 schema v57 基线；历史迁移梯子已经删除。旧库需先使用仍支持其 schema 的历史版本升级，或按错误提示备份不可重建数据并重建当前数据库。当前基线上的 `atm serve migrate` 只报告无需迁移。

@@ -115,49 +115,28 @@ func TestTodoCreateRecordRollsBackWhenTodoWriteFails(t *testing.T) {
 	}
 }
 
-func TestFreshSchemaAndV54MigrationIncludeTodoCreateIdempotency(t *testing.T) {
-	for _, migrateFromV54 := range []bool{false, true} {
-		name := "fresh"
-		if migrateFromV54 {
-			name = "migrate_v54"
-		}
-		t.Run(name, func(t *testing.T) {
-			withTempStore(t)
-			seedTodos(t, openTodo("t1", "Existing"))
-			db, err := Open()
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer db.Close()
-			if migrateFromV54 {
-				for _, statement := range []string{
-					`DROP TABLE work_create_idempotency`,
-					`UPDATE schema_version SET version=54`,
-				} {
-					if _, err := db.Exec(statement); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if err := migrate(db); err != nil {
-					t.Fatalf("migrate v54: %v", err)
-				}
-			}
-			var version, columns, references, todos int
-			if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('work_create_idempotency')`).Scan(&columns); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('work_create_idempotency')`).Scan(&references); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.QueryRow(`SELECT count(*) FROM todos WHERE id='t1'`).Scan(&todos); err != nil {
-				t.Fatal(err)
-			}
-			if version != SchemaVersion || columns != 5 || references != 0 || todos != 1 {
-				t.Fatalf("version=%d columns=%d references=%d todos=%d", version, columns, references, todos)
-			}
-		})
+func TestFreshSchemaIncludesTodoCreateIdempotency(t *testing.T) {
+	withTempStore(t)
+	seedTodos(t, openTodo("t1", "Existing"))
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var version, columns, references, todos int
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('work_create_idempotency')`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_foreign_key_list('work_create_idempotency')`).Scan(&references); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM todos WHERE id='t1'`).Scan(&todos); err != nil {
+		t.Fatal(err)
+	}
+	if version != SchemaVersion || columns != 5 || references != 0 || todos != 1 {
+		t.Fatalf("version=%d columns=%d references=%d todos=%d", version, columns, references, todos)
 	}
 }

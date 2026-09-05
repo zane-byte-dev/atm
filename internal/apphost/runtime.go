@@ -305,11 +305,7 @@ func configBusy() error {
 
 func (h *Host) workspaceRuntime() WorkspaceRuntime {
 	jobs, live := h.attachedRuntime()
-	mode := "workspace"
-	if jobs != nil || live != nil {
-		mode = "go"
-	}
-	return WorkspaceRuntime{Mode: mode, Version: h.Version, BackgroundSync: jobs != nil, Collection: jobs != nil, Models: jobs != nil, AgentHooks: live != nil}
+	return WorkspaceRuntime{Mode: "go", Version: h.Version, BackgroundSync: jobs != nil, Collection: jobs != nil, Models: jobs != nil, AgentHooks: live != nil}
 }
 
 // RefreshConfig notices external CLI edits without waiting behind a running

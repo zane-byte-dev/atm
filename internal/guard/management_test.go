@@ -190,8 +190,8 @@ func TestManagementMutationsRequireHumanCLIAndDoNotReachPorts(t *testing.T) {
 	for _, actor := range []application.Call{
 		guardServiceCall(application.ActorAgent),
 		{
-			RequestID: "human-ipc",
-			Actor:     application.Actor{Kind: application.ActorHuman, Origin: application.OriginIPC},
+			RequestID: "human-web",
+			Actor:     application.Actor{Kind: application.ActorHuman, Origin: application.OriginWeb},
 		},
 	} {
 		for _, mutation := range mutations {

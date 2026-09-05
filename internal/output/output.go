@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-var JSONMode bool
-
 func JSON(v any) {
 	data, _ := json.MarshalIndent(normalizeJSON(v), "", "  ")
 	fmt.Println(string(data))

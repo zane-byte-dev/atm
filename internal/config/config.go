@@ -111,7 +111,7 @@ var (
 	CollectionConnectors map[string]CollectionConnectorConfig
 	// QuotaProviders registers optional executable quota providers. Providers
 	// keep service credentials and private endpoints outside ATM while returning
-	// versioned, provider-neutral cards for the CLI and App.
+	// versioned, provider-neutral cards for the CLI and browser workspace.
 	QuotaProviders map[string]QuotaProviderConfig
 	// Guard holds the outbound action gate's overrides. The built-in rules apply
 	// with no config at all; this only widens or retunes them.
@@ -132,7 +132,7 @@ var (
 	// checklist children.
 	TodoRefinePrompt = DefaultTodoRefinePrompt
 	// TodoRefineOnAdd runs one schema-constrained pass right after a human
-	// files a todo in the App: polish the card and, when the work is
+	// files a todo in the browser workspace: polish the card and, when the work is
 	// independently trackable, split it. CLI `todo add` never does this unless
 	// `--refine` is passed — agents already write structured cards and a
 	// network model call would break `id=$(atm todo add ...)`.

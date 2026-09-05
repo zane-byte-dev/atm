@@ -2,7 +2,6 @@ package apphost
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -38,70 +37,6 @@ func TestKnowledgeReadsDoNotMaterializeMissingData(t *testing.T) {
 	for _, path := range []string{config.AtmDB, filepath.Join(config.AtmDir, "knowledge")} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("read materialized %s: %v", path, err)
-		}
-	}
-}
-
-func TestKnowledgeReadOldSchemaPreservesDatabaseAndCorpus(t *testing.T) {
-	h := testHost(t)
-	// Build an old-version fixture directly. Opening it through store.Open would
-	// already migrate it and invalidate what this test is intended to prove.
-	db, err := sql.Open("sqlite", config.AtmDB)
-	if err != nil {
-		t.Fatal(err)
-	}
-	statements := []string{
-		`CREATE TABLE schema_version (version INTEGER NOT NULL)`,
-		`INSERT INTO schema_version VALUES (54)`,
-		`CREATE TABLE memory_events (id TEXT PRIMARY KEY, op TEXT, scope TEXT, content TEXT, target_id TEXT, created_at TEXT)`,
-		`CREATE TABLE memory_event_tags (event_id TEXT, position INTEGER, tag TEXT)`,
-		`CREATE TABLE memory_event_metadata (event_id TEXT, key TEXT, value TEXT)`,
-		`INSERT INTO memory_events VALUES ('memory:legacy','remember','global','Legacy facts remain readable',NULL,'2026-09-01T08:00:00Z')`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			db.Close()
-			t.Fatal(err)
-		}
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	document, err := knowledge.Add(config.AtmDir, knowledge.AddDocumentInput{Title: "Legacy knowledge", Content: "Legacy read only knowledge", Collection: "notes"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	beforeDB, _ := os.ReadFile(config.AtmDB)
-	beforeDocument, _ := os.ReadFile(document.Path)
-	beforeInfo, _ := os.Stat(config.AtmDB)
-	requests := []struct {
-		method string
-		input  any
-	}{
-		{"knowledge.catalog", map[string]any{}},
-		{"knowledge.query", map[string]any{"text": "Legacy"}},
-		{"knowledge.document.get", knowledge.GetInput{DocumentID: document.Metadata.ID}},
-		{"memory.recall", knowledge.RecallMemoryInput{Query: "Legacy"}},
-		{"memory.get", MemoryGetInput{MemoryID: "memory:legacy"}},
-	}
-	for _, request := range requests {
-		result, err := knowledgeRequest(t, h, request.method, request.input)
-		if err != nil {
-			t.Fatalf("%s: %v", request.method, err)
-		}
-		if request.method == "memory.get" && result.(knowledge.MemoryHit).Content != "Legacy facts remain readable" {
-			t.Fatalf("legacy memory lost: %+v", result)
-		}
-	}
-	afterDB, _ := os.ReadFile(config.AtmDB)
-	afterDocument, _ := os.ReadFile(document.Path)
-	afterInfo, _ := os.Stat(config.AtmDB)
-	if string(beforeDB) != string(afterDB) || !beforeInfo.ModTime().Equal(afterInfo.ModTime()) || string(beforeDocument) != string(afterDocument) {
-		t.Fatal("read altered the old database or corpus")
-	}
-	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
-		if _, err := os.Stat(config.AtmDB + suffix); !os.IsNotExist(err) {
-			t.Fatalf("read created sidecar %s: %v", suffix, err)
 		}
 	}
 }

@@ -169,10 +169,16 @@ func TestAnalyzeDecodesStubbedModelJSON(t *testing.T) {
 		})
 	}
 	todo := store.Todo{ID: "t1", Title: "修一下那个红的", Status: store.TodoStatusOpen}
-	prepared, _, err := Analyze(context.Background(), todo, "", 0, Options{AllowSplit: true})
+	options := Options{AllowSplit: true}
+	proposal, source, err := Propose(context.Background(), todo, "", options)
 	if err != nil {
 		t.Fatal(err)
 	}
+	prepared, err := Prepare(todo, 0, proposal, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared.Source = source
 	if !prepared.TitleChanged || prepared.Title != "修复发布检查失败" || prepared.Split ||
 		prepared.Source != "company gateway" || !strings.Contains(capturedPrompt, config.TodoRefinePrompt) {
 		t.Fatalf("prepared = %+v", prepared)
@@ -197,7 +203,10 @@ func TestChildSourceRoundTrip(t *testing.T) {
 }
 
 func TestPromptIncludesTitleAndForbidsInvention(t *testing.T) {
-	prompt := Prompt(store.Todo{ID: "t9", Title: "修一下那个红的", Project: "atm", Status: "open", Priority: "P1"}, "# 修一下那个红的")
+	prompt := PromptWithInstructions(
+		store.Todo{ID: "t9", Title: "修一下那个红的", Project: "atm", Status: "open", Priority: "P1"},
+		"# 修一下那个红的", config.DefaultTodoRefinePrompt, "",
+	)
 	for _, want := range []string{"t9", "修一下那个红的", "Do not invent", "atm", "默认将任务判定为 simple"} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)

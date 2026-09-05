@@ -12,7 +12,7 @@ import (
 // DocumentView is the stable read model shared by collection browsing and
 // full-text search. A browser row has timestamps and a search row has a snippet
 // and score; optional fields keep that distinction explicit without forcing the
-// desktop adapter to decode two representations of the same document identity.
+// browser adapter to decode two representations of the same document identity.
 type DocumentView struct {
 	DocumentID string     `json:"document_id"`
 	Title      string     `json:"title"`
@@ -28,7 +28,7 @@ type DocumentView struct {
 	Score      *float64   `json:"score,omitempty"`
 }
 
-// QueryInput describes the desktop library's one read operation. Text is
+// QueryInput describes the browser library's one read operation. Text is
 // optional because collection browsing is the empty-query form of the same
 // operation, not a separate mutation or an argv mode switch.
 type QueryInput struct {

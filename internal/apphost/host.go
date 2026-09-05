@@ -55,8 +55,8 @@ func New(version string) *Host {
 
 // restoreDataPaths pins this resident host to its startup database. A config
 // service write reloads config.json, whose data_dir must not redirect an already
-// authenticated listener or invalidate its database-upgrade write gate. Callers
-// hold gate exclusively while changing settings and before restoring these.
+// authenticated listener. Callers hold gate exclusively while changing settings
+// and before restoring these.
 func (h *Host) restoreDataPaths() {
 	config.AtmDir, config.AtmDB, config.ConfigPath = h.dataDir, h.databasePath, h.configPath
 }
@@ -217,7 +217,7 @@ func (h *Host) ListTodos(ctx context.Context, call application.Call, input ListI
 		}
 		result.Counts[todo.Status]++
 		result.Counts["all"]++
-		if status == "archived" || status != "" && status != "all" && todo.Status != status {
+		if status == "archived" || status == "" && !store.TodoIsActive(todo) || status != "" && status != "all" && todo.Status != status {
 			continue
 		}
 		filtered = append(filtered, todo)

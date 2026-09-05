@@ -172,14 +172,14 @@ func parseGroup(raw string) (Group, error) {
 	group := Group(strings.TrimSpace(raw))
 	switch group {
 	case GroupProject, GroupModel, GroupModelDay, GroupModelHour, GroupSkill,
-		GroupSession, GroupSessionUsage, GroupRequest, GroupSpeed, GroupDay,
+		GroupSession, GroupRequest, GroupSpeed, GroupDay,
 		GroupHour, GroupWrapped:
 		return group, nil
 	default:
 		return "", invalid(
 			"group",
 			raw,
-			fmt.Sprintf("unknown stats group %q (use model, model-day, model-hour, skill, session, session-usage, request, speed, day, hour, or wrapped)", raw),
+			fmt.Sprintf("unknown stats group %q (use model, model-day, model-hour, skill, session, request, speed, day, hour, or wrapped)", raw),
 		)
 	}
 }
@@ -291,9 +291,6 @@ func queryStore(ctx context.Context, db *sql.DB, spec querySpec) (Result, error)
 	case GroupSession:
 		rows, err := store.GetSessionStats(db, spec.startTS, spec.endTS, spec.agent)
 		return sessionResult(rows), err
-	case GroupSessionUsage:
-		rows, err := store.GetSessionUsageStats(db, spec.startTS, spec.endTS, spec.agent)
-		return sessionUsageResult(rows), err
 	case GroupRequest:
 		rows, err := store.GetRequestStats(db, spec.startTS, spec.endTS, spec.agent, spec.sessionID)
 		return requestResult(rows), err
@@ -313,47 +310,95 @@ func queryStore(ctx context.Context, db *sql.DB, spec querySpec) (Result, error)
 	}
 }
 
+// usageTotals is the common additive part of every usage projection. Keeping
+// the accumulation policy in one place prevents a new projection from silently
+// assigning one metric to another (for example total cost to estimated cost).
+type usageTotals struct {
+	sessions            int
+	queries             int
+	toolCalls           int
+	requests            int
+	freshInputTokens    int64
+	outputTokens        int64
+	cacheCreateTokens   int64
+	cacheReadTokens     int64
+	totalInputTokens    int64
+	totalTokens         int64
+	detailedRequests    int
+	aggregateRequests   int
+	sampledRequests     int
+	untimedRequests     int
+	outOfWindowRequests int
+	costUSD             float64
+	estimatedCostUSD    float64
+	costEstimated       bool
+}
+
+func (row usageTotals) metrics(source store.PricingSource) UsageMetrics {
+	return UsageMetrics{
+		FreshInputTokens:  row.freshInputTokens,
+		OutputTokens:      row.outputTokens,
+		CacheCreateTokens: row.cacheCreateTokens,
+		CacheReadTokens:   row.cacheReadTokens,
+		TotalInputTokens:  row.totalInputTokens,
+		TotalTokens:       row.totalTokens,
+		CostUSD:           row.costUSD,
+		CostEstimated:     row.costEstimated,
+		EstimatedCostUSD:  row.estimatedCostUSD,
+		PricingSource:     string(source),
+	}
+}
+
+func addUsageTotals(totals *Totals, row usageTotals) {
+	totals.Sessions += row.sessions
+	totals.Queries += row.queries
+	totals.ToolCalls += row.toolCalls
+	totals.Requests += row.requests
+	totals.FreshInputTokens += row.freshInputTokens
+	totals.OutputTokens += row.outputTokens
+	totals.CacheCreateTokens += row.cacheCreateTokens
+	totals.CacheReadTokens += row.cacheReadTokens
+	totals.CacheTokens += row.cacheCreateTokens + row.cacheReadTokens
+	totals.TotalInputTokens += row.totalInputTokens
+	totals.TotalTokens += row.totalTokens
+	totals.DetailedRequests += row.detailedRequests
+	totals.AggregateRequests += row.aggregateRequests
+	totals.SampledRequests += row.sampledRequests
+	totals.UntimedRequests += row.untimedRequests
+	totals.OutOfWindowRequests += row.outOfWindowRequests
+	totals.CostUSD += row.costUSD
+	totals.EstimatedCostUSD += row.estimatedCostUSD
+	if row.costEstimated || row.estimatedCostUSD > 0 {
+		totals.AnyEstimated = true
+	}
+}
+
 func projectResult(rows []store.StatsResult) Result {
 	result := Result{Projects: make([]ProjectRow, 0, len(rows))}
 	agents := map[string]struct{}{}
 	tokenAgents := map[string]struct{}{}
 	for _, row := range rows {
+		usage := usageTotals{
+			sessions: row.Sessions, queries: row.Queries, toolCalls: row.ToolCalls,
+			requests: row.Requests, freshInputTokens: row.FreshInputTokens,
+			outputTokens: row.OutputTokens, cacheCreateTokens: row.CacheCreateTokens,
+			cacheReadTokens: row.CacheReadTokens, totalInputTokens: row.TotalInputTokens,
+			totalTokens: row.TotalTokens, detailedRequests: row.DetailedRequests,
+			aggregateRequests: row.AggregateRequests, sampledRequests: row.SampledRequests,
+			untimedRequests: row.UntimedRequests, outOfWindowRequests: row.OutOfWindowRequests,
+			costUSD: row.CostUSD, costEstimated: row.CostEstimated,
+			estimatedCostUSD: row.EstimatedCostUSD,
+		}
 		result.Projects = append(result.Projects, ProjectRow{
 			Project: row.Project, Agent: row.Agent, Sessions: row.Sessions,
 			TokenSessions: row.TokenSessions, Queries: row.Queries, ToolCalls: row.ToolCalls,
-			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
-			OutputTokens: row.OutputTokens, CacheCreateTokens: row.CacheCreateTokens,
-			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
-			TotalTokens: row.TotalTokens, Requests: row.Requests,
+			UsageMetrics: usage.metrics(row.PricingSource), Requests: row.Requests,
 			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
 			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
 			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
-			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
-			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
 		})
-		result.Totals.Sessions += row.Sessions
+		addUsageTotals(&result.Totals, usage)
 		result.Totals.TokenSessions += row.TokenSessions
-		result.Totals.Queries += row.Queries
-		result.Totals.ToolCalls += row.ToolCalls
-		result.Totals.InputTokens += row.InputTokens
-		result.Totals.FreshInputTokens += row.FreshInputTokens
-		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheCreateTokens += row.CacheCreateTokens
-		result.Totals.CacheReadTokens += row.CacheReadTokens
-		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
-		result.Totals.TotalInputTokens += row.TotalInputTokens
-		result.Totals.TotalTokens += row.TotalTokens
-		result.Totals.Requests += row.Requests
-		result.Totals.DetailedRequests += row.DetailedRequests
-		result.Totals.AggregateRequests += row.AggregateRequests
-		result.Totals.SampledRequests += row.SampledRequests
-		result.Totals.UntimedRequests += row.UntimedRequests
-		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
-		result.Totals.CostUSD += row.CostUSD
-		if row.CostEstimated {
-			result.Totals.AnyEstimated = true
-			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
-		}
 		agents[row.Agent] = struct{}{}
 		if row.TokenSessions > 0 {
 			tokenAgents[row.Agent] = struct{}{}
@@ -367,39 +412,24 @@ func projectResult(rows []store.StatsResult) Result {
 func modelResult(rows []store.ModelStatsResult) Result {
 	result := Result{Models: make([]ModelRow, 0, len(rows))}
 	for _, row := range rows {
+		usage := usageTotals{
+			sessions: row.Sessions, requests: row.Requests,
+			freshInputTokens: row.FreshInputTokens, outputTokens: row.OutputTokens,
+			cacheCreateTokens: row.CacheCreateTokens, cacheReadTokens: row.CacheReadTokens,
+			totalInputTokens: row.TotalInputTokens, totalTokens: row.TotalTokens,
+			detailedRequests: row.DetailedRequests, aggregateRequests: row.AggregateRequests,
+			sampledRequests: row.SampledRequests, untimedRequests: row.UntimedRequests,
+			outOfWindowRequests: row.OutOfWindowRequests, costUSD: row.CostUSD,
+			costEstimated: row.CostEstimated, estimatedCostUSD: row.EstimatedCostUSD,
+		}
 		result.Models = append(result.Models, ModelRow{
 			Client: row.Client, Model: row.Model, Sessions: row.Sessions,
-			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
-			OutputTokens: row.OutputTokens, CacheCreateTokens: row.CacheCreateTokens,
-			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
-			TotalTokens: row.TotalTokens, Requests: row.Requests,
+			UsageMetrics: usage.metrics(row.PricingSource), Requests: row.Requests,
 			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
 			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
 			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
-			CostUSD:       row.CostUSD,
-			CostEstimated: row.CostEstimated, PricingSource: string(row.PricingSource),
-			EstimatedCostUSD: row.EstimatedCostUSD,
 		})
-		result.Totals.Sessions += row.Sessions
-		result.Totals.InputTokens += row.InputTokens
-		result.Totals.FreshInputTokens += row.FreshInputTokens
-		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheCreateTokens += row.CacheCreateTokens
-		result.Totals.CacheReadTokens += row.CacheReadTokens
-		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
-		result.Totals.TotalInputTokens += row.TotalInputTokens
-		result.Totals.TotalTokens += row.TotalTokens
-		result.Totals.Requests += row.Requests
-		result.Totals.DetailedRequests += row.DetailedRequests
-		result.Totals.AggregateRequests += row.AggregateRequests
-		result.Totals.SampledRequests += row.SampledRequests
-		result.Totals.UntimedRequests += row.UntimedRequests
-		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
-		result.Totals.CostUSD += row.CostUSD
-		if row.CostEstimated {
-			result.Totals.AnyEstimated = true
-			result.Totals.EstimatedCostUSD += row.CostUSD
-		}
+		addUsageTotals(&result.Totals, usage)
 	}
 	return result
 }
@@ -407,40 +437,25 @@ func modelResult(rows []store.ModelStatsResult) Result {
 func modelPeriodResult(rows []store.ModelDayStatsResult) Result {
 	result := Result{ModelPeriods: make([]ModelPeriodRow, 0, len(rows))}
 	for _, row := range rows {
+		usage := usageTotals{
+			sessions: row.Sessions, requests: row.Requests,
+			freshInputTokens: row.FreshInputTokens, outputTokens: row.OutputTokens,
+			cacheCreateTokens: row.CacheCreateTokens, cacheReadTokens: row.CacheReadTokens,
+			totalInputTokens: row.TotalInputTokens, totalTokens: row.TotalTokens,
+			detailedRequests: row.DetailedRequests, aggregateRequests: row.AggregateRequests,
+			sampledRequests: row.SampledRequests, untimedRequests: row.UntimedRequests,
+			outOfWindowRequests: row.OutOfWindowRequests, costUSD: row.CostUSD,
+			costEstimated: row.CostEstimated, estimatedCostUSD: row.EstimatedCostUSD,
+		}
 		result.ModelPeriods = append(result.ModelPeriods, ModelPeriodRow{
 			Date: row.Date, Client: row.Client, Model: row.Model, Sessions: row.Sessions,
-			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
-			OutputTokens: row.OutputTokens, CacheCreateTokens: row.CacheCreateTokens,
-			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
-			TotalTokens: row.TotalTokens, Requests: row.Requests,
+			UsageMetrics: usage.metrics(row.PricingSource), Requests: row.Requests,
 			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
 			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
 			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
-			CostUSD:       row.CostUSD,
-			CostEstimated: row.CostEstimated, PricingSource: string(row.PricingSource),
-			EstimatedCostUSD:     row.EstimatedCostUSD,
 			MeasuredOutputTokens: row.MeasuredOutputTokens, MeasuredDurationMS: row.MeasuredDurationMS,
 		})
-		result.Totals.Sessions += row.Sessions
-		result.Totals.InputTokens += row.InputTokens
-		result.Totals.FreshInputTokens += row.FreshInputTokens
-		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheCreateTokens += row.CacheCreateTokens
-		result.Totals.CacheReadTokens += row.CacheReadTokens
-		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
-		result.Totals.TotalInputTokens += row.TotalInputTokens
-		result.Totals.TotalTokens += row.TotalTokens
-		result.Totals.Requests += row.Requests
-		result.Totals.DetailedRequests += row.DetailedRequests
-		result.Totals.AggregateRequests += row.AggregateRequests
-		result.Totals.SampledRequests += row.SampledRequests
-		result.Totals.UntimedRequests += row.UntimedRequests
-		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
-		result.Totals.CostUSD += row.CostUSD
-		if row.CostEstimated {
-			result.Totals.AnyEstimated = true
-			result.Totals.EstimatedCostUSD += row.CostUSD
-		}
+		addUsageTotals(&result.Totals, usage)
 	}
 	return result
 }
@@ -457,91 +472,27 @@ func skillResult(rows []store.SkillStatsResult) Result {
 
 func sessionResult(rows []store.SessionStatsResult) Result {
 	result := Result{Sessions: make([]SessionRow, 0, len(rows))}
-	var tokenTotal int64
 	for _, row := range rows {
-		rowTotal := row.TotalTokens
-		if rowTotal == 0 {
-			rowTotal = row.InputTokens + row.OutputTokens + row.CacheTokens
-		}
-		tokenTotal += rowTotal
-		result.Totals.Queries += row.Queries
-		result.Totals.InputTokens += row.InputTokens
-		result.Totals.FreshInputTokens += row.FreshInputTokens
-		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheTokens += row.CacheTokens
-		result.Totals.CacheCreateTokens += row.CacheCreateTokens
-		result.Totals.CacheReadTokens += row.CacheReadTokens
-		result.Totals.TotalInputTokens += row.TotalInputTokens
-		result.Totals.TotalTokens += row.TotalTokens
-		result.Totals.Requests += row.Queries
-		result.Totals.DetailedRequests += row.DetailedRequests
-		result.Totals.AggregateRequests += row.AggregateRequests
-		result.Totals.SampledRequests += row.SampledRequests
-		result.Totals.UntimedRequests += row.UntimedRequests
-		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
-		result.Totals.CostUSD += row.CostUSD
-		if row.CostEstimated {
-			result.Totals.AnyEstimated = true
-			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
+		usage := usageTotals{
+			requests: row.Requests, freshInputTokens: row.FreshInputTokens,
+			outputTokens: row.OutputTokens, cacheCreateTokens: row.CacheCreateTokens,
+			cacheReadTokens: row.CacheReadTokens, totalInputTokens: row.TotalInputTokens,
+			totalTokens: row.TotalTokens, detailedRequests: row.DetailedRequests,
+			aggregateRequests: row.AggregateRequests, sampledRequests: row.SampledRequests,
+			untimedRequests: row.UntimedRequests, outOfWindowRequests: row.OutOfWindowRequests,
+			costUSD: row.CostUSD, costEstimated: row.CostEstimated,
+			estimatedCostUSD: row.EstimatedCostUSD,
 		}
 		result.Sessions = append(result.Sessions, SessionRow{
-			ShortID: row.ShortID, Project: row.Project, Model: row.Model, Queries: row.Queries,
-			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
-			OutputTokens: row.OutputTokens, CacheTokens: row.CacheTokens,
-			CacheCreateTokens: row.CacheCreateTokens, CacheReadTokens: row.CacheReadTokens,
-			TotalInputTokens: row.TotalInputTokens, TotalTokens: rowTotal,
-			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
-			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
-			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
-			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
-			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
-		})
-	}
-	if tokenTotal > 0 {
-		for index := range result.Sessions {
-			row := &result.Sessions[index]
-			row.Share = float64(row.TotalTokens) / float64(tokenTotal)
-		}
-	}
-	return result
-}
-
-func sessionUsageResult(rows []store.SessionUsageStatsResult) Result {
-	result := Result{SessionUsage: make([]SessionUsageRow, 0, len(rows))}
-	for _, row := range rows {
-		result.SessionUsage = append(result.SessionUsage, SessionUsageRow{
 			SessionID: row.SessionID, ShortID: row.ShortID, Agent: row.Agent,
 			Project: row.Project, Model: row.Model, StartedTS: row.StartedTS, LastTS: row.LastTS,
-			Requests: row.Requests, InputTokens: row.InputTokens,
-			FreshInputTokens: row.FreshInputTokens, OutputTokens: row.OutputTokens,
-			CacheCreateTokens: row.CacheCreateTokens, CacheReadTokens: row.CacheReadTokens,
-			TotalInputTokens: row.TotalInputTokens, TotalTokens: row.TotalTokens,
+			Requests: row.Requests, UsageMetrics: usage.metrics(row.PricingSource),
 			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
 			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
 			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
-			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
-			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
 			Share: row.Share,
 		})
-		result.Totals.Requests += row.Requests
-		result.Totals.InputTokens += row.InputTokens
-		result.Totals.FreshInputTokens += row.FreshInputTokens
-		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheCreateTokens += row.CacheCreateTokens
-		result.Totals.CacheReadTokens += row.CacheReadTokens
-		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
-		result.Totals.TotalInputTokens += row.TotalInputTokens
-		result.Totals.TotalTokens += row.TotalTokens
-		result.Totals.DetailedRequests += row.DetailedRequests
-		result.Totals.AggregateRequests += row.AggregateRequests
-		result.Totals.SampledRequests += row.SampledRequests
-		result.Totals.UntimedRequests += row.UntimedRequests
-		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
-		result.Totals.CostUSD += row.CostUSD
-		if row.CostEstimated {
-			result.Totals.AnyEstimated = true
-			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
-		}
+		addUsageTotals(&result.Totals, usage)
 	}
 	return result
 }
@@ -553,35 +504,22 @@ func requestResult(rows []store.RequestStatsResult) Result {
 		if count < 1 {
 			count = 1
 		}
+		usage := usageTotals{
+			requests: count, freshInputTokens: row.FreshInputTokens,
+			outputTokens: row.OutputTokens, cacheCreateTokens: row.CacheCreateTokens,
+			cacheReadTokens: row.CacheReadTokens, totalInputTokens: row.TotalInputTokens,
+			totalTokens: row.TotalTokens, detailedRequests: count,
+			sampledRequests: row.SampledRequests, untimedRequests: row.UntimedRequests,
+			outOfWindowRequests: row.OutOfWindowRequests, costUSD: row.CostUSD,
+			costEstimated: row.CostEstimated, estimatedCostUSD: row.EstimatedCostUSD,
+		}
 		result.Requests = append(result.Requests, RequestRow{
 			SessionID: row.SessionID, Agent: row.Agent, Project: row.Project, Model: row.Model,
-			TS: row.TS, RequestCount: count, InputTokens: row.InputTokens,
-			FreshInputTokens: row.FreshInputTokens, OutputTokens: row.OutputTokens,
-			CacheTokens: row.CacheTokens, CacheCreateTokens: row.CacheCreateTokens,
-			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
-			TotalTokens: row.TotalTokens, SampledRequests: row.SampledRequests,
+			TS: row.TS, RequestCount: count, UsageMetrics: usage.metrics(row.PricingSource),
+			SampledRequests: row.SampledRequests,
 			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
-			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
-			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
 		})
-		result.Totals.Requests += count
-		result.Totals.InputTokens += row.InputTokens
-		result.Totals.FreshInputTokens += row.FreshInputTokens
-		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheTokens += row.CacheTokens
-		result.Totals.CacheCreateTokens += row.CacheCreateTokens
-		result.Totals.CacheReadTokens += row.CacheReadTokens
-		result.Totals.TotalInputTokens += row.TotalInputTokens
-		result.Totals.TotalTokens += row.TotalTokens
-		result.Totals.DetailedRequests += count
-		result.Totals.SampledRequests += row.SampledRequests
-		result.Totals.UntimedRequests += row.UntimedRequests
-		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
-		result.Totals.CostUSD += row.CostUSD
-		if row.CostEstimated {
-			result.Totals.AnyEstimated = true
-			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
-		}
+		addUsageTotals(&result.Totals, usage)
 	}
 	return result
 }
@@ -599,8 +537,9 @@ func speedResult(report store.SpeedReport) Result {
 			DurationP50Seconds:      row.DurationP50Seconds, DurationP90Seconds: row.DurationP90Seconds,
 			OutputTokens: row.OutputTokens, SampledSeconds: row.SampledSeconds,
 		})
-		result.Totals.Requests += row.Requests
-		result.Totals.SampledRequests += row.Sampled
+		addUsageTotals(&result.Totals, usageTotals{
+			requests: row.Requests, sampledRequests: row.Sampled,
+		})
 	}
 	result.Totals.UntimedRequests = report.Untimed
 	result.Totals.OutOfWindowRequests = report.OutOfWindow
@@ -666,9 +605,6 @@ func finalizeQuality(result *Result) {
 	for _, row := range result.Sessions {
 		addSource(row.PricingSource)
 	}
-	for _, row := range result.SessionUsage {
-		addSource(row.PricingSource)
-	}
 	for _, row := range result.Requests {
 		addSource(row.PricingSource)
 	}
@@ -686,39 +622,24 @@ func finalizeQuality(result *Result) {
 func periodResult(rows []store.DayStatsResult) Result {
 	result := Result{Periods: make([]PeriodRow, 0, len(rows))}
 	for _, row := range rows {
+		usage := usageTotals{
+			sessions: row.Sessions, queries: row.Queries, requests: row.Requests,
+			freshInputTokens: row.FreshInputTokens, outputTokens: row.OutputTokens,
+			cacheCreateTokens: row.CacheCreateTokens, cacheReadTokens: row.CacheReadTokens,
+			totalInputTokens: row.TotalInputTokens, totalTokens: row.TotalTokens,
+			detailedRequests: row.DetailedRequests, aggregateRequests: row.AggregateRequests,
+			sampledRequests: row.SampledRequests, untimedRequests: row.UntimedRequests,
+			outOfWindowRequests: row.OutOfWindowRequests, costUSD: row.CostUSD,
+			costEstimated: row.CostEstimated, estimatedCostUSD: row.EstimatedCostUSD,
+		}
 		result.Periods = append(result.Periods, PeriodRow{
 			Date: row.Date, Sessions: row.Sessions, Queries: row.Queries,
-			InputTokens: row.InputTokens, FreshInputTokens: row.FreshInputTokens,
-			OutputTokens: row.OutputTokens, CacheCreateTokens: row.CacheCreateTokens,
-			CacheReadTokens: row.CacheReadTokens, TotalInputTokens: row.TotalInputTokens,
-			TotalTokens: row.TotalTokens, Requests: row.Requests,
+			UsageMetrics: usage.metrics(row.PricingSource), Requests: row.Requests,
 			DetailedRequests: row.DetailedRequests, AggregateRequests: row.AggregateRequests,
 			RequestCoveragePct: row.RequestCoveragePct, SampledRequests: row.SampledRequests,
 			UntimedRequests: row.UntimedRequests, OutOfWindowRequests: row.OutOfWindowRequests,
-			CostUSD: row.CostUSD, CostEstimated: row.CostEstimated,
-			EstimatedCostUSD: row.EstimatedCostUSD, PricingSource: string(row.PricingSource),
 		})
-		result.Totals.Sessions += row.Sessions
-		result.Totals.Queries += row.Queries
-		result.Totals.InputTokens += row.InputTokens
-		result.Totals.FreshInputTokens += row.FreshInputTokens
-		result.Totals.OutputTokens += row.OutputTokens
-		result.Totals.CacheCreateTokens += row.CacheCreateTokens
-		result.Totals.CacheReadTokens += row.CacheReadTokens
-		result.Totals.CacheTokens += row.CacheCreateTokens + row.CacheReadTokens
-		result.Totals.TotalInputTokens += row.TotalInputTokens
-		result.Totals.TotalTokens += row.TotalTokens
-		result.Totals.Requests += row.Requests
-		result.Totals.DetailedRequests += row.DetailedRequests
-		result.Totals.AggregateRequests += row.AggregateRequests
-		result.Totals.SampledRequests += row.SampledRequests
-		result.Totals.UntimedRequests += row.UntimedRequests
-		result.Totals.OutOfWindowRequests += row.OutOfWindowRequests
-		result.Totals.CostUSD += row.CostUSD
-		if row.CostEstimated {
-			result.Totals.AnyEstimated = true
-			result.Totals.EstimatedCostUSD += row.EstimatedCostUSD
-		}
+		addUsageTotals(&result.Totals, usage)
 		if row.CostUSD > result.Totals.MaxCostUSD {
 			result.Totals.MaxCostUSD = row.CostUSD
 		}
@@ -746,7 +667,7 @@ func queryWrapped(db *sql.DB, spec querySpec) (Result, error) {
 	wrapped := &Wrapped{
 		Period: spec.window.Label, Days: spec.window.Days,
 		Sessions: result.Totals.Sessions, Queries: result.Totals.Queries,
-		ToolCalls: result.Totals.ToolCalls, InputTokens: result.Totals.InputTokens,
+		ToolCalls: result.Totals.ToolCalls, FreshInputTokens: result.Totals.FreshInputTokens,
 		OutputTokens: result.Totals.OutputTokens, CostUSD: result.Totals.CostUSD,
 	}
 	if len(models) > 0 {

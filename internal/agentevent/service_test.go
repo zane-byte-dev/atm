@@ -69,7 +69,7 @@ func TestServiceReportsEveryAgentAndTheActionThatProducedIt(t *testing.T) {
 func TestServiceRoundTripsInstallStatusAndUninstall(t *testing.T) {
 	service, home := hookServiceFixture(t)
 	ctx := context.Background()
-	call := hookServiceCall(application.OriginIPC)
+	call := hookServiceCall(application.OriginWeb)
 
 	before, err := service.Status(ctx, call, RegistrationInput{Source: SourceClaude})
 	if err != nil {
@@ -199,7 +199,7 @@ func TestServiceKeepsGoingWhenOneAgentsConfigIsMalformed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	report, err := service.Install(context.Background(), hookServiceCall(application.OriginIPC), RegistrationInput{})
+	report, err := service.Install(context.Background(), hookServiceCall(application.OriginWeb), RegistrationInput{})
 	if err != nil {
 		t.Fatalf("one malformed config must not fail the call: %v", err)
 	}

@@ -24,6 +24,18 @@ type StartResult struct {
 	Effects        []Effect `json:"-"`
 }
 
+type ReturnToOpenInput struct {
+	TodoID       string `json:"todo_id"`
+	ExpectedETag string `json:"expected_etag,omitempty"`
+}
+
+type ReturnToOpenResult struct {
+	Todo            Todo     `json:"todo"`
+	AlreadyOpen     bool     `json:"already_open"`
+	UnboundSessions int      `json:"unbound_sessions"`
+	Effects         []Effect `json:"-"`
+}
+
 type CloseInput struct {
 	TodoID    string `json:"todo_id,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
@@ -41,7 +53,6 @@ type CloseResult struct {
 type WakeInput struct {
 	TodoID       string `json:"todo_id"`
 	ExpectedETag string `json:"expected_etag,omitempty"`
-	Status       string `json:"status,omitempty"`
 	Reason       string `json:"reason"`
 }
 
@@ -52,18 +63,10 @@ type WakeResult struct {
 	Effects         []Effect `json:"-"`
 }
 
-type ReconcileInput struct{}
-
-type ReconcileResult struct {
-	Awakened []store.TodoWakeEvent       `json:"awakened"`
-	Issues   []store.TodoDependencyIssue `json:"issues"`
-	Effects  []Effect                    `json:"-"`
-}
-
 // dependencyReconcileMutation is the shared in-transaction result used by
-// Close, the explicit Reconcile use case, and dependency add/remove. Keeping
-// the helper on Transaction guarantees the derived wake transitions, binding
-// closures, and outbox rows commit or roll back together with their cause.
+// Close and dependency add/remove. Keeping the helper on Transaction guarantees
+// the derived wake transitions, binding closures, and outbox rows commit or
+// roll back together with their cause.
 type dependencyReconcileMutation struct {
 	Awakened []store.TodoWakeEvent
 	Effects  []Effect
@@ -151,6 +154,68 @@ func (service Service) Start(ctx context.Context, call application.Call, input S
 	return result, nil
 }
 
+// ReturnToOpen moves in-progress work back to the backlog without sharing the
+// generic metadata editor. Review and completed work must be explicitly
+// reopened through Start so their audit trail cannot be bypassed.
+func (service Service) ReturnToOpen(
+	ctx context.Context,
+	call application.Call,
+	input ReturnToOpenInput,
+) (ReturnToOpenResult, error) {
+	if err := validateLifecycleCall(ctx, call); err != nil {
+		return ReturnToOpenResult{}, err
+	}
+	if err := validateLifecycleTodoID(input.TodoID); err != nil {
+		return ReturnToOpenResult{}, err
+	}
+
+	result := ReturnToOpenResult{}
+	err := service.Mutate(func(transaction *Transaction) error {
+		todo, err := transaction.Todo(input.TodoID)
+		if err != nil {
+			return lifecycleTodoNotFound(input.TodoID, err)
+		}
+		if err := checkExpectedTodo(call, *todo, input.ExpectedETag); err != nil {
+			return err
+		}
+		if todo.Status == store.TodoStatusDone || todo.Status == store.TodoStatusReview {
+			return lifecycleConflict(
+				fmt.Sprintf("cannot return %s todo %s to open; use start --reopen-reason to reopen it", todo.Status, todo.ID),
+				todo.ID, todo.Status,
+			)
+		}
+		if todo.Status == store.TodoStatusOpen && todo.WakeCondition == "" && todo.ReviewAt == "" &&
+			todo.StartTS == nil && todo.DoneTS == nil && todo.Closed == nil && todo.ClosedReason == nil {
+			result.Todo = cloneTodo(*todo)
+			result.AlreadyOpen = true
+			result.Effects, err = transaction.pendingEffects(todo.ID)
+			return err
+		}
+
+		todo.Status = store.TodoStatusOpen
+		todo.WakeCondition = ""
+		todo.ReviewAt = ""
+		todo.StartTS = nil
+		todo.DoneTS = nil
+		todo.Closed = nil
+		todo.ClosedReason = nil
+		if err := transaction.enqueueOrReplaceEffect(call, EffectTodoUpdated, *todo, ""); err != nil {
+			return fmt.Errorf("enqueue return-to-open effect: %w", err)
+		}
+		result.UnboundSessions, err = transaction.UnbindTodoSessions(todo.ID, "open")
+		if err != nil {
+			return fmt.Errorf("unbind todo sessions before returning to open: %w", err)
+		}
+		result.Todo = cloneTodo(*todo)
+		result.Effects, err = transaction.pendingEffects(todo.ID)
+		return err
+	})
+	if err != nil {
+		return ReturnToOpenResult{}, lifecycleApplicationError("return todo to open", err)
+	}
+	return result, nil
+}
+
 // Done is the human acceptance transition. Actor attribution from the CLI
 // environment is an authorization signal, not strong operating-system
 // authentication; nevertheless enforcing the policy here prevents ordinary
@@ -165,9 +230,9 @@ func (service Service) Done(ctx context.Context, call application.Call, input Cl
 		err.Details = map[string]any{"actor_kind": call.Actor.Kind, "required_actor_kind": application.ActorHuman}
 		return CloseResult{}, err
 	}
-	// The desktop or authenticated Web click is the acceptance decision, not a request to justify
-	// it. Keep an honest action receipt when the human supplies no optional note.
-	// CLI acceptance still requires evidence; this does not relax actor policy.
+	// The authenticated Web click is the acceptance decision, not a request to
+	// justify it. Keep an honest action receipt when the human supplies no
+	// optional note. CLI acceptance still requires evidence.
 	if humanAcceptanceClickOrigin(call.Actor.Origin) && strings.TrimSpace(input.Reason) == "" {
 		input.Reason = store.TodoGUICompletionReceipt
 	}
@@ -175,51 +240,7 @@ func (service Service) Done(ctx context.Context, call application.Call, input Cl
 }
 
 func humanAcceptanceClickOrigin(origin application.Origin) bool {
-	return origin == application.OriginIPC || origin == application.OriginWeb
-}
-
-func (service Service) Drop(ctx context.Context, call application.Call, input CloseInput) (CloseResult, error) {
-	if err := validateLifecycleCall(ctx, call); err != nil {
-		return CloseResult{}, err
-	}
-	if strings.TrimSpace(input.TodoID) != "" {
-		if err := validateLifecycleTodoID(input.TodoID); err != nil {
-			return CloseResult{}, err
-		}
-	}
-	result := CloseResult{}
-	err := service.Mutate(func(transaction *Transaction) error {
-		todoID := store.NormalizeTodoID(input.TodoID)
-		if todoID == "" {
-			sessionID := strings.TrimSpace(input.SessionID)
-			if sessionID == "" {
-				sessionID = call.Actor.SessionID
-			}
-			binding, bindErr := transaction.currentSessionBinding(sessionID)
-			if bindErr != nil {
-				return bindErr
-			}
-			if binding == nil {
-				return transitionTargetUnavailable(sessionID)
-			}
-			todoID = binding.TodoID
-		}
-		todo, findErr := transaction.Todo(todoID)
-		if findErr != nil {
-			return lifecycleTodoNotFound(todoID, findErr)
-		}
-		result.Todo = cloneTodo(*todo)
-		result.UnboundSessions, findErr = transaction.UnbindTodoSessions(todo.ID, "todo archived")
-		if findErr != nil {
-			return findErr
-		}
-		_, findErr = transaction.ArchiveTodos([]string{todo.ID})
-		return findErr
-	})
-	if err != nil {
-		return CloseResult{}, lifecycleApplicationError("archive todo", err)
-	}
-	return result, nil
+	return origin == application.OriginWeb
 }
 
 func (service Service) close(
@@ -332,11 +353,6 @@ func (service Service) Wake(ctx context.Context, call application.Call, input Wa
 	if err := validateLifecycleTodoID(input.TodoID); err != nil {
 		return WakeResult{}, err
 	}
-	status := strings.ToLower(strings.TrimSpace(input.Status))
-	if status != "" && status != store.TodoStatusInProgress {
-		return WakeResult{}, lifecycleInvalidArgument("wake only clears waiting style; status remains in_progress", "status", input.Status)
-	}
-	status = store.TodoStatusInProgress
 	reason := strings.TrimSpace(input.Reason)
 	if reason == "" {
 		return WakeResult{}, lifecycleInvalidArgument("wake reason is required", "reason", input.Reason)
@@ -361,7 +377,7 @@ func (service Service) Wake(ctx context.Context, call application.Call, input Wa
 				return pendingErr
 			}
 			for _, effect := range pending {
-				if effect.Kind == EffectTodoAwakened && todo.Status == status {
+				if effect.Kind == EffectTodoAwakened && todo.Status == store.TodoStatusInProgress {
 					result.Todo = cloneTodo(*todo)
 					result.AlreadyAwake = true
 					result.Effects = append(result.Effects, effect)
@@ -388,7 +404,7 @@ func (service Service) Wake(ctx context.Context, call application.Call, input Wa
 		if err := transaction.enqueueEffect(call, EffectTodoAwakened, *todo, message); err != nil {
 			return fmt.Errorf("enqueue wake effect: %w", err)
 		}
-		result.UnboundSessions, err = transaction.UnbindTodoSessions(todo.ID, "wake:"+status)
+		result.UnboundSessions, err = transaction.UnbindTodoSessions(todo.ID, "wake:"+store.TodoStatusInProgress)
 		if err != nil {
 			return fmt.Errorf("unbind todo sessions before wake: %w", err)
 		}
@@ -405,30 +421,6 @@ func (service Service) Wake(ctx context.Context, call application.Call, input Wa
 	})
 	if err != nil {
 		return WakeResult{}, lifecycleApplicationError("wake todo", err)
-	}
-	return result, nil
-}
-
-// Reconcile atomically wakes every dependency-satisfied Todo and records a
-// durable projection per awakened Todo. Repeating it returns still-pending
-// reconciliation effects without changing lifecycle state again.
-func (service Service) Reconcile(ctx context.Context, call application.Call, _ ReconcileInput) (ReconcileResult, error) {
-	if err := validateLifecycleCall(ctx, call); err != nil {
-		return ReconcileResult{}, err
-	}
-	result := ReconcileResult{}
-	err := service.Mutate(func(transaction *Transaction) error {
-		reconciled, err := transaction.reconcileDependencies(call, "")
-		if err != nil {
-			return err
-		}
-		result.Awakened = reconciled.Awakened
-		result.Effects = reconciled.Effects
-		result.Issues = store.AuditTodoDependencies(transaction.Todos())
-		return nil
-	})
-	if err != nil {
-		return ReconcileResult{}, lifecycleApplicationError("reconcile todo dependencies", err)
 	}
 	return result, nil
 }

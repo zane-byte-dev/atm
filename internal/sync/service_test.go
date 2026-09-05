@@ -64,11 +64,11 @@ func fakeService(t *testing.T, counts *scanCounts, sampler QuotaSampler) Service
 		Now:       func() time.Time { return time.Unix(syncTestNow, 0).UTC() },
 		OpenWrite: store.Open,
 		OpenRead:  store.Open,
-		SyncAll: func(*sql.DB) (int, error) {
+		SyncAllContext: func(context.Context, *sql.DB) (int, error) {
 			counts.all++
 			return 7, nil
 		},
-		SyncAgent: func(_ *sql.DB, agent string) (int, error) {
+		SyncAgentContext: func(_ context.Context, _ *sql.DB, agent string) (int, error) {
 			counts.agents = append(counts.agents, agent)
 			return 2, nil
 		},
@@ -129,7 +129,7 @@ func TestRunNormalizesAnAgentAliasAndRejectsAnUnknownOne(t *testing.T) {
 
 // Quota history is a convenience; the session index is the point. A sampling
 // failure must not fail the refresh — but it must not vanish either, because
-// nobody reads stderr when the App runs this on a timer.
+// nobody reads stderr when the server runs this on a timer.
 func TestRunReportsASamplingFailureWithoutFailingTheRefresh(t *testing.T) {
 	var counts scanCounts
 	sampler := &recordedSampler{err: errors.New("quota_history table is locked")}
@@ -218,9 +218,9 @@ func TestStatusFailsOnAnUnreadableIndexRatherThanCallingItMissing(t *testing.T) 
 func TestStatusWithSyncBuildsTheIndexAndReportsIt(t *testing.T) {
 	withTempAtmDir(t)
 	service := NewService(ServiceOptions{
-		Now:     func() time.Time { return time.Unix(syncTestNow, 0).UTC() },
-		SyncAll: func(*sql.DB) (int, error) { return 0, nil },
-		Sampler: &recordedSampler{},
+		Now:            func() time.Time { return time.Unix(syncTestNow, 0).UTC() },
+		SyncAllContext: func(context.Context, *sql.DB) (int, error) { return 0, nil },
+		Sampler:        &recordedSampler{},
 	})
 
 	report, err := service.Status(context.Background(), syncTestCall(), StatusInput{Sync: true})
@@ -243,9 +243,9 @@ func TestStatusWithSyncBuildsTheIndexAndReportsIt(t *testing.T) {
 func TestStatusAcceptsTheAllScopeAndAnAgentName(t *testing.T) {
 	withTempAtmDir(t)
 	service := NewService(ServiceOptions{
-		Now:     func() time.Time { return time.Unix(syncTestNow, 0).UTC() },
-		SyncAll: func(*sql.DB) (int, error) { return 0, nil },
-		Sampler: &recordedSampler{},
+		Now:            func() time.Time { return time.Unix(syncTestNow, 0).UTC() },
+		SyncAllContext: func(context.Context, *sql.DB) (int, error) { return 0, nil },
+		Sampler:        &recordedSampler{},
 	})
 	if _, err := service.Status(context.Background(), syncTestCall(),
 		StatusInput{Scope: store.SyncScopeAll, Sync: true}); err != nil {

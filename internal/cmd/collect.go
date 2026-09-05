@@ -862,7 +862,7 @@ var collectItemDeleteCmd = &cobra.Command{
 		"are kept: a record is collection's own note about a decision, not the work " +
 		"itself. Use `atm collect item revert` when the Todo write is what was wrong.\n\n" +
 		"Several ids delete as one transaction, which is what clearing a whole group in " +
-		"the App does: either every named record goes or none does, and an id that is " +
+		"the browser does: either every named record goes or none does, and an id that is " +
 		"already gone stops the batch instead of half-clearing it.\n\n" +
 		"A record whose messages still fall inside the next run's re-read window can be " +
 		"rebuilt by that run; older records are gone for good.",

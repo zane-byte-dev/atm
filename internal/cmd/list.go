@@ -11,15 +11,14 @@ import (
 )
 
 var (
-	daysFlag            int
-	projectFlag         string
-	sessionSinceFlag    string
-	sessionReviewFlag   string
-	sessionListAllFlag  bool
-	sessionListLimit    int
-	sessionListOffset   int
-	sessionListOrder    string
-	sessionListEnvelope bool
+	daysFlag           int
+	projectFlag        string
+	sessionSinceFlag   string
+	sessionReviewFlag  string
+	sessionListAllFlag bool
+	sessionListLimit   int
+	sessionListOffset  int
+	sessionListOrder   string
 )
 
 const defaultSessionListLimit = 200
@@ -33,7 +32,6 @@ func init() {
 	listCmd.Flags().StringVar(&sessionListOrder, "order", "activity-desc", "sort order: activity-desc (latest activity first), asc, or desc (by start time)")
 	listCmd.Flags().IntVar(&sessionListLimit, "limit", defaultSessionListLimit, "maximum number of sessions (0 means all)")
 	listCmd.Flags().IntVar(&sessionListOffset, "offset", 0, "number of sessions to skip")
-	listCmd.Flags().BoolVar(&sessionListEnvelope, "envelope", false, "wrap JSON rows with schema and pagination metadata")
 	sessionCmd.AddCommand(listCmd)
 }
 
@@ -43,18 +41,15 @@ var listCmd = &cobra.Command{
 	Long: `List indexed sessions in latest-activity order with a bounded default page.
 
 Use --offset to fetch the next page, --limit 0 for an explicitly unbounded
-result, or --all to ignore the time window. Historical --json output remains a
-top-level array; --envelope adds schema and pagination metadata.`,
+result, or --all to ignore the time window. JSON output always includes schema
+and pagination metadata.`,
 	Example: `  atm session list --days 7
-  atm session list --all --limit 200 --offset 200 --json --envelope`,
+  atm session list --all --limit 200 --offset 200 --json`,
 	Args: cobra.NoArgs,
 	RunE: runList,
 }
 
 func runList(cmd *cobra.Command, args []string) error {
-	if sessionListEnvelope && !jsonOutput {
-		return fmt.Errorf("--envelope requires --json")
-	}
 	agent, err := resolveAgent()
 	if err != nil {
 		return err
@@ -110,22 +105,16 @@ func runList(cmd *cobra.Command, args []string) error {
 				FinalResult: row.FinalResult, Review: row.Review,
 			})
 		}
-		if sessionListEnvelope {
-			output.JSON(map[string]any{
-				"schema_version": sessionCLIOutputSchemaVersion,
-				"total":          result.Total,
-				"returned":       len(sessions),
-				"truncated":      result.Offset+len(sessions) < result.Total,
-				"limit":          result.Limit,
-				"offset":         result.Offset,
-				"order":          sessionListOrder,
-				"sessions":       sessions,
-			})
-		} else {
-			// Preserve the historical top-level array for scripts and older clients.
-			// New integrations can opt into the common metadata envelope above.
-			output.JSON(sessions)
-		}
+		output.JSON(map[string]any{
+			"schema_version": sessionCLIOutputSchemaVersion,
+			"total":          result.Total,
+			"returned":       len(sessions),
+			"truncated":      result.Offset+len(sessions) < result.Total,
+			"limit":          result.Limit,
+			"offset":         result.Offset,
+			"order":          sessionListOrder,
+			"sessions":       sessions,
+		})
 		return nil
 	}
 

@@ -38,13 +38,6 @@ func TestTodoDoneAutomaticallyWakesStructuredDependents(t *testing.T) {
 	}
 }
 
-func TestTodoWakeKeepsInProgress(t *testing.T) {
-	statusFlag := todoWakeCmd.Flags().Lookup("status")
-	if statusFlag == nil || statusFlag.DefValue != store.TodoStatusInProgress {
-		t.Fatalf("wake status default = %#v, want in_progress", statusFlag)
-	}
-}
-
 func TestTodoDependRemoveLastGeneratedWaitWakesTodo(t *testing.T) {
 	withTempAtmDir(t)
 	oldJSON := jsonOutput

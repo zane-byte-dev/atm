@@ -26,22 +26,20 @@ func init() {
 	exportCmd.Flags().StringVar(&exportFormatFlag, "format", "json", "output format: json, jsonl, or csv")
 	exportCmd.Flags().IntVar(&exportLimitFlag, "limit", 0, "maximum number of exported messages (0 means all)")
 	exportCmd.Flags().IntVar(&exportOffsetFlag, "offset", 0, "number of filtered messages to skip")
-	exportCmd.Flags().BoolVar(&exportEnvelopeFlag, "envelope", false, "wrap JSON rows with schema and pagination metadata")
 	exportCmd.MarkFlagsMutuallyExclusive("days", "since")
 	sessionCmd.AddCommand(exportCmd)
 }
 
 var (
-	exportDaysFlag     int
-	exportSinceFlag    string
-	exportUntilFlag    string
-	exportProjectFlag  string
-	exportRoleFlag     string
-	exportQueryFlag    string
-	exportFormatFlag   string
-	exportLimitFlag    int
-	exportOffsetFlag   int
-	exportEnvelopeFlag bool
+	exportDaysFlag    int
+	exportSinceFlag   string
+	exportUntilFlag   string
+	exportProjectFlag string
+	exportRoleFlag    string
+	exportQueryFlag   string
+	exportFormatFlag  string
+	exportLimitFlag   int
+	exportOffsetFlag  int
 )
 
 var exportCmd = &cobra.Command{
@@ -49,11 +47,11 @@ var exportCmd = &cobra.Command{
 	Short: "Export raw session data",
 	Long: `Export filtered session messages as JSON, newline-delimited JSON, or CSV.
 
-JSON keeps the historical top-level array unless --envelope is requested.
-Pagination is applied after project, role, text, and time filters.`,
+JSON includes schema and pagination metadata. Pagination is applied after
+project, role, text, and time filters.`,
 	Example: `  atm session export --days 7 --format json
   atm session export --since 2026-08-01 --until 2026-09-01 --project atm --role user --format jsonl
-  atm session export --days 30 --query deployment --limit 500 --offset 500 --format json --envelope`,
+  atm session export --days 30 --query deployment --limit 500 --offset 500 --format json`,
 	Args: cobra.NoArgs,
 	RunE: runExport,
 }
@@ -74,10 +72,6 @@ func runExport(cmd *cobra.Command, args []string) error {
 	if exportOffsetFlag < 0 {
 		return fmt.Errorf("--offset must not be negative")
 	}
-	if exportEnvelopeFlag && format != "json" {
-		return fmt.Errorf("--envelope is only supported with --format json")
-	}
-
 	days := exportDaysFlag
 	if days < 1 {
 		days = 1
@@ -136,17 +130,7 @@ func runExport(cmd *cobra.Command, args []string) error {
 			}
 			return nil
 		}
-		if exportEnvelopeFlag {
-			return writeExportEnvelope(start, end, total, rows)
-		}
-		// Keep the historical top-level array for existing scripts, including []
-		// rather than null for an empty result.
-		if len(rows) == 0 {
-			rows = []store.ExportRow{}
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(rows)
+		return writeExportEnvelope(start, end, total, rows)
 	})
 }
 

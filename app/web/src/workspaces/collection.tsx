@@ -14,7 +14,6 @@ import {
   LoaderCircle,
   Pencil,
   Plus,
-  RefreshCw,
   Search,
   Settings2,
   X,
@@ -37,7 +36,7 @@ import { useNativePreferences } from './native-preferences-react'
 import { nativeOrdered } from './native-preferences'
 
 const states = [
-  ['active', '全部'],
+  ['active', '收件箱'],
   ['unread', '未读'],
   ['read', '已读'],
   ['archived', '已归档'],
@@ -171,10 +170,6 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
   const source = data?.sources.find((value) => value.id === sourceID)
   const selected = detail.data?.item
   const selectedSource = data?.sources.find((value) => value.id === selected?.source_id)
-  const refreshing =
-    overview.isFetching ||
-    (view === 'items' && items.isFetching) ||
-    (view === 'history' && history.isFetching)
   const latestRun = (id: string) => data?.runs.find((run) => run.source_id === id)
 
   return (
@@ -238,14 +233,6 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
               )}
             </>
           )}
-          <button
-            className="button"
-            onClick={() => void client.invalidateQueries({ queryKey: ['collection'] })}
-            disabled={refreshing}
-          >
-            <RefreshCw size={14} className={refreshing ? 'spin' : ''} />
-            刷新
-          </button>
         </div>
       </div>
       {overview.isError && <Notice error={overview.error} retry={() => void overview.refetch()} />}

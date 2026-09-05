@@ -102,11 +102,6 @@ func printDiagnoseSummary(report diagnoseapp.Report) {
 	} else {
 		fmt.Println("  database: absent — run `atm sync`")
 	}
-	if report.App.Found {
-		fmt.Printf("  app: %s (bundle %s)\n", report.App.ShortVersion, report.App.BundleVersion)
-	} else {
-		fmt.Println("  app: not installed where ATM looks")
-	}
 	fmt.Printf("  platform: %s/%s, %s\n", report.Platform.OS, report.Platform.Arch, report.Platform.GoVersion)
 	fmt.Printf("  sync: %s", report.Sync.Sync.Status)
 	if report.Sync.Sync.LastError != "" {

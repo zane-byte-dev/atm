@@ -13,7 +13,7 @@ type configRename func(oldPath, newPath string) error
 
 // mutateRawConfig is the only read-modify-write path for config.json. The
 // advisory lock is deliberately held while the file is re-read and patched:
-// locking only the final rename would still allow two CLI/App processes to
+// locking only the final rename would still allow CLI and server processes to
 // overwrite each other's changes from stale snapshots.
 func mutateRawConfig(apply func(raw map[string]any) error) error {
 	return withConfigWriteLock(func(path string) error {

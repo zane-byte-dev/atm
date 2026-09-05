@@ -70,7 +70,7 @@ func (service Service) PlanForget(ctx context.Context, input PlanForgetInput) (F
 }
 
 // Forget permanently drops the confirmed session. Confirmed is a workflow
-// guard, not proof of human identity: CLI flags and IPC payloads are
+// guard, not proof of human identity: CLI flags and Web payloads are
 // replayable, so obtaining the confirmation stays with the adapter.
 func (service Service) Forget(ctx context.Context, input ForgetInput) (ForgetResult, error) {
 	if err := contextError(ctx); err != nil {

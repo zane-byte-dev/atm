@@ -134,12 +134,12 @@ func TestSnapshotRefusesExistingDestination(t *testing.T) {
 	}
 }
 
-// TestReadSchemaVersionAtSkipsMigration covers why backup exists: a database
-// below minUpgradableVersion must still be readable enough to archive, and Open
+// TestReadSchemaVersionAtSkipsSchemaValidation covers why backup exists: a database
+// below MinUpgradableVersion must still be readable enough to archive, and Open
 // is exactly what refuses it.
-func TestReadSchemaVersionAtSkipsMigration(t *testing.T) {
+func TestReadSchemaVersionAtSkipsSchemaValidation(t *testing.T) {
 	openTempDB(t)
-	stale := minUpgradableVersion - 1
+	stale := MinUpgradableVersion - 1
 	writable, err := openNoMigrate(config.AtmDB, false)
 	if err != nil {
 		t.Fatalf("open writable: %v", err)

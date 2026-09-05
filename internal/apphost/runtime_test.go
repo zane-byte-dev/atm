@@ -317,12 +317,11 @@ func TestCompanionTodoProjectionPreservesMenuBucketsWithoutDuplicates(t *testing
 		{ID: "t6", Title: "working", Status: store.TodoStatusInProgress, Priority: "P1", Created: "2026-09-04"},
 		{ID: "t7", Title: "not a current menu task", Status: store.TodoStatusOpen, Priority: "P0", Created: "2026-09-04"},
 		{ID: "t8", Title: "closed", Status: store.TodoStatusDone, Priority: "P0", Created: "2026-09-04"},
-		{ID: "t9", Title: "legacy blocked", Status: store.TodoStatusBlocked, Priority: "P1", Created: "2026-09-04"},
 	}, now)
-	if result.Total != 7 || !result.Truncated || len(result.Items) != companionTodoLimit {
+	if result.Total != 6 || !result.Truncated || len(result.Items) != companionTodoLimit {
 		t.Fatalf("bounds = %+v", result)
 	}
-	want := []string{"t3", "t1", "t9", "t2", "t4"}
+	want := []string{"t3", "t1", "t2", "t4", "t5"}
 	seen := map[string]bool{}
 	for index, item := range result.Items {
 		if item.ID != want[index] {
@@ -333,7 +332,7 @@ func TestCompanionTodoProjectionPreservesMenuBucketsWithoutDuplicates(t *testing
 		}
 		seen[item.ID] = true
 	}
-	if result.Items[2].MenuState != "blocked" || result.Items[3].MenuState != "due" || result.Items[3].ReviewAt != "2026-09-04" || result.Items[4].MenuState != "waiting" {
+	if result.Items[2].MenuState != "due" || result.Items[2].ReviewAt != "2026-09-04" || result.Items[3].MenuState != "waiting" || result.Items[4].MenuState != "working" {
 		t.Fatalf("presentation state lost: %+v", result.Items)
 	}
 	if len([]rune(result.Items[0].Title)) != 160 || strings.Contains(result.Items[0].Title, "\n") {
@@ -383,13 +382,30 @@ func TestCompanionQuotaCacheProjectsProductsCardsAndTrendSafely(t *testing.T) {
 			Order: []string{"codex"},
 		},
 	}
-	result := projectCompanionQuota(runtimeCachedQuota(cache, now))
+	result := projectCompanionQuota(runtimeCachedQuota(cache, now, ""))
 	projectCompanionQuotaCache(&result, cache, now)
 	if len(result.Windows) != 1 || result.Windows[0].Plan != "pro" || result.Windows[0].Trend == nil || result.Windows[0].Trend.FullAt == "" {
 		t.Fatalf("window cache projection: %+v", result.Windows)
 	}
 	if result.ProductsTotal != 1 || len(result.Products) != 1 || result.ProviderCardsTotal != 1 || len(result.ProviderCards) != 1 || len(result.ProviderCards[0].Metrics) != 1 || result.ProviderCards[0].URL != "" {
 		t.Fatalf("provider cache was not filtered/bounded: %+v", result)
+	}
+}
+
+func TestCachedQuotaMergeSelectsLatestObservationPerWindow(t *testing.T) {
+	history := CachedQuota{Source: "quota_history", GeneratedAt: "2026-09-04T12:00:00Z", Windows: []CachedQuotaWindow{
+		{Agent: "codex", WindowMinutes: 300, UsedPercent: 40, ObservedAt: "2026-09-04T12:00:00Z"},
+	}}
+	runtime := CachedQuota{Source: "runtime_quota_cache", GeneratedAt: "2026-09-04T13:00:00Z", Windows: []CachedQuotaWindow{
+		{Agent: "codex", WindowMinutes: 300, UsedPercent: 20, ObservedAt: "2026-09-04T11:00:00Z"},
+		{Agent: "grok", WindowMinutes: 120, UsedPercent: 60, ObservedAt: "2026-09-04T13:00:00Z"},
+	}}
+	merged := mergeCachedQuota(history, runtime)
+	if len(merged.Windows) != 2 || merged.Windows[0].Agent != "codex" || merged.Windows[0].UsedPercent != 40 || merged.Windows[1].Agent != "grok" || merged.Windows[1].UsedPercent != 60 {
+		t.Fatalf("latest merge = %+v", merged)
+	}
+	if merged.Source != runtime.Source || merged.GeneratedAt != runtime.GeneratedAt {
+		t.Fatalf("merged source = %q at %q", merged.Source, merged.GeneratedAt)
 	}
 }
 
@@ -431,7 +447,7 @@ func TestTodayUsageCacheCanBeInvalidatedAfterRuntimeSync(t *testing.T) {
 	}
 }
 
-func TestCompanionQuotaUsesRuntimeCacheWhenIndexIsUnreadable(t *testing.T) {
+func TestQuotaReadersUseRuntimeCacheWhenHistoryIsUnreadable(t *testing.T) {
 	h := testHost(t)
 	now := time.Now().UTC().Truncate(time.Second)
 	cache := background.QuotaCache{UpdatedAt: now.Format(time.RFC3339), Snapshot: quota.Snapshot{Agents: map[string]*quota.AgentQuota{"codex": {Primary: &quota.Window{UsedPercent: 73, WindowMinutes: 300, ResetsAt: now.Add(time.Hour).Unix()}}}}}
@@ -447,6 +463,13 @@ func TestCompanionQuotaUsesRuntimeCacheWhenIndexIsUnreadable(t *testing.T) {
 	}
 	if err := os.Mkdir(h.databasePath, 0700); err != nil {
 		t.Fatal(err)
+	}
+	browser, err := h.callActivity(context.Background(), webCall(), "quota.cached", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached := browser.(CachedQuota); cached.Source != "runtime_quota_cache" || len(cached.Windows) != 1 || cached.Windows[0].UsedPercent != 73 {
+		t.Fatalf("browser lost runtime cache with unreadable history: %+v", cached)
 	}
 	attachFixturePresence(t, h)
 	value, err := h.Companion(context.Background(), json.RawMessage(`{"client_id":"cache-fallback","after":0,"notifications_enabled":false}`), false)

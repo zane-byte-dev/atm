@@ -79,6 +79,70 @@ func TestStartRequiresExplicitReasonToReopenReview(t *testing.T) {
 	}
 }
 
+func TestReturnToOpenIsExplicitAndCannotEraseCompletionAudit(t *testing.T) {
+	withTempWorkStore(t)
+	startTS := int64(10)
+	closed, reason, doneTS := "2026-09-01", "accepted after review", int64(20)
+	seedWorkTodos(t,
+		store.Todo{
+			ID: "t1", Title: "Back to backlog", Priority: "P1", Status: store.TodoStatusInProgress,
+			WakeCondition: "external release", ReviewAt: "2026-09-10", StartTS: &startTS, Created: store.Today(),
+		},
+		store.Todo{
+			ID: "t2", Title: "Accepted", Priority: "P1", Status: store.TodoStatusDone,
+			Closed: &closed, ClosedReason: &reason, StartTS: &startTS, DoneTS: &doneTS, Created: store.Today(),
+		},
+		store.Todo{
+			ID: "t3", Title: "Stale open audit", Priority: "P1", Status: store.TodoStatusOpen,
+			Closed: &closed, ClosedReason: &reason, StartTS: &startTS, DoneTS: &doneTS, Created: store.Today(),
+		},
+		store.Todo{
+			ID: "t4", Title: "Under review", Priority: "P1", Status: store.TodoStatusReview,
+			StartTS: &startTS, Created: store.Today(),
+		},
+	)
+	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "return-open", TodoID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := Default.ReturnToOpen(context.Background(), lifecycleCall(application.ActorAgent, "return-open-1"), ReturnToOpenInput{TodoID: "t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.AlreadyOpen || first.UnboundSessions != 1 || first.Todo.Status != store.TodoStatusOpen ||
+		first.Todo.WakeCondition != "" || first.Todo.ReviewAt != "" || first.Todo.StartTS != nil ||
+		len(first.Effects) != 1 || first.Effects[0].Kind != EffectTodoUpdated {
+		t.Fatalf("ReturnToOpen = %+v", first)
+	}
+	retry, err := Default.ReturnToOpen(context.Background(), lifecycleCall(application.ActorAgent, "return-open-2"), ReturnToOpenInput{TodoID: "t1"})
+	if err != nil || !retry.AlreadyOpen || len(retry.Effects) != 1 || retry.Effects[0].ID != first.Effects[0].ID {
+		t.Fatalf("ReturnToOpen retry = %+v, err=%v", retry, err)
+	}
+
+	_, err = Default.ReturnToOpen(context.Background(), lifecycleCall(application.ActorAgent, "return-done"), ReturnToOpenInput{TodoID: "t2"})
+	if !errors.Is(err, application.ErrConflict) {
+		t.Fatalf("completed ReturnToOpen error = %v, want conflict", err)
+	}
+	todos, err := store.LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := store.FindTodo(todos, "t2")
+	if completed.Status != store.TodoStatusDone || completed.ClosedReason == nil || *completed.ClosedReason != reason ||
+		completed.DoneTS == nil || *completed.DoneTS != doneTS {
+		t.Fatalf("completed audit changed: %+v", completed)
+	}
+	_, err = Default.ReturnToOpen(context.Background(), lifecycleCall(application.ActorAgent, "return-review"), ReturnToOpenInput{TodoID: "t4"})
+	if !errors.Is(err, application.ErrConflict) || !strings.Contains(err.Error(), "--reopen-reason") {
+		t.Fatalf("review ReturnToOpen error = %v, want reopen conflict", err)
+	}
+	repaired, err := Default.ReturnToOpen(context.Background(), lifecycleCall(application.ActorAgent, "repair-open"), ReturnToOpenInput{TodoID: "t3"})
+	if err != nil || repaired.AlreadyOpen || repaired.Todo.Closed != nil || repaired.Todo.ClosedReason != nil ||
+		repaired.Todo.StartTS != nil || repaired.Todo.DoneTS != nil {
+		t.Fatalf("stale open repair = %+v, err=%v", repaired, err)
+	}
+}
+
 func TestDoneRequiresAcceptanceEvidenceButRetryRemainsIdempotent(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t, store.Todo{
@@ -86,7 +150,7 @@ func TestDoneRequiresAcceptanceEvidenceButRetryRemainsIdempotent(t *testing.T) {
 		Creator: store.TodoCreatorMe, Created: store.Today(),
 	})
 	call := lifecycleCall(application.ActorHuman, "done-evidence")
-	for _, reason := range []string{"", "通过 ATM 菜单栏完成", store.TodoGUICompletionReceipt} {
+	for _, reason := range []string{"", store.TodoGUICompletionReceipt} {
 		_, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1", Reason: reason})
 		if !errors.Is(err, application.ErrInvalidArgument) || !strings.Contains(err.Error(), "evidence") {
 			t.Fatalf("Done(%q) error = %v", reason, err)
@@ -107,7 +171,6 @@ func TestDoneFromGUIAcceptsOptionalNotesAndKeepsAudit(t *testing.T) {
 			{"empty", "", store.TodoGUICompletionReceipt},
 			{"whitespace", " \n\t ", store.TodoGUICompletionReceipt},
 			{"short", "完成", "完成"},
-			{"legacy_receipt", "通过 ATM 菜单栏完成", "通过 ATM 菜单栏完成"},
 			{"custom", "  关键路径已验证  ", "关键路径已验证"},
 		} {
 			t.Run(status+"/"+note.name, func(t *testing.T) {
@@ -117,7 +180,7 @@ func TestDoneFromGUIAcceptsOptionalNotesAndKeepsAudit(t *testing.T) {
 					Priority: "P2", Creator: store.TodoCreatorMe, Created: store.Today(),
 				})
 				call := lifecycleCall(application.ActorHuman, "gui-done")
-				call.Actor.Origin = application.OriginIPC
+				call.Actor.Origin = application.OriginWeb
 				result, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1", Reason: note.input})
 				if err != nil {
 					t.Fatal(err)
@@ -142,22 +205,22 @@ func TestDoneFromGUIAcceptsOptionalNotesAndKeepsAudit(t *testing.T) {
 	}
 }
 
-func TestDoneFromIPCStillRejectsNonHumanActors(t *testing.T) {
+func TestDoneFromWebStillRejectsNonHumanActors(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t, store.Todo{
 		ID: "t1", Title: "Needs human acceptance", Status: store.TodoStatusReview, Created: store.Today(),
 	})
 	for _, kind := range []application.ActorKind{application.ActorAgent, application.ActorController} {
-		call := lifecycleCall(kind, "nonhuman-ipc-done")
-		call.Actor.Origin = application.OriginIPC
+		call := lifecycleCall(kind, "nonhuman-web-done")
+		call.Actor.Origin = application.OriginWeb
 		_, err := Default.Done(context.Background(), call, CloseInput{TodoID: "t1", Reason: store.TodoGUICompletionReceipt})
 		if !errors.Is(err, application.ErrForbidden) {
-			t.Fatalf("Done(%s@ipc) = %v, want forbidden", kind, err)
+			t.Fatalf("Done(%s@web) = %v, want forbidden", kind, err)
 		}
 	}
 	todos, err := store.LoadTodosReadOnly()
 	if err != nil || store.FindTodo(todos, "t1").Status != store.TodoStatusReview {
-		t.Fatalf("non-human IPC changed state: %+v, err=%v", todos, err)
+		t.Fatalf("non-human Web request changed state: %+v, err=%v", todos, err)
 	}
 }
 
@@ -279,7 +342,7 @@ func TestWakeIsValidatedTransactionalAndRetryable(t *testing.T) {
 	}
 
 	first, err := Default.Wake(context.Background(), lifecycleCall(application.ActorAgent, "wake-1"), WakeInput{
-		TodoID: "#T01", Status: "IN_PROGRESS", Reason: "external approval arrived",
+		TodoID: "#T01", Reason: "external approval arrived",
 	})
 	if err != nil {
 		t.Fatalf("Wake: %v", err)
@@ -292,37 +355,13 @@ func TestWakeIsValidatedTransactionalAndRetryable(t *testing.T) {
 		t.Fatalf("binding after Wake = %+v, err=%v", binding, err)
 	}
 	retry, err := Default.Wake(context.Background(), lifecycleCall(application.ActorAgent, "wake-2"), WakeInput{
-		TodoID: "t1", Status: store.TodoStatusInProgress, Reason: "external approval arrived",
+		TodoID: "t1", Reason: "external approval arrived",
 	})
 	if err != nil {
 		t.Fatalf("retry Wake: %v", err)
 	}
 	if !retry.AlreadyAwake || len(retry.Effects) != 1 || retry.Effects[0].ID != first.Effects[0].ID {
 		t.Fatalf("retry = %+v", retry)
-	}
-}
-
-func TestReconcileReturnsPendingEffectsOnIdempotentRetry(t *testing.T) {
-	withTempWorkStore(t)
-	seedWorkTodos(t,
-		store.Todo{ID: "t1", Title: "Complete dependency", Priority: "P1", Status: store.TodoStatusDone, Created: store.Today()},
-		store.Todo{ID: "t2", Title: "Ready dependent", Priority: "P1", Status: store.TodoStatusInProgress,
-			WakeCondition: "waiting for todos: t1", DependsOn: []string{"t1"}, Created: store.Today()},
-	)
-	first, err := Default.Reconcile(context.Background(), lifecycleCall(application.ActorHuman, "reconcile-1"), ReconcileInput{})
-	if err != nil {
-		t.Fatalf("Reconcile: %v", err)
-	}
-	if len(first.Awakened) != 1 || len(first.Effects) != 1 || first.Effects[0].Kind != EffectTodoDependencyAwakened ||
-		first.Effects[0].CauseTodoID != "" {
-		t.Fatalf("first = %+v", first)
-	}
-	second, err := Default.Reconcile(context.Background(), lifecycleCall(application.ActorHuman, "reconcile-2"), ReconcileInput{})
-	if err != nil {
-		t.Fatalf("retry Reconcile: %v", err)
-	}
-	if len(second.Awakened) != 0 || len(second.Effects) != 1 || second.Effects[0].ID != first.Effects[0].ID {
-		t.Fatalf("second = %+v", second)
 	}
 }
 
@@ -348,8 +387,7 @@ func TestRetentionBatchPolicyIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("binding after Archive = %+v, err=%v", binding, err)
 	}
 	// Archiving what is already archived reports it as unchanged rather than
-	// failing the batch. Trash and Unarchive were separate use cases here before
-	// the three disposal states collapsed into this one layer.
+	// failing the batch.
 	retry, err := Default.Archive(context.Background(), call, RetentionInput{TodoIDs: []string{"t2"}})
 	if err != nil || len(retry.Moved) != 0 || len(retry.Unchanged) != 1 {
 		t.Fatalf("idempotent Archive = %+v, err=%v", retry, err)

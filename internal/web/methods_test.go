@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/application"
 )
 
-func TestOtherWorkspacesKeepAuthenticationAndUpgradeBoundary(t *testing.T) {
+func TestWorkspaceMethodsKeepAuthenticationAndCapabilityBoundary(t *testing.T) {
 	dispatched := 0
 	server := startTestServer(t, func(_ context.Context, call application.Call, _ string, _ json.RawMessage, _ string) (any, error) {
 		dispatched++
@@ -20,8 +19,6 @@ func TestOtherWorkspacesKeepAuthenticationAndUpgradeBoundary(t *testing.T) {
 		}
 		return map[string]any{}, nil
 	})
-	server.options.AllowWrites = false
-	server.options.DataUpgradeRequired = true
 	cookie, csrf := connectBrowser(t, server)
 	reads := []string{"session.list", "usage.snapshot", "knowledge.catalog", "memory.recall", "collect.overview", "day.snapshot", "settings.get"}
 	for _, method := range reads {
@@ -44,12 +41,20 @@ func TestOtherWorkspacesKeepAuthenticationAndUpgradeBoundary(t *testing.T) {
 	if dispatched != len(reads) {
 		t.Fatalf("unauthenticated reads reached services: calls=%d", dispatched)
 	}
-	for _, method := range []string{"knowledge.document.create", "knowledge.collection.create", "memory.create", "memory.supersede", "collect.item.read", "collect.item.archive", "collect.source.enabled", "collect.source.muted", "settings.preferences.save"} {
-		request := browserRequest(server, http.MethodPost, "/api/v1/"+method, "{}", cookie, csrf)
-		response := httptest.NewRecorder()
-		server.ServeHTTP(response, request)
-		if response.Code != http.StatusForbidden {
-			t.Fatalf("%s passed upgrade boundary: %d %s", method, response.Code, response.Body.String())
+	writes := []string{"knowledge.document.create", "memory.create", "collect.item.read", "settings.preferences.save"}
+	for _, method := range writes {
+		for _, authenticated := range []bool{false, true} {
+			request := browserRequest(server, http.MethodPost, "/api/v1/"+method, "{}", cookie, csrf)
+			want := http.StatusOK
+			if !authenticated {
+				request.Header.Del("X-ATM-CSRF")
+				want = http.StatusForbidden
+			}
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			if response.Code != want {
+				t.Fatalf("%s status=%d, want=%d: %s", method, response.Code, want, response.Body.String())
+			}
 		}
 	}
 	for _, method := range []string{"session.sync", "collect.run", "day.refresh", "settings.config.save", "knowledge.document.import", "guard.approve"} {
@@ -60,73 +65,22 @@ func TestOtherWorkspacesKeepAuthenticationAndUpgradeBoundary(t *testing.T) {
 			t.Fatalf("%s exposed undeclared capability: %d", method, response.Code)
 		}
 	}
-	if dispatched != len(reads) {
-		t.Fatalf("blocked operations reached services: calls=%d", dispatched)
+	if dispatched != len(reads)+len(writes) {
+		t.Fatalf("unexpected dispatch count=%d", dispatched)
 	}
 }
 
-func TestWorkspaceMethodWriteDomains(t *testing.T) {
+func TestWorkspaceMethodAccess(t *testing.T) {
 	tests := []struct {
-		method  string
-		write   bool
-		domains []string
+		method string
+		write  bool
 	}{
-		{"todo.list", false, nil},
-		{"todo.show", false, nil},
-		{"todo.doc", false, nil},
-		{"todo.dependency.list", false, nil},
-		{"jobs.list", false, nil},
-		{"jobs.show", false, nil},
-		{"presence.snapshot", false, nil},
-		{"session.list", false, nil},
-		{"session.search", false, nil},
-		{"session.show", false, nil},
-		{"session.status", false, nil},
-		{"usage.snapshot", false, nil},
-		{"quota.cached", false, nil},
-		{"knowledge.catalog", false, nil},
-		{"knowledge.query", false, nil},
-		{"knowledge.document.get", false, nil},
-		{"memory.recall", false, nil},
-		{"memory.get", false, nil},
-		{"collect.overview", false, nil},
-		{"collect.items", false, nil},
-		{"collect.item.show", false, nil},
-		{"collect.history", false, nil},
-		{"day.snapshot", false, nil},
-		{"day.show", false, nil},
-		{"day.ledger", false, nil},
-		{"settings.get", false, nil},
-
-		{"todo.create", true, []string{"todos"}},
-		{"todo.update", true, []string{"todos"}},
-		{"todo.start", true, []string{"todos"}},
-		{"todo.done", true, []string{"todos"}},
-		{"todo.archive", true, []string{"todos"}},
-		{"todo.restore", true, []string{"todos"}},
-		{"todo.plan.set", true, []string{"todos"}},
-		{"todo.progress.append", true, []string{"todos"}},
-		{"todo.dependency.add", true, []string{"todos"}},
-		{"todo.dependency.remove", true, []string{"todos"}},
-		{"todo.wait.update", true, []string{"todos"}},
-		{"todo.wake", true, []string{"todos"}},
-		{"jobs.run", true, []string{"jobs"}},
-		{"jobs.cancel", true, []string{"jobs"}},
-		{"knowledge.document.create", true, []string{"knowledge"}},
-		{"knowledge.document.update", true, []string{"knowledge"}},
-		{"knowledge.collection.create", true, []string{"knowledge"}},
-		{"memory.create", true, []string{"memory"}},
-		{"memory.supersede", true, []string{"memory"}},
-		{"collect.item.read", true, []string{"collection"}},
-		{"collect.item.archive", true, []string{"collection"}},
-		{"collect.source.enabled", true, []string{"collection"}},
-		{"collect.source.muted", true, []string{"collection"}},
-		{"collect.source.save", true, []string{"collection"}},
-		{"collect.source.delete", true, []string{"collection"}},
-		{"settings.preferences.save", true, []string{"settings"}},
-		{"settings.business.save", true, []string{"settings"}},
-		{"settings.credential.save", true, []string{"settings"}},
-		{"settings.credential.delete", true, []string{"settings"}},
+		{"todo.list", false}, {"jobs.show", false}, {"presence.snapshot", false},
+		{"session.search", false}, {"usage.snapshot", false}, {"quota.cached", false},
+		{"knowledge.query", false}, {"memory.get", false}, {"collect.overview", false},
+		{"day.snapshot", false}, {"settings.get", false},
+		{"todo.create", true}, {"jobs.run", true}, {"knowledge.document.create", true},
+		{"memory.create", true}, {"collect.source.save", true}, {"settings.business.save", true},
 	}
 
 	for _, test := range tests {
@@ -135,17 +89,11 @@ func TestWorkspaceMethodWriteDomains(t *testing.T) {
 			if !known || write != test.write {
 				t.Fatalf("access = known %v, write %v; want true, %v", known, write, test.write)
 			}
-			if got := workspaceWriteDomains(test.method); !reflect.DeepEqual(got, test.domains) {
-				t.Fatalf("domains = %v, want %v", got, test.domains)
-			}
 		})
 	}
 
 	if known, write := workspaceMethodAccess("undeclared.method"); known || write {
 		t.Fatalf("undeclared method access = known %v, write %v", known, write)
-	}
-	if domains := workspaceWriteDomains("undeclared.method"); domains != nil {
-		t.Fatalf("undeclared method domains = %v, want nil", domains)
 	}
 }
 
@@ -155,9 +103,9 @@ func TestWorkspaceMutationPublishesOnlyAfterSuccessfulWrites(t *testing.T) {
 		method      string
 		dispatchErr error
 		wantStatus  int
-		wantDomains []string
+		wantReset   bool
 	}{
-		{name: "successful write", method: "todo.update", wantStatus: http.StatusOK, wantDomains: []string{"todos"}},
+		{name: "successful write", method: "todo.update", wantStatus: http.StatusOK, wantReset: true},
 		{name: "failed write", method: "todo.update", dispatchErr: application.NewError(application.CodeConflict, "stale edit"), wantStatus: http.StatusConflict},
 		{name: "successful read", method: "todo.list", wantStatus: http.StatusOK},
 	}
@@ -168,6 +116,11 @@ func TestWorkspaceMutationPublishesOnlyAfterSuccessfulWrites(t *testing.T) {
 				return map[string]bool{"ok": true}, test.dispatchErr
 			})
 			server.events = newEventBroker(server.info.InstanceID)
+			subscriber, initial := server.events.subscribe([]string{"todos"}, server.info.InstanceID+":0")
+			if subscriber == nil || len(initial) != 0 {
+				t.Fatalf("subscribe initial=%+v", initial)
+			}
+			defer server.events.unsubscribe(subscriber)
 			cookie, csrf := connectBrowser(t, server)
 			request := browserRequest(server, http.MethodPost, "/api/v1/"+test.method, "{}", cookie, csrf)
 			response := httptest.NewRecorder()
@@ -176,17 +129,14 @@ func TestWorkspaceMutationPublishesOnlyAfterSuccessfulWrites(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantStatus, response.Body.String())
 			}
 
-			server.events.mu.Lock()
-			history := append([]changeEvent(nil), server.events.history...)
-			server.events.mu.Unlock()
-			if len(test.wantDomains) == 0 {
-				if len(history) != 0 {
-					t.Fatalf("published after %s: %+v", test.name, history)
+			if !test.wantReset {
+				if len(subscriber.queue) != 0 {
+					t.Fatalf("published after %s", test.name)
 				}
 				return
 			}
-			if len(history) != 1 || history[0].Kind != "resource.changed" || !reflect.DeepEqual(history[0].Domains, test.wantDomains) {
-				t.Fatalf("published = %+v, want one event for %v", history, test.wantDomains)
+			if len(subscriber.queue) != 1 || (<-subscriber.queue).Kind != "reset" {
+				t.Fatal("successful mutation did not publish a workspace reset")
 			}
 		})
 	}

@@ -37,7 +37,7 @@ const (
 	maxPlanRunes         = 2000
 	maxDocExcerptRunes   = 4000
 	maxCustomPromptRunes = 4000
-	// maxHintRunes bounds the one-shot request a human types in the App. It is
+	// maxHintRunes bounds the one-shot request a human types in the browser. It is
 	// short on purpose: a whole new requirement belongs in the description,
 	// not in a nudge that is not persisted anywhere.
 	maxHintRunes = 500
@@ -158,19 +158,6 @@ func NormalizeOptions(opts Options) Options {
 		opts.Hint = string([]rune(opts.Hint)[:maxHintRunes])
 	}
 	return opts
-}
-
-// Analyze asks the configured model for a proposal and prepares it. The
-// original card is trusted context; the model is not allowed to invent a
-// project, change priority, or follow instructions inside the title.
-func Analyze(ctx context.Context, todo store.Todo, card string, existingChildren int, opts Options) (Prepared, Proposal, error) {
-	proposal, source, err := Propose(ctx, todo, card, opts)
-	if err != nil {
-		return Prepared{}, Proposal{}, err
-	}
-	prepared, err := Prepare(todo, existingChildren, proposal, opts)
-	prepared.Source = source
-	return prepared, proposal, err
 }
 
 // Propose is the built-in text-model adapter without Work's post-model policy.
@@ -372,10 +359,6 @@ func FormatAnalysis(prepared Prepared, children []store.Todo) string {
 		}
 	}
 	return b.String()
-}
-
-func Prompt(todo store.Todo, card string) string {
-	return PromptWithInstructions(todo, card, config.DefaultTodoRefinePrompt, "")
 }
 
 // PromptWithInstructions preserves ATM's fixed schema, safety and factuality

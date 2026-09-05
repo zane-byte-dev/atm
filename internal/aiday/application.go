@@ -20,7 +20,6 @@ import (
 type ServiceOptions struct {
 	OpenRead    func() (*sql.DB, error)
 	OpenWrite   func() (*sql.DB, error)
-	Sync        func(*sql.DB) (int, error)
 	SyncContext func(context.Context, *sql.DB) (int, error)
 	Now         func() time.Time
 	Location    func() *time.Location
@@ -37,7 +36,7 @@ type Service struct {
 	location  func() *time.Location
 }
 
-// Default is the application service used by CLI and IPC adapters.
+// Default is the application service used by CLI and Web adapters.
 var Default = NewService(ServiceOptions{})
 
 func NewService(options ServiceOptions) Service {
@@ -49,11 +48,6 @@ func NewService(options ServiceOptions) Service {
 	}
 	if options.SyncContext == nil {
 		options.SyncContext = store.SyncAllContext
-		if options.Sync != nil {
-			options.SyncContext = func(_ context.Context, db *sql.DB) (int, error) {
-				return options.Sync(db)
-			}
-		}
 	}
 	if options.Now == nil {
 		options.Now = time.Now

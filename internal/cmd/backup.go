@@ -375,11 +375,11 @@ func runRestore(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	// A newer archive may hold columns this build cannot interpret. Extracting it
-	// would produce a database that reads as valid and answers wrongly, which is
-	// worse than refusing.
-	if manifest.SchemaVersion > store.SchemaVersion {
-		return fmt.Errorf("archive holds schema v%d but this atm build supports v%d: upgrade atm before restoring",
+	// Restores are deliberately exact-version only. There is no migration chain,
+	// so accepting either an older or newer database would only defer the failure
+	// until after the user's current data had been moved aside.
+	if manifest.Database != "" && manifest.SchemaVersion != store.SchemaVersion {
+		return fmt.Errorf("archive holds schema v%d but this atm build requires v%d: restore it with a matching atm build",
 			manifest.SchemaVersion, store.SchemaVersion)
 	}
 

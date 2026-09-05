@@ -4,9 +4,9 @@
 
 The following files are redistributed from [Ping Island](https://github.com/erha19/ping-island):
 
-- `app/macos/Sources/ATMMenuBarApp/Resources/Sounds/8bit_approval_alert.wav`
-- `app/macos/Sources/ATMMenuBarApp/Resources/Sounds/8bit_menu_select.wav`
-- `app/macos/Sources/ATMMenuBarApp/Resources/Sounds/8bit_submit_blip.wav`
+- `app/menubar/Sources/ATMCompanion/Resources/Sounds/8bit_approval_alert.wav`
+- `app/menubar/Sources/ATMCompanion/Resources/Sounds/8bit_menu_select.wav`
+- `app/menubar/Sources/ATMCompanion/Resources/Sounds/8bit_submit_blip.wav`
 
 Ping Island
 Copyright 2026 Ping Island contributors

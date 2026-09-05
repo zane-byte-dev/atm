@@ -1,6 +1,7 @@
 package knowledge
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,13 @@ import (
 	"testing"
 	"time"
 )
+
+func searchKnowledge(dataDir, query string, options SearchOptions) ([]SearchHit, error) {
+	result, err := NewService(ServiceOptions{DataDir: dataDir}).Search(
+		context.Background(), SearchInput{Query: query, Options: options},
+	)
+	return result.Hits, err
+}
 
 func TestCentralKnowledgeAddSearchAndGet(t *testing.T) {
 	dataDir := newDataDir(t)
@@ -22,18 +30,18 @@ func TestCentralKnowledgeAddSearchAndGet(t *testing.T) {
 	if document.Path != filepath.Join(dataDir, "knowledge", "ink", "视频专家调研.md") {
 		t.Fatalf("document path = %s", document.Path)
 	}
-	hits, err := Search(dataDir, "Coding Agent", SearchOptions{Limit: 5, Domains: []string{"architecture"}})
+	hits, err := searchKnowledge(dataDir, "Coding Agent", SearchOptions{Limit: 5, Domains: []string{"architecture"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(hits) != 1 || hits[0].DocumentID != document.Metadata.ID || hits[0].Title != "视频专家调研" || hits[0].LineStart == 0 {
 		t.Fatalf("hits = %#v", hits)
 	}
-	filtered, err := Search(dataDir, "Coding Agent", SearchOptions{Projects: []string{"other"}})
+	filtered, err := searchKnowledge(dataDir, "Coding Agent", SearchOptions{Projects: []string{"other"}})
 	if err != nil || len(filtered) != 0 {
 		t.Fatalf("filtered hits = %#v, err = %v", filtered, err)
 	}
-	filtered, err = Search(dataDir, "Coding Agent", SearchOptions{Collections: []string{"xifeng"}})
+	filtered, err = searchKnowledge(dataDir, "Coding Agent", SearchOptions{Collections: []string{"xifeng"}})
 	if err != nil || len(filtered) != 0 {
 		t.Fatalf("collection filtered hits = %#v, err = %v", filtered, err)
 	}
@@ -61,7 +69,7 @@ func TestSearchAllowsPartialMatchesRankedByCoverage(t *testing.T) {
 
 	// Terms are alternatives: one document covers "Skill" and the other covers
 	// "统计", so both surface even though neither covers the whole query.
-	hits, err := Search(dataDir, "Skill 统计", SearchOptions{Limit: 10})
+	hits, err := searchKnowledge(dataDir, "Skill 统计", SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +78,7 @@ func TestSearchAllowsPartialMatchesRankedByCoverage(t *testing.T) {
 	}
 
 	// A fully-covered match still ranks first over partial matches.
-	hits, err = Search(dataDir, "Skill 调用", SearchOptions{Limit: 10})
+	hits, err = searchKnowledge(dataDir, "Skill 调用", SearchOptions{Limit: 10})
 	if err != nil || len(hits) == 0 || hits[0].Title != "Skill usage" {
 		t.Fatalf("full-coverage results = %#v, err = %v", hits, err)
 	}
@@ -89,7 +97,7 @@ func TestSearchDoesNotMatchOneCharacterOfCompactChineseTerm(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hits, err := Search(dataDir, "搜索", SearchOptions{Limit: 10})
+	hits, err := searchKnowledge(dataDir, "搜索", SearchOptions{Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,6 +113,7 @@ func TestSearchDoesNotMatchOneCharacterOfCompactChineseTerm(t *testing.T) {
 
 func TestMemoryRecallDoesNotMatchOneCharacterOfCompactChineseTerm(t *testing.T) {
 	newDataDir(t)
+	service := NewService(ServiceOptions{})
 	if _, err := RememberWithMetadata("global", "培养探索力", nil, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -112,10 +121,11 @@ func TestMemoryRecallDoesNotMatchOneCharacterOfCompactChineseTerm(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	hits, err := Recall("搜索", "", 10)
+	result, err := service.RecallMemory(context.Background(), RecallMemoryInput{Query: "搜索", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
+	hits := result.Hits
 	if len(hits) != 1 || hits[0].ID != wanted.ID {
 		t.Fatalf("memory results = %#v", hits)
 	}
@@ -123,13 +133,15 @@ func TestMemoryRecallDoesNotMatchOneCharacterOfCompactChineseTerm(t *testing.T) 
 
 func TestMemoryRecallRequiresEveryQueryTerm(t *testing.T) {
 	newDataDir(t)
+	service := NewService(ServiceOptions{})
 	if _, err := RememberWithMetadata("global", "hub 指代 mm-dio-hub-service", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	hits, err := Recall("完全不存在 xyz987", "", 10)
+	result, err := service.RecallMemory(context.Background(), RecallMemoryInput{Query: "完全不存在 xyz987", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
+	hits := result.Hits
 	if len(hits) != 0 {
 		t.Fatalf("irrelevant memories = %#v", hits)
 	}
@@ -307,11 +319,11 @@ func TestKnowledgeEditMovesAndArchivesNativeDocument(t *testing.T) {
 	if _, err := os.Stat(originalPath); !os.IsNotExist(err) {
 		t.Fatalf("old path still exists: %v", err)
 	}
-	active, err := Search(dataDir, "Knowledge", SearchOptions{Statuses: []string{"active"}})
+	active, err := searchKnowledge(dataDir, "Knowledge", SearchOptions{Statuses: []string{"active"}})
 	if err != nil || len(active) != 0 {
 		t.Fatalf("active hits = %#v, err = %v", active, err)
 	}
-	archived, err := Search(dataDir, "Knowledge", SearchOptions{Statuses: []string{"archived"}})
+	archived, err := searchKnowledge(dataDir, "Knowledge", SearchOptions{Statuses: []string{"archived"}})
 	if err != nil || len(archived) != 1 || archived[0].Status != "archived" {
 		t.Fatalf("archived hits = %#v, err = %v", archived, err)
 	}
@@ -421,6 +433,7 @@ func TestKnowledgeEditRejectsInvalidMetadata(t *testing.T) {
 
 func TestKnowledgeFeedbackBuildsQualityAndReranksSearch(t *testing.T) {
 	dataDir := newDataDir(t)
+	service := NewService(ServiceOptions{DataDir: dataDir})
 	trusted, err := Add(dataDir, AddDocumentInput{Title: "Trusted", Content: "shared ranking marker", Collection: "atm"})
 	if err != nil {
 		t.Fatal(err)
@@ -429,21 +442,25 @@ func TestKnowledgeFeedbackBuildsQualityAndReranksSearch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial, err := Search(dataDir, "shared ranking marker", SearchOptions{Limit: 20})
+	searchResult, err := service.Search(context.Background(), SearchInput{
+		Query: "shared ranking marker", SessionID: "session-test", Options: SearchOptions{Limit: 20},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := RecordRetrievals("session-test", "shared ranking marker", append(initial, initial...)); err != nil {
-		t.Fatal(err)
+	if len(searchResult.Hits) != 2 {
+		t.Fatalf("initial hits = %#v", searchResult.Hits)
 	}
-	if err := RecordRetrievals("session-test", "shared ranking marker", initial); err != nil {
+	if _, err := service.Search(context.Background(), SearchInput{
+		Query: "shared ranking marker", SessionID: "session-test", Options: SearchOptions{Limit: 20},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	for index := 0; index < 3; index++ {
-		if _, err := RecordFeedback(dataDir, FeedbackInput{DocumentID: trusted.Metadata.ID, SessionID: fmt.Sprintf("trusted-%d", index), Outcome: "adopted"}); err != nil {
+		if _, err := service.Feedback(context.Background(), FeedbackInput{DocumentID: trusted.Metadata.ID, SessionID: fmt.Sprintf("trusted-%d", index), Outcome: "adopted"}); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := RecordFeedback(dataDir, FeedbackInput{DocumentID: weak.Metadata.ID, SessionID: fmt.Sprintf("weak-%d", index), Outcome: "rejected"}); err != nil {
+		if _, err := service.Feedback(context.Background(), FeedbackInput{DocumentID: weak.Metadata.ID, SessionID: fmt.Sprintf("weak-%d", index), Outcome: "rejected"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -458,20 +475,20 @@ func TestKnowledgeFeedbackBuildsQualityAndReranksSearch(t *testing.T) {
 	if byID[trusted.Metadata.ID].Score <= byID[weak.Metadata.ID].Score || byID[trusted.Metadata.ID].Retrievals != 1 || byID[weak.Metadata.ID].Retrievals != 1 {
 		t.Fatalf("qualities = %#v", qualities)
 	}
-	ranked, err := Search(dataDir, "shared ranking marker", SearchOptions{Limit: 20})
+	ranked, err := searchKnowledge(dataDir, "shared ranking marker", SearchOptions{Limit: 20})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ranked) < 2 || ranked[0].DocumentID != trusted.Metadata.ID || ranked[0].Quality <= ranked[1].Quality {
 		t.Fatalf("ranked hits = %#v", ranked)
 	}
-	if _, err := RecordFeedback(dataDir, FeedbackInput{DocumentID: trusted.Metadata.ID, SessionID: "session", Outcome: "retrieved"}); err == nil {
+	if _, err := service.Feedback(context.Background(), FeedbackInput{DocumentID: trusted.Metadata.ID, SessionID: "session", Outcome: "retrieved"}); err == nil {
 		t.Fatal("retrieved is reserved for automatic search tracking")
 	}
-	if _, err := RecordFeedback(dataDir, FeedbackInput{DocumentID: trusted.Metadata.ID, SessionID: "changed-result", Outcome: "adopted"}); err != nil {
+	if _, err := service.Feedback(context.Background(), FeedbackInput{DocumentID: trusted.Metadata.ID, SessionID: "changed-result", Outcome: "adopted"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := RecordFeedback(dataDir, FeedbackInput{DocumentID: trusted.Metadata.ID, SessionID: "changed-result", Outcome: "corrected"}); err != nil {
+	if _, err := service.Feedback(context.Background(), FeedbackInput{DocumentID: trusted.Metadata.ID, SessionID: "changed-result", Outcome: "corrected"}); err != nil {
 		t.Fatal(err)
 	}
 	qualities, err = KnowledgeQualities(dataDir)
@@ -487,6 +504,7 @@ func TestKnowledgeFeedbackBuildsQualityAndReranksSearch(t *testing.T) {
 
 func TestKnowledgeAuditFindsDuplicatesStaleSourcesAndLowQuality(t *testing.T) {
 	dataDir := newDataDir(t)
+	service := NewService(ServiceOptions{DataDir: dataDir})
 	first, err := Add(dataDir, AddDocumentInput{Title: "Duplicate：Title", Content: "Same duplicate content", Collection: "atm"})
 	if err != nil {
 		t.Fatal(err)
@@ -512,7 +530,7 @@ func TestKnowledgeAuditFindsDuplicatesStaleSourcesAndLowQuality(t *testing.T) {
 		t.Fatal(err)
 	}
 	for index := 0; index < 3; index++ {
-		if _, err := RecordFeedback(dataDir, FeedbackInput{DocumentID: second.Metadata.ID, SessionID: fmt.Sprintf("reject-%d", index), Outcome: "rejected"}); err != nil {
+		if _, err := service.Feedback(context.Background(), FeedbackInput{DocumentID: second.Metadata.ID, SessionID: fmt.Sprintf("reject-%d", index), Outcome: "rejected"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -702,6 +720,7 @@ func TestKnowledgeCatalogUsesCollectionManifests(t *testing.T) {
 
 func TestMemoryLifecycleAndRelevantRecall(t *testing.T) {
 	newDataDir(t)
+	service := NewService(ServiceOptions{})
 	first, err := RememberWithMetadata("project:mox", "ATM 使用 Markdown 作为知识事实源", []string{"architecture"}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -709,14 +728,18 @@ func TestMemoryLifecycleAndRelevantRecall(t *testing.T) {
 	if _, err := RememberWithMetadata("project:mox", "午饭吃面条", nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	second, err := SupersedeWithMetadata(first.ID, "project:mox", "ATM 使用中央 Knowledge 作为事实源", nil, nil)
+	superseded, err := service.SupersedeMemory(context.Background(), SupersedeMemoryInput{
+		TargetID: first.ID, Scope: "project:mox", Content: "ATM 使用中央 Knowledge 作为事实源",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hits, err := Recall("Knowledge", "project:mox", 10)
+	second := superseded.Event
+	recalled, err := service.RecallMemory(context.Background(), RecallMemoryInput{Query: "Knowledge", Scope: "project:mox", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
+	hits := recalled.Hits
 	if len(hits) != 1 || hits[0].ID != second.ID || strings.Contains(hits[0].Content, "面条") {
 		t.Fatalf("hits after supersede = %#v", hits)
 	}
@@ -726,14 +749,15 @@ func TestMemoryLifecycleAndRelevantRecall(t *testing.T) {
 	if _, err := ForgetWithMetadata(second.ID, "project:mox", nil); err != nil {
 		t.Fatal(err)
 	}
-	hits, err = Recall("Knowledge", "project:mox", 10)
-	if err != nil || len(hits) != 0 {
-		t.Fatalf("hits after forget = %#v, err = %v", hits, err)
+	recalled, err = service.RecallMemory(context.Background(), RecallMemoryInput{Query: "Knowledge", Scope: "project:mox", Limit: 10})
+	if err != nil || len(recalled.Hits) != 0 {
+		t.Fatalf("hits after forget = %#v, err = %v", recalled.Hits, err)
 	}
 }
 
 func TestMemoryProvenanceIsPreserved(t *testing.T) {
 	newDataDir(t)
+	service := NewService(ServiceOptions{})
 	event, err := RememberWithMetadata("project:atm", "ATM memory capture is agent-driven", []string{"decision"}, map[string]string{
 		"source": "session:abc#turn:2",
 	})
@@ -743,10 +767,11 @@ func TestMemoryProvenanceIsPreserved(t *testing.T) {
 	if event.Metadata["source"] != "session:abc#turn:2" {
 		t.Fatalf("event metadata = %#v", event.Metadata)
 	}
-	hits, err := Recall("agent-driven", "project:atm", 10)
+	recalled, err := service.RecallMemory(context.Background(), RecallMemoryInput{Query: "agent-driven", Scope: "project:atm", Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}
+	hits := recalled.Hits
 	if len(hits) != 1 || hits[0].Metadata["source"] != "session:abc#turn:2" {
 		t.Fatalf("hits = %#v", hits)
 	}

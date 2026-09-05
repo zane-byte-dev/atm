@@ -214,6 +214,9 @@ func runTodoBatchAdd(cmd *cobra.Command) error {
 }
 
 func runTodoEdit(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("status") {
+		return runTodoReturnToOpen(cmd, args[0])
+	}
 	patch := workapp.EditPatch{}
 	if cmd.Flags().Changed("title") {
 		patch.Title = stringValue(todoEditTitleFlag)
@@ -242,26 +245,6 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("creator") {
 		patch.Creator = stringValue(todoEditCreatorFlag)
 	}
-	if cmd.Flags().Changed("status") {
-		status := strings.ToLower(strings.TrimSpace(todoEditStatusFlag))
-		id := canonicalTodoIDForHint(args[0])
-		switch status {
-		case "open":
-			patch.Status = stringValue(status)
-		case "in_progress":
-			return fmt.Errorf("--status cannot start work; run `atm todo start %s` (add --reopen-reason when reopening review/done)", id)
-		case "review":
-			return fmt.Errorf("--status cannot submit work; run `atm todo submit %s --reason \"<result and evidence>\"`", id)
-		case "done":
-			return fmt.Errorf("--status cannot accept work; a human must run `atm todo done %s --reason \"<acceptance evidence>\"`; Agents use `atm todo submit %s --reason \"<result and evidence>\"`", id, id)
-		case "archived":
-			return fmt.Errorf("--status cannot archive work; run `atm todo archive %s`", id)
-		case "waiting", "blocked":
-			return fmt.Errorf("%s is not a lifecycle status; keep the Todo in_progress and run `atm todo edit %s --wake \"<observable condition>\"`", status, id)
-		default:
-			return fmt.Errorf("invalid --status %q; use open, or the explicit start/submit/done/archive command", todoEditStatusFlag)
-		}
-	}
 	if cmd.Flags().Changed("wake") {
 		patch.WakeCondition = stringValue(todoEditWakeFlag)
 	}
@@ -279,12 +262,55 @@ func runTodoEdit(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	deliverTodoMetadataEffects(result.Effects)
 	if jsonOutput {
 		output.JSON(result.Todo)
 		return nil
 	}
 	fmt.Printf("Updated %s: %s\n", result.Todo.ID, result.Todo.Title)
+	return nil
+}
+
+func runTodoReturnToOpen(cmd *cobra.Command, rawID string) error {
+	id := canonicalTodoIDForHint(rawID)
+	status := strings.ToLower(strings.TrimSpace(todoEditStatusFlag))
+	switch status {
+	case "open":
+	case "in_progress":
+		return fmt.Errorf("--status cannot start work; run `atm todo start %s` (add --reopen-reason when reopening review/done)", id)
+	case "review":
+		return fmt.Errorf("--status cannot submit work; run `atm todo submit %s --reason \"<result and evidence>\"`", id)
+	case "done":
+		return fmt.Errorf("--status cannot accept work; a human must run `atm todo done %s --reason \"<acceptance evidence>\"`; Agents use `atm todo submit %s --reason \"<result and evidence>\"`", id, id)
+	case "archived":
+		return fmt.Errorf("--status cannot archive work; run `atm todo archive %s`", id)
+	case "waiting", "blocked":
+		return fmt.Errorf("%s is not a lifecycle status; keep the Todo in_progress and run `atm todo edit %s --wake \"<observable condition>\"`", status, id)
+	default:
+		return fmt.Errorf("invalid --status %q; only open is accepted", todoEditStatusFlag)
+	}
+	for _, name := range []string{"title", "desc", "desc-file", "priority", "project", "source", "creator", "wake", "review-at", "maintenance-limit"} {
+		if cmd.Flags().Changed(name) {
+			return fmt.Errorf("--status cannot be combined with --%s; return the Todo to open first, then edit its metadata", name)
+		}
+	}
+
+	call := todoWorkflowCLICall("return-open")
+	result, err := workapp.Default.ReturnToOpen(cmd.Context(), call, workapp.ReturnToOpenInput{TodoID: rawID})
+	if err != nil {
+		return err
+	}
+	if err := workapp.Default.DeliverEffects(cmd.Context(), call, result.Effects, localWorkEffectExecutor{}); err != nil {
+		return err
+	}
+	if jsonOutput {
+		output.JSON(result.Todo)
+		return nil
+	}
+	if result.AlreadyOpen {
+		fmt.Printf("%s already open: %s\n", result.Todo.ID, result.Todo.Title)
+	} else {
+		fmt.Printf("Returned %s to open: %s\n", result.Todo.ID, result.Todo.Title)
+	}
 	return nil
 }
 
@@ -294,8 +320,6 @@ func deliverTodoMetadataEffects(effects []workapp.MetadataEffect) {
 		switch effect.Kind {
 		case workapp.MetadataEffectCreated:
 			notifyTodoEvent(&todo, notifyEventCreated)
-		case workapp.MetadataEffectEnteredReview:
-			notifyTodoEvent(&todo, notifyEventReview)
 		}
 	}
 }

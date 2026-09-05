@@ -1,5 +1,5 @@
 // Package sync owns the derived session index's refresh and freshness. Command
-// and IPC adapters ask it to run or report; they do not open the index, decide
+// and Web adapters ask it to run or report; they do not open the index, decide
 // which agents to scan, or reproduce the "do not create a database just to look
 // at it" rule.
 package sync
@@ -50,7 +50,7 @@ type StatusState struct {
 	LastSyncedFiles   int     `json:"last_synced_files"`
 }
 
-// StatusReport is the published freshness shape the desktop decodes.
+// StatusReport is the published freshness shape the browser workspace decodes.
 type StatusReport struct {
 	GeneratedAt string      `json:"generated_at"`
 	Index       StatusIndex `json:"index"`

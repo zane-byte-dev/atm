@@ -11,7 +11,7 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
   - package-ecosystem: swift
-    directory: /app/macos
+    directory: /app/voice
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

@@ -1,5 +1,10 @@
 export const themes = [
-  { id: 'minimal', name: '极简黑白', description: '黑白与浅灰，专注内容本身。', scheme: 'light' },
+  {
+    id: 'minimal',
+    name: 'ATM 原生',
+    description: '与 macOS 版本一致的蓝灰导航、冷灰列表和白色阅读面。',
+    scheme: 'light',
+  },
   { id: 'slate', name: '石墨雾蓝', description: '清爽的灰白底色，搭配柔和雾蓝。', scheme: 'light' },
   { id: 'sage', name: '鼠尾草绿', description: '带一点自然绿意，平静而轻盈。', scheme: 'light' },
   { id: 'sand', name: '暖砂', description: '温暖的纸张底色，搭配陶土色。', scheme: 'light' },

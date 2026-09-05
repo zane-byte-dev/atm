@@ -128,7 +128,7 @@ func SaveFeedback(ctx context.Context, db *sql.DB, feedback Feedback) error {
 
 // ClearFeedback removes a day's verdict so the engine's own conclusion applies
 // again. A correction has to be undoable: it overrides the computed badge for
-// that day indefinitely, and the app submits one on a single click.
+// that day indefinitely, and the browser submits one on a single click.
 func ClearFeedback(ctx context.Context, db *sql.DB, day string) error {
 	if _, err := time.Parse(time.DateOnly, day); err != nil {
 		return fmt.Errorf("invalid feedback day: %w", err)

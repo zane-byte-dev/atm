@@ -38,8 +38,8 @@ Independently trackable pieces become child todos the parent waits on.
 
 This is one API call, not an Agent loop, and it never dispatches work. It shares
 its credential, model and endpoint with collection classification and digests.
-In ATM.app, configure Settings > Model; CLI
-users can set DEEPSEEK_API_KEY. The default model is deepseek-v4-flash with
+In the browser workspace, configure Settings > Model; CLI users can set
+DEEPSEEK_API_KEY. The default model is deepseek-v4-flash with
 thinking disabled. Config or ATM_TEXT_MODEL_* can override model and endpoint.
 Every written analysis records "from <text_model_source>". Optional
 todo_refine_prompt guidance is appended after ATM's fixed safety and JSON rules.
@@ -50,7 +50,7 @@ A bare second pass usually reports "already clear": the card is already
 structured, so the model returns the same text. Pass --hint to say what this
 pass should change instead.
 
-Refining is always asked for. CLI todo add needs --refine; the desktop app
+Refining is always asked for. CLI todo add needs --refine; the browser workspace
 only runs this when a human triggers it, or on add when the opt-in
 todo_refine_on_add is turned on.`,
 	Example: `  atm todo refine t270

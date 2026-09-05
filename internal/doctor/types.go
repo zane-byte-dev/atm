@@ -1,5 +1,5 @@
 // Package doctor owns ATM's self-check: what it can see, how much of it it
-// understood, and every way the install can be quietly broken. Command and IPC
+// understood, and every way the install can be quietly broken. Command and Web
 // adapters render the report; they do not open the session index or derive
 // findings of their own.
 package doctor
@@ -46,15 +46,15 @@ type Issue struct {
 }
 
 // Summary is the count consumers show without reading the list. It is a struct
-// rather than a computed field so the published shape says the same thing to the
-// CLI's JSON and to the desktop.
+// rather than a computed field so the CLI and browser workspace publish the same
+// shape.
 type Summary struct {
 	Issues int `json:"issues"`
 }
 
 // Report is everything a check found. The JSON tags are the published contract:
-// `atm doctor --json` and the desktop's typed call both serialize this value, so
-// a field added here changes both on purpose rather than by accident.
+// `atm doctor --json` and the browser workspace both serialize this value, so a
+// field added here changes both on purpose rather than by accident.
 type Report struct {
 	CoverageWindow CoverageWindow              `json:"coverage_window"`
 	Sources        []Source                    `json:"sources"`

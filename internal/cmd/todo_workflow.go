@@ -113,7 +113,7 @@ func notifyTodoEvent(t *store.Todo, event string) {
 	postLocalBanner(title, subtitle, msg, "todo show "+t.ID)
 }
 
-// postLocalBanner raises one desktop notification, fire and forget.
+// postLocalBanner raises one system notification, fire and forget.
 //
 // `execute` is the argument string for a click-through back into this same
 // binary, and is only honoured by terminal-notifier — the osascript and

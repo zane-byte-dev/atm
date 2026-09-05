@@ -43,7 +43,7 @@ func init() {
 	install.Flags().BoolVar(&serveServicePrint, "print", false, "print the LaunchAgent plist without writing files or running launchctl")
 	install.Flags().BoolVar(&serveServiceDryRun, "dry-run", false, "same as --print")
 	uninstall := &cobra.Command{Use: "uninstall", Short: "Stop and remove this workspace's login service, keeping all data", Args: cobra.NoArgs, RunE: runServeUninstall,
-		Long: "Unload and remove only ATM's managed LaunchAgent for the selected data directory. Data, logs and the Go presence ownership marker remain. The old macOS App is not restarted or re-enabled."}
+		Long: "Unload and remove only ATM's managed LaunchAgent for the selected data directory. Data, logs and the Go presence ownership marker remain. No other ATM runtime is started or enabled."}
 	uninstall.Flags().BoolVar(&serveUninstallDryRun, "dry-run", false, "show the service target without unloading or removing it")
 	serveCmd.AddCommand(install, uninstall)
 }

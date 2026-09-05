@@ -95,8 +95,20 @@ func TestListTotalsFiltersStableOrderAndArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err = h.ListTodos(ctx, call, ListInput{})
-	if err != nil || result.Total != 4 || result.Counts["archived"] != 0 {
+	if err != nil || result.Total != 3 || result.Counts["all"] != 4 || result.Counts["archived"] != 0 {
 		t.Fatalf("restore=%+v err=%v", result, err)
+	}
+	result, err = h.ListTodos(ctx, call, ListInput{Status: "all"})
+	if err != nil || result.Total != 4 {
+		t.Fatalf("explicit all=%+v err=%v", result, err)
+	}
+	result, err = h.ListTodos(ctx, call, ListInput{Query: "archived"})
+	if err != nil || result.Total != 0 || result.Counts["done"] != 1 {
+		t.Fatalf("active search=%+v err=%v", result, err)
+	}
+	result, err = h.ListTodos(ctx, call, ListInput{Status: "all", Query: "archived"})
+	if err != nil || result.Total != 1 || result.Items[0].ID != "t2" {
+		t.Fatalf("all search=%+v err=%v", result, err)
 	}
 }
 

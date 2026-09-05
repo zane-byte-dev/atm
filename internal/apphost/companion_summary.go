@@ -5,13 +5,10 @@ import (
 	"errors"
 	"math"
 	"net/url"
-	"os"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
-	"github.com/zane-byte-dev/atm/internal/background"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 	"github.com/zane-byte-dev/atm/internal/work"
@@ -154,22 +151,16 @@ func (h *Host) companionSummaries(ctx context.Context) (CompanionTodos, Companio
 			return err
 		}
 
-		cache, cacheErr := background.ReadQuotaCache(h.dataDir)
 		quotaCtx, cancelQuota := context.WithTimeout(ctx, companionSectionReadTimeout)
-		cached, readErr := readCompanionQuotaHistory(quotaCtx, now.UTC())
+		cached, cache, readErr := h.readCachedQuotaSources(quotaCtx, now.UTC(), "", true)
 		cancelQuota()
-		if cacheErr == nil {
-			cached = mergeCompanionCachedQuota(cached, runtimeCachedQuota(cache, now.UTC()))
-			quota = projectCompanionQuota(cached)
-		} else if readErr == nil {
+		if readErr == nil {
 			quota = projectCompanionQuota(cached)
 		} else {
 			quota.Error = "额度暂不可用"
 		}
-		if cacheErr == nil {
-			projectCompanionQuotaCache(&quota, cache, now.UTC())
-		} else if !errors.Is(cacheErr, os.ErrNotExist) && quota.Error == "" {
-			quota.Error = "额度缓存暂不可用"
+		if cache != nil {
+			projectCompanionQuotaCache(&quota, *cache, now.UTC())
 		}
 		return ctx.Err()
 	})
@@ -177,88 +168,6 @@ func (h *Host) companionSummaries(ctx context.Context) (CompanionTodos, Companio
 		return todos, quota, err
 	}
 	return todos, quota, ctx.Err()
-}
-
-func runtimeCachedQuota(cache background.QuotaCache, now time.Time) CachedQuota {
-	result := CachedQuota{Source: "runtime_quota_cache", GeneratedAt: boundedCompanionText(cache.UpdatedAt, 64), Windows: []CachedQuotaWindow{}}
-	for agent, value := range cache.Snapshot.Agents {
-		if value == nil {
-			continue
-		}
-		observed, err := time.Parse(time.RFC3339, cache.UpdatedAtFor(agent))
-		if err != nil || observed.After(now.Add(time.Minute)) {
-			continue
-		}
-		for _, window := range value.Windows() {
-			if window == nil || window.WindowMinutes <= 0 {
-				continue
-			}
-			result.Windows = append(result.Windows, CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: value.Source, Plan: value.Plan, Trend: quotaTrendDTO(window.Trend)})
-		}
-	}
-	return result
-}
-
-func readCompanionQuotaHistory(ctx context.Context, now time.Time) (CachedQuota, error) {
-	result := CachedQuota{Source: "quota_history", GeneratedAt: now.Format(time.RFC3339), Windows: []CachedQuotaWindow{}}
-	db, err := store.OpenQuickReadOnly()
-	if errors.Is(err, store.ErrDatabaseMissing) {
-		return result, nil
-	}
-	if err != nil {
-		return result, err
-	}
-	defer db.Close()
-	if err := store.BoundReadWait(ctx, db, 200*time.Millisecond); err != nil {
-		return result, err
-	}
-	var exists int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='quota_history'`).Scan(&exists); err != nil || exists == 0 {
-		return result, err
-	}
-	rows, err := db.QueryContext(ctx, `SELECT q.agent,q.window_minutes,q.used_percent,q.resets_at,q.ts
-		FROM quota_history q JOIN (
-			SELECT agent,window_minutes,MAX(ts) ts FROM quota_history GROUP BY agent,window_minutes
-		) latest USING(agent,window_minutes,ts)
-		ORDER BY q.agent,q.window_minutes LIMIT 100`)
-	if err != nil {
-		return result, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var item CachedQuotaWindow
-		var ts int64
-		if err := rows.Scan(&item.Agent, &item.WindowMinutes, &item.UsedPercent, &item.ResetsAt, &ts); err != nil {
-			return result, err
-		}
-		item.ObservedAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
-		item.Stale = now.Sub(time.Unix(ts, 0)) > store.DefaultSyncStaleAfter
-		item.ResetElapsed = item.ResetsAt > 0 && item.ResetsAt <= now.Unix()
-		result.Windows = append(result.Windows, item)
-	}
-	return result, rows.Err()
-}
-
-func mergeCompanionCachedQuota(history, runtime CachedQuota) CachedQuota {
-	result := history
-	index := make(map[string]int, len(result.Windows))
-	for i, window := range result.Windows {
-		index[window.Agent+"\x00"+strconv.Itoa(window.WindowMinutes)] = i
-	}
-	for _, window := range runtime.Windows {
-		key := window.Agent + "\x00" + strconv.Itoa(window.WindowMinutes)
-		if at, ok := index[key]; ok {
-			result.Windows[at] = window
-		} else if len(result.Windows) < 100 {
-			index[key] = len(result.Windows)
-			result.Windows = append(result.Windows, window)
-		}
-	}
-	if len(runtime.Windows) > 0 {
-		result.Source = runtime.Source
-		result.GeneratedAt = runtime.GeneratedAt
-	}
-	return result
 }
 
 type rankedCompanionTodo struct {
@@ -283,10 +192,8 @@ func projectStoredCompanionTodos(value store.QuickTodoSnapshot) CompanionTodos {
 		switch row.MenuState {
 		case "review":
 			rank = 0
-		case "blocked":
-			rank = 1
 		case "due":
-			rank = 2
+			rank = 1
 		}
 		ranked = append(ranked, rankedCompanionTodo{todo: row.Todo, menuState: row.MenuState, rank: rank})
 	}
@@ -304,7 +211,7 @@ func projectStoredCompanionTodos(value store.QuickTodoSnapshot) CompanionTodos {
 		return ranked[i].todo.ID < ranked[j].todo.ID
 	})
 	result := projectCompanionTodosRanked(ranked)
-	result.Total = value.Summary.Review + value.Summary.Blocked + value.Summary.Due + value.Summary.PureWorking + value.Summary.Waiting
+	result.Total = value.Summary.Review + value.Summary.Working
 	result.Truncated = result.Total > len(result.Items)
 	return result
 }
@@ -321,15 +228,13 @@ func rankCompanionTodos(values []store.Todo, now time.Time) []rankedCompanionTod
 		switch todo.Status {
 		case store.TodoStatusReview:
 			item.rank, item.menuState = 0, "review"
-		case store.TodoStatusBlocked: // readable legacy rows
-			item.rank, item.menuState = 1, "blocked"
-		case store.TodoStatusInProgress, store.TodoStatusWaiting:
+		case store.TodoStatusInProgress:
 			if todo.ReviewAt != "" && todo.ReviewAt <= today {
-				item.rank, item.menuState = 2, "due"
+				item.rank, item.menuState = 1, "due"
 			} else if strings.TrimSpace(todo.WakeCondition) != "" || todo.ReviewAt != "" {
-				item.rank, item.menuState = 3, "waiting"
+				item.rank, item.menuState = 2, "waiting"
 			} else {
-				item.rank, item.menuState = 3, "working"
+				item.rank, item.menuState = 2, "working"
 			}
 		default:
 			continue

@@ -276,7 +276,7 @@ func TestAttentionJoinOrderingClearAndExpiry(t *testing.T) {
 	}
 }
 
-func TestSameSecondHooksKeepSourceOrderAndStartANewTurn(t *testing.T) {
+func TestSubsecondHooksKeepSourceOrderAndStartANewTurn(t *testing.T) {
 	r, clock := startFixture(t)
 	base := clock.now()
 	raw := map[agentevent.Kind]string{
@@ -316,8 +316,8 @@ func TestSameSecondHooksKeepSourceOrderAndStartANewTurn(t *testing.T) {
 		t.Fatalf("out-of-order delivery emitted stale transitions: %+v", feed)
 	}
 
-	// Legacy v1 senders used whole-second timestamps. A Started at the same
-	// instant after completion is treated as the next explicit turn boundary.
+	// A Started at the same instant after completion is an explicit next-turn
+	// boundary rather than a duplicate of the completed event.
 	next := started
 	next.At = completed.At
 	next.Text = "next turn"
@@ -328,42 +328,6 @@ func TestSameSecondHooksKeepSourceOrderAndStartANewTurn(t *testing.T) {
 		t.Fatalf("same-time next turn was suppressed: %q", got)
 	}
 
-	legacyID := "legacy-same-second"
-	legacyAt := base.Format(time.RFC3339)
-	legacy := func(event agentevent.Envelope, kind agentevent.Kind) agentevent.Envelope {
-		event.Event = kind
-		event.SessionID = legacyID
-		event.At = legacyAt
-		return event
-	}
-	legacyStarted := legacy(started, agentevent.KindStarted)
-	legacyAttention := legacy(attention, agentevent.KindAttention)
-	legacyResumed := legacy(resumed, agentevent.KindResumed)
-	legacyCompleted := legacy(completed, agentevent.KindCompleted)
-	for _, event := range []agentevent.Envelope{legacyStarted, legacyCompleted, legacyAttention, legacyResumed} {
-		if err := r.Apply(event); err != nil {
-			t.Fatal(err)
-		}
-	}
-	byID := func(id string) Session {
-		t.Helper()
-		for _, session := range r.Snapshot().Sessions {
-			if session.ID == id {
-				return session
-			}
-		}
-		t.Fatalf("session %q is missing", id)
-		return Session{}
-	}
-	if got := byID(legacyID).State; got != "completed" {
-		t.Fatalf("legacy same-second events rewound completion: %q", got)
-	}
-	if err := r.Apply(legacyStarted); err != nil {
-		t.Fatal(err)
-	}
-	if got := byID(legacyID).State; got != "busy" {
-		t.Fatalf("legacy same-second next turn was suppressed: %q", got)
-	}
 }
 
 func TestConcurrentSameSecondApplyConvergesOnLatestEvent(t *testing.T) {

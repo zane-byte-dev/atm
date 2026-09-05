@@ -373,7 +373,7 @@ func decideApproval(db *sql.DB, id, decision string, now int64, by, reason strin
 }
 
 // ClaimApprovalRun is the hard claim on execution: approved → running, and only
-// one caller can win. This is what stops a waiting gate and the app from both
+// one caller can win. This is what stops a waiting gate and the browser from both
 // running one approved command and sending the same message twice.
 func ClaimApprovalRun(db *sql.DB, id, ranBy string, pid int) error {
 	result, err := db.Exec(`UPDATE approvals SET status=?,ran_by=?,gate_pid=?

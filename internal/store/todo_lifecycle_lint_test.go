@@ -87,7 +87,7 @@ func TestLintTodoLifecycleSkipsBatchHeuristicsForBoundedMaintenance(t *testing.T
 }
 
 func TestCompletionReasonValidationAndLint(t *testing.T) {
-	for _, reason := range []string{"", "done", "通过 ATM 菜单栏完成", "通过 ATM 菜单栏验收", TodoGUICompletionReceipt} {
+	for _, reason := range []string{"", "done", TodoGUICompletionReceipt} {
 		if err := ValidateTodoCompletionReason(reason); err == nil {
 			t.Errorf("accepted generic completion reason %q", reason)
 		}
@@ -101,7 +101,7 @@ func TestCompletionReasonValidationAndLint(t *testing.T) {
 	if len(issues) != 1 || issues[0].Code != "generic_completion_reason" {
 		t.Fatalf("issues = %+v", issues)
 	}
-	for _, receipt := range []string{TodoGUICompletionReceipt, "通过 ATM 菜单栏完成", "通过 ATM 菜单栏验收"} {
+	for _, receipt := range []string{TodoGUICompletionReceipt} {
 		todo.ClosedReason = &receipt
 		if issues := LintTodoLifecycle(&TodoFile{Items: []Todo{todo}}, &todo, TodoLintRuntime{}); len(issues) != 0 {
 			t.Errorf("GUI receipt %q should not require evidence: %+v", receipt, issues)

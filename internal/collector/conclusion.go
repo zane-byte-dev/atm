@@ -31,7 +31,7 @@ func (service Service) saveConclusion(itemID, collection string) (store.Collecti
 		return store.CollectionItem{}, itemConflict(fmt.Sprintf("collection item %s conclusion is empty", item.ID), item.ID)
 	}
 	// Repeated clicks are idempotent. If the document was moved, refresh the
-	// stored collection so the App still opens the right library. If it was
+	// stored collection so the browser still opens the right library. If it was
 	// deleted, recreate it: the conclusion remains the durable source here.
 	if item.KnowledgeDocumentID != "" {
 		if document, getErr := knowledge.Get(config.AtmDir, item.KnowledgeDocumentID); getErr == nil {

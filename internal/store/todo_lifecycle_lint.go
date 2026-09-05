@@ -37,13 +37,7 @@ type TodoLintRuntime struct {
 const TodoGUICompletionReceipt = "通过 ATM GUI 完成"
 
 func isTodoGUICompletionReceipt(reason string) bool {
-	switch strings.ToLower(strings.Join(strings.Fields(reason), " ")) {
-	case "通过 atm gui 完成", "通过 atm 菜单栏完成", "通过 atm 菜单栏验收",
-		"通过菜单栏完成", "completed via atm menu bar":
-		return true
-	default:
-		return false
-	}
+	return strings.EqualFold(strings.Join(strings.Fields(reason), " "), TodoGUICompletionReceipt)
 }
 
 // IsGenericTodoCompletionReason recognizes UI/action receipts that contain no

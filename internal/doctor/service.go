@@ -372,7 +372,7 @@ func (service Service) collectionModelIssues() []Issue {
 		Severity: "warning", Domain: "collection", Code: "collection_model_unavailable",
 		Subject: config.TextModelName,
 		Detail:  "the built-in text model has no API Key, so nothing can be classified",
-		Suggestion: "save one in ATM.app under Settings > Model or with `atm config credential set`, " +
+		Suggestion: "save one under Settings > Model in the browser workspace or with `atm config credential set`, " +
 			"then verify it with `atm config test-text-model`",
 	}}
 }

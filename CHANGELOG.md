@@ -45,6 +45,11 @@ a database from a much older version. `atm backup` exists for exactly that case.
 
 ### Added
 
+- **重新构建 Go 服务不再让 Web 掉登录，菜单栏短暂断线也保留上次状态。** 浏览器会话现在由
+  `~/.atm/runtime/browser.key` 中的本地随机密钥签名；密钥权限为 `0600` 并跨服务重启保留，
+  进程级 `control.token` 仍然每次启动轮换。菜单栏在服务重启窗口显示重连状态、保留现有任务和额度摘要，
+  并把断线重试从 10 秒缩短到 2 秒。
+
 - **Todo 生命周期改走 typed IPC，App 少了 5 条 fork/exec 契约。** `start`、`done`、`archive`、
   `restore`、`delete` 从散在 Swift 里的 argv 数组变成 `todo.start` / `todo.done` /
   `todo.archive` / `todo.restore` / `todo.delete` 五个 typed method，直接调用既有的 Work

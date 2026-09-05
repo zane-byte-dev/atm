@@ -16,14 +16,12 @@ type BulkAction string
 const (
 	BulkDone BulkAction = "done"
 	BulkMove BulkAction = "move"
-	BulkEdit BulkAction = "edit"
 )
 
 type BulkInput struct {
 	Action    BulkAction `json:"action"`
 	TodoIDs   []string   `json:"todo_ids"`
 	Project   string     `json:"project,omitempty"`
-	Status    string     `json:"status,omitempty"`
 	Reason    string     `json:"reason,omitempty"`
 	Confirmed bool       `json:"confirmed"`
 }
@@ -73,29 +71,10 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 	if strings.TrimSpace(input.Project) != "" {
 		project = config.CanonicalProject(input.Project)
 	}
-	status := ""
-	if strings.TrimSpace(input.Status) != "" {
-		status, err = normalizeMetadataStatus(input.Status)
-		if err != nil {
-			return BulkResult{}, err
-		}
-	}
 	switch action {
 	case BulkMove:
 		if project == "" {
 			return BulkResult{}, lifecycleInvalidArgument("bulk move requires a project", "project", input.Project)
-		}
-	case BulkEdit:
-		if project == "" && status == "" {
-			return BulkResult{}, lifecycleInvalidArgument(
-				"bulk edit requires a project or status", "input", input,
-			)
-		}
-		if status != "" && status != store.TodoStatusOpen {
-			return BulkResult{}, lifecycleInvalidArgument(
-				"bulk edit may only return work to open; use start, submit, or done for lifecycle transitions",
-				"status", input.Status,
-			)
 		}
 	}
 
@@ -187,25 +166,6 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 				if err := transaction.enqueueOrReplaceEffect(call, EffectTodoUpdated, *todo, ""); err != nil {
 					return fmt.Errorf("enqueue bulk move effect for %s: %w", todo.ID, err)
 				}
-			case BulkEdit:
-				if project != "" {
-					todo.Project = project
-				}
-				if status != "" {
-					todo.Status = status
-				}
-				if todo.Status != store.TodoStatusInProgress {
-					todo.WakeCondition = ""
-					todo.ReviewAt = ""
-				}
-				if status != "" && todo.Status != store.TodoStatusInProgress {
-					if _, err := transaction.UnbindTodoSessions(todo.ID, "bulk-status:"+todo.Status); err != nil {
-						return fmt.Errorf("unbind bulk-edited todo %s: %w", todo.ID, err)
-					}
-				}
-				if err := transaction.enqueueOrReplaceEffect(call, EffectTodoUpdated, *todo, ""); err != nil {
-					return fmt.Errorf("enqueue bulk edit effect for %s: %w", todo.ID, err)
-				}
 			}
 		}
 
@@ -250,13 +210,11 @@ func (service Service) Bulk(ctx context.Context, call application.Call, input Bu
 func normalizeBulkAction(value BulkAction) (BulkAction, error) {
 	action := BulkAction(strings.ToLower(strings.TrimSpace(string(value))))
 	switch action {
-	case BulkDone, BulkMove, BulkEdit:
+	case BulkDone, BulkMove:
 		return action, nil
 	default:
-		// `drop` was an archive alias here. `todo archive` already takes a list of
-		// IDs, so batching it a second way only added a second spelling.
 		return "", lifecycleInvalidArgument(
-			fmt.Sprintf("unsupported bulk action %q (use done, move, or edit)", value), "action", value,
+			fmt.Sprintf("unsupported bulk action %q (use done or move)", value), "action", value,
 		)
 	}
 }

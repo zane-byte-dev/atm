@@ -32,9 +32,8 @@ func runTodoStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// Accepting work as done is the only closing transition left on this path:
-// abandoning became archival, which the retention use case owns. This used to
-// branch on a `done` flag to serve `todo drop` as well.
+// Accepting work as done is the human-owned closing transition; archival is a
+// separate retention operation.
 func runTodoDone(cmd *cobra.Command, args []string) error {
 	call := todoWorkflowCLICall("done")
 	id, sessionID := todoTransitionTarget(args)

@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
-	"github.com/zane-byte-dev/atm/internal/ipc"
 )
 
 const MaxRequestBytes = 2 * 1024 * 1024
@@ -43,38 +42,29 @@ type Options struct {
 	Capabilities  func() map[string]bool
 	Companion     func(context.Context, json.RawMessage, bool) (any, error)
 	NativeControl NativeControl
-	// BeforeUnlock stops background writers before the instance lock is released.
-	BeforeUnlock func(context.Context) error
 	// StartRuntime is called under the instance lock, before accepting HTTP.
 	StartRuntime func(Instance, func(...string)) (func(context.Context) error, error)
-	// AllowWrites enables only the explicit mutation methods in methods.go.
-	AllowWrites         bool
-	DataUpgradeRequired bool
-}
-
-type browserSession struct {
-	csrf    string
-	expires time.Time
 }
 
 type Server struct {
-	info          Instance
-	options       Options
-	http          *http.Server
-	listener      net.Listener
-	lock          *os.File
-	controlToken  string
-	cookieName    string
-	mu            sync.Mutex
-	tickets       map[string]time.Time
-	sessions      map[string]browserSession
-	done          chan struct{}
-	closeOnce     sync.Once
-	serveErr      error
-	events        *eventBroker
-	fingerprintMu sync.Mutex
-	fingerprints  map[string]string
-	devUI         http.Handler
+	info           Instance
+	options        Options
+	http           *http.Server
+	listener       net.Listener
+	lock           *os.File
+	controlToken   string
+	browserKey     []byte
+	cookieName     string
+	mu             sync.Mutex
+	tickets        map[string]time.Time
+	done           chan struct{}
+	closeOnce      sync.Once
+	serveErr       error
+	runtimeCleanup func(context.Context) error
+	events         *eventBroker
+	fingerprintMu  sync.Mutex
+	fingerprints   map[string]string
+	devUI          http.Handler
 }
 
 func Start(options Options) (*Server, error) {
@@ -92,6 +82,9 @@ func Start(options Options) (*Server, error) {
 	if options.Assets == nil && devUI == nil {
 		return nil, errors.New("this ATM build has no Web assets; install a full release or run make build")
 	}
+	if options.StartRuntime == nil {
+		return nil, errors.New("workspace runtime is required")
+	}
 	if devUI == nil {
 		if _, err := fs.Stat(options.Assets, "index.html"); err != nil {
 			return nil, fmt.Errorf("ATM Web assets are missing index.html: %w", err)
@@ -106,10 +99,11 @@ func Start(options Options) (*Server, error) {
 		return nil, err
 	}
 	runtimeDir := filepath.Join(dataDir, "runtime")
-	if options.DataUpgradeRequired {
-		options.AllowWrites = false
-	}
 	fail := func(err error) (*Server, error) { unlockInstance(lock); lock.Close(); return nil, err }
+	browserKey, err := loadOrCreateBrowserKey(runtimeDir)
+	if err != nil {
+		return fail(fmt.Errorf("load persistent browser credential: %w", err))
+	}
 	listener, err := net.Listen("tcp4", fmt.Sprintf("127.0.0.1:%d", options.Port))
 	if err != nil {
 		return fail(fmt.Errorf("listen on local ATM port: %w", err))
@@ -124,15 +118,11 @@ func Start(options Options) (*Server, error) {
 		listener.Close()
 		return fail(err)
 	}
-	mode := "workspace"
-	if options.StartRuntime != nil {
-		mode = "go"
-	}
 	server := &Server{
 		devUI:   devUI,
-		info:    Instance{SchemaVersion: 1, PID: os.Getpid(), InstanceID: instanceID, Origin: "http://" + listener.Addr().String(), Version: options.Version, DataDir: dataDir, Mode: mode, StartedAt: time.Now().UTC().Format(time.RFC3339)},
-		options: options, listener: listener, lock: lock, controlToken: controlToken,
-		cookieName: "atm_session_" + instanceID[:12], tickets: map[string]time.Time{}, sessions: map[string]browserSession{}, done: make(chan struct{}),
+		info:    Instance{SchemaVersion: 1, PID: os.Getpid(), InstanceID: instanceID, Origin: "http://" + listener.Addr().String(), Version: options.Version, DataDir: dataDir, Mode: "go", StartedAt: time.Now().UTC().Format(time.RFC3339)},
+		options: options, listener: listener, lock: lock, controlToken: controlToken, browserKey: browserKey,
+		cookieName: browserCookieName(dataDir), tickets: map[string]time.Time{}, done: make(chan struct{}),
 	}
 	server.http = &http.Server{Handler: server, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 20 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 * 1024}
 	if options.Fingerprints != nil {
@@ -147,19 +137,17 @@ func Start(options Options) (*Server, error) {
 		os.Remove(filepath.Join(runtimeDir, "control.token"))
 		return fail(err)
 	}
-	if options.StartRuntime != nil {
-		cleanup, err := options.StartRuntime(server.info, server.Invalidate)
-		if err != nil {
-			if server.events != nil {
-				server.events.close()
-			}
-			listener.Close()
-			os.Remove(filepath.Join(runtimeDir, "control.token"))
-			os.Remove(filepath.Join(runtimeDir, "server.json"))
-			return fail(err)
+	cleanup, err := options.StartRuntime(server.info, server.Invalidate)
+	if err != nil {
+		if server.events != nil {
+			server.events.close()
 		}
-		server.options.BeforeUnlock = cleanup
+		listener.Close()
+		os.Remove(filepath.Join(runtimeDir, "control.token"))
+		os.Remove(filepath.Join(runtimeDir, "server.json"))
+		return fail(err)
 	}
+	server.runtimeCleanup = cleanup
 	if server.events != nil {
 		go server.watchChanges()
 	}
@@ -199,10 +187,10 @@ func (server *Server) Close() {
 		if drainErr != nil {
 			_ = server.http.Close()
 		}
-		if server.options.BeforeUnlock != nil {
+		if server.runtimeCleanup != nil {
 			runtimeCtx, runtimeCancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer runtimeCancel()
-			if err := server.options.BeforeUnlock(runtimeCtx); err != nil {
+			if err := server.runtimeCleanup(runtimeCtx); err != nil {
 				server.mu.Lock()
 				server.serveErr = err
 				server.mu.Unlock()
@@ -258,11 +246,6 @@ func (server *Server) pruneAuthLocked() {
 	for key, expires := range server.tickets {
 		if !now.Before(expires) {
 			delete(server.tickets, key)
-		}
-	}
-	for key, session := range server.sessions {
-		if !now.Before(session.expires) {
-			delete(server.sessions, key)
 		}
 	}
 }
@@ -327,32 +310,28 @@ func (server *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		server.fail(w, 401, "unauthorized", "connect with atm serve --open")
 		return
 	}
-	server.mu.Lock()
-	server.pruneAuthLocked()
-	session, ok := server.sessions[cookie.Value]
-	server.mu.Unlock()
+	session, ok := decodeBrowserSession(server.browserKey, cookie.Value, time.Now())
 	if !ok {
 		server.fail(w, 401, "unauthorized", "browser connection expired; run atm serve --open")
 		return
 	}
 	if r.URL.Path == "/api/v1/bootstrap" && r.Method == http.MethodGet {
 		capabilities := map[string]any{
-			"todo_write": server.options.AllowWrites, "workspace_write": server.options.AllowWrites,
-			"data_upgrade_required": server.options.DataUpgradeRequired,
-			"workspaces":            []string{"tasks", "collection", "agents", "knowledge", "usage", "ai-day", "settings"},
-			"sse":                   server.events != nil, "poll_interval_ms": 5000, "background_sync": false, "agent_hooks": false,
-			"collection_run": false, "models": false, "runtime_jobs": false, "attachments_upload": server.options.AllowWrites && server.options.Upload != nil,
+			"todo_write": true, "workspace_write": true,
+			"workspaces": []string{"tasks", "collection", "agents", "knowledge", "usage", "ai-day", "settings"},
+			"sse":        server.events != nil, "poll_interval_ms": 5000, "background_sync": false, "agent_hooks": false,
+			"collection_run": false, "models": false, "runtime_jobs": false, "attachments_upload": server.options.Upload != nil,
 		}
 		if server.options.Capabilities != nil {
 			runtimeCapabilities := server.options.Capabilities()
 			for _, name := range []string{"background_sync", "agent_hooks", "collection_run", "models", "runtime_jobs"} {
-				capabilities[name] = server.options.AllowWrites && runtimeCapabilities[name]
+				capabilities[name] = runtimeCapabilities[name]
 			}
 		}
 		server.respond(w, 200, map[string]any{"version": server.info.Version, "instance_id": server.info.InstanceID, "mode": server.info.Mode, "csrf_token": session.csrf, "capabilities": capabilities})
 		return
 	}
-	call := application.Call{RequestID: ipc.NewRequestID(), Actor: application.Actor{Kind: application.ActorHuman, Origin: application.OriginWeb}}
+	call := application.Call{RequestID: newRequestID(), Actor: application.Actor{Kind: application.ActorHuman, Origin: application.OriginWeb}}
 	if r.URL.Path == "/api/v1/events" {
 		server.serveEvents(w, r, session)
 		return
@@ -379,14 +358,6 @@ func (server *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		server.fail(w, 404, "not_found", "unknown workspace method")
 		return
 	}
-	if write && !server.options.AllowWrites {
-		message := "this workspace is read-only"
-		if server.options.DataUpgradeRequired {
-			message += "; stop the workspace and run atm serve migrate to back up and upgrade its database"
-		}
-		server.fail(w, 403, "forbidden", message)
-		return
-	}
 	body, ok := readJSONBody(w, r)
 	if !ok {
 		return
@@ -406,7 +377,7 @@ func (server *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if write {
-		server.Invalidate(workspaceWriteDomains(method)...)
+		server.Invalidate()
 	}
 	server.respondID(w, 200, call.RequestID, data, nil)
 }
@@ -431,12 +402,12 @@ func (server *Server) exchange(w http.ResponseWriter, r *http.Request) {
 		server.fail(w, 400, "invalid_argument", "invalid connection ticket request")
 		return
 	}
-	token, err := randomToken()
+	session, err := newBrowserSession(time.Now())
 	if err != nil {
 		server.fail(w, 500, "internal", "cannot create browser connection")
 		return
 	}
-	csrf, err := randomToken()
+	value, err := encodeBrowserSession(server.browserKey, session)
 	if err != nil {
 		server.fail(w, 500, "internal", "cannot create browser connection")
 		return
@@ -453,21 +424,15 @@ func (server *Server) exchange(w http.ResponseWriter, r *http.Request) {
 	// Opening another tab must not replace the browser-wide cookie and break
 	// the CSRF token held by tabs which are already editing a task.
 	if existing, cookieErr := r.Cookie(server.cookieName); cookieErr == nil {
-		if previous, exists := server.sessions[existing.Value]; exists {
+		if previous, valid := decodeBrowserSession(server.browserKey, existing.Value, time.Now()); valid {
 			server.mu.Unlock()
 			server.respond(w, 200, map[string]string{"csrf_token": previous.csrf})
 			return
 		}
 	}
-	if len(server.sessions) >= 32 {
-		server.mu.Unlock()
-		server.fail(w, 429, "busy", "too many browser sessions; restart the workspace to reconnect")
-		return
-	}
-	server.sessions[token] = browserSession{csrf: csrf, expires: time.Now().Add(12 * time.Hour)}
 	server.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: server.cookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: 12 * 60 * 60})
-	server.respond(w, 200, map[string]string{"csrf_token": csrf})
+	http.SetCookie(w, &http.Cookie{Name: server.cookieName, Value: value, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, MaxAge: int(browserSessionLifetime.Seconds()), Expires: session.expiresAt})
+	server.respond(w, 200, map[string]string{"csrf_token": session.csrf})
 }
 
 func (server *Server) serveControl(w http.ResponseWriter, r *http.Request) {
@@ -492,7 +457,7 @@ func (server *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 			}
 			data, err := server.options.Companion(r.Context(), body, strings.HasSuffix(r.URL.Path, "/ack"))
 			if err != nil {
-				server.applicationError(w, ipc.NewRequestID(), err)
+				server.applicationError(w, newRequestID(), err)
 				return
 			}
 			server.respond(w, 200, data)
@@ -503,15 +468,7 @@ func (server *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 				server.fail(w, 503, "unavailable", "native control runtime is unavailable")
 				return
 			}
-			if nativeControlWrites(nativeMethod) && !server.options.AllowWrites {
-				message := "this workspace is read-only"
-				if server.options.DataUpgradeRequired {
-					message += "; stop the workspace and run atm serve migrate to back up and upgrade its database"
-				}
-				server.fail(w, 403, "forbidden", message)
-				return
-			}
-			requestID := ipc.NewRequestID()
+			requestID := newRequestID()
 			call := application.Call{RequestID: requestID, Actor: application.Actor{Kind: application.ActorHuman, Origin: application.OriginNativeControl}}
 			data, err := server.options.NativeControl(r.Context(), call, nativeMethod, body)
 			if err != nil {
@@ -540,7 +497,7 @@ func (server *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 		}
 		url, err := server.BrowserURL()
 		if err != nil {
-			server.applicationError(w, ipc.NewRequestID(), err)
+			server.applicationError(w, newRequestID(), err)
 			return
 		}
 		server.respond(w, 200, map[string]string{"url": url})
@@ -563,10 +520,6 @@ func nativeControlMethod(path string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func nativeControlWrites(method string) bool {
-	return method == "session.sync"
 }
 
 func readJSONBody(w http.ResponseWriter, r *http.Request) (json.RawMessage, bool) {
@@ -706,14 +659,15 @@ func (server *Server) applicationError(w http.ResponseWriter, id string, err err
 }
 
 func (server *Server) respond(w http.ResponseWriter, status int, data any) {
-	server.respondID(w, status, ipc.NewRequestID(), data, nil)
+	server.respondID(w, status, newRequestID(), data, nil)
 }
 func (server *Server) fail(w http.ResponseWriter, status int, code, message string) {
 	writeFailure(w, status, code, message)
 }
 func writeFailure(w http.ResponseWriter, status int, code, message string) {
-	writeEnvelope(w, status, ipc.NewRequestID(), nil, map[string]any{"code": code, "message": message, "retryable": false})
+	writeEnvelope(w, status, newRequestID(), nil, map[string]any{"code": code, "message": message, "retryable": false})
 }
+
 func (server *Server) respondID(w http.ResponseWriter, status int, id string, data any, err any) {
 	writeEnvelope(w, status, id, data, err)
 }

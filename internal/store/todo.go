@@ -88,17 +88,11 @@ const (
 	TodoStatusReview     = "review"
 	TodoStatusDone       = "done"
 
-	// Legacy values remain readable for migrations, backups and compatibility
-	// tests. Public mutation paths never write them after schema v51.
-	TodoStatusWaiting = "waiting"
-	TodoStatusBlocked = "blocked"
-	TodoStatusDropped = "dropped"
-
 	TodoTagMaintenance = "maintenance"
 )
 
 func TodoIsActive(t Todo) bool {
-	return t.Status != TodoStatusDone && t.Status != TodoStatusDropped
+	return t.Status != TodoStatusDone
 }
 
 func TodoHasTag(t Todo, tag string) bool {
@@ -561,13 +555,8 @@ func SyncTodoDocPlan(todoID, explanation string, items []TodoPlanDocumentItem) e
 }
 
 // todoStatusDisplay writes the Status line on a Todo's markdown card. The four
-// labels are the same words the App shows, so a card and the UI never describe
+// labels are the same words the UI shows, so a card and the UI never describe
 // one Todo differently.
-//
-// waiting, blocked and dropped were labelled here too. They are no longer
-// lifecycle states — waiting is presentation on in_progress, and dropped became
-// archival — so a card still carrying one falls through and prints the raw
-// value rather than being translated into a vocabulary nothing else uses.
 func todoStatusDisplay(status string) string {
 	switch status {
 	case "open":

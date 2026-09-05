@@ -22,12 +22,9 @@ import (
 type Service struct {
 	Connectors    *Registry
 	RegistryError error
-	// Fetcher is retained as a narrow injection point for existing embedders and
-	// tests. Production routing uses Connectors and selects by source.Connector.
-	Fetcher    Fetcher
-	Extractor  Extractor
-	Summarizer Summarizer
-	Now        func() time.Time
+	Extractor     Extractor
+	Summarizer    Summarizer
+	Now           func() time.Time
 	// ApplyCollectionEnabled is the config persistence port behind the global
 	// collection switch. Nil uses config.Default in production.
 	ApplyCollectionEnabled func(bool) (bool, error)
@@ -57,7 +54,7 @@ type BlockedConnector struct {
 	// this run's own failure, which the next run dates from the ledger.
 	RetryAt int64 `json:"retry_at,omitempty"`
 	// LoginCommand is the connector's declared way back in, carried so the CLI and
-	// the desktop can offer it without either of them reading config themselves.
+	// the browser can offer it without either of them reading config themselves.
 	LoginCommand string `json:"login_command,omitempty"`
 }
 
@@ -107,7 +104,7 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 		return RunReport{}, err
 	}
 	defer lock.Close()
-	if service.Connectors == nil && service.Fetcher == nil {
+	if service.Connectors == nil {
 		registry, err := DefaultRegistry()
 		if err != nil {
 			return RunReport{}, err
@@ -468,7 +465,7 @@ func (service Service) mergeRunInsights(ctx context.Context, db *sql.DB,
 // call, and nothing new is being claimed. It exists because the invariant this
 // path is for, one round leaves one record, must not depend on the endpoint being
 // up, and because the per-topic records are deleted either way. Which one
-// happened is recorded in reason, where the App shows it.
+// happened is recorded in reason, where the browser shows it.
 func (service Service) mergedInsightDecision(ctx context.Context, source store.CollectionSource,
 	insights []runInsight, now time.Time) Decision {
 	items := make([]store.CollectionItem, 0, len(insights))
@@ -549,18 +546,11 @@ func joinedInsightSummaries(items []store.CollectionItem) string {
 	return strings.Join(lines, "\n")
 }
 
-func (service Service) fetcherFor(source store.CollectionSource) (Fetcher, error) {
-	if service.Connectors != nil {
-		connector, err := service.Connectors.Resolve(source.Connector)
-		if err != nil {
-			return nil, err
-		}
-		return connector, nil
+func (service Service) fetcherFor(source store.CollectionSource) (Connector, error) {
+	if service.Connectors == nil {
+		return nil, fmt.Errorf("collection connector is not configured: %s", source.Connector)
 	}
-	if service.Fetcher != nil {
-		return service.Fetcher, nil
-	}
-	return nil, fmt.Errorf("collection connector is not configured: %s", source.Connector)
+	return service.Connectors.Resolve(source.Connector)
 }
 
 func unhandledMessages(messages []Message, handled map[string]struct{}) []Message {
@@ -1227,14 +1217,7 @@ func createDecision(batch MessageBatch, decision Decision) (string, error) {
 // collectionSupplementMarker tags a 补充 that collection wrote, so the note can
 // be tied back to the item that wrote it and written again idempotently.
 //
-// Named rather than inlined because it is a contract with a second codebase: the
-// App matches this exact literal to keep the marker out of the task timeline
-// (ATMTodoProgressEntry.displayText in
-// app/macos/Sources/ATMMenuBarApp/Models.swift), and Todo documents on disk
-// already carry it. It says 钉钉 even though nothing here is DingTalk-specific —
-// that is the cost of a literal shared with documents already written, so a
-// second connector's supplements will read 钉钉采集 until both sides learn a new
-// tag and the old one stays understood.
+// Keep the marker in one place because it is persisted in Todo documents.
 const collectionSupplementMarker = "钉钉采集"
 
 // appendDecision records what a batch adds to work an existing Todo already
@@ -1262,7 +1245,7 @@ func appendDecision(batch MessageBatch, decision Decision) (string, error) {
 	// person working the Todo reached. It is also where Revert writes its
 	// compensating note, so an append and its undo read as one thread.
 	//
-	// The fingerprint goes in an HTML comment because the App strips exactly this
+	// The fingerprint goes in an HTML comment because the browser strips exactly this
 	// shape out of the task timeline: the entry reads as the one sentence the chat
 	// added, and the marker stays on disk to tie it back to the collection item.
 	fingerprintMarker := collectionAppendMarker(batch.Fingerprint)

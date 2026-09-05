@@ -211,7 +211,7 @@ func (QueryService) Items(ctx context.Context, input WorkspaceCollectionListInpu
 	args := []any{input.SourceID, input.SourceID}
 	switch input.State {
 	case "", "active":
-		where += " AND archived_at=0"
+		where += " AND archived_at=0 AND action<>'ignore'"
 	case "unread":
 		where += " AND archived_at=0 AND read_at=0"
 	case "read":

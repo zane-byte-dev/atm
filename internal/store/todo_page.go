@@ -98,7 +98,9 @@ func ReadTodoPage(ctx context.Context, input TodoPageQuery) (TodoPage, error) {
 	where, args := todoPageSelection(input.Status, scope, scopeArgs)
 	if input.Status == "archived" {
 		result.Total = result.Counts["archived"]
-	} else if input.Status == "" || input.Status == "all" {
+	} else if input.Status == "" {
+		result.Total = result.Counts[TodoStatusOpen] + result.Counts[TodoStatusInProgress] + result.Counts[TodoStatusReview]
+	} else if input.Status == "all" {
 		result.Total = result.Counts["all"]
 	} else {
 		result.Total = result.Counts[input.Status]
@@ -182,7 +184,9 @@ func todoPageSelection(status, scope string, scopeArgs []any) (string, []any) {
 		return where + join + "archived_at IS NOT NULL", args
 	}
 	where += join + "archived_at IS NULL"
-	if status != "" && status != "all" {
+	if status == "" {
+		where += " AND status<>'done'"
+	} else if status != "all" {
 		where += " AND status=?"
 		args = append(args, status)
 	}

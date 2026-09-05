@@ -206,17 +206,17 @@ func TestEditRefusesAMaintenanceLimitOnClosedWorkButStillClearsIt(t *testing.T) 
 	}
 }
 
-func TestEditReturnsToOpenAndCommitsBindingPolicyThenSyncsDocument(t *testing.T) {
+func TestEditCannotReopenDoneTodoAndKeepsClosureAudit(t *testing.T) {
 	withTempWorkStore(t)
+	closed, reason := "2026-09-01", "accepted after review"
+	startTS, doneTS := int64(10), int64(20)
 	todo := store.Todo{
 		ID: "t1", Title: "Old title", Description: "Old requirement", Priority: "P1",
-		Status: store.TodoStatusInProgress, Project: "old", Created: store.Today(),
+		Status: store.TodoStatusDone, Project: "old", Created: store.Today(),
+		Closed: &closed, ClosedReason: &reason, StartTS: &startTS, DoneTS: &doneTS,
 	}
 	seedWorkTodos(t, todo)
 	if _, err := store.EnsureTodoDoc(&todo); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "edit-session", TodoID: "t1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -227,26 +227,24 @@ func TestEditReturnsToOpenAndCommitsBindingPolicyThenSyncsDocument(t *testing.T)
 			Description: stringPointerForTest("New requirement"),
 			Priority:    stringPointerForTest("p0"),
 			Project:     stringPointerForTest(" atm "),
-			Status:      stringPointerForTest("open"),
 		},
 	})
 	if err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
-	if result.PreviousStatus != store.TodoStatusInProgress || result.Todo.Title != "New title" ||
-		result.Todo.Priority != "P0" || result.Todo.Project != "atm" ||
-		result.Todo.Status != store.TodoStatusOpen || result.Todo.WakeCondition != "" || result.Todo.ReviewAt != "" {
+	if result.Todo.Title != "New title" || result.Todo.Priority != "P0" || result.Todo.Project != "atm" ||
+		result.Todo.Status != store.TodoStatusDone || result.Todo.Closed == nil || *result.Todo.Closed != closed ||
+		result.Todo.ClosedReason == nil || *result.Todo.ClosedReason != reason ||
+		result.Todo.StartTS == nil || *result.Todo.StartTS != startTS || result.Todo.DoneTS == nil || *result.Todo.DoneTS != doneTS {
 		t.Fatalf("result = %+v", result)
 	}
-	if len(result.Effects) != 0 {
-		t.Fatalf("effects = %+v", result.Effects)
+	persisted, err := store.LoadTodosReadOnly()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if binding, err := store.CurrentTodoBinding("edit-session"); err != nil || binding != nil {
-		t.Fatalf("binding after Edit = %+v, err=%v", binding, err)
-	}
-	history, err := store.ListTodoSessionBindings("t1")
-	if err != nil || len(history) != 1 || history[0].Reason != "status-style:open" {
-		t.Fatalf("binding history = %+v, err=%v", history, err)
+	if current := store.FindTodo(persisted, "t1"); current == nil || current.Status != store.TodoStatusDone ||
+		current.ClosedReason == nil || *current.ClosedReason != reason || current.DoneTS == nil || *current.DoneTS != doneTS {
+		t.Fatalf("persisted lifecycle changed through metadata edit: %+v", current)
 	}
 	document, err := store.ReadTodoDoc("t1")
 	if err != nil || !strings.Contains(document, "# New title") || !strings.Contains(document, "New requirement") {
@@ -254,43 +252,30 @@ func TestEditReturnsToOpenAndCommitsBindingPolicyThenSyncsDocument(t *testing.T)
 	}
 }
 
-func TestEditRollsBackTodoWhenBindingUnbindFails(t *testing.T) {
+func TestEditWaitMetadataKeepsTheActiveBinding(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t, store.Todo{
-		ID: "t1", Title: "Rollback edit", Priority: "P1",
+		ID: "t1", Title: "Keep working", Priority: "P1",
 		Status: store.TodoStatusInProgress, Created: store.Today(),
 	})
 	if _, err := store.BindTodoSession(store.TodoSessionBinding{SessionID: "edit-session", TodoID: "t1"}); err != nil {
 		t.Fatal(err)
 	}
-	db, err := store.Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = db.Exec(`CREATE TRIGGER fail_metadata_edit_unbind
-		BEFORE UPDATE OF unbound_at ON todo_session_bindings
-		WHEN NEW.reason = 'status-style:open'
-		BEGIN SELECT RAISE(ABORT, 'injected metadata unbind failure'); END`)
-	db.Close()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = Default.Edit(context.Background(), metadataTestCall(application.ActorHuman, ""), EditInput{
-		TodoID: "t1", Patch: EditPatch{Status: stringPointerForTest(store.TodoStatusOpen)},
+	result, err := Default.Edit(context.Background(), metadataTestCall(application.ActorHuman, ""), EditInput{
+		TodoID: "t1", Patch: EditPatch{WakeCondition: stringPointerForTest("external release")},
 	})
-	if !errors.Is(err, application.ErrUnavailable) {
-		t.Fatalf("Edit error = %v, want unavailable", err)
+	if err != nil || result.Todo.WakeCondition != "external release" {
+		t.Fatalf("Edit = %+v, err=%v", result, err)
 	}
 	todos, loadErr := store.LoadTodosReadOnly()
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
-	if todo := store.FindTodo(todos, "t1"); todo == nil || todo.Status != store.TodoStatusInProgress {
-		t.Fatalf("todo after rollback = %+v", todo)
+	if todo := store.FindTodo(todos, "t1"); todo == nil || todo.Status != store.TodoStatusInProgress || todo.WakeCondition != "external release" {
+		t.Fatalf("persisted todo = %+v", todo)
 	}
 	if binding, bindErr := store.CurrentTodoBinding("edit-session"); bindErr != nil || binding == nil {
-		t.Fatalf("binding after rollback = %+v, err=%v", binding, bindErr)
+		t.Fatalf("binding after wait metadata edit = %+v, err=%v", binding, bindErr)
 	}
 }
 

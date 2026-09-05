@@ -47,12 +47,6 @@ type ExternalState struct {
 	CheckedAt   int64  `json:"checked_at"`
 }
 
-// Fetcher is the legacy single-connector injection point kept for embedders and
-// tests. New integrations should implement Connector and register by ID.
-type Fetcher interface {
-	Fetch(context.Context, store.CollectionSource, int64) ([]Message, int64, error)
-}
-
 // Connector is the minimum capability required by automatic collection. The
 // identifier is persisted with every source, run, item, checkpoint and message,
 // so it is a stable protocol name rather than a display label.

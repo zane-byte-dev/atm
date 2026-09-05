@@ -1,13 +1,12 @@
 // Package logging records what went wrong on disk, so a failure that happened
 // yesterday can still be diagnosed today.
 //
-// Before this, a CLI error reached stderr and died with the process, and the App
-// had one NSLog line in the whole codebase. That is fine while someone is
-// watching a terminal and useless for everything else ATM does: the App refreshes
-// on a timer, collection runs in the background, and hooks run unattended. Those
-// failures were invisible unless they happened to be on screen at the time, and
-// an intermittent one — failing once a day, fine otherwise — looked identical to
-// no failure at all.
+// A CLI error otherwise reaches stderr and dies with the process. That is fine
+// while someone is watching a terminal and useless for everything else ATM
+// does: the workspace refreshes on a timer, collection runs in the background,
+// and hooks run unattended. Those failures are invisible unless they happen to
+// be on screen at the time, and an intermittent one — failing once a day, fine
+// otherwise — looks identical to no failure at all.
 //
 // Three rules the format and the call sites both depend on:
 //
@@ -48,13 +47,13 @@ const (
 	keptRotations = 1
 )
 
-// Dir is where both the CLI and the App write. Under ~/.atm rather than
+// Dir is where ATM processes write logs. Under ~/.atm rather than
 // ~/Library/Logs/ATM so that ATM's own data stays in one place, which is what
 // makes `atm backup` and `atm diagnose` able to reason about it — see the "ATM
 // 数据自有" principle in DESIGN.md.
 func Dir() string { return filepath.Join(config.AtmDir, "logs") }
 
-// Path is the CLI's log file. The App writes app.log beside it.
+// Path is the shared Go runtime log file.
 func Path() string { return filepath.Join(Dir(), "cli.log") }
 
 var mutex sync.Mutex
@@ -101,8 +100,8 @@ func Failure(event, command string, err error, fields map[string]any) {
 // for whoever ran the command; the log's job is what failed and where, and it is
 // read by people the user forwarded a support bundle to.
 //
-// Exported so the App can apply the same rule to the CLI error text it forwards
-// into app.log.
+// RedactQuoted is exported so adapters can apply the same content rule before
+// forwarding an error.
 func RedactQuoted(message string) string {
 	if !strings.Contains(message, `"`) {
 		return message

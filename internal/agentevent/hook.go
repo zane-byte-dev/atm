@@ -49,14 +49,14 @@ type Input struct {
 }
 
 // preToolAttention lists the tools whose call *is* a dialog the user has to
-// answer, keyed to the reason the notch should show.
+// answer, keyed to the reason the activity feed should show.
 //
 // PreToolUse fires for every tool, so the payload's tool name — not the reason
 // baked into the command line — decides here. AskUserQuestion earns its place
 // because Claude Code emits no notification for it at all: in 2.1.211 the only
 // notify call sites are the permission dialog, the two elicitation dialogs,
 // idle_prompt, auth_success, and the background-job bands. The question dialog
-// is not one of them, so without this hook the notch stays dark for the entire
+// is not one of them, so without this hook the activity feed stays quiet for the entire
 // time the user is being asked something. idle_prompt does not cover the gap
 // either — the turn is still in flight while the dialog is open, so its
 // not-busy guard suppresses it.
@@ -67,7 +67,7 @@ var preToolAttention = map[string]string{
 // notificationKinds maps Notification matchers onto normalized events. A
 // matcher that is absent from this table is deliberately dropped: auth_success
 // and the elicitation_* completions are not moments where the agent is waiting
-// on you, and surfacing them would make the notch cry wolf.
+// on you, and surfacing them would make the activity feed cry wolf.
 //
 // idle_prompt is dropped for the same reason, and it is worth spelling out
 // because the name reads like the opposite. It does not fire while a turn is
@@ -78,7 +78,7 @@ var preToolAttention = map[string]string{
 // agent is blocked on you"; it means "the agent finished and you have not come
 // back yet". Surfacing it turned every completed turn orange a minute later,
 // claiming the finished work still needed confirmation — and because attention
-// outranks completion in the notch, it also displaced the completion card that
+// outranks completion in the activity feed, it also displaced the completion card that
 // was telling the truth.
 var notificationKinds = map[string]Kind{
 	"permission_prompt":    KindAttention,
@@ -92,7 +92,7 @@ var notificationKinds = map[string]Kind{
 }
 
 // FromHook converts a hook payload into an envelope. The boolean is false for
-// events that are valid but carry no notch meaning, which the caller treats as
+// events that are valid but carry no activity meaning, which the caller treats as
 // success — a hook must never fail just because we ignore its event.
 func FromHook(in Input) (Envelope, bool, error) {
 	if !isHookSource(in.Source) {
@@ -257,7 +257,7 @@ func eventText(payload map[string]any) string {
 }
 
 // questionText pulls the first question out of an AskUserQuestion call. That
-// event carries no message field, so without this the notch would only know
+// event carries no message field, so without this the activity feed would only know
 // that something is being asked, not what — and "扫一眼" is the whole point of
 // lighting it up.
 func questionText(payload map[string]any) string {

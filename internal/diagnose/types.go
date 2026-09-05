@@ -48,16 +48,6 @@ type Platform struct {
 	CPUs      int    `json:"cpus"`
 }
 
-type App struct {
-	Found         bool     `json:"found"`
-	Path          string   `json:"path,omitempty"`
-	ShortVersion  string   `json:"short_version,omitempty"`
-	BundleVersion string   `json:"bundle_version,omitempty"`
-	DashboardV    int      `json:"cli_dashboard_schema_version"`
-	InspectError  string   `json:"inspect_error,omitempty"`
-	SearchedPaths []string `json:"searched_paths"`
-}
-
 // DataEntry describes one top-level entry under ~/.atm by shape only. Names are
 // never recursed into: a knowledge file's name is its title, and a support bundle
 // has no business carrying those.
@@ -86,7 +76,6 @@ type Report struct {
 	GeneratedAt string               `json:"generated_at"`
 	ATM         ATM                  `json:"atm"`
 	Platform    Platform             `json:"platform"`
-	App         App                  `json:"app"`
 	Sync        syncapp.StatusReport `json:"sync"`
 	DataDir     []DataEntry          `json:"data_dir"`
 	Doctor      doctorapp.Report     `json:"doctor"`

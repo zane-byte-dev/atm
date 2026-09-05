@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -35,6 +36,34 @@ func openTempDB(t *testing.T) *sql.DB {
 		}
 	})
 	return db
+}
+
+func TestReportingRowsExposeCanonicalInputFields(t *testing.T) {
+	rows := []any{
+		StatsResult{FreshInputTokens: 1, TotalInputTokens: 2},
+		ModelStatsResult{FreshInputTokens: 1, TotalInputTokens: 2},
+		ModelDayStatsResult{FreshInputTokens: 1, TotalInputTokens: 2},
+		ProjectDayStatsResult{FreshInputTokens: 1, TotalInputTokens: 2},
+		DayStatsResult{FreshInputTokens: 1, TotalInputTokens: 2},
+		SessionStatsResult{FreshInputTokens: 1, TotalInputTokens: 2},
+		RequestStatsResult{FreshInputTokens: 1, TotalInputTokens: 2},
+	}
+	for _, row := range rows {
+		encoded, err := json.Marshal(row)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if fields["fresh_input_tokens"] != float64(1) || fields["total_input_tokens"] != float64(2) {
+			t.Fatalf("canonical token fields missing from %T: %s", row, encoded)
+		}
+		if _, exists := fields["input_tokens"]; exists {
+			t.Fatalf("input_tokens alias remains on %T: %s", row, encoded)
+		}
+	}
 }
 
 func TestUpsertSessionPersistsMessagesToolsAndUsage(t *testing.T) {
@@ -285,12 +314,12 @@ func TestStatsUsesActivityTimeForResumedSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(stats) != 1 || len(modelStats) != 1 || stats[0].Sessions != 1 || stats[0].Queries != 1 ||
-		stats[0].InputTokens != 20 || stats[0].OutputTokens != 2 || stats[0].CostUSD != modelStats[0].CostUSD {
+		stats[0].TotalInputTokens != 20 || stats[0].OutputTokens != 2 || stats[0].CostUSD != modelStats[0].CostUSD {
 		t.Fatalf("stats = %#v", stats)
 	}
 }
 
-func TestSessionUsageStatsUsesEventWindowAndRanksPrimaryModel(t *testing.T) {
+func TestSessionStatsUsesEventWindowAndRanksPrimaryModel(t *testing.T) {
 	db := openTempDB(t)
 	resumed := &parser.ParsedFile{
 		SessionID: "resumed-session-usage", ShortID: "resumed-u", Agent: "codex", Project: "atm",
@@ -308,27 +337,23 @@ func TestSessionUsageStatsUsesEventWindowAndRanksPrimaryModel(t *testing.T) {
 	if err := upsertSession(db, resumed, "/tmp/resumed-session-usage.jsonl", "codex", 1, 10); err != nil {
 		t.Fatal(err)
 	}
-	legacy := &parser.ParsedFile{
-		SessionID: "legacy-session-usage", ShortID: "legacy-u", Agent: "pi", Project: "atm-worktree",
+	aggregateOnly := &parser.ParsedFile{
+		SessionID: "aggregate-session-usage", ShortID: "aggregate-u", Agent: "pi", Project: "atm-worktree",
 		CreatedTS: 160, LastTS: 160,
 		Usage: parser.Usage{
 			Model: "legacy-model", InputTokens: 7, OutputTokens: 1,
 			CacheReadTokens: 2, RequestCount: 2,
 		},
 	}
-	if err := upsertSession(db, legacy, "/tmp/legacy-session-usage.jsonl", "pi", 1, 10); err != nil {
+	if err := upsertSession(db, aggregateOnly, "/tmp/aggregate-session-usage.jsonl", "pi", 1, 10); err != nil {
 		t.Fatal(err)
 	}
 
-	oldAliases := config.ProjectAliases
-	config.ProjectAliases = map[string]string{"atm-worktree": "atm"}
-	t.Cleanup(func() { config.ProjectAliases = oldAliases })
-
-	stats, err := GetSessionUsageStats(db, 100, 200, "")
+	stats, err := GetSessionStats(db, 100, 200, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stats) != 2 {
+	if len(stats) != 1 {
 		t.Fatalf("stats = %#v", stats)
 	}
 	got := stats[0]
@@ -336,29 +361,68 @@ func TestSessionUsageStatsUsesEventWindowAndRanksPrimaryModel(t *testing.T) {
 		CalcCost("model-b", 9, 3, 5, 20)
 	if got.ShortID != "resumed-u" || got.Model != "model-b" ||
 		got.StartedTS != 150 || got.LastTS != 170 || got.Requests != 9 ||
-		got.InputTokens != 29 || got.OutputTokens != 5 ||
+		got.FreshInputTokens != 29 || got.OutputTokens != 5 ||
 		got.CacheCreateTokens != 5 || got.CacheReadTokens != 30 ||
 		got.TotalTokens != 69 || got.CostUSD != expectedCost {
 		t.Fatalf("resumed stats = %#v", got)
 	}
-	if stats[1].ShortID != "legacy-u" || stats[1].Project != "atm" ||
-		stats[1].Requests != 2 || stats[1].TotalTokens != 10 {
-		t.Fatalf("legacy stats = %#v", stats[1])
-	}
-	if got.Share < 0.873 || got.Share > 0.874 {
-		t.Fatalf("share = %f, want 69/79", got.Share)
+	if got.Share != 1 {
+		t.Fatalf("share = %f, want 1", got.Share)
 	}
 
-	filtered, err := GetSessionUsageStats(db, 100, 200, "pi")
+	filtered, err := GetSessionStats(db, 100, 200, "pi")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(filtered) != 1 || filtered[0].ShortID != "legacy-u" || filtered[0].Share != 1 {
+	if len(filtered) != 0 {
 		t.Fatalf("filtered stats = %#v", filtered)
 	}
 }
 
-func TestRequestAndLegacySessionStatsUseRequestEventWindow(t *testing.T) {
+func TestQoderSessionStatsUseEventTimeAcrossFullResync(t *testing.T) {
+	db := openTempDB(t)
+	parsed := &parser.ParsedFile{
+		SessionID: "qoder-root", ShortID: "qoder-ro", Agent: "qoder", Project: "atm",
+		CreatedTS: 50, LastTS: 180,
+		Usage: parser.Usage{
+			Model: "qoder-qwen-max", InputTokens: 900, OutputTokens: 160,
+			CacheReadTokens: 600, RequestCount: 2,
+		},
+		UsageEvents: []parser.UsageEvent{
+			{Model: "qoder-qwen-max", TS: 120, InputTokens: 600, OutputTokens: 100, CacheReadTokens: 400, Fingerprint: "qoder:root-message"},
+			{Model: "qoder-qwen-plus", TS: 180, InputTokens: 300, OutputTokens: 60, CacheReadTokens: 200, Fingerprint: "qoder:child-message"},
+		},
+	}
+	for range 2 {
+		if err := upsertSession(db, parsed, "qoder://qoder-root", "qoder", 0, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var eventCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM usage_events WHERE session_id = ?`, parsed.SessionID).Scan(&eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if eventCount != 2 {
+		t.Fatalf("usage event count after repeated full sync = %d, want 2", eventCount)
+	}
+	stats, err := GetSessionStats(db, 150, 200, "qoder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("session stats = %#v", stats)
+	}
+	got := stats[0]
+	if got.SessionID != parsed.SessionID || got.Model != "qoder-qwen-plus" ||
+		got.StartedTS != 180 || got.LastTS != 180 || got.Requests != 1 ||
+		got.FreshInputTokens != 300 || got.OutputTokens != 60 || got.CacheReadTokens != 200 ||
+		got.TotalTokens != 560 {
+		t.Fatalf("Qoder event-time stats = %#v", got)
+	}
+}
+
+func TestRequestStatsUseRequestEventWindow(t *testing.T) {
 	db := openTempDB(t)
 	parsed := &parser.ParsedFile{
 		SessionID: "event-window-session", ShortID: "eventwin", Agent: "codex", Project: "atm",
@@ -386,15 +450,6 @@ func TestRequestAndLegacySessionStatsUseRequestEventWindow(t *testing.T) {
 		t.Fatalf("request stats = %#v", requests)
 	}
 
-	sessions, err := GetSessionStats(db, 100, 200, "codex")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(sessions) != 1 || sessions[0].Queries != 1 || sessions[0].FreshInputTokens != 20 ||
-		sessions[0].CacheCreateTokens != 3 || sessions[0].CacheReadTokens != 7 ||
-		sessions[0].TotalInputTokens != 30 || sessions[0].TotalTokens != 34 {
-		t.Fatalf("session stats = %#v", sessions)
-	}
 }
 
 func TestStatsCollapseSubagentUsageIntoRootTaskCounts(t *testing.T) {
@@ -585,7 +640,7 @@ func TestFingerprintedRequestIsCountedOnceAcrossSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stats) != 1 || stats[0].InputTokens != 35 || stats[0].OutputTokens != 6 {
+	if len(stats) != 1 || stats[0].TotalInputTokens != 35 || stats[0].OutputTokens != 6 {
 		t.Fatalf("stats = %#v, want the three distinct requests only", stats)
 	}
 
@@ -615,7 +670,7 @@ func TestFingerprintedRequestIsCountedOnceAcrossSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stats) != 1 || stats[0].InputTokens != 35 {
+	if len(stats) != 1 || stats[0].TotalInputTokens != 35 {
 		t.Fatalf("stats after reparse = %#v", stats)
 	}
 }
@@ -639,7 +694,7 @@ func TestUnfingerprintedRequestsAreAllCounted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(stats) != 1 || stats[0].InputTokens != 20 || stats[0].OutputTokens != 4 {
+	if len(stats) != 1 || stats[0].TotalInputTokens != 20 || stats[0].OutputTokens != 4 {
 		t.Fatalf("stats = %#v", stats)
 	}
 }
@@ -667,7 +722,7 @@ func TestModelStatsUsesPerRequestUsageEvents(t *testing.T) {
 		}
 		byModel[r.Model] = r
 	}
-	if byModel["model-a"].InputTokens != 13 || byModel["model-b"].OutputTokens != 8 || byModel["model-b"].CacheReadTokens != 6 {
+	if byModel["model-a"].TotalInputTokens != 13 || byModel["model-b"].OutputTokens != 8 || byModel["model-b"].CacheReadTokens != 6 {
 		t.Fatalf("model stats = %#v", got)
 	}
 }
@@ -697,8 +752,8 @@ func TestModelStatsSeparatesSameModelByClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 2 ||
-		got[0].Client != "pi" || got[0].Model != "shared-model" || got[0].InputTokens != 20 ||
-		got[1].Client != "codex" || got[1].Model != "shared-model" || got[1].InputTokens != 10 {
+		got[0].Client != "pi" || got[0].Model != "shared-model" || got[0].TotalInputTokens != 20 ||
+		got[1].Client != "codex" || got[1].Model != "shared-model" || got[1].TotalInputTokens != 10 {
 		t.Fatalf("model stats = %#v", got)
 	}
 
@@ -727,7 +782,7 @@ func TestModelStatsUsesUsageEventTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].InputTokens != 20 || got[0].OutputTokens != 2 || got[0].CacheReadTokens != 5 {
+	if len(got) != 1 || got[0].TotalInputTokens != 20 || got[0].OutputTokens != 2 || got[0].CacheReadTokens != 5 {
 		t.Fatalf("model stats = %#v", got)
 	}
 }
@@ -772,12 +827,12 @@ func TestModelDayStatsGroupsByRequestDateAndIncludesAggregateFallback(t *testing
 		t.Fatalf("model day stats = %#v", got)
 	}
 	if got[0].Date != "2026-07-12" || got[0].Client != "codex" || got[0].Model != "model-a" ||
-		got[0].Sessions != 2 || got[0].InputTokens != 20 || got[0].OutputTokens != 3 ||
+		got[0].Sessions != 2 || got[0].TotalInputTokens != 20 || got[0].OutputTokens != 3 ||
 		got[0].CacheReadTokens != 5 {
 		t.Fatalf("first model day = %#v", got[0])
 	}
 	if got[1].Date != "2026-07-13" || got[1].Model != "model-b" ||
-		got[1].Sessions != 1 || got[1].InputTokens != 20 {
+		got[1].Sessions != 1 || got[1].TotalInputTokens != 20 {
 		t.Fatalf("second model day = %#v", got[1])
 	}
 
@@ -833,14 +888,14 @@ func TestProjectDayStatsGroupsByProjectAndKeepsModellessUsage(t *testing.T) {
 	}
 	if got[0].Date != "2026-07-12" || got[0].Client != "codex" || got[0].Project != "atm" ||
 		// 10 + 5 input plus the 3 cached tokens the query folds into input.
-		got[0].Sessions != 1 || got[0].InputTokens != 18 || got[0].OutputTokens != 2 ||
+		got[0].Sessions != 1 || got[0].TotalInputTokens != 18 || got[0].OutputTokens != 2 ||
 		got[0].CacheReadTokens != 3 {
 		t.Fatalf("first project day = %#v", got[0])
 	}
-	if got[1].Project != "wanda" || got[1].InputTokens != 7 {
+	if got[1].Project != "wanda" || got[1].TotalInputTokens != 7 {
 		t.Fatalf("second project day = %#v", got[1])
 	}
-	if got[2].Date != "2026-07-13" || got[2].Project != "atm" || got[2].InputTokens != 20 {
+	if got[2].Date != "2026-07-13" || got[2].Project != "atm" || got[2].TotalInputTokens != 20 {
 		t.Fatalf("third project day = %#v", got[2])
 	}
 
@@ -890,7 +945,7 @@ func TestDayStatsUsesActivityTimeAcrossMidnight(t *testing.T) {
 		t.Fatalf("day stats = %#v", got)
 	}
 	if got[0].Date != "2026-07-13" || got[0].Sessions != 1 || got[0].Queries != 1 ||
-		got[0].InputTokens != 50 || got[0].OutputTokens != 5 || got[0].CacheReadTokens != 30 {
+		got[0].TotalInputTokens != 50 || got[0].OutputTokens != 5 || got[0].CacheReadTokens != 30 {
 		t.Fatalf("day stats = %#v", got[0])
 	}
 
@@ -901,11 +956,11 @@ func TestDayStatsUsesActivityTimeAcrossMidnight(t *testing.T) {
 	if len(hourly) != 12 {
 		t.Fatalf("hour stats = %#v", hourly)
 	}
-	if hourly[0].Date != "2026-07-13 00:00" || hourly[0].InputTokens != 0 {
+	if hourly[0].Date != "2026-07-13 00:00" || hourly[0].TotalInputTokens != 0 {
 		t.Fatalf("zero hour = %#v", hourly[0])
 	}
 	if hourly[1].Date != "2026-07-13 01:00" || hourly[1].Sessions != 1 ||
-		hourly[1].Queries != 1 || hourly[1].InputTokens != 50 ||
+		hourly[1].Queries != 1 || hourly[1].TotalInputTokens != 50 ||
 		hourly[1].OutputTokens != 5 || hourly[1].CacheReadTokens != 30 {
 		t.Fatalf("active hour = %#v", hourly[1])
 	}
@@ -961,7 +1016,7 @@ func TestGetRequestStatsExposesAggregatedRequestCount(t *testing.T) {
 	if requests[0].RequestCount != 5 || requests[1].RequestCount != 4 {
 		t.Fatalf("request counts = %#v", requests)
 	}
-	if requests[0].InputTokens != 20 || requests[1].InputTokens != 10 {
+	if requests[0].FreshInputTokens != 20 || requests[1].FreshInputTokens != 10 {
 		t.Fatalf("tokens = %#v", requests)
 	}
 }
@@ -1065,7 +1120,7 @@ func TestRemovedSourceKeepsSessionAndUsage(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(after) != len(before) || len(after) != 1 ||
-		after[0].InputTokens != before[0].InputTokens || after[0].OutputTokens != before[0].OutputTokens {
+		after[0].TotalInputTokens != before[0].TotalInputTokens || after[0].OutputTokens != before[0].OutputTokens {
 		t.Fatalf("model stats = %#v, want %#v unchanged by the source removal", after, before)
 	}
 

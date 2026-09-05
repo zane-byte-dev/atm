@@ -26,7 +26,7 @@ func bindingCall(kind application.ActorKind, sessionID string) application.Call 
 func TestBindStartsTodoAndSessionInOneUseCase(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t, store.Todo{
-		ID: "t1", Title: "Bind atomically", Priority: "P1", Status: store.TodoStatusWaiting,
+		ID: "t1", Title: "Bind atomically", Priority: "P1", Status: store.TodoStatusInProgress,
 		Project: "atm", WakeCondition: "waiting for a worker", ReviewAt: "2026-09-01", Created: store.Today(),
 	})
 

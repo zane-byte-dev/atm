@@ -20,6 +20,7 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
     private var pollTask: Task<Void, Never>?
     private var refreshInFlight = false
     private var refreshAgain = false
+    private var connected = false
     private var syncing = false
     private var message = "连接中…"
     private var active = 0
@@ -73,7 +74,8 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
             }
             while !Task.isCancelled {
                 await self?.refresh()
-                do { try await Task.sleep(for: .seconds(10)) } catch { return }
+                let retrySeconds = self?.connected == false ? 2 : 10
+                do { try await Task.sleep(for: .seconds(retrySeconds)) } catch { return }
             }
         }
     }
@@ -95,26 +97,23 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
         do {
             let runtime = client
             let instance = try runtime.instance()
-            if lastInstance != instance.instanceID {
-                lastInstance = instance.instanceID
-                cursor = 0
-                active = 0
-                attention = 0
-                todos = nil
-                quota = nil
-                todayTokens = .loading
-            }
+            let instanceChanged = lastInstance != instance.instanceID
+            let requestCursor = instanceChanged ? 0 : cursor
             let center = UNUserNotificationCenter.current()
             let settings = await center.notificationSettings()
             let granted = settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional
             let result = try await runtime.state(
                 instance: instance,
                 clientID: clientID,
-                after: cursor,
+                after: requestCursor,
                 enabled: notifications && granted
             )
             guard !Task.isCancelled else { return }
 
+            if instanceChanged {
+                lastInstance = instance.instanceID
+                cursor = 0
+            }
             active = result.snapshot.activeCount
             attention = result.snapshot.attentionCount
             todos = result.todos
@@ -123,7 +122,8 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
                 today: result.todayUsage,
                 legacyQuick: result.legacyQuick
             )
-            message = "服务运行中 · \(active) 个活跃会话 · \(attention) 项待处理"
+            connected = true
+            message = CompanionMenuPresentation.serviceTitle(active: active, attention: attention)
 
             if notifications && granted, let currentIDs = result.attentionNotificationIDs {
                 await reconcileAttentionNotifications(validIDs: Set(currentIDs), center: center)
@@ -168,12 +168,12 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
             }
         } catch {
             guard !Task.isCancelled else { return }
-            message = error.localizedDescription
-            active = 0
-            attention = 0
-            todos = nil
-            quota = nil
-            todayTokens = .unavailable(error.localizedDescription)
+            let hasSnapshot = connected
+                || todos != nil
+                || quota != nil
+                || TodayTokenMenuPresentation.statusBarValue(todayTokens) != nil
+            connected = false
+            message = hasSnapshot ? "正在重新连接… · 显示上次数据" : error.localizedDescription
         }
 
         updateStatusItem()
@@ -207,24 +207,21 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
 
     private func updateStatusItem() {
         let summary = CompanionMenuPresentation.statusBarTitle(
-            active: active,
             attention: attention,
-            todos: todos,
             quota: quota,
             todayTokens: todayTokens
         )
         let hasSummary = todos != nil
             || quota != nil
             || TodayTokenMenuPresentation.statusBarValue(todayTokens) != nil
-        let tooltip = !hasSummary
-            ? message
-            : CompanionMenuPresentation.statusBarTooltip(
+        let summaryTooltip = CompanionMenuPresentation.statusBarTooltip(
                 active: active,
                 attention: attention,
                 todos: todos,
                 quota: quota,
                 todayTokens: todayTokens
             )
+        let tooltip = !hasSummary ? message : connected ? summaryTooltip : message + "\n" + summaryTooltip
         item.button?.title = summary.isEmpty ? "" : " \(summary)"
         item.button?.toolTip = tooltip
         item.button?.setAccessibilityLabel("ATM")
@@ -292,10 +289,11 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
             keyEquivalent: ""
         )
         importEntry.submenu = importMenu
-        let settingsEntry = menu.addItem(withTitle: "ATM Menu 设置", action: nil, keyEquivalent: "")
+        let settingsEntry = menu.addItem(withTitle: "设置", action: nil, keyEquivalent: "")
         settingsEntry.submenu = settings
         menu.addItem(.separator())
-        add("退出菜单栏（后台继续运行）", #selector(quit), to: menu, keyEquivalent: "q")
+        let quitEntry = add("退出 ATM Menu", #selector(quit), to: menu, keyEquivalent: "q")
+        quitEntry.toolTip = "后台服务继续运行"
         item.menu = menu
     }
 
@@ -306,16 +304,15 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
             keyEquivalent: ""
         )
         taskHeader.isEnabled = false
+        taskHeader.toolTip = todos?.error
         if let error = todos?.error, !error.isEmpty {
-            addDisabled("任务暂不可用", detail: error, to: menu)
+            taskHeader.toolTip = error
         } else {
             let rows = CompanionMenuPresentation.taskRows(todos)
-            if rows.isEmpty {
-                addDisabled(todos == nil ? "等待 Go 服务返回任务摘要…" : "没有进行中或待验收任务", to: menu)
-            } else {
+            if !rows.isEmpty {
                 for row in rows {
                     addRoute(
-                        "\(row.title)    \(row.detail)",
+                        row.title,
                         detail: row.detail,
                         route: row.route,
                         symbol: "checklist",
@@ -333,13 +330,6 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
                 }
             }
         }
-        addRoute(
-            "查看全部任务…",
-            detail: nil,
-            route: .tasks,
-            symbol: "arrow.up.right.square",
-            to: menu
-        )
 
         menu.addItem(.separator())
         let quotaHeader = menu.addItem(
@@ -348,13 +338,12 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
             keyEquivalent: ""
         )
         quotaHeader.isEnabled = false
+        quotaHeader.toolTip = quota?.error
         if let error = quota?.error, !error.isEmpty {
-            addDisabled("额度暂不可用", detail: error, to: menu)
+            quotaHeader.toolTip = error
         } else {
             let rows = CompanionMenuPresentation.quotaRows(quota)
-            if rows.isEmpty {
-                addDisabled(quota == nil ? "等待 Go 服务返回额度摘要…" : "暂无缓存额度数据", to: menu)
-            } else {
+            if !rows.isEmpty {
                 for row in rows {
                     addRoute(
                         "\(row.title)    \(row.detail)",
@@ -364,9 +353,10 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
                         to: menu
                     )
                 }
-                if quota?.truncated == true {
+                let hiddenCount = max(0, (quota?.windows.count ?? 0) - rows.count)
+                if hiddenCount > 0 || quota?.truncated == true {
                     addRoute(
-                        "还有额度窗口…",
+                        quota?.truncated == true ? "查看全部额度…" : "另外 \(hiddenCount) 个额度窗口…",
                         detail: "在 Web 中查看全部",
                         route: .usage(agent: nil),
                         symbol: "ellipsis.circle",
@@ -375,13 +365,6 @@ final class CompanionDelegate: NSObject, NSApplicationDelegate, UNUserNotificati
                 }
             }
         }
-        addRoute(
-            "查看额度详情…",
-            detail: nil,
-            route: .usage(agent: nil),
-            symbol: "arrow.up.right.square",
-            to: menu
-        )
     }
 
     @discardableResult

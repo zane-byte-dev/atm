@@ -16,12 +16,11 @@ type QuickTodoRow struct {
 	MenuState string `json:"menu_state"`
 }
 
-// QuickTodoCounts are exact whole-working-set counts. Working is the legacy
-// work.working count: every in_progress row, including due and externally
-// waiting work. PureWorking is the classified working-only subset.
+// QuickTodoCounts are exact whole-working-set counts. Working includes every
+// in_progress row, including due and externally waiting work. PureWorking is
+// the classified working-only subset.
 type QuickTodoCounts struct {
 	Review      int `json:"review"`
-	Blocked     int `json:"blocked"`
 	Due         int `json:"due"`
 	Working     int `json:"working"`
 	PureWorking int `json:"pure_working"`
@@ -44,10 +43,9 @@ const quickTodoClassifiedCTE = `WITH classified AS (
 	SELECT id,priority,created,status,
 		CASE
 			WHEN status='review' THEN 'review'
-			WHEN status='blocked' THEN 'blocked'
-			WHEN status IN ('in_progress','waiting') AND review_at<>'' AND review_at<=? THEN 'due'
-			WHEN status IN ('in_progress','waiting') AND (trim(wake_condition)<>'' OR review_at<>'') THEN 'waiting'
-			WHEN status IN ('in_progress','waiting') THEN 'working'
+			WHEN status='in_progress' AND review_at<>'' AND review_at<=? THEN 'due'
+			WHEN status='in_progress' AND (trim(wake_condition)<>'' OR review_at<>'') THEN 'waiting'
+			WHEN status='in_progress' THEN 'working'
 			ELSE ''
 		END AS menu_state
 	FROM todos WHERE archived_at IS NULL
@@ -59,7 +57,7 @@ const quickTodoWithinGroupOrderSQL = ` ORDER BY
 	id`
 
 const quickTodoNeedsActionOrderSQL = ` ORDER BY
-	CASE menu_state WHEN 'review' THEN 0 WHEN 'blocked' THEN 1 WHEN 'due' THEN 2 ELSE 3 END,
+	CASE menu_state WHEN 'review' THEN 0 WHEN 'due' THEN 1 ELSE 2 END,
 	CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 WHEN 'P3' THEN 3 ELSE 99 END,
 	created,
 	id`
@@ -86,20 +84,19 @@ func ReadQuickTodos(ctx context.Context, db *sql.DB, today string, limit int) (Q
 
 	if err := tx.QueryRowContext(ctx, quickTodoClassifiedCTE+`SELECT
 		COALESCE(SUM(menu_state='review'),0),
-		COALESCE(SUM(menu_state='blocked'),0),
 		COALESCE(SUM(menu_state='due'),0),
 		COALESCE(SUM(status='in_progress'),0),
 		COALESCE(SUM(menu_state='working'),0),
 		COALESCE(SUM(menu_state='waiting'),0)
 		FROM classified`, today).Scan(
-		&result.Summary.Review, &result.Summary.Blocked, &result.Summary.Due,
+		&result.Summary.Review, &result.Summary.Due,
 		&result.Summary.Working, &result.Summary.PureWorking, &result.Summary.Waiting,
 	); err != nil {
 		return result, err
 	}
 
 	needsAction, err := readQuickTodoCandidates(ctx, tx, today,
-		`menu_state IN ('review','blocked','due')`, quickTodoNeedsActionOrderSQL, limit)
+		`menu_state IN ('review','due')`, quickTodoNeedsActionOrderSQL, limit)
 	if err != nil {
 		return result, err
 	}
@@ -123,7 +120,7 @@ func ReadQuickTodos(ctx context.Context, db *sql.DB, today string, limit int) (Q
 	result.NeedsAction = assembleQuickTodoRows(needsAction, todos)
 	result.Working = assembleQuickTodoRows(working, todos)
 	result.Waiting = assembleQuickTodoRows(waiting, todos)
-	needsActionCount := result.Summary.Review + result.Summary.Blocked + result.Summary.Due
+	needsActionCount := result.Summary.Review + result.Summary.Due
 	result.Truncated = needsActionCount > len(result.NeedsAction) ||
 		result.Summary.Working > len(result.Working) ||
 		result.Summary.Waiting > len(result.Waiting)

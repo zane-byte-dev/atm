@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,8 +24,8 @@ func TestHTTPDrainTimeoutRetainsOwnershipAfterRuntimeCleanup(t *testing.T) {
 	var releaseOnce sync.Once
 	var runtimeStopped atomic.Bool
 	server, err := Start(Options{
-		DataDir: t.TempDir(), AllowWrites: true,
-		Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
+		DataDir: t.TempDir(),
+		Assets:  fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
 		Dispatch: func(context.Context, application.Call, string, json.RawMessage, string) (any, error) {
 			close(entered)
 			defer close(finished)
@@ -35,7 +34,9 @@ func TestHTTPDrainTimeoutRetainsOwnershipAfterRuntimeCleanup(t *testing.T) {
 			<-release
 			return map[string]bool{"committed": true}, nil
 		},
-		BeforeUnlock: func(context.Context) error { runtimeStopped.Store(true); return nil },
+		StartRuntime: func(Instance, func(...string)) (func(context.Context) error, error) {
+			return func(context.Context) error { runtimeStopped.Store(true); return nil }, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +136,7 @@ func TestFirstFingerprintInvalidatesChangesAfterInitialReset(t *testing.T) {
 	defer func() { broker.close(); <-done }()
 	select {
 	case event := <-sub.queue:
-		if event.Kind != "resource.changed" || !reflect.DeepEqual(event.Domains, []string{"knowledge"}) {
+		if event.Kind != "reset" {
 			t.Fatalf("first scan event = %+v", event)
 		}
 	case <-time.After(5 * time.Second):

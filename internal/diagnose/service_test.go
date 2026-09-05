@@ -12,7 +12,6 @@ import (
 
 	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
-	"github.com/zane-byte-dev/atm/internal/contract"
 	doctorapp "github.com/zane-byte-dev/atm/internal/doctor"
 	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -106,10 +105,6 @@ func TestBundleCollectsRequiredFields(t *testing.T) {
 	}
 	if report.Platform.OS == "" || report.Platform.GoVersion == "" {
 		t.Errorf("platform not described: %+v", report.Platform)
-	}
-	if report.App.DashboardV != contract.DashboardSchemaVersion {
-		t.Errorf("dashboard contract version = %d, want %d",
-			report.App.DashboardV, contract.DashboardSchemaVersion)
 	}
 	if len(report.Doctor.Sources) == 0 {
 		t.Error("doctor findings are missing; the bundle exists to carry them")
@@ -223,11 +218,6 @@ func TestBundleCarriesLogTails(t *testing.T) {
 	}
 	if len(cli.Lines) == 0 || !strings.Contains(strings.Join(cli.Lines, "\n"), "SEEDED_LOG_FAILURE") {
 		t.Errorf("logged failure did not reach the bundle: %v", cli.Lines)
-	}
-	// The app section must be present even with no App installed, so "no app log"
-	// is distinguishable from "we forgot to look".
-	if _, ok := report.Logs["app"]; !ok {
-		t.Error("bundle has no app log section")
 	}
 }
 
@@ -345,58 +335,5 @@ func TestReportDegradesWhenItsSourcesFail(t *testing.T) {
 	}
 	if !strings.Contains(report.Doctor.Issues[0].Detail, "index is corrupt") {
 		t.Errorf("finding does not carry the cause: %q", report.Doctor.Issues[0].Detail)
-	}
-}
-
-func TestPlistStringReadsVersionsAndToleratesBinary(t *testing.T) {
-	xml := []byte(`<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0">
-<dict>
-	<key>CFBundleName</key>
-	<string>ATM</string>
-	<key>CFBundleShortVersionString</key>
-	<string>1.2.3</string>
-	<key>CFBundleVersion</key>
-	<string>42</string>
-</dict>
-</plist>`)
-	if got := plistString(xml, "CFBundleShortVersionString"); got != "1.2.3" {
-		t.Errorf("short version = %q, want 1.2.3", got)
-	}
-	if got := plistString(xml, "CFBundleVersion"); got != "42" {
-		t.Errorf("bundle version = %q, want 42", got)
-	}
-	if got := plistString(xml, "CFBundleAbsent"); got != "" {
-		t.Errorf("missing key returned %q", got)
-	}
-	if got := plistString([]byte("bplist00\x00\x01\x02"), "CFBundleVersion"); got != "" {
-		t.Errorf("binary plist returned %q, want empty", got)
-	}
-}
-
-func TestInspectAppReportsWhereItLooked(t *testing.T) {
-	withFakeHome(t)
-	appDir := filepath.Join(t.TempDir(), "ATM.app", "Contents")
-	if err := os.MkdirAll(appDir, 0700); err != nil {
-		t.Fatalf("mkdir app: %v", err)
-	}
-	plist := `<plist version="1.0"><dict>
-	<key>CFBundleShortVersionString</key><string>9.9.9</string>
-	<key>CFBundleVersion</key><string>77</string>
-</dict></plist>`
-	if err := os.WriteFile(filepath.Join(appDir, "Info.plist"), []byte(plist), 0600); err != nil {
-		t.Fatalf("write plist: %v", err)
-	}
-	t.Setenv("ATM_APP_PATH", filepath.Dir(appDir))
-
-	app := inspectApp()
-	if !app.Found {
-		t.Fatalf("app not found via ATM_APP_PATH: %+v", app)
-	}
-	if app.ShortVersion != "9.9.9" || app.BundleVersion != "77" {
-		t.Errorf("versions = %q/%q, want 9.9.9/77", app.ShortVersion, app.BundleVersion)
-	}
-	if len(app.SearchedPaths) == 0 {
-		t.Error("searched paths not reported")
 	}
 }

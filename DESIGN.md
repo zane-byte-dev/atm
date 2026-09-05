@@ -18,10 +18,10 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 5. **协作与通信** — 交接或显式派发任务、交接产物和通知结果
 6. **外部事项收集** — 本地连接器把白名单来源转成可追溯、可纠错的 Todo
 
-项目已从 macOS 开发练手转向个人日常使用。主工作区逐步迁到浏览器，同一个 Go 二进制通过 `serve`
-提供本机页面和 API，CLI 保持独立可用；菜单栏最终只保留提醒与入口，全局语音作为独立工具。
-实施按[本地 Web 技术方案](docs/design/local-web-runtime.md)推进，当前交付边界见 README，不能将目标
-架构当作所有迁移已经完成。
+项目已从 macOS 开发练手转向个人日常使用。主工作区运行在浏览器，同一个 Go 二进制通过 `serve`
+提供本机页面、API 和后台职责，CLI 保持独立可用；菜单栏只保留提醒与入口，全局语音作为独立工具。
+旧 Swift 主工作区只保留源码作为历史实现参考，当前 Go 不再提供它使用的 runtime 或进程间接口。
+实施依据见[本地 Web 技术方案](docs/design/local-web-runtime.md)，当前交付边界见 README。
 
 ## 设计原则
 
@@ -30,7 +30,7 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 - **ATM 数据自有**：ATM 产生和管理的数据全部位于 `~/.atm`，不会静默写入项目目录或探测其他产品的私有目录。
 - **显式导入**：外部知识和历史数据通过 add/import 进入 ATM，不在日常查询路径中做兼容扫描。
 - **旁路而非主路**：普通 coding/chat 由客户端直接连接 Agent；ATM 停止不能阻断普通会话。
-- **不实现 agent loop 或 Agent scheduler**：后台可定时运行已有同步与连接器采集；迁移期间由 macOS App 负责，完成接管后归 Go 服务。ATM 不代为启动 Agent 会话；任务交给 Codex 只用 `todo handoff`（要指针文本就 `--copy`）。与历史任务有关时只记录关联上下文，不合并事项。
+- **不实现 agent loop 或 Agent scheduler**：Go 服务可定时运行已有同步与连接器采集，但不代为启动 Agent 会话；任务交给 Codex 只用 `todo handoff`（要指针文本就 `--copy`）。与历史任务有关时只记录关联上下文，不合并事项。
 - **执行必须授权且可追踪**：`todo handoff` 在 Codex Desktop 填好指针后停下，回车和审批都归人；`--copy` 只把指针交给人，由人自己开会话。ATM 不在后台启动 Agent。
 - **事实分域**：Todo 保存工作目标与生命周期，Git 保存实现状态，测试/CI 提供验证证据，Session 保存过程追溯；ATM 提供关联视图，不复制或覆盖其他事实源。
 - **状态正交**：live activity 是观测信号，Session binding 是显式关系，Todo status 是工作生命周期；三者独立展示，禁止按项目名或 `in_progress` 猜测绑定。
@@ -56,43 +56,36 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
   避免把正在工作的会话解绑。
 - **模块化单体，业务规则归 Application Service**（2026-08-20，2026-09-03 调整入口）：ATM 保持一个
   Go 程序和一个 SQLite；`serve` 常驻、CLI 短进程可以访问同一份数据，不拆微服务或独立读库。
-  边界存在于依赖方向。Cobra、typed IPC、HTTP、Run controller 和 hook 都是
+  边界存在于依赖方向。Cobra、HTTP、后台 controller 和 hook 都是
   adapter，只能调用按领域划分的 application service，再由 service 调用 domain/store 和副作用 port：
-  `adapter → service → domain/store`。adapter 之间禁止互相复用——尤其不能让 IPC 调 Cobra handler，或让
+  `adapter → service → domain/store`。adapter 之间禁止互相复用——尤其不能让 HTTP 调 Cobra handler，或让
   service 通过 shell 再执行 `atm`。`internal/cmd` 只保留参数解析、确认交互和人类文本/JSON 渲染；校验、
   授权、事务、幂等和跨表编排属于 service。Service 按 Work、AI Day、Collector、Knowledge、Guard、Config
   等 bounded context 划分，不建立一个接受 `string + map` 的万能 God Service。迁移可以逐域完成，
   `store` 暂时无需先拆 repository 层；当前公共调用身份和错误模型在
-  [`internal/application`](internal/application)，typed IPC router 在 [`internal/ipc`](internal/ipc)，首批
+  [`internal/application`](internal/application)，Web 装配和白名单入口在 [`internal/apphost`](internal/apphost)；首批
   纵向样板是 [`config.Service`](internal/config/settings.go) 和
   [`aiday.Service`](internal/aiday/application.go)。
 - **人的界面与 Agent 能力面可以分化，同一动作必须共享 service**（2026-08-20，2026-09-03 调整入口）：浏览器逐步成为人的主入口，Agent
   通过 skill 发现 CLI；二者的任务和授权不同，因此不要求一条 App 能力同时暴露为 Agent 命令。真正的
   一致性约束是：如果两个入口表达同一业务动作，它们必须映射到同一个 typed use case，不能各自实现规则。
-  原生 App 迁移期间继续使用隐藏的 `atm _ipc <method>`；Web 通过本机 HTTP adapter 直接调用 service，
-  不执行 `_ipc` 或 Cobra 子进程。普通 CLI 只保留 Agent、人工恢复或诊断确实需要的 adapter。
-  `_ipc` 仍用 fork/exec + JSON stdin/stdout，保留崩溃隔离和终端可重放性；`serve` 则有明确的长期运行
-  生命周期。Method 按数据或原子工作流命名（如 `config.settings`、`day.snapshot`），不按 Swift
-  screen 命名，也不把 100 多条 CLI 一对一镜像成 verbs。统一 envelope 回显 request ID、协议版本和稳定
-  错误码；App 必须先解 error envelope，再按进程退出码处理 transport failure。可重放也意味着 `_ipc`
-  不是 App 身份认证边界；Guard approve/deny 这类只允许人执行的授权动作在有可验证调用方身份前继续走
-  能识别 Agent 环境的 CLI adapter，不能仅凭 `human@ipc` 标签放行。现有 CLI 对 ambient environment 的
-  识别也只是 best-effort 分类，不是抗恶意调用的认证；若 Guard 要成为真正的安全边界，仍需 user-presence
-  或可验证的可信 App channel。
+  Web 通过本机 HTTP adapter 直接调用 service，不执行 Cobra 子进程；ATM Menu 只使用专门的有界本机
+  control API，旧 Swift 主工作区没有当前 Go transport。普通 CLI 只保留 Agent、人工恢复或诊断确实需要的
+  adapter。HTTP method 按数据或原子工作流命名，不按 screen 命名，也不把 CLI 一对一镜像成 verbs。
+  现有 CLI 对 ambient environment 的识别只是 best-effort 分类，不是抗恶意调用的认证；若 Guard 要成为
+  真正的安全边界，仍需 user-presence 或可验证的可信 App channel。
   本机 Web 会话只授权普通工作区操作，不能凭 `human@web`、浏览器 Cookie 或本机控制令牌开放 Guard
   批准、拒绝或规则管理。现有 Guard 人工决策约束保持不变。
-  尚未迁移的普通 argv 由 [`app/macos/atm-cli-contract.txt`](app/macos/atm-cli-contract.txt) 和
-  [`internal/cmd/app_contract_test.go`](internal/cmd/app_contract_test.go) 钉住，迁完一个领域就从清单移走。
 - **Web 是本机工作区，原生能力按职责拆分**（2026-09-03）：页面随 Go 二进制发布，运行时无需 Node，
   不要求 WebKit 壳或另一套前端服务器。HTTP 只监听 loopback，并验证实例、浏览器会话、Host、Origin
-  和写入来源。服务不可用时 CLI 继续直接使用业务层。后台接管前旧 macOS App 仍是唯一调度与 hook
-  owner；完成接管后，关闭浏览器或菜单栏不应停止后台工作。语音拥有独立数据、权限和生命周期，不依赖
-  ATM 业务服务。新增 schema 仍走现有迁移规则；旧二进制不认识新 schema 时只能通过备份恢复回退。
+  和写入来源。服务不可用时 CLI 继续直接使用业务层。Go 服务是唯一调度与 hook owner，关闭浏览器或
+  菜单栏不会停止后台工作。语音拥有独立数据、权限和生命周期，不依赖 ATM 业务服务。当前构建只接受
+  当前 schema 基线；确有下一版变更时只短期保留一阶迁移，完成唯一日用库升级后再次收平基线。
 - **skill 是 Agent 的真实命令面，root help 只是人工导航**（2026-08-20）：命令存在于 Cobra 但没有写进
   ATM skill，对日常 Agent 等同于不存在。常驻 skill 只放 match/bind/context/log/wait/submit 等核心闭环；
   Knowledge、Memory、Artifact、收集纠正和历史查询按任务加载扩展说明。root help 分组仍保留，因为它让
-  人工排障更容易，但它不能替代 skill 覆盖。删除或迁移 Cobra adapter 的判据是 IPC 切换后已无 Agent、
-  人工或后台消费者，而不是简单地看 App 是否调用过。
+  人工排障更容易，但它不能替代 skill 覆盖。删除 Cobra adapter 的判据是已无 Agent、人工或后台消费者，
+  不能仅凭界面没有入口判断。
 - **Parser 提取结构，不做业务判断**：应提取一切可用的结构化信息（summary、时间戳、工具调用），
   但不提取 git commit、不生成摘要。
 - **`review` 状态保留，但不是状态前置闸门**：它表示「Agent 声称完成、人尚未验收」。`todo done` 只允许

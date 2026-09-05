@@ -65,7 +65,7 @@ Settable keys:
                                   fixed safety and JSON-shape prompt. The default
                                   keeps one feature's implementation phases in a
                                   single Todo; pass an empty string to restore it
-  todo_refine_on_add true|false After a human files a todo in the App, run one
+  todo_refine_on_add true|false After a human files a todo in the browser, run one
                                 model pass to polish the card and split complex
                                 work (default false — 优化 is an action on the
                                 Todo, not something that happens on add). CLI

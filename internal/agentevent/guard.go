@@ -6,23 +6,22 @@ import (
 	"time"
 )
 
-// TypeGuardRequest marks a guard message on the notch socket.
+// TypeGuardRequest marks a guard message on the presence socket.
 //
 // The socket carries a discriminated union rather than a sixth Kind. A new Kind
 // would be read by every consumer of an agent event — it would credit a session
 // with turn-state reporting, join a cwd, and force a session refresh — none of
 // which is true of an approval request, which is not about a session at all.
 // Messages with no `type` are agent events, so every hook already installed keeps
-// working byte for byte and an older app simply fails to decode the new shape and
-// drops it.
+// working byte for byte while guard requests remain a separate runtime message.
 const TypeGuardRequest = "guard_request"
 
 // GuardEnvelope is one pending approval, pushed the moment it is created so the
-// app can raise a banner instead of waiting up to a minute to notice the row.
+// runtime can raise a banner instead of waiting up to a minute to notice the row.
 //
 // The socket is a courtesy channel, not the record: the request is already in the
-// database before this is sent, and the app rebuilds the same list from the CLI
-// on its own schedule. Anything undeliverable here is therefore a no-op, not a
+// database before this is sent, and consumers rebuild the same list from storage
+// on their own schedule. Anything undeliverable here is therefore a no-op, not a
 // failure.
 type GuardEnvelope struct {
 	Version int    `json:"v"`
@@ -54,7 +53,7 @@ func (e GuardEnvelope) Line() ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
-// DeliverGuard pushes one pending approval to the notch.
+// DeliverGuard pushes one pending approval to the presence runtime.
 //
 // Unlike Deliver, the error is worth looking at: the caller uses failure as the
 // signal to raise a local banner itself, because the whole point of the request

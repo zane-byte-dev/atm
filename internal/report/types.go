@@ -1,6 +1,6 @@
 // Package report owns the daily activity report: which day, which sessions are
 // worth listing, and what of each session's transcript is readable. Command and
-// IPC adapters decide column widths and truncation; they do not open the session
+// Web adapters decide column widths and truncation; they do not open the session
 // index or reproduce the selection rules.
 package report
 

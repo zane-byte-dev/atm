@@ -147,32 +147,6 @@ func TestServiceDecisionIsHumanOnly(t *testing.T) {
 	}
 }
 
-func TestServiceDecisionRejectsReplayableIPCIdentity(t *testing.T) {
-	withGuardServiceStore(t)
-	created := createServiceApproval(t, 0)
-	executor := &fakeDeferredExecutor{}
-	service := guardTestService(executor)
-	call := guardServiceCall(application.ActorHuman)
-	call.Actor.Origin = application.OriginIPC
-
-	_, err := service.Decide(context.Background(), call, DecisionInput{
-		ID: created.ID, Approve: true, Run: true,
-	})
-	if !errors.Is(err, application.ErrForbidden) {
-		t.Fatalf("replayable IPC decision error = %v, want forbidden", err)
-	}
-	shown, _, err := service.Show(context.Background(), guardServiceCall(application.ActorHuman), ShowInput{ID: created.ID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if shown.Approval.Status != ApprovalPending {
-		t.Fatalf("status = %s, want pending", shown.Approval.Status)
-	}
-	if len(executor.validated) != 0 || len(executor.executed) != 0 {
-		t.Fatal("a replayable IPC identity reached the executor")
-	}
-}
-
 func TestServiceDecisionRejectsWebAndNativeControl(t *testing.T) {
 	withGuardServiceStore(t)
 	created := createServiceApproval(t, 0)

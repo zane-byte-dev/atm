@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -81,28 +80,7 @@ func runTodoShow(cmd *cobra.Command, args []string) error {
 }
 
 func printTodoShowJSON(result workapp.ShowResult) error {
-	encodedTodo, err := json.Marshal(result.Todo)
-	if err != nil {
-		return fmt.Errorf("encode todo: %w", err)
-	}
-	var out map[string]any
-	if err := json.Unmarshal(encodedTodo, &out); err != nil {
-		return fmt.Errorf("build todo response: %w", err)
-	}
-	out["todo"] = result.Todo
-	out["doc_path"] = result.Document.Path
-	out["doc_exists"] = result.Document.Exists
-	if len(result.Bindings) > 0 {
-		out["bindings"] = result.Bindings
-	}
-	if len(result.Sessions) > 0 {
-		out["sessions"] = result.Sessions
-		out["summary"] = result.Summary
-	}
-	if result.LatestPlan != nil {
-		out["latest_plan"] = result.LatestPlan
-	}
-	output.JSON(out)
+	output.JSON(result)
 	return nil
 }
 

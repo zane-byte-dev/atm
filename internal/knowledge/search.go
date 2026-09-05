@@ -20,30 +20,6 @@ type chunk struct {
 	tokens   []string
 }
 
-func Search(dataDir, query string, options SearchOptions) ([]SearchHit, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil, fmt.Errorf("query must not be empty")
-	}
-	// The corpus is read on every search. At this scale that costs about as much
-	// as the process start-up itself, and a chunk cache measurably cost more than
-	// it saved: serialising every chunk's text and tokens produced a file several
-	// times the size of the corpus, and any file's mtime invalidated all of it.
-	documents, err := Discover(dataDir)
-	if err != nil {
-		return nil, err
-	}
-	tallies, tallyErr := (sqliteFeedbackStore{}).Totals()
-	if tallyErr != nil {
-		// Search historically remained useful when the optional quality ledger was
-		// unavailable. The application service is stricter because it promises the
-		// complete search-and-record use case; this compatibility function retains
-		// the old best-effort ranking behavior for lower-level callers.
-		tallies = nil
-	}
-	return searchDocuments(documents, query, options, qualityIndexFromTallies(documents, tallies)), nil
-}
-
 func searchDocuments(documents []Document, query string, options SearchOptions, qualityIndex map[string]float64) []SearchHit {
 	if options.Limit <= 0 {
 		options.Limit = 10

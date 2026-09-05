@@ -1,7 +1,6 @@
 package apphost
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -104,7 +103,7 @@ func collectionTestCall(t *testing.T, h *Host, method, input string) any {
 	return result
 }
 
-func TestCollectionReadsNeverCreateOrMigrateAndHistoryNeverPrunes(t *testing.T) {
+func TestCollectionReadsNeverCreateAndHistoryNeverPrunes(t *testing.T) {
 	h := testHost(t)
 	collectionTestCall(t, h, "collect.overview", `{}`)
 	collectionTestCall(t, h, "collect.items", `{}`)
@@ -116,14 +115,12 @@ func TestCollectionReadsNeverCreateOrMigrateAndHistoryNeverPrunes(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("UPDATE schema_version SET version=54"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("DROP TABLE work_create_idempotency"); err != nil {
-		t.Fatal(err)
-	}
+	ignored, _, err := store.PutCollectionItem(db, store.CollectionItem{
+		SourceID: source.ID, Connector: source.Connector, ConversationID: source.ExternalID,
+		Fingerprint: "ignored-result", MessageIDs: []string{"m1"}, Title: "Ignored result",
+		Action: "ignore", Status: "processed", CreatedAt: 200, UpdatedAt: 200,
+	})
 	db.Close()
-	before, err := os.ReadFile(config.AtmDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,6 +132,14 @@ func TestCollectionReadsNeverCreateOrMigrateAndHistoryNeverPrunes(t *testing.T) 
 	if listed.Total != 105 || len(listed.Items) != 5 {
 		t.Fatalf("lost records beyond the old bounded snapshot: %+v", listed)
 	}
+	all := collectionTestCall(t, h, "collect.items", `{"state":"all","limit":100}`).(CollectionListResult)
+	foundIgnored := false
+	for _, item := range all.Items {
+		foundIgnored = foundIgnored || item.ID == ignored.ID
+	}
+	if all.Total != 106 || len(all.Items) != 100 || !foundIgnored {
+		t.Fatalf("all records did not retain ignored audit item: %+v", all)
+	}
 	shown := collectionTestCall(t, h, "collect.item.show", fmt.Sprintf(`{"item_id":%q}`, items[0].ID)).(CollectionItemResult)
 	if shown.Item.RawContext != "historic source context" || shown.Item.ReadAt != 0 {
 		t.Fatalf("detail modified or lost item: %+v", shown)
@@ -142,21 +147,6 @@ func TestCollectionReadsNeverCreateOrMigrateAndHistoryNeverPrunes(t *testing.T) 
 	history := collectionTestCall(t, h, "collect.history", fmt.Sprintf(`{"source_id":%q}`, source.ID)).(CollectionHistoryResult)
 	if len(history.Messages) != 1 || history.Messages[0].CreatedAt != 1 || !history.Local {
 		t.Fatalf("history lost older local messages: %+v", history)
-	}
-	for method, input := range map[string]string{
-		"collect.item.read":      fmt.Sprintf(`{"item_id":%q,"read":true}`, items[0].ID),
-		"collect.item.archive":   fmt.Sprintf(`{"item_id":%q,"archived":true}`, items[0].ID),
-		"collect.source.enabled": fmt.Sprintf(`{"source_id":%q,"enabled":false}`, source.ID),
-		"collect.source.muted":   fmt.Sprintf(`{"source_id":%q,"muted":true}`, source.ID),
-	} {
-		_, err := h.callCollection(context.Background(), webCall(), method, json.RawMessage(input))
-		if !errors.Is(err, application.ErrForbidden) {
-			t.Fatalf("%s upgraded old database: %v", method, err)
-		}
-	}
-	after, err := os.ReadFile(config.AtmDB)
-	if err != nil || !bytes.Equal(before, after) {
-		t.Fatalf("old database bytes changed during Web reads/rejected writes: %v", err)
 	}
 }
 

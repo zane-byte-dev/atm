@@ -1103,3 +1103,585 @@
     border-top: 1px solid var(--line);
   }
 }
+
+/* AI Day reads as a full canvas; Settings keeps a narrow category navigator. */
+.as-workspace {
+  max-width: none;
+  padding: 0;
+  background: var(--canvas);
+}
+.as-page-heading {
+  min-height: 64px;
+  margin: 0;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.as-page-heading h1 {
+  font-size: 20px;
+  font-weight: 560;
+  letter-spacing: -0.24px;
+}
+.as-page-heading p {
+  margin-top: 3px;
+  font-size: 11px;
+}
+.aid-workspace {
+  height: 100%;
+  overflow: auto;
+  padding-bottom: 28px;
+}
+.aid-workspace .as-tabs {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  width: fit-content;
+  max-width: calc(100% - 48px);
+  gap: 2px;
+  margin: 10px 24px;
+  padding: 3px;
+  overflow-x: auto;
+  border: 0;
+  border-radius: 9px;
+  background: var(--soft);
+}
+.aid-workspace .as-tabs button {
+  flex: none;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.aid-workspace .as-tabs button.selected {
+  border: 0;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 1px 4px var(--shadow-color);
+  font-weight: 540;
+}
+.aid-workspace > :not(.as-page-heading):not(.as-tabs) {
+  max-width: 1120px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.aid-workspace > .as-range {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.as-stats,
+.as-card,
+.aid-hero,
+.aid-badge-card,
+.as-table-wrap {
+  border-radius: 12px;
+}
+.aid-history-layout {
+  padding: 18px 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 3px 14px var(--shadow-color);
+}
+.aid-hero {
+  background: linear-gradient(130deg, var(--surface), var(--accent-soft));
+}
+
+.settings-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+.settings-workspace .as-page-heading {
+  flex: none;
+  padding-inline: 14px;
+}
+.settings-workspace .as-page-heading h1 {
+  font-size: 17px;
+  letter-spacing: -0.1px;
+}
+.as-settings-layout {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+.as-settings-nav {
+  min-height: 0;
+  padding: 10px 8px;
+  overflow-y: auto;
+  border-right: 1px solid var(--line);
+  background: var(--canvas);
+}
+.as-settings-nav > button {
+  min-height: 54px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 9px;
+}
+.as-settings-nav > button.selected {
+  border: 0;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 2px 9px var(--shadow-color);
+}
+.as-settings-nav strong {
+  font-size: 13px;
+  font-weight: 540;
+}
+.as-settings-nav small {
+  font-size: 11px;
+}
+.as-settings-content {
+  max-width: none;
+  min-height: 0;
+  padding: 20px 24px 32px;
+  overflow: auto;
+  background: var(--canvas);
+}
+.as-settings-content > * {
+  max-width: 880px;
+}
+.as-settings-content .as-card,
+.as-runtime-banner {
+  box-shadow: 0 3px 14px var(--shadow-color);
+}
+.as-setting-row {
+  padding: 15px 0;
+}
+
+@media (max-width: 1000px) and (min-width: 761px) {
+  .as-settings-layout {
+    grid-template-columns: 188px minmax(0, 1fr);
+    gap: 0;
+  }
+  .as-settings-nav {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .as-settings-nav > button {
+    width: 100%;
+    flex: none;
+    justify-content: flex-start;
+  }
+  .as-settings-nav small,
+  .as-settings-nav > button > svg:last-child,
+  .as-settings-version {
+    display: initial;
+  }
+  .as-settings-nav > button > svg:last-child {
+    display: block;
+  }
+}
+
+@media (max-width: 760px) {
+  .as-page-heading {
+    padding-inline: 14px;
+  }
+  .aid-workspace .as-tabs {
+    max-width: calc(100% - 24px);
+    margin-inline: 12px;
+    gap: 2px;
+  }
+  .aid-workspace > :not(.as-page-heading):not(.as-tabs) {
+    width: calc(100% - 24px);
+  }
+  .as-settings-layout {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  .as-settings-nav {
+    flex-direction: row;
+    min-height: auto;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .as-settings-content {
+    padding: 16px 12px 24px;
+  }
+}
+
+/* Settings follows the approved navigator/detail composition exactly. */
+.settings-workspace .as-settings-layout {
+  grid-template-columns: 232px minmax(0, 1fr);
+}
+.settings-workspace .as-settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 8px 12px;
+  background: var(--list-pane);
+}
+.settings-navigator-heading {
+  flex: none;
+  min-height: 86px;
+  margin: 0 -8px 5px;
+  padding: 24px 20px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.settings-navigator-heading h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 620;
+  letter-spacing: -0.1px;
+}
+.settings-navigator-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.settings-workspace .as-settings-nav > button {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 9px;
+  min-height: 62px;
+  padding: 9px 10px;
+  border-radius: 10px;
+}
+.settings-workspace .as-settings-nav > button > svg:first-child {
+  width: 30px;
+  height: 30px;
+  padding: 7px;
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.settings-workspace .as-settings-nav > button > span {
+  gap: 4px;
+}
+.settings-workspace .as-settings-nav > button.selected {
+  color: var(--text);
+  background: var(--content-selected);
+  box-shadow: none;
+}
+.settings-workspace .as-settings-nav > button.selected > svg:first-child {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.settings-workspace .as-settings-nav > button > svg:last-child {
+  display: block;
+  width: 12px;
+}
+.settings-workspace .as-settings-version {
+  display: block;
+  margin-top: auto;
+  padding: 18px 10px 5px;
+}
+.as-settings-detail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--canvas);
+}
+.settings-detail-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: none;
+  min-height: 86px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.settings-detail-identity {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+.settings-detail-identity > svg:first-child {
+  width: 36px;
+  height: 36px;
+  padding: 10px;
+  border-radius: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.settings-detail-identity h1 {
+  max-width: 780px;
+  margin: 0;
+  color: var(--text);
+  font-size: 20px;
+  font-weight: 560;
+  line-height: 1.3;
+  letter-spacing: -0.24px;
+}
+.settings-detail-identity p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.settings-workspace .as-settings-content {
+  flex: 1;
+  max-width: none;
+  min-height: 0;
+  padding: 12px 24px 24px;
+  overflow: auto;
+}
+.settings-content-sheet {
+  width: min(980px, 100%);
+  min-height: 330px;
+  padding: 18px 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px #00000009;
+}
+.settings-content-sheet > *,
+.settings-workspace .as-settings-content > * {
+  max-width: none;
+}
+.settings-content-sheet > .as-section-title,
+.settings-content-sheet > .workspace-form > .as-section-title,
+.settings-content-sheet > .appearance-settings > .as-section-title {
+  display: none;
+}
+.settings-content-sheet .as-card,
+.settings-content-sheet .as-runtime-banner {
+  margin: 0;
+  padding: 18px 0;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.settings-content-sheet .workspace-form > .as-card:first-of-type,
+.settings-content-sheet > .as-card:first-child,
+.settings-content-sheet > .as-runtime-banner:first-child {
+  padding-top: 0;
+}
+.settings-content-sheet .workspace-form > .as-card:last-of-type,
+.settings-content-sheet > .as-card:last-child {
+  border-bottom: 0;
+}
+.settings-content-sheet .workspace-form-footer {
+  margin-top: 2px;
+}
+.settings-content-sheet .native-preferences-import {
+  margin-top: 22px;
+}
+
+@media (max-width: 1000px) and (min-width: 761px) {
+  .settings-workspace .as-settings-layout {
+    grid-template-columns: 220px minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .settings-workspace .as-settings-layout {
+    display: flex;
+    flex-direction: column;
+  }
+  .settings-workspace .as-settings-nav {
+    flex: none;
+    flex-direction: row;
+    padding: 0 8px 8px;
+    overflow-x: auto;
+  }
+  .settings-navigator-heading,
+  .settings-workspace .as-settings-version {
+    display: none;
+  }
+  .settings-workspace .as-settings-nav > button {
+    display: flex;
+    flex: 0 0 auto;
+    min-height: 38px;
+    padding: 6px 9px;
+  }
+  .settings-workspace .as-settings-nav small,
+  .settings-workspace .as-settings-nav > button > svg:last-child {
+    display: none;
+  }
+  .settings-detail-header {
+    min-height: 76px;
+    padding: 0 16px;
+  }
+  .settings-workspace .as-settings-content {
+    padding: 10px 12px 18px;
+  }
+  .settings-content-sheet {
+    padding: 16px;
+  }
+}
+
+/* AI Day uses the macOS full-canvas toolbar: view switch left, actions right. */
+.aid-workspace {
+  position: relative;
+}
+.aid-workspace > .as-page-heading {
+  position: sticky;
+  z-index: 3;
+  top: 0;
+  min-height: 64px;
+  padding: 14px 24px;
+}
+.aid-workspace > .as-page-heading > div:first-child {
+  visibility: hidden;
+}
+.aid-workspace > .as-page-heading .workspace-actions {
+  position: relative;
+  z-index: 2;
+  flex-wrap: nowrap;
+}
+.aid-workspace > .as-tabs {
+  position: absolute;
+  z-index: 4;
+  top: 14px;
+  left: 24px;
+  max-width: calc(100% - 280px);
+  margin: 0;
+}
+.aid-workspace > :not(.as-page-heading):not(.as-tabs) {
+  width: min(1120px, calc(100% - 48px));
+}
+
+@media (max-width: 760px) {
+  .aid-workspace > .as-page-heading {
+    padding-inline: 12px;
+  }
+  .aid-workspace > .as-page-heading .workspace-actions {
+    display: none;
+  }
+  .aid-workspace > .as-tabs {
+    left: 12px;
+    max-width: calc(100% - 24px);
+  }
+  .aid-workspace > :not(.as-page-heading):not(.as-tabs) {
+    width: calc(100% - 24px);
+  }
+}
+
+/* Native detail polish shared by full-canvas tabs and Settings. */
+.aid-workspace .as-tabs,
+.as-presets {
+  background: var(--segment-track);
+}
+.as-settings-content,
+.as-settings-nav,
+.aid-workspace {
+  scrollbar-width: none;
+}
+.as-settings-content::-webkit-scrollbar,
+.as-settings-nav::-webkit-scrollbar,
+.aid-workspace::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* Keep the compact AI Day toolbar usable on phone-sized windows. */
+@media (max-width: 760px) {
+  .aid-workspace > .as-page-heading {
+    min-height: 112px;
+    padding: 54px 12px 10px;
+    align-items: flex-start;
+  }
+  .aid-workspace > .as-page-heading > div:first-child {
+    display: none;
+  }
+  .aid-workspace > .as-page-heading .workspace-actions {
+    display: flex;
+    flex-wrap: nowrap;
+  }
+  .aid-workspace > .as-page-heading > .workspace-actions {
+    width: 100%;
+    min-width: 0;
+    justify-content: flex-start;
+    padding-right: 18px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 16px), transparent);
+  }
+  .aid-workspace > .as-page-heading > .workspace-actions::-webkit-scrollbar {
+    display: none;
+  }
+  .aid-workspace > .as-page-heading .workspace-jobs,
+  .aid-workspace > .as-page-heading .workspace-actions > .button {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+  }
+  .aid-workspace > .as-page-heading .button {
+    min-height: 30px;
+    padding-inline: 8px;
+    font-size: 11px;
+  }
+  .aid-workspace > .as-tabs,
+  .settings-workspace .as-settings-nav {
+    padding-right: 22px;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  }
+  .aid-workspace > .as-tabs::-webkit-scrollbar,
+  .settings-workspace .as-settings-nav::-webkit-scrollbar {
+    display: none;
+  }
+  .aid-workspace > .as-tabs > button,
+  .settings-workspace .as-settings-nav > button {
+    scroll-snap-align: start;
+  }
+  .as-date-fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+    flex: 1 1 100%;
+    width: 100%;
+    gap: 6px;
+  }
+  .as-date-fields input {
+    width: 100%;
+  }
+  .as-date-fields > span {
+    align-self: center;
+  }
+  .as-date-fields > .button {
+    min-width: 48px;
+  }
+}
+
+@media (max-width: 350px) {
+  .as-date-fields {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+  .as-date-fields > .button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+}
+
+@media (max-width: 760px) {
+  .aid-workspace > .as-page-heading:has(> .workspace-actions > .button:only-child) {
+    min-height: 64px;
+    padding: 14px 12px;
+  }
+  .aid-workspace
+    > .as-page-heading:has(> .workspace-actions > .button:only-child)
+    > .workspace-actions {
+    position: absolute;
+    top: 14px;
+    right: 12px;
+    width: auto;
+    padding: 0;
+    overflow: visible;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .aid-workspace:has(> .as-page-heading > .workspace-actions > .button:only-child) > .as-tabs {
+    max-width: calc(100% - 86px);
+  }
+}

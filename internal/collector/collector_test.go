@@ -27,9 +27,19 @@ type fakeFetcher struct {
 	since    []int64
 }
 
+func (*fakeFetcher) ID() string { return "test" }
+
 func (fetcher *fakeFetcher) Fetch(_ context.Context, _ store.CollectionSource, since int64) ([]Message, int64, error) {
 	fetcher.since = append(fetcher.since, since)
 	return append([]Message(nil), fetcher.messages...), fetcher.newest, fetcher.err
+}
+
+func testRegistry(connectors ...Connector) *Registry {
+	registry, err := NewRegistry(connectors...)
+	if err != nil {
+		panic(err)
+	}
+	return registry
 }
 
 type fakeExtractor struct {
@@ -178,7 +188,7 @@ func TestAnExpiredLoginStopsTheRestOfItsConnector(t *testing.T) {
 	addSecondCollectorSource(t)
 	withConnectorLoginCommand(t, "test", "~/bin/fake auth login")
 	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
-	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: &fakeExtractor{}, Now: tickingClock()}
 	report, err := service.Run(context.Background(), "")
 	if err == nil || !strings.Contains(err.Error(), "未登录") {
 		t.Fatalf("the attempt that did happen must still be reported: %v", err)
@@ -207,7 +217,7 @@ func TestTheBackgroundRunLeavesAnExpiredLoginAloneUntilItsWindowPasses(t *testin
 	now := time.Unix(200_000, 0)
 	seedFailedRun(t, first, now.Add(-10*time.Minute), expiredLogin)
 	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
-	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{},
+	service := Service{Connectors: testRegistry(fetcher), Extractor: &fakeExtractor{},
 		Now: func() time.Time { return now }}
 
 	report, err := service.RunDue(context.Background(), "")
@@ -246,7 +256,7 @@ func TestAManualRunAlwaysAttemptsAConnectorTheLedgerCallsBlocked(t *testing.T) {
 	now := time.Unix(200_000, 0)
 	seedFailedRun(t, first, now.Add(-time.Minute), expiredLogin)
 	fetcher := &fakeFetcher{newest: now.Unix()}
-	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{},
+	service := Service{Connectors: testRegistry(fetcher), Extractor: &fakeExtractor{},
 		Now: func() time.Time { return now }}
 	report, err := service.Run(context.Background(), "")
 	if err != nil || len(report.Runs) != 1 || len(fetcher.since) != 1 {
@@ -273,7 +283,7 @@ func TestOnlyAnExpiredLoginBlocksTheConnector(t *testing.T) {
 		addCollectorSource(t)
 		addSecondCollectorSource(t)
 		fetcher := &fakeFetcher{err: errors.New(message)}
-		service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+		service := Service{Connectors: testRegistry(fetcher), Extractor: &fakeExtractor{}, Now: tickingClock()}
 		report, err := service.Run(context.Background(), "")
 		if err == nil || len(report.Runs) != 2 || len(fetcher.since) != 2 {
 			t.Errorf("%q stopped the connector: runs=%d fetches=%v err=%v",
@@ -291,7 +301,7 @@ func TestABlockedConnectorWithNoSiblingsIsNotReportedTwice(t *testing.T) {
 	withCollectorStore(t)
 	addCollectorSource(t)
 	fetcher := &fakeFetcher{err: errors.New(expiredLogin)}
-	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: &fakeExtractor{}, Now: tickingClock()}
 	report, _ := service.Run(context.Background(), "")
 	if len(report.Runs) != 1 || len(report.Blocked) != 0 {
 		t.Fatalf("runs=%d blocked=%+v", len(report.Runs), report.Blocked)
@@ -326,7 +336,7 @@ func TestServiceCreatesOnceAndAdvancesCheckpoint(t *testing.T) {
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "实现全自动需求收集",
 		Summary: "自动读取聊天并创建 Todo", ItemType: "requirement", Project: "atm",
 		Priority: "P1", Reason: "明确需求", Confidence: 0.96}}
-	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: extractor, Now: tickingClock()}
 
 	first, err := service.Run(context.Background(), source.ID)
 	if err != nil {
@@ -393,7 +403,7 @@ func TestServiceRelatedWorkCreatesNewTodoAndKeepsExistingTodoUntouched(t *testin
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "实现需求收集",
 		Summary: "使用 connector 增量拉取", ItemType: "requirement", Project: "atm", Priority: "P1",
 		RelatedTodoID: "t9", Reason: "新的可执行事项", Confidence: 0.95}}
-	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: extractor, Now: tickingClock()}
 	first, err := service.Run(context.Background(), source.ID)
 	if err != nil || first.Runs[0].CreatedCount != 1 || first.Runs[0].AppendedCount != 0 {
 		t.Fatalf("create related run=%+v err=%v", first, err)
@@ -432,7 +442,7 @@ func TestServiceAppendsFollowUpToTheTodoTheSameChatFiled(t *testing.T) {
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "排查技能命中默认 SKILL",
 		Summary: "批测有概率命中默认 SKILL", ItemType: "investigation", Project: "atm",
 		Priority: "P1", Reason: "明确排查项", Confidence: 0.95}}
-	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: extractor, Now: tickingClock()}
 	if _, err := service.Run(context.Background(), source.ID); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -465,7 +475,7 @@ func TestServiceAppendsFollowUpToTheTodoTheSameChatFiled(t *testing.T) {
 		!strings.Contains(doc, "只注入了 skill definition，未在 prompt 里真正触发激活") {
 		t.Fatalf("append did not reach the Todo's 补充 section:\n%s", doc)
 	}
-	// The App strips exactly this marker out of the task timeline and keeps it on
+	// The browser strips exactly this marker out of the task timeline and keeps it on
 	// disk to tie the entry back to its collection item.
 	if !strings.Contains(doc, "<!-- [钉钉采集:") {
 		t.Fatalf("append lost its traceability marker:\n%s", doc)
@@ -663,7 +673,7 @@ func TestServiceRefusesToAppendOutsideTheConversationThatFiledTheTodo(t *testing
 	extractor := &fakeExtractor{decision: Decision{Action: "append", Title: "补充手写任务",
 		Summary: "群里提到的补充信息", ItemType: "follow_up", Project: "atm", Priority: "P1",
 		RelatedTodoID: "t9", Reason: "自称与 t9 有关", Confidence: 0.9}}
-	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: extractor, Now: tickingClock()}
 	report, err := service.Run(context.Background(), source.ID)
 	if err != nil || report.Runs[0].CreatedCount != 1 || report.Runs[0].AppendedCount != 0 {
 		t.Fatalf("refused append run=%+v err=%v", report, err)
@@ -707,7 +717,7 @@ func TestServiceRefusesToFileAnUntitledTodoWhenAnAppendTargetIsGone(t *testing.T
 	extractor := &fakeExtractor{decision: Decision{Action: "append", Title: "",
 		Summary: "还有个后续", ItemType: "follow_up", Project: "atm", Priority: "P1",
 		RelatedTodoID: "t9", Reason: "自称与 t9 有关", Confidence: 0.9}}
-	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: extractor, Now: tickingClock()}
 	// The source's run fails, which is how the checkpoint stays put and the batch
 	// comes back next time.
 	report, err := service.Run(context.Background(), source.ID)
@@ -746,7 +756,7 @@ func TestServiceDoesNotRegroupHandledMessagesWhenConversationExpands(t *testing.
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "实现需求收集",
 		Summary: "使用 connector 增量拉取", ItemType: "requirement", Project: "atm", Priority: "P1",
 		RelatedTodoID: "t9", Reason: "新的事项与历史任务有关", Confidence: 0.95}}
-	service := Service{Fetcher: fetcher, Extractor: extractor, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: extractor, Now: tickingClock()}
 	if _, err := service.Run(context.Background(), source.ID); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -799,11 +809,11 @@ func TestObservationSourceKeepsInsightAndNeverWritesTodo(t *testing.T) {
 	source := observationSource(t)
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "大家在聊 AI 工具",
 		Summary: "讨论不同工具的体验", ItemType: "requirement", Priority: "P1", Confidence: 0.9}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		{ID: "m-observe-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
 			Content: "最近都在用什么 AI？"},
 	},
-		newest: 10_000}, Extractor: extractor, Now: tickingClock()}
+		newest: 10_000}), Extractor: extractor, Now: tickingClock()}
 	report, err := service.Run(context.Background(), source.ID)
 	if err != nil || report.Runs[0].InsightCount != 1 || report.Runs[0].CreatedCount != 0 {
 		t.Fatalf("observation run=%+v err=%v", report, err)
@@ -842,13 +852,13 @@ func TestObservationSourceDecidesPerTopic(t *testing.T) {
 			ItemType: "insight", Confidence: 0.8}
 	}}
 	// 33 minutes apart: past the 15-minute gap that separates one topic from the next.
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		{ID: "m-topic-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
 			Content: "connector 的增量拉取用 --since"},
 		{ID: "m-topic-2", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 12_000,
 			Content: "午饭去哪里吃？"},
 	},
-		newest: 12_000}, Extractor: extractor, Now: tickingClock()}
+		newest: 12_000}), Extractor: extractor, Now: tickingClock()}
 	report, err := service.Run(context.Background(), source.ID)
 	if err != nil || report.Runs[0].AnalyzedCount != 2 || extractor.calls != 2 {
 		t.Fatalf("observation run=%+v calls=%d err=%v", report, extractor.calls, err)
@@ -884,7 +894,7 @@ func TestRunCollapsesItsInsightsIntoOneRecord(t *testing.T) {
 	summarizer := &fakeSummarizer{content: DigestContent{Title: "采集机制两则",
 		Body: "- 增量拉取用 --since\n- 白名单只采集显式来源"}}
 	// Three topics, each past the 15-minute gap from the last.
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		{ID: "m-merge-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
 			Content: "connector 的增量拉取用 --since"},
 		{ID: "m-merge-2", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 12_000,
@@ -892,7 +902,7 @@ func TestRunCollapsesItsInsightsIntoOneRecord(t *testing.T) {
 		{ID: "m-merge-3", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 14_000,
 			Content: "来源走白名单，只采集显式添加的"},
 	},
-		newest: 14_000}, Extractor: extractor, Summarizer: summarizer, Now: tickingClock()}
+		newest: 14_000}), Extractor: extractor, Summarizer: summarizer, Now: tickingClock()}
 
 	report, err := service.Run(context.Background(), source.ID)
 	if err != nil {
@@ -954,10 +964,10 @@ func TestASingleInsightIsNotMerged(t *testing.T) {
 	withCollectorStore(t)
 	source := observationSource(t)
 	summarizer := &fakeSummarizer{content: DigestContent{Title: "不该被调用", Body: "不该被调用"}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		{ID: "m-single-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
 			Content: "connector 的增量拉取用 --since"},
-	}, newest: 10_000},
+	}, newest: 10_000}),
 		Extractor: &fakeExtractor{decision: Decision{Action: "insight", Title: "增量拉取用 --since",
 			Summary: "connector 靠 --since 增量拉取", ItemType: "insight", Confidence: 0.8}},
 		Summarizer: summarizer, Now: tickingClock()}
@@ -988,12 +998,12 @@ func TestInsightMergeFallsBackToTheirOwnTextWhenTheModelIsUnavailable(t *testing
 		return Decision{Action: "insight", Title: "白名单只采集显式来源",
 			Summary: "来源要显式添加才会被采集", ItemType: "insight", Confidence: 0.6}
 	}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		{ID: "m-fallback-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
 			Content: "connector 的增量拉取用 --since"},
 		{ID: "m-fallback-2", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 12_000,
 			Content: "来源走白名单，只采集显式添加的"},
-	}, newest: 12_000}, Extractor: extractor,
+	}, newest: 12_000}), Extractor: extractor,
 		Summarizer: &fakeSummarizer{err: errors.New("model unavailable")}, Now: tickingClock()}
 
 	report, err := service.Run(context.Background(), source.ID)
@@ -1035,14 +1045,14 @@ func TestMergingInsightsLeavesTodoRecordsAlone(t *testing.T) {
 		return Decision{Action: "insight", Title: "白名单只采集显式来源",
 			Summary: "来源要显式添加才会被采集", ItemType: "insight", Confidence: 0.6}
 	}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		{ID: "m-mixed-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
 			Content: "收集的时候报错了"},
 		{ID: "m-mixed-2", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 12_000,
 			Content: "connector 的增量拉取用 --since"},
 		{ID: "m-mixed-3", ConversationID: source.ExternalID, Sender: "临遥", CreatedAt: 14_000,
 			Content: "来源走白名单，只采集显式添加的"},
-	}, newest: 14_000}, Extractor: extractor,
+	}, newest: 14_000}), Extractor: extractor,
 		Summarizer: &fakeSummarizer{content: DigestContent{Title: "采集机制两则",
 			Body: "- 增量拉取用 --since\n- 白名单只采集显式来源"}}, Now: tickingClock()}
 
@@ -1073,11 +1083,11 @@ func TestMergingInsightsLeavesTodoRecordsAlone(t *testing.T) {
 func TestPromoteTurnsObservationInsightIntoTodo(t *testing.T) {
 	withCollectorStore(t)
 	source := observationSource(t)
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		{ID: "m-promote-1", ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 10_000,
 			Content: "收集来源要走白名单"},
 	},
-		newest: 10_000},
+		newest: 10_000}),
 		Extractor: &fakeExtractor{decision: Decision{Action: "insight", Title: "来源走白名单",
 			Summary: "只采集显式添加的群和人", ItemType: "insight", Confidence: 0.9}},
 		Now: tickingClock()}
@@ -1134,7 +1144,7 @@ func TestRunDueHonorsSourceCadenceWhileManualRunForces(t *testing.T) {
 	}
 	db.Close()
 	fetcher := &fakeFetcher{newest: now.Unix()}
-	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: func() time.Time { return now }}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: &fakeExtractor{}, Now: func() time.Time { return now }}
 	report, err := service.RunDue(context.Background(), source.ID)
 	if err != nil || len(report.Runs) != 0 || len(fetcher.since) != 0 {
 		t.Fatalf("not-due background run=%+v fetches=%v err=%v", report, fetcher.since, err)
@@ -1157,9 +1167,9 @@ func TestSourceExclusionIsAuditedWithoutCallingModel(t *testing.T) {
 		t.Fatalf("update source exclusion: %v", err)
 	}
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "不应调用"}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{{ID: "bot1",
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{{ID: "bot1",
 		ConversationID: source.ExternalID, Sender: "机器人", CreatedAt: 11_500,
-		Content: "机器人通知：构建成功"}}, newest: 11_500}, Extractor: extractor, Now: tickingClock()}
+		Content: "机器人通知：构建成功"}}, newest: 11_500}), Extractor: extractor, Now: tickingClock()}
 	report, err := service.Run(context.Background(), source.ID)
 	if err != nil || report.Runs[0].IgnoredCount != 1 || extractor.calls != 0 {
 		t.Fatalf("excluded run=%+v calls=%d err=%v", report, extractor.calls, err)
@@ -1188,12 +1198,12 @@ func TestSourceExclusionDropsOnlyTheMatchedMessages(t *testing.T) {
 	}
 	extractor := &fakeExtractor{decision: Decision{Action: "create", Title: "修复登录超时",
 		ItemType: "bug", Confidence: 0.9}}
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{
 		{ID: "noise", ConversationID: source.ExternalID, Sender: "机器人",
 			CreatedAt: 11_400, Content: "构建成功：主干流水线 #42"},
 		{ID: "real", ConversationID: source.ExternalID, Sender: "测试发送人",
 			CreatedAt: 11_500, Content: "登录超时需要修复一下"},
-	}, newest: 11_500}, Extractor: extractor, Now: tickingClock()}
+	}, newest: 11_500}), Extractor: extractor, Now: tickingClock()}
 	report, err := service.Run(context.Background(), source.ID)
 	if err != nil || report.Runs[0].CreatedCount != 1 || extractor.calls != 1 {
 		t.Fatalf("mixed batch run=%+v calls=%d err=%v", report, extractor.calls, err)
@@ -1256,7 +1266,7 @@ func TestDecisionUnitDecidesHowManyEventsSurviveOneWindow(t *testing.T) {
 				t.Fatalf("set decision unit %s: %v", testCase.unit, err)
 			}
 			extractor := &fakeExtractor{decide: titleFromLastLine}
-			service := Service{Fetcher: &fakeFetcher{messages: messages, newest: 11_520},
+			service := Service{Connectors: testRegistry(&fakeFetcher{messages: messages, newest: 11_520}),
 				Extractor: extractor, Now: tickingClock()}
 			report, err := service.Run(context.Background(), source.ID)
 			if err != nil || extractor.calls != testCase.wantCalls ||
@@ -1298,7 +1308,7 @@ func TestServiceFailureDoesNotAdvanceCheckpointAndCanRecover(t *testing.T) {
 	fetcher := &fakeFetcher{messages: []Message{{ID: "m3", ConversationID: source.ExternalID,
 		Sender: "测试发送人", CreatedAt: 12_000, Content: "这里有个 bug 需要修复"}}, newest: 12_000}
 	failing := &fakeExtractor{err: errors.New("model unavailable")}
-	service := Service{Fetcher: fetcher, Extractor: failing, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: failing, Now: tickingClock()}
 	if _, err := service.Run(context.Background(), source.ID); err == nil || !strings.Contains(err.Error(), "model unavailable") {
 		t.Fatalf("model failure was not surfaced: %v", err)
 	}
@@ -1333,7 +1343,7 @@ func TestFailedBatchStopsRetryingWhenItsAttemptBudgetRunsOut(t *testing.T) {
 	fetcher := &fakeFetcher{messages: []Message{{ID: "m9", ConversationID: source.ExternalID,
 		Sender: "测试发送人", CreatedAt: 12_000, Content: "这段内容解析不了"}}, newest: 12_000}
 	failing := &fakeExtractor{err: errors.New("model unavailable")}
-	service := Service{Fetcher: fetcher, Extractor: failing, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: failing, Now: tickingClock()}
 
 	for attempt := 1; attempt <= store.MaxCollectionAttempts; attempt++ {
 		if _, err := service.Run(context.Background(), source.ID); err == nil {
@@ -1383,7 +1393,7 @@ func TestReprocessRestoresTheAutomaticRetryBudget(t *testing.T) {
 	fetcher := &fakeFetcher{messages: []Message{{ID: "m10", ConversationID: source.ExternalID,
 		Sender: "测试发送人", CreatedAt: 12_000, Content: "连接器刚刚挂了"}}, newest: 12_000}
 	failing := &fakeExtractor{err: errors.New("model unavailable")}
-	service := Service{Fetcher: fetcher, Extractor: failing, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: failing, Now: tickingClock()}
 	for attempt := 1; attempt <= store.MaxCollectionAttempts; attempt++ {
 		service.Run(context.Background(), source.ID)
 	}
@@ -1417,7 +1427,7 @@ func TestExpandedBatchRetiresTheFailedItemItAbsorbs(t *testing.T) {
 	source := addCollectorSource(t)
 	fetcher := &fakeFetcher{messages: []Message{{ID: "m11", ConversationID: source.ExternalID,
 		Sender: "测试发送人", CreatedAt: 12_000, Content: "这个功能要改"}}, newest: 12_000}
-	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{err: errors.New("model unavailable")},
+	service := Service{Connectors: testRegistry(fetcher), Extractor: &fakeExtractor{err: errors.New("model unavailable")},
 		Now: tickingClock()}
 	service.Run(context.Background(), source.ID)
 	db, _ := store.Open()
@@ -1524,7 +1534,7 @@ func TestFetcherFailurePreservesExistingCheckpoint(t *testing.T) {
 	}
 	db.Close()
 	fetcher := &fakeFetcher{err: errors.New("not_authenticated")}
-	service := Service{Fetcher: fetcher, Extractor: &fakeExtractor{}, Now: tickingClock()}
+	service := Service{Connectors: testRegistry(fetcher), Extractor: &fakeExtractor{}, Now: tickingClock()}
 	if _, err := service.Run(context.Background(), source.ID); err == nil || !strings.Contains(err.Error(), "not_authenticated") {
 		t.Fatalf("fetcher error was not surfaced: %v", err)
 	}
@@ -1539,9 +1549,9 @@ func TestFetcherFailurePreservesExistingCheckpoint(t *testing.T) {
 func TestItemPromotionCorrectionAndRevert(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
-	service := Service{Fetcher: &fakeFetcher{messages: []Message{{ID: "m4",
+	service := Service{Connectors: testRegistry(&fakeFetcher{messages: []Message{{ID: "m4",
 		ConversationID: source.ExternalID, Sender: "测试用户", CreatedAt: 13_000,
-		Content: "可以先看看这个想法"}}, newest: 13_000},
+		Content: "可以先看看这个想法"}}, newest: 13_000}),
 		Extractor: &fakeExtractor{decision: Decision{Action: "ignore", ItemType: "conversation",
 			Reason: "没有明确行动", Confidence: 0.7}}, Now: tickingClock()}
 	if _, err := service.Run(context.Background(), source.ID); err != nil {
@@ -1611,9 +1621,9 @@ func TestRunArchivesFetchedChatWhateverTheDecisionIs(t *testing.T) {
 			Content: "顺便说下午饭吃什么"},
 	}
 	service := Service{
-		Fetcher:   &fakeFetcher{messages: fetched, newest: 10_060},
-		Extractor: &fakeExtractor{decision: Decision{Action: "ignore", Reason: "闲聊"}},
-		Now:       tickingClock(),
+		Connectors: testRegistry(&fakeFetcher{messages: fetched, newest: 10_060}),
+		Extractor:  &fakeExtractor{decision: Decision{Action: "ignore", Reason: "闲聊"}},
+		Now:        tickingClock(),
 	}
 	if _, err := service.Run(context.Background(), source.ID); err != nil {
 		t.Fatalf("collection run: %v", err)

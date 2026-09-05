@@ -31,12 +31,12 @@ type ConnectorHealth struct {
 	RecentRuns          int    `json:"recent_runs,omitempty"`
 	RecentFailures      int    `json:"recent_failures,omitempty"`
 	// LoginCommand is what this connector declared as its way back in. It travels
-	// with health so the CLI line and the desktop banner can offer the action from
+	// with health so the CLI line and browser banner can offer the action from
 	// the same read, instead of each reaching into config for it.
 	LoginCommand string `json:"login_command,omitempty"`
 }
 
-// Snapshot is the collection workspace's read model. CLI and desktop IPC both
+// Snapshot is the collection workspace's read model. CLI and Web adapters both
 // consume this shape; neither adapter reconstructs health from storage rows.
 type Snapshot struct {
 	Enabled         bool                         `json:"enabled"`

@@ -1,23 +1,22 @@
 # ATM 本地 Web 工作区与应用拆分技术方案
 
-日期：2026-09-03。状态：Go/Web、后台接管与两个可选原生产品的代码已落地；真实日用切换和新 bundle 权限验收另行记录。
+日期：2026-09-03。状态：Go/Web、后台职责与两个可选原生产品的代码已落地；新 bundle 权限验收另行记录。
 
 本方案依据当前仓库源码和产品讨论编写。初始设计基线为 `c87f3cf`，本轮保留已有 t355 macOS 性能修复和其他用户改动。
 历史设计取舍继续保留，具体实现以本节、后文更正以及 [Web 开发说明](../../app/web/README.md)为准。
-源码、构建和隔离测试通过不等同于真实数据库已经升级、登录服务已安装或麦克风/辅助功能权限已验收。
-真实切换由当前交付主线执行并补充证据，本节不提前宣称日用迁移完成。
+源码、构建和隔离测试通过不等同于登录服务已安装或麦克风/辅助功能权限已验收。
 
 当前实现包含：
 
 - 同一个完整 Go 二进制提供 CLI、七个 Web 工作区、白名单 API、嵌入资源和同源 Vite HMR。
 - 任务创建/编辑/生命周期、计划/进展/依赖/等待、图片选择/拖放/粘贴上传；本地知识文档 ETag 编辑、共享记忆、来源增删改、业务设置和只写凭证。
 - 任务及知识草稿按编辑器实例存入 `localStorage`，关闭后可显式恢复；不会相互删除不同编辑器的草稿。
-- schema 55 的创建幂等记录加上 schema 56 的持久后台执行记录、域变更版本。54/55 旧库只读打开，显式备份成功后才升级到 56。
+- schema v57 是当前完整基线；旧迁移梯子与旧库只读预览已经删除，当前构建不猜测历史 schema。
 - `jobs.run/list/show/cancel` 支持同步、采集、重处理、AI Day、额度刷新和 `todo.refine`，保留幂等身份、ETag、取消与重启中断语义。
 - Go 默认接管后台：同步约 5 分钟，AI Day 约 7 分钟，采集按配置检查到期；Hook 即时接收，每 8 秒回补 presence。
 - SSE 按当前页面域订阅，服务内提交主动失效；有订阅时每 2 秒检查对应域版本与文件指纹，关闭页面不停止 Go 后台。
 - 用户级 LaunchAgent `serve install --print/install/uninstall`，固定当前完整二进制绝对路径，受控停机、登录启动及异常退出恢复。
-- 独立 [ATM Menu](../../app/menubar/README.md) 和 [ATM Voice](../../app/voice/README.md)，各自构建、偏好域和权限；旧 Swift 主工作区保留为回退，不是新产品构建依赖。
+- 独立 [ATM Menu](../../app/menubar/README.md) 和 [ATM Voice](../../app/voice/README.md)，各自构建、偏好域和权限；旧 Swift 主工作区只保留源码参考，不是新产品构建依赖，也没有当前 Go runtime/IPC 支持。
 - 原生偏好按白名单迁移：Web 的知识/来源顺序及三项用量筛选；Menu 的通知、声音与呼出快捷键；Voice 的七项语音偏好和已下载完整模型。配置凭证与转写历史不混入迁移文件。
 
 先前只读和任务阶段已完成真实数据页面核对、隔离创建/编辑/冲突、生命周期与知识/记忆操作验证；本轮增加跨进程锁、持久执行、SSE、上传、配置冲突和原生拆分的针对性测试。
@@ -53,11 +52,11 @@ DESIGN.md 已更新相应决定并链接本方案；各运行入口和构建边�
 | --- | --- | --- |
 | [CLI 入口](../../cmd/atm/main.go)、[Cobra root](../../internal/cmd/root.go) | 加载全局配置、初始化定价、命令级记账 | 增加长期运行入口，审计所有“进程退出时收尾”的假设 |
 | [application](../../internal/application/call.go) | Actor、Origin、RequestID、稳定错误分类 | HTTP 增加明确来源，不从请求 JSON 接受身份 |
-| [appipc](../../internal/appipc/server.go)、[ipc](../../internal/ipc/registry.go) | 按领域绑定 typed use case；IPC 使用 stdin/stdout | 复用业务和 DTO，HTTP 不执行 CLI，也不套用固定的 human@ipc |
+| [apphost](../../internal/apphost/host.go)、[web](../../internal/web/server.go) | 装配领域 use case；HTTP 使用白名单 method 与本机会话 | Web 复用业务服务而不执行 CLI；Menu 只走有界 control API |
 | [Work](../../internal/work/service.go)、[Session](../../internal/session/service.go)、[Knowledge](../../internal/knowledge/service.go) 等 | 大量业务已收敛到 service | 页面迁移不重写规则；残余 cmd 编排按迁移功能下沉 |
 | [SQLite 打开逻辑](../../internal/store/db.go) | WAL、写连接 busy timeout、只读入口、schema 检查 | 保留多进程访问；新增常驻连接、锁和迁移生命周期约束 |
-| [Swift Store](../../app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift) | 定时同步、收集、配额、状态、通知准备、页面缓存 | 分别移到 Go runtime 或前端，不能整体翻译成一个 React 全局 store |
-| [事件监听](../../app/macos/Sources/ATMMenuBarApp/ATMAgentEventListener.swift) | 接收 `~/.atm/notch.sock`，start/stop 会 unlink socket | 必须单一接收者切换；旧 App 与新服务不能直接抢占同一路径 |
+| [历史 Swift Store](../../app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift) | 曾负责同步、收集、配额、状态和页面缓存 | 仅作实现参考；当前职责已分别归 Go runtime 或前端 |
+| [presence](../../internal/presence/runtime.go) | 接收 `~/.atm/notch.sock`，合并 Agent 事件并维护通知状态 | Go 服务是唯一接收者；界面只消费状态，不持有 socket |
 | [关注提醒](../../app/macos/Sources/ATMMenuBarApp/ATMAgentAttentionNotifier.swift) | 维持状态轮询、状态音和阻塞通知 | 当前源码已移除常驻刘海绘制；README 有历史描述，刘海不列为必须迁移的当前功能 |
 | [内置模型记账](../../internal/cmd/builtin_model_usage.go) | 模型调用暂存在内存，CLI 结束时落库 | `serve` 必须周期/按批次落库，不能无限积累直到服务退出 |
 
@@ -119,7 +118,6 @@ atm serve stop                 # 停止对应实例，不按模糊进程名杀�
 atm serve install --print      # macOS：预览登录服务
 atm serve install              # macOS：安装并启动当前完整二进制
 atm serve uninstall            # macOS：卸载登录服务，保留数据
-atm serve --background=false   # 不接管后台的页面实例；不等同于只读
 ```
 
 - 不采用全局 `--headed`：是否启动长期服务与是否打开浏览器分别表达。
@@ -139,13 +137,14 @@ runtime/
   server.lock         # OS 文件锁
   server.json         # PID、instance_id、origin、版本、启动时间；无凭据
   control.token       # 当前实例的本机控制令牌，启动轮换
+  browser.key         # 浏览器会话签名密钥，0600，跨实例重启保留
   notification.json   # 去重游标/显示渠道状态，不存原始会话全文
   presence-owner.json # Go Hook 所有权/租约；停止后保留接管决定
   serve.stdout.log    # 登录服务输出
   serve.stderr.log    # 登录服务错误输出
 ```
 
-已接受后台执行和幂等结果保存在业务 SQLite，纳入备份和迁移；不依靠临时 JSON 恢复执行事实。运行文件不包含业务正文。`presence-owner.json` 在停机和卸载后仍保留，避免旧 App 在 Go 重启窗口擅自恢复后台，回退必须显式处理所有权。不能拿旧文件的 PID 直接发送信号：先通过本机控制接口核验实例，只清理仍属于自己的 socket。
+已接受后台执行和幂等结果保存在业务 SQLite，纳入备份；不依靠临时 JSON 恢复执行事实。运行文件不包含业务正文。`presence-owner.json` 在停机和卸载后仍保留 Go 对事件运行时的所有权记录。不能拿旧文件的 PID 直接发送信号：先通过本机控制接口核验实例，只清理仍属于自己的 socket。
 
 ### 4.3 关停、重启和自启动
 
@@ -161,16 +160,16 @@ runtime/
 
 ```text
 CLI 参数解析 ────────────────┐
-旧 IPC typed binding ───────┼→ application service → domain/store
-HTTP typed handler ────────┤
-runtime 明确后台工作 ──────┘
+HTTP typed handler ─────────┼→ application service → domain/store
+Menu control handler ───────┤
+runtime 明确后台工作 ───────┘
 ```
 
-HTTP handler 只处理路由、身份、参数、限制、结果编码。它不能调用 Cobra handler、执行 `atm _ipc` 子进程，或把业务校验复制成 TypeScript 规则。
+HTTP handler 只处理路由、身份、参数、限制、结果编码。它不能调用 Cobra handler、执行 CLI 子进程，或把业务校验复制成 TypeScript 规则。
 
-`internal/apphost` 已负责 Web 依赖装配、配置 gate、运行时挂接和按域调用；CLI/旧 IPC 继续复用同一业务服务。业务服务不反向依赖 apphost。
+`internal/apphost` 负责 Web 依赖装配、配置 gate、运行时挂接和按域调用；CLI 直接复用同一业务服务。业务服务不反向依赖 apphost。
 
-当前采用显式方法白名单和 typed service 输入/输出，按需复用 appipc 中已有 DTO；没有引入通用命令执行路由或额外的 `appcontract` 包。
+当前采用显式方法白名单和 typed service 输入/输出，没有通用命令执行路由，也不维护旧桌面 transport 的 DTO 与契约。
 
 ### 5.2 接口形态
 
@@ -200,7 +199,7 @@ HTTP handler 只处理路由、身份、参数、限制、结果编码。它不�
 
 ### 5.3 契约与错误
 
-HTTP 采用独立 `api_version`，不借用旧 IPC 的版本握手值。保持稳定的 `request_id/data/error` 形态，但省掉只对 stdin/stdout 有意义的 envelope 层级。
+HTTP 采用独立 `api_version`，保持稳定的 `request_id/data/error` 形态。
 
 ```json
 {
@@ -239,7 +238,7 @@ TypeScript DTO 维护 Go 公开契约的小型明确映射，不把整个 store 
 ### 6.2 SQLite、事务与多进程
 
 - 保留 CLI 直接读写同库，不把 HTTP 服务变成唯一允许访问数据的入口。
-- runtime 在启动阶段检查 schema；旧库只读，迁移由显式 `serve migrate` 在备份和执行锁保护下完成，不由 HTTP 请求或后台工作隐式升级。
+- runtime 在启动阶段检查 schema；当前构建只接受 v57 或新建空库，不提供旧库只读模式。以后若明确注册一阶迁移，才由 `serve migrate` 在备份和执行锁保护下执行，不由 HTTP 请求或后台工作隐式升级。
 - 只读 HTTP 请求不得走隐式同步或建库；无索引时返回可展示的状态，后台初始化明确走写入口。
 - 常驻查询和变更监测使用正常 WAL 可见连接，不能使用 `immutable=1` 回退；现有只读 fallback 在沙箱中可能忽略未 checkpoint 的 WAL，不能成为 Web 的长期视图。
 - 增加可注入的 DB opener/provider 时保留连接所有权：当前许多 service 会 defer Close，不能把共享池直接塞进去再被一次请求关闭。先维持安全的独立句柄，确认需要优化后再统一生命周期。
@@ -284,7 +283,8 @@ Go 成为唯一接收者，移植现有事件解析、snapshot/stream、事件�
 
 保留 `ATM_NOTCH_SOCKET` 测试/配置覆盖；当前发送端有约 400 ms 交付上限，不扩大为长时间等待服务。Go 已实现 attention overlay、busy/completion 转换、过期与查询回补；重启后先建立状态基线，不补发历史完成提醒。回补周期固定 8 秒，未照搬 Swift 的窗口可见性调度。
 
-不能在 Go 启动时无条件 unlink 已存在的 socket。先用明确模式完成旧 App 停用/退出，再由实例锁和存活核验接管。旧 App 如需并存，必须先修改为连接 Go 的客户端，禁用其 listener 的 start/stop/unlink 路径；否则旧 App 退出也可能删除新服务的 socket。
+不能在 Go 启动时无条件 unlink 已存在的 socket。实例锁与存活核验先确认没有其他 Go runtime 持有它，
+服务退出也只清理自己创建的 socket inode。旧 Swift 主工作区不属于受支持的并存客户端。
 
 ### 7.3 SSE 与外部变更发现
 
@@ -306,7 +306,7 @@ SSE 支持自动重连、心跳和有界 replay buffer。收到不属于当前�
 
 **CLI 写库必须被发现。** 首期保留 CLI 原路径，通过固定的一条 `sql.Conn` 每约 2 秒检查 `PRAGMA data_version`；其值只能与同一连接过去的值比较。不能在连接池里每次随机借一条连接做比较。[SQLite 文档](https://sqlite.org/pragma.html#pragma_data_version)
 
-data_version 只表示疑似变化。schema 56 的 `workspace_changes` 按域触发修订计数，CLI telemetry 不会让无关业务域全部失效；旧只读库回退到 data_version。当前订阅域另外检查 Todo/知识/config 等固定目录的内容指纹，覆盖同长度修改、原子替换和删除，不跟随任意符号链接。无订阅不执行这轮检查，也不借变更发现重算全量统计。
+data_version 只表示疑似变化。当前 schema 的 `workspace_changes` 按域触发修订计数，CLI telemetry 不会让无关业务域全部失效。当前订阅域另外检查 Todo/知识/config 等固定目录的内容指纹，覆盖同长度修改、原子替换和删除，不跟随任意符号链接。无订阅不执行这轮检查，也不借变更发现重算全量统计。
 
 统计使用短 TTL/同步完成事件使当前查询范围过期，回到前台再校验；未打开的统计范围只标记 stale。共享记忆存储在 SQLite，归 memory 域失效；知识 Markdown、Todo 文档和配置文件需单独监测相关路径的签名。目录变动、原子替换、同长度改写和删除都要覆盖。文件通知可用于加速，但仍保留低频校验与页面重新聚焦校验。
 
@@ -359,8 +359,8 @@ data_version 只表示疑似变化。schema 56 的 `workspace_changes` 按域触
 
 - 只监听 loopback，并严格校验 Host 为当前实例允许的主机和端口，防止 DNS rebinding；不提供 `0.0.0.0` 作为个人版选项。
 - `--open` 通过本机控制凭据申请短时、一次性的 bootstrap ticket，放在 URL fragment；页面读取后立即清除 fragment，再 POST 交换成 HttpOnly、SameSite=Strict 会话 cookie。ticket 不写日志、Referer 或浏览器本地存储。
-- 普通收藏的页面在会话仍有效时直接进入；服务重启/会话失效显示“重新连接”，引导使用 `atm serve --open`，不自动从公开 GET 接口发放凭据。
-- HTTP API、附件和 SSE 均要求访问凭据。Cookie 有效期、bootstrap 有效期和 companion token 生命周期有界；服务启动轮换控制令牌。
+- 普通收藏的页面在会话仍有效时直接进入；会话由数据目录内的持久随机密钥签名，服务重启后仍可验证。只有会话到期或签名密钥失效时显示“重新连接”，引导使用 `atm serve --open`；不从公开 GET 接口发放凭据。
+- HTTP API、附件和 SSE 均要求访问凭据。Cookie 有效期、bootstrap 有效期和 companion token 生命周期有界；高权限控制令牌仍随服务启动轮换，不能用持久浏览器密钥调用本机控制 API。
 - POST 校验 Content-Type、Origin（完整 scheme/host/port）、Fetch Metadata 和会话 CSRF token；不允许通配 CORS。缺少浏览器来源信息的 native 请求必须使用专门的本机 bearer 凭据。
 - Go 1.25 已提供 CrossOriginProtection，可作为一层保护；它允许 safe methods 且不是身份认证，不能替代上述校验。[Go 文档](https://pkg.go.dev/net/http#CrossOriginProtection)
 
@@ -416,7 +416,7 @@ CLI 的 Todo 生命周期通知已优先转交 Go owner，通过有确认回执�
 
 系统麦克风、语音识别、辅助功能授权不能假定随代码复制而继承；新 bundle 必须按真实系统流程重新获得权限。热键注册也要在旧语音模块关闭后接管，不能让两个 App 同时持有同一组合键。
 
-ATM 的业务数据不迁到语音 App，语音不读取 ATM 数据库。新 Go/Web/Menu 构建已隔离语音依赖，`sherpa-onnx-spm` 只用于独立 Voice target。旧 `app/macos` 中的源代码和资源保留作为回退，不在本轮删除已有用户工作。
+ATM 的业务数据不迁到语音 App，语音不读取 ATM 数据库。新 Go/Web/Menu 构建已隔离语音依赖，`sherpa-onnx-spm` 只用于独立 Voice target。旧 `app/macos` 中的源代码和资源只保留作为历史实现参考，不属于运行时回退。
 
 ### 11.1 具体迁移清单
 
@@ -470,7 +470,7 @@ internal/web/                  # HTTP、鉴权、SSE、图片上传、开发代�
 internal/background/           # 持久执行队列、同步/采集/Day/refine 调度
 internal/presence/             # Hook、presence、通知状态与渠道
 internal/<domain>/             # 现有 application services
-internal/store/                # SQLite、业务文件、schema 56
+internal/store/                # SQLite、业务文件、当前 schema 基线
 app/web/src/                   # 路由、任务、草稿、API、主题、SSE
 app/web/src/workspaces/         # 六个其他工作区及偏好迁移
 app/web/public/                # 静态资源
@@ -479,7 +479,7 @@ app/web/assets_embed.go        # webui 构建标签 + go:embed
 app/web/assets_stub.go         # 无 webui 时的明确降级
 app/menubar/                   # 独立 ATM Menu，无旧主界面依赖
 app/voice/                     # 独立 ATM Voice，无 Go 数据依赖
-app/macos/                     # 保留回退源码和已有 t355 改动，不参与新产品构建
+app/macos/                     # 保留历史源码和已有 t355 改动；无当前 Go transport，不参与新产品构建
 ```
 
 先在当前仓库内明确构建目标和依赖边界，避免同时引入多仓库发布协调。语音是独立产品边界，不意味着首日必须完成仓库搬家。
@@ -490,7 +490,7 @@ app/macos/                     # 保留回退源码和已有 t355 改动，不�
 
 Vite 提供 HMR，Go 提供 API。已实现浏览器始终访问 Go 的同一个 origin：开发模式用 `--dev-ui http://127.0.0.1:5173` 把非 API 请求代理给 Vite，并配置 HMR WebSocket 走同一开发入口。明确代理白名单，生产包不启用此模式，不因开发方便放开生产 CORS。
 
-开发与日用实例不要共享同一数据目录并运行两套后台工作。使用 `--data-dir` 指定空工作区或脱敏 fixture 副本，`--background=false` 关闭开发实例调度；不通过改 HOME 重定向其他工具的数据和凭据。该开关不禁止写入，涉及生命周期、收集、通知测试仍使用隔离目录。
+开发与日用实例不要共享同一数据目录。使用 `--data-dir` 指定空工作区或脱敏 fixture 副本；每个 `serve` 实例都会运行后台职责并允许写入，因此涉及生命周期、收集、通知的测试始终使用隔离目录。不要通过改 HOME 重定向其他工具的数据和凭据。
 
 ### 13.2 单二进制资源
 
@@ -505,15 +505,18 @@ Vite 提供 HMR，Go 提供 API。已实现浏览器始终访问 Go 的同一个
 | 前端开发模式 | stub 构建可以代理指定 Vite 服务，API 可独立开发 |
 | Release / goreleaser | 必须先构建前端并带 webui tag，产物检查失败则停止发布 |
 
-README 已区分默认 go install 与完整发布包。Release 的资源与 Go API 一起更新，实例重启后重新建立浏览器会话并加载页面，不另建远程前端发布系统。
+README 已区分默认 go install 与完整发布包。Release 的资源与 Go API 一起更新，实例重启后沿用仍有效的浏览器会话并加载页面，不另建远程前端发布系统。
 
 index.html 使用 no-cache，带内容 hash 的资源可长期缓存；API/敏感附件默认不进共享缓存。第一版不启用 Service Worker，避免升级后旧页面缓存继续调用新 API。页面资源离线可用，连接器和远程模型能力仍取决于各自网络。
 
 ### 13.3 备份、升级和回退
 
-已实现显式升级：schema 54/55 的 `serve` 实例仅开放读取，不接管后台。切换前 `serve stop`、退出旧 macOS App、暂停并等待旧写入，让日用 CLI 和所有调用方使用同一份支持 schema 56 的完整二进制，再执行 `serve migrate`。命令同时取得同步/采集执行锁并在 `backups/` 保存升级前归档，备份成功后才升级至 56，随后 `serve --open` 或 `serve install` 接管。自定义数据目录保持一致，新建空工作区不需要迁移。已接管后不能重新开启旧 App 调度。
+当前构建创建并只接受 schema v57。历史迁移梯子与旧库只读 Web 模式已经删除：旧库需先用仍支持其
+schema 的历史版本升级，或按错误提示备份不可重建数据并重建当前数据库。`serve migrate` 只保留未来
+明确注册的一阶迁移边界，在当前基线上是无操作。自定义数据目录必须保持一致，新建空工作区直接创建当前基线。
 
-页面迁移不改变 Todo、Session、Knowledge 的事实归属。需要新增幂等记录等辅助 schema 时，复用现有迁移和版本拒绝规则，先备份，不把 schema 降级交给前端处理。
+页面实现不改变 Todo、Session、Knowledge 的事实归属。确需修改 schema 时只增加当前版本到下一版本的
+一阶迁移和版本拒绝规则，先备份；唯一日用库升级完成后将新结构收平为基线，不把 schema 降级交给前端处理。
 
 回退以“支持同一 schema 的旧界面/二进制”为前提；若旧版本不认识新 schema，应停止写入、另存新数据并恢复明确的备份，不能宣称任意旧二进制可直接打开新库，也不自动丢弃备份后的修改。
 
@@ -531,7 +534,7 @@ index.html 使用 no-cache，带内容 hash 的资源可长期缓存；API/敏�
 | 任务新建/编辑/归档/恢复/人工验收 | 生命周期、绑定关闭、审计、副作用与 CLI/现有 service 一致 |
 | 快速切换任务、慢响应、断网 | 旧结果不覆盖新选择，错误与最后成功数据可区分 |
 | 重启服务、SSE 断线、实例变化 | 页面重建当前域状态，不靠无限保存历史事件恢复 |
-| 重复启动/停止旧 App | 只有一个 hook 接收者/同步调度者，不误删新 socket |
+| 尝试启动旧 Swift 主工作区 | 明确属于不支持路径；当前 Go 不提供它依赖的 runtime 或进程协议 |
 | 模型调用后长期运行 | 用量及时可查，缓冲有界，退出不是唯一落账时机 |
 | 外部网页请求本机服务 | 无法读取业务数据或触发写入；附件无任意路径入口 |
 | Guard | Web 不借本机 token 或伪造来源放宽现有人工决策约束 |
@@ -557,20 +560,19 @@ index.html 使用 no-cache，带内容 hash 的资源可长期缓存；API/敏�
 
 | 阶段 | 范围 | 退出条件 |
 | --- | --- | --- |
-| P0：确认基线与职责 | 固定当前可用版本/备份，记录常用流程，更新设计边界；列清旧 App 后台开关与 socket 所有权 | 能明确启动/停止某一套后台，不发生双采集；已有性能工作不被覆盖 |
+| P0：确认基线与职责 | 固定当前可用版本/备份，记录常用流程，更新设计边界与 socket 所有权 | 能明确启动/停止 Go 后台；已有性能工作不被覆盖 |
 | P1：只读 Web 骨架 | apphost、serve、配置 gate、loopback 会话、静态资源、bootstrap、任务列表/详情；CLI 保持原路径 | 从完整二进制打开真实数据；输入校验和身份不靠模拟；无需 Swift 主窗口 |
-| P2：任务闭环 | 创建/编辑/生命周期、并发条件、幂等、草稿、附件、按域失效/SSE；模型记账先于开放整理/标题生成；sync/collect 锁先于开放相应手动执行 | 日常任务管理可在 Web 完成；CLI 并行写入可见且不覆盖草稿；模型用量不积压；手动执行不撞旧后台 |
-| P3：接管后台 | 接管调度、hook 接收与状态合并、通知路由；先完成旧 App 客户端/仅语音模式或停用 | 关浏览器/菜单栏后后台仍正常；无重复同步、socket 抢占、通知双发；旧语音可独立保留 |
+| P2：任务闭环 | 创建/编辑/生命周期、并发条件、幂等、草稿、附件、按域失效/SSE；模型记账先于开放整理/标题生成；sync/collect 锁先于开放相应手动执行 | 日常任务管理可在 Web 完成；CLI 并行写入可见且不覆盖草稿；模型用量不积压；手动执行遵守同一工作锁 |
+| P3：接管后台 | 接管调度、hook 接收与状态合并、通知路由 | 关浏览器/菜单栏后后台仍正常；无重复同步、socket 抢占或通知双发 |
 | P4：完整工作区 | 会话、知识/记忆、收集管理、统计、AI Day、设置、来源跳转；补必要后台自启动 | 常用工作无需回旧主窗口；长文、上传、源文件回写边界清楚 |
 | P5：原生产品拆分 | 提取菜单栏伴随 App；语音独立 target、偏好/模型导入及权限验证 | 两个 App 各自运行/退出；语音不依赖 ATM 服务；仅保留有用入口 |
-| P6：收尾 | 新产品构建脱离旧 Swift 主工作区与语音依赖，整理文档/构建/安装；保留旧源码和 t355 既有改动作为回退 | 主产品使用一套 Web 工作区；旧源码不参与新构建，日用切换和权限验收证据明确 |
+| P6：收尾 | 新产品构建脱离旧 Swift 主工作区与语音依赖，整理文档/构建/安装；保留旧源码和 t355 既有改动作为历史参考 | 主产品使用一套 Web 工作区；旧源码不参与新构建，也没有当前 Go transport |
 
 上述阶段仍是切换顺序，而非同时运行两套后台的许可。代码状态：P1/P2/P4 已有完整 Web 操作，P3 已有 Go 调度/Hook/通知与执行锁，P5 已有独立 Menu/Voice 及白名单导入，P6 已完成产品构建隔离和文档调整。
-实际退出条件仍需部署现场核验：真实库备份升级、稳定二进制路径、唯一后台 owner、登录服务以及新 App 的系统权限。
+实际退出条件仍需部署现场核验：真实库基线与备份、稳定二进制路径、唯一后台 owner、登录服务以及新 App 的系统权限。
 
-旧普通模式发现 Go owner 标记时拒绝恢复后台；回退源码另提供真正的仅语音分流，在建立旧 Store/监听器之前完成。
-`ATM_MENU_ONLY` 只隐藏主窗，仍不能作为停后台协议。当前产品已提供独立 Voice，无需把旧主 App 作为语音常驻依赖。
-旧 Swift 与 t355 工作保留，不通过删除用户改动来宣称 P6 完成。
+当前产品已提供独立 Voice，无需把旧主 App 作为语音常驻依赖。旧 Swift 与 t355 工作只保留为源码记录；
+这不表示旧主工作区仍可连接当前 Go 或作为运行时回退。
 
 ## 16. 风险与实施时仍需核验的事项
 
@@ -579,7 +581,7 @@ index.html 使用 no-cache，带内容 hash 的资源可长期缓存；API/敏�
 | 并发服务暴露旧全局状态竞态 | 配置 gate 和副作用/记账审计先于后台全面接管 |
 | CLI 与 HTTP 数据可见性不一致 | 正常 WAL 连接、外部变更监测、页面重新聚焦校验 |
 | 统计仍因任何写入重算 | 按域指纹、按需范围、TTL；CLI telemetry 不等同于统计全量刷新信号 |
-| 双启动抢 socket、重复收集/通知 | 单一 owner、跨进程工作锁、渠道切换和旧 App 兼容开关 |
+| 双启动抢 socket、重复收集/通知 | 单一 Go owner、实例锁、跨进程工作锁和渠道切换 |
 | 原生文件路径导入无法等价搬到浏览器 | 上传副本与关联源文件明确区分，保留 CLI 路径导入 |
 | 语音权限/模型路径迁移 | 首次导入与独立授权验收，成功前保留旧资源 |
 | 浏览器资源占用/体验不符合预期 | 同机生产构建实测，不承诺自动比 Swift 更快 |
@@ -589,10 +591,10 @@ index.html 使用 no-cache，带内容 hash 的资源可长期缓存；API/敏�
 2026-09-03 初始核对发现的前置问题已有对应实现：
 
 - SyncAll/SyncAgent 使用数据目录级跨进程锁，保护增量 offset 到提交的整个执行范围；收集执行/重处理共用锁，迁移也持有这些锁。
-- `internal/background` 使用 schema 56 的持久执行账本；模型调用结束落用量，任务 AI 整理在模型调用前后都核对 ETag，不覆盖并行编辑。
+- `internal/background` 使用当前 schema 的持久执行账本；模型调用结束落用量，任务 AI 整理在模型调用前后都核对 ETag，不覆盖并行编辑。
 - `internal/presence` 保留现有 Hook 协议，拒绝接管活跃外部 socket，只删除自己的 socket；8 秒回补与生命周期不依赖窗口。
-- 旧 App 通过 Go owner 标记避免恢复调度；Menu 只消费轻量状态/通知，Voice 不连接 ATM 数据。通知采用唯一显示渠道与稳定 ID，备用横幅不保证撤回。
-- 日用切换仍必须统一实际调用的二进制、等待旧子进程结束、备份升级并确认系统权限。仅在独立目录构建测试用 `atm` 不代表旧 App 或日用 CLI 已改用它。
+- Menu 只消费轻量状态/通知，Voice 不连接 ATM 数据。通知采用唯一显示渠道与稳定 ID，备用横幅不保证撤回。
+- 日用部署仍必须统一实际调用的二进制、确认数据基线、登录服务和系统权限；独立目录里的测试构建不代表日用 CLI 已改用它。
 
 最终日用入口为完整 `atm` 的浏览器工作区与 Go 服务，可选 Menu 提供持续提醒，Voice 独立使用。
 实际数据库、LaunchAgent、偏好导入和权限验收的完成状态由交付主线另记，本方案不提前代替这些结果。

@@ -79,7 +79,7 @@ func TestSnapshotKeepsTheRawPercentAndZeroesOnlyTheDisplayedOne(t *testing.T) {
 	}
 }
 
-// The published shape is what the desktop decodes, so the keys are part of the
+// The published shape is what the browser decodes, so the keys are part of the
 // contract: a top-level object per agent, null for an agent that reported
 // nothing, and no trend key when history is too thin to divide.
 func TestSnapshotPublishesOneNullableObjectPerAgent(t *testing.T) {

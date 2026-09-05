@@ -1,7 +1,6 @@
 package knowledge
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
@@ -52,20 +51,6 @@ func RememberWithMetadata(scope, content string, tags []string, metadata map[str
 	return &event, nil
 }
 
-func SupersedeWithMetadata(targetID, scope, content string, tags []string, metadata map[string]string) (*MemoryEvent, error) {
-	result, err := NewService(ServiceOptions{}).SupersedeMemory(context.Background(), SupersedeMemoryInput{
-		TargetID: targetID,
-		Scope:    scope,
-		Content:  content,
-		Tags:     tags,
-		Source:   metadata["source"],
-	})
-	if err != nil {
-		return nil, err
-	}
-	return &result.Event, nil
-}
-
 func ForgetWithMetadata(targetID, scope string, metadata map[string]string) (*MemoryEvent, error) {
 	if err := ValidateScope(scope); err != nil {
 		return nil, err
@@ -78,15 +63,6 @@ func ForgetWithMetadata(targetID, scope string, metadata map[string]string) (*Me
 		return nil, err
 	}
 	return &event, nil
-}
-
-func Recall(query, scope string, limit int) ([]MemoryHit, error) {
-	result, err := NewService(ServiceOptions{}).RecallMemory(context.Background(), RecallMemoryInput{
-		Query: query,
-		Scope: scope,
-		Limit: limit,
-	})
-	return result.Hits, err
 }
 
 func recallMemoryHits(query, scope string, limit int) ([]MemoryHit, error) {

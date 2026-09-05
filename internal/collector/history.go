@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"context"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -12,10 +11,6 @@ import (
 type HistoryOptions struct {
 	Since time.Time
 	Limit int
-}
-
-type Historian interface {
-	History(ctx context.Context, source store.CollectionSource, options HistoryOptions) ([]Message, error)
 }
 
 // CollectionMessagesFor prepares fetched messages for the archive. The source

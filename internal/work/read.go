@@ -302,6 +302,8 @@ func (service Service) ListPage(ctx context.Context, call application.Call, inpu
 	}
 	if archived {
 		status = "archived"
+	} else if strings.EqualFold(strings.TrimSpace(input.Status), "all") {
+		status = "all"
 	}
 	if input.Offset < 0 || input.Limit < 1 || input.Limit > 200 {
 		return ListPageResult{}, readInvalidArgument("limit must be 1–200 and offset non-negative", "limit", input.Limit)
@@ -466,7 +468,7 @@ func normalizeListStatus(value string) (status string, activeOnly, archived bool
 		return status, activeOnly, false, nil
 	case "all":
 		return "", false, false, nil
-	case "archived", "trashed":
+	case "archived":
 		return status, false, true, nil
 	case store.TodoStatusOpen, store.TodoStatusInProgress, store.TodoStatusReview, store.TodoStatusDone:
 		return status, false, false, nil

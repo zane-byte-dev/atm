@@ -20,14 +20,25 @@ import (
 	"github.com/zane-byte-dev/atm/internal/application"
 )
 
+func testRuntime(Instance, func(...string)) (func(context.Context) error, error) {
+	return func(context.Context) error { return nil }, nil
+}
+
 func startTestServer(t *testing.T, dispatch Dispatch) *Server {
 	t.Helper()
-	server, err := Start(Options{DataDir: t.TempDir(), Version: "test", Port: 0, Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>ATM</title>")}, "assets/app-abcd.js": {Data: []byte("export const ok = true;")}}, Dispatch: dispatch, AllowWrites: true})
+	server, err := Start(Options{DataDir: t.TempDir(), Version: "test", Port: 0, Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>ATM</title>")}, "assets/app-abcd.js": {Data: []byte("export const ok = true;")}}, Dispatch: dispatch, StartRuntime: testRuntime})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(server.Close)
 	return server
+}
+
+func TestStartRequiresWorkspaceRuntime(t *testing.T) {
+	_, err := Start(Options{DataDir: t.TempDir(), Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}}})
+	if err == nil || !strings.Contains(err.Error(), "runtime is required") {
+		t.Fatalf("missing runtime error = %v", err)
+	}
 }
 
 func browserRequest(server *Server, method, path, body string, cookie *http.Cookie, csrf string) *http.Request {
@@ -109,7 +120,6 @@ func TestBrowserAuthenticationAndTypedBoundary(t *testing.T) {
 		{"form body", "/api/v1/todo.list", func(r *http.Request) { r.Header.Set("Content-Type", "text/plain") }, 415},
 		{"guard not exposed", "/api/v1/guard.approve", nil, 404},
 		{"config not exposed", "/api/v1/config.save", nil, 404},
-		{"arbitrary ipc not exposed", "/api/v1/_ipc", nil, 404},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			r := browserRequest(server, http.MethodPost, test.path, "{}", cookie, csrf)
@@ -179,11 +189,36 @@ func TestOpenAnotherTabPreservesExistingBrowserSession(t *testing.T) {
 	if w.Code != 200 || !strings.Contains(w.Body.String(), csrf) || len(w.Result().Cookies()) != 0 {
 		t.Fatalf("opening another tab replaced the current session: %d %s", w.Code, w.Body.String())
 	}
-	server.mu.Lock()
-	count := len(server.sessions)
-	server.mu.Unlock()
-	if count != 1 {
-		t.Fatalf("sessions = %d, want 1", count)
+}
+
+func TestBrowserSessionSurvivesServerRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	options := Options{DataDir: dataDir, Version: "test", Port: 0, Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html><title>ATM</title>")}}, StartRuntime: testRuntime}
+	server, err := Start(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cookie, csrf := connectBrowser(t, server)
+	instanceID := server.info.InstanceID
+	controlToken := server.controlToken
+	server.Close()
+
+	restarted, err := Start(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restarted.Close()
+	if restarted.info.InstanceID == instanceID || restarted.controlToken == controlToken {
+		t.Fatal("restart did not rotate process capabilities")
+	}
+	if restarted.cookieName != cookie.Name {
+		t.Fatalf("cookie name changed across restart: %q != %q", restarted.cookieName, cookie.Name)
+	}
+	request := browserRequest(restarted, http.MethodGet, "/api/v1/bootstrap", "", cookie, "")
+	response := httptest.NewRecorder()
+	restarted.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), csrf) {
+		t.Fatalf("restarted browser session = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -248,7 +283,7 @@ func TestInstanceControlAndExclusiveOwnership(t *testing.T) {
 	if err != nil || !strings.HasPrefix(link, server.info.Origin+"/#ticket=") {
 		t.Fatalf("open existing %q: %v", link, err)
 	}
-	for name, wants := range map[string]os.FileMode{"runtime": 0o700, "runtime/server.json": 0o600, "runtime/control.token": 0o600, "runtime/server.lock": 0o600} {
+	for name, wants := range map[string]os.FileMode{"runtime": 0o700, "runtime/server.json": 0o600, "runtime/control.token": 0o600, "runtime/browser.key": 0o600, "runtime/server.lock": 0o600} {
 		info, err := os.Stat(filepath.Join(server.info.DataDir, name))
 		if err != nil {
 			t.Fatal(err)

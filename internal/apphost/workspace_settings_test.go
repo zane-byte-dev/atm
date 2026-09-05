@@ -38,10 +38,6 @@ func seedWorkspaceDay(t *testing.T) {
 		{`INSERT INTO ai_day_events(event_id,occurred_at,source,session_hash,event_type,input_tokens,output_tokens,semantic_labels_json,schema_version,ingested_at) VALUES ('private-event',?,'codex','private-session','turn',100,200,'["private-semantic"]',2,123)`, []any{day.Add(9 * time.Hour).Unix()}},
 		{`INSERT INTO ai_day_events(event_id,occurred_at,source,session_hash,event_type,schema_version,ingested_at) VALUES ('private-event2',?,'codex','private-session','tool',2,123)`, []any{day.Add(10 * time.Hour).Unix()}},
 		{`INSERT INTO ai_day_events(event_id,occurred_at,source,session_hash,event_type,schema_version,ingested_at) VALUES ('previous-day',?,'codex','private-session','turn',2,123)`, []any{day.Add(-time.Second).Unix()}},
-		// The Web runtime must keep this existing schema readable without
-		// upgrading it to add the new Todo idempotency table.
-		{`UPDATE schema_version SET version=54`, nil},
-		{`DROP TABLE IF EXISTS work_create_idempotency`, nil},
 	} {
 		if _, err := db.Exec(statement.query, statement.args...); err != nil {
 			t.Fatal(err)
@@ -49,7 +45,7 @@ func seedWorkspaceDay(t *testing.T) {
 	}
 }
 
-func TestWorkspaceAIDayReadsStoredSchema54WithoutRebuild(t *testing.T) {
+func TestWorkspaceAIDayReadsStoredCurrentSchemaWithoutRebuild(t *testing.T) {
 	h := testHost(t)
 	seedWorkspaceDay(t)
 	before, err := os.ReadFile(config.AtmDB)
@@ -94,11 +90,8 @@ func TestWorkspaceAIDayReadsStoredSchema54WithoutRebuild(t *testing.T) {
 	}
 	defer db.Close()
 	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != 54 {
+	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != store.SchemaVersion {
 		t.Fatalf("read migrated schema: %d, %v", version, err)
-	}
-	if exists, err := workspaceHasTable(ctx, db, "work_create_idempotency"); err != nil || exists {
-		t.Fatalf("read materialized a newer schema table: %v, %v", exists, err)
 	}
 }
 
@@ -253,7 +246,7 @@ func TestWorkspacePersonalPreferenceKeepsStartupDataDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(54); CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('another account')`); err != nil {
+	if _, err := db.Exec(`CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(?); CREATE TABLE marker(value TEXT); INSERT INTO marker VALUES('another account')`, store.SchemaVersion); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()

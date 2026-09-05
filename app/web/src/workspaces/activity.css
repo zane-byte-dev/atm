@@ -979,8 +979,527 @@
     font-size: 18px;
   }
 }
+
+/* Native macOS parity for Agent: controls live in the navigator, detail starts at the top. */
+.activity-agents {
+  position: relative;
+}
+.activity-agents > .activity-heading {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  left: 0;
+  width: var(--navigator-width);
+  min-height: 64px;
+  padding: 14px 13px;
+  border-right: 1px solid var(--line);
+  background: var(--canvas);
+}
+.activity-agents > .activity-heading p,
+.activity-agent-strip,
+.activity-index-row {
+  display: none;
+}
+.activity-agents > .activity-heading .workspace-actions {
+  gap: 3px;
+  flex-wrap: nowrap;
+}
+.activity-agents > .activity-heading .workspace-actions .button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  overflow: hidden;
+  border-color: transparent;
+  background: transparent;
+  font-size: 0;
+}
+.activity-agents > .activity-heading .workspace-actions .button:hover {
+  background: var(--accent-soft);
+}
+.activity-agents > .activity-filters {
+  position: absolute;
+  z-index: 3;
+  top: 64px;
+  left: 0;
+  width: var(--navigator-width);
+  min-height: 48px;
+  padding: 7px 13px;
+  border-right: 1px solid var(--line);
+}
+.activity-agents > .activity-filters > label:not(.activity-search) {
+  display: none;
+}
+.activity-session-grid {
+  height: 100%;
+}
+.activity-agents .activity-list {
+  padding-top: 112px;
+}
+.activity-agents .activity-panel-heading {
+  min-height: 32px;
+  padding: 5px 14px;
+}
+.activity-agents .activity-panel-heading h2 {
+  color: var(--muted);
+  font-size: 12px;
+}
+.activity-agents .activity-conversation-body {
+  max-width: none;
+  margin: 0;
+  padding: 0 0 24px;
+}
+.activity-agents .activity-conversation-heading {
+  min-height: 108px;
+  margin: 0;
+  padding: 17px 24px 18px;
+}
+.activity-agents .activity-conversation-meta,
+.activity-agents .activity-transcript,
+.activity-agents .activity-inline-note {
+  width: min(900px, calc(100% - 48px));
+  margin-left: 24px;
+  margin-right: 24px;
+}
+.activity-agents .activity-conversation-meta {
+  margin-top: 10px;
+}
+
+@media (max-width: 760px) {
+  .activity-agents > .activity-heading,
+  .activity-agents > .activity-filters {
+    width: 100%;
+    border-right: 0;
+  }
+  .activity-agents .activity-conversation-heading {
+    min-height: 0;
+    padding-inline: 16px;
+  }
+  .activity-agents .activity-conversation-meta,
+  .activity-agents .activity-transcript,
+  .activity-agents .activity-inline-note {
+    width: calc(100% - 24px);
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .activity-bar {
     transition: none;
+  }
+}
+
+/* Agent is an object workspace; Usage is a full-width reading workspace. */
+.activity-workspace {
+  max-width: none;
+  padding: 0;
+  background: var(--canvas);
+}
+.activity-agents {
+  padding: 0;
+}
+.activity-heading {
+  min-height: 64px;
+  margin: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.activity-heading h1 {
+  font-size: 17px;
+  font-weight: 560;
+  letter-spacing: -0.1px;
+}
+.activity-heading p {
+  margin-top: 3px;
+  font-size: 11px;
+}
+.activity-agent-strip {
+  min-height: 44px;
+  padding: 7px 13px 5px;
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
+}
+.activity-agent {
+  min-height: 29px;
+  padding: 3px 8px;
+  border-color: transparent;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 12px;
+}
+.activity-agent.selected {
+  border-color: transparent;
+  background: var(--surface);
+  box-shadow: 0 1px 5px var(--shadow-color);
+  color: var(--text);
+}
+.activity-avatar {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+}
+.activity-index-row {
+  min-height: 30px;
+  margin: 0;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.activity-index-row .activity-source-note {
+  font-size: 11px;
+}
+.activity-filters {
+  min-height: 48px;
+  gap: 8px;
+  margin: 0;
+  padding: 7px 13px;
+  border-bottom: 1px solid var(--line);
+  background: var(--canvas);
+}
+.activity-filters .activity-search {
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 8px;
+}
+.activity-filters input,
+.activity-filters select {
+  height: 34px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.activity-session-grid {
+  grid-template-columns: var(--navigator-width) minmax(0, 1fr);
+  border: 0;
+  border-radius: 0;
+  background: var(--canvas);
+}
+.activity-list {
+  background: var(--canvas);
+}
+.activity-panel-heading {
+  min-height: 42px;
+  padding: 10px 14px;
+}
+.activity-panel-heading h2 {
+  font-size: 13px;
+  font-weight: 560;
+}
+.activity-session-items {
+  padding: 3px 8px 10px;
+}
+.activity-session-row {
+  min-height: 62px;
+  margin-bottom: 3px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+}
+.activity-session-row.selected {
+  background: var(--surface);
+  box-shadow: 0 2px 9px var(--shadow-color);
+}
+.activity-session-row h3 {
+  font-size: 13px;
+  font-weight: 520;
+  line-height: 1.42;
+}
+.activity-session-detail {
+  background: var(--canvas);
+}
+.activity-conversation-body {
+  max-width: 900px;
+  margin: 0;
+  padding: 0 24px 24px;
+}
+.activity-conversation-heading {
+  margin: 0 -24px 10px;
+  padding: 17px 24px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.activity-conversation-heading h2 {
+  max-width: 780px;
+  font-size: 20px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+.activity-conversation-meta,
+.activity-transcript {
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 3px 14px var(--shadow-color);
+}
+.activity-transcript {
+  margin-top: 10px;
+}
+.activity-turn {
+  padding-block: 14px;
+}
+
+.activity-usage {
+  padding: 0 24px 28px;
+  overflow: auto;
+}
+.activity-usage .activity-heading {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  margin: 0 -24px 12px;
+  padding: 12px 24px;
+}
+.activity-usage .activity-heading h1 {
+  font-size: 20px;
+}
+.activity-usage-filters {
+  max-width: 1120px;
+  margin: 0 auto 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.activity-usage > .activity-source-note,
+.activity-usage > .activity-inline-note,
+.activity-usage > .activity-loading,
+.activity-usage > .activity-empty,
+.activity-usage > .notice,
+.activity-usage > .activity-metrics,
+.activity-usage > .activity-chart-card,
+.activity-usage > .activity-breakdown-card,
+.activity-usage > .activity-quality,
+.activity-usage > .activity-quota-section {
+  max-width: 1120px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.activity-metrics {
+  border-radius: 10px;
+  background: var(--surface);
+}
+.activity-chart-card,
+.activity-breakdown-card,
+.activity-quota-section {
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 3px 14px var(--shadow-color);
+}
+
+@media (max-width: 900px) {
+  .activity-heading p,
+  .activity-index-row {
+    display: none;
+  }
+  .activity-session-grid {
+    grid-template-columns: minmax(250px, var(--navigator-width)) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .activity-workspace {
+    padding: 0;
+  }
+  .activity-usage {
+    padding: 0 12px 20px;
+  }
+  .activity-usage .activity-heading {
+    margin-inline: -12px;
+    padding-inline: 14px;
+  }
+  .activity-conversation-body {
+    padding-inline: 14px;
+  }
+  .activity-conversation-heading {
+    margin-inline: -14px;
+    padding-inline: 16px;
+  }
+}
+
+/* Native fidelity pass; navigator rows stay flat and empty detail uses one sheet. */
+.activity-agents > .activity-heading,
+.activity-agents > .activity-filters,
+.activity-agents .activity-list {
+  background: var(--list-pane);
+}
+.activity-agents > .activity-heading {
+  padding-inline: 20px;
+}
+.activity-session-row {
+  min-height: 64px;
+  transition: background 100ms ease-out;
+}
+.activity-session-row:hover:not(.selected) {
+  background: var(--row-hover);
+}
+.activity-segment {
+  background: var(--segment-track);
+}
+.activity-session-row.selected {
+  background: var(--content-selected);
+  box-shadow: none;
+}
+.activity-agents .activity-conversation-meta,
+.activity-agents .activity-transcript {
+  box-shadow: 0 2px 8px #00000009;
+}
+.activity-session-detail > .activity-empty {
+  flex: none;
+  width: min(900px, calc(100% - 48px));
+  min-height: 180px;
+  margin: 12px 24px;
+  padding: 32px 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px #00000009;
+}
+.activity-session-items,
+.activity-conversation-body,
+.activity-usage {
+  scrollbar-width: none;
+}
+.activity-session-items::-webkit-scrollbar,
+.activity-conversation-body::-webkit-scrollbar,
+.activity-usage::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+.activity-chart-card,
+.activity-breakdown-card,
+.activity-quota-section {
+  box-shadow: 0 2px 8px #00000009;
+}
+
+@media (max-width: 760px) {
+  .activity-session-detail > .activity-empty {
+    width: calc(100% - 24px);
+    margin: 10px 12px;
+  }
+}
+
+/* Final Agent detail and compact-layout pass. Keep the conversation as one
+   reading surface, and let the navigator own the full available height. */
+.activity-agents .activity-conversation-heading {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+}
+.activity-agents .activity-conversation-surface {
+  width: min(900px, calc(100% - 48px));
+  margin: 10px 24px 24px;
+  padding: 0 20px 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px #00000009;
+}
+.activity-agents .activity-conversation-surface > .activity-conversation-meta,
+.activity-agents .activity-conversation-surface > .activity-transcript {
+  width: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.activity-agents .activity-conversation-surface > .activity-conversation-meta {
+  padding: 18px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+.activity-agents .activity-conversation-surface > .activity-conversation-meta:empty {
+  display: none;
+}
+.activity-agents .activity-conversation-surface > .activity-transcript {
+  padding: 0;
+}
+.activity-agents .activity-conversation-surface > .activity-inline-note {
+  width: auto;
+  margin: 12px 0;
+}
+.activity-agents .activity-conversation-surface .activity-turn:last-child {
+  border-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .activity-agents {
+    height: 100%;
+    min-height: 0;
+  }
+  .activity-agents .activity-session-grid {
+    display: block;
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+  }
+  .activity-agents .activity-list,
+  .activity-agents .activity-session-detail {
+    height: 100%;
+    min-height: 0;
+  }
+  .activity-agents .activity-session-grid:not(.has-selection) .activity-list,
+  .activity-agents .activity-session-grid.has-selection .activity-session-detail {
+    display: flex;
+  }
+  .activity-agents .activity-session-items,
+  .activity-agents .activity-conversation-body {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .activity-agents .activity-conversation-surface {
+    width: calc(100% - 24px);
+    margin: 10px 12px 20px;
+    padding: 0 16px 6px;
+  }
+}
+
+/* Compact Usage controls: keep all three selectors useful, and show that the
+   range strip has more options beyond the viewport. */
+@media (max-width: 600px) {
+  .activity-usage .activity-usage-filters {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) repeat(2, minmax(0, 1fr));
+    align-items: end;
+    gap: 9px 8px;
+  }
+  .activity-usage .activity-range-picker {
+    grid-column: 1 / -1;
+    width: 100%;
+    max-width: none;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-inline: contain;
+    padding-right: 22px;
+    scrollbar-width: thin;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+    background:
+      linear-gradient(to right, var(--segment-track) 30%, transparent) left center / 28px 100%
+        no-repeat local,
+      linear-gradient(to left, var(--segment-track) 30%, transparent) right center / 28px 100%
+        no-repeat local,
+      linear-gradient(to right, color-mix(in srgb, var(--text) 15%, transparent), transparent) left
+        center / 10px 100% no-repeat scroll,
+      linear-gradient(to left, color-mix(in srgb, var(--text) 15%, transparent), transparent) right
+        center / 10px 100% no-repeat scroll,
+      var(--segment-track);
+  }
+  .activity-usage .activity-usage-filters > label {
+    display: grid;
+    min-width: 0;
+    width: 100%;
+    gap: 5px;
+    align-items: stretch;
+  }
+  .activity-usage .activity-usage-filters > label select {
+    width: 100%;
+    max-width: none;
+  }
+  .activity-usage .activity-usage-filters > .text-button {
+    grid-column: 1 / -1;
+    justify-self: end;
   }
 }

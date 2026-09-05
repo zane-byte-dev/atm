@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"time"
 )
@@ -43,10 +42,10 @@ func Rebuild(ctx context.Context, db *sql.DB, from, to time.Time, loc *time.Loca
 	return summary, nil
 }
 
-// Refresh is the zero-configuration entry point used by the desktop AI Day
+// Refresh is the zero-configuration entry point used by the browser AI Day
 // snapshot. It fills in any missing day in the baseline window and
 // always rebuilds the current day, but leaves already-built past days alone.
-// Rebuilding the whole window on every read meant opening the app could silently
+// Rebuilding the whole window on every read meant opening the workspace could silently
 // rewrite last month's badges; changing history stays an explicit `day rebuild`.
 func Refresh(ctx context.Context, db *sql.DB, now time.Time, loc *time.Location, windowDays int) (RebuildSummary, error) {
 	today := dayStart(now, loc)
@@ -298,59 +297,6 @@ func loadCandidates(ctx context.Context, db *sql.DB, result *Result) error {
 	return rows.Err()
 }
 
-func aggregateLegacy(ctx context.Context, db *sql.DB, start, end time.Time, loc *time.Location) (Features, error) {
-	f := Features{
-		Day:            start.Format(time.DateOnly),
-		Timezone:       loc.String(),
-		BuiltAt:        time.Now().Unix(),
-		FeatureVersion: FeatureVersion,
-	}
-	startTS, endTS := start.Unix(), end.Unix()
-
-	// A session is active on a day if the session itself, one of its messages, or
-	// one of its usage events lands in that day. UNION prevents one session from
-	// being counted more than once when all three are present.
-	err := db.QueryRowContext(ctx, `
-		WITH active AS (
-			SELECT id, agent FROM sessions WHERE created_ts >= ? AND created_ts < ?
-			UNION
-			SELECT s.id, s.agent FROM sessions s JOIN messages m ON m.session_id = s.id
-			 WHERE m.ts >= ? AND m.ts < ?
-			UNION
-			SELECT s.id, s.agent FROM sessions s JOIN usage_events u ON u.session_id = s.id
-			 WHERE u.ts >= ? AND u.ts < ?
-		)
-		SELECT COUNT(*), COUNT(DISTINCT agent) FROM active`,
-		startTS, endTS, startTS, endTS, startTS, endTS).
-		Scan(&f.SessionCount, &f.SourceCount)
-	if err != nil {
-		return Features{}, err
-	}
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE role = 'user' AND ts >= ? AND ts < ?`, startTS, endTS).Scan(&f.TurnCount); err != nil {
-		return Features{}, err
-	}
-	// Tool rows are per-session aggregates and have no event timestamp in the
-	// current parser contract. Attribute them only to sessions first created on
-	// this day; this is deterministic and avoids duplicating a long session's
-	// lifetime total across every day it spans.
-	if err := db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(t.count), 0)
-		FROM tools t JOIN sessions s ON s.id = t.session_id
-		WHERE s.created_ts >= ? AND s.created_ts < ?`, startTS, endTS).Scan(&f.ToolCalls); err != nil {
-		return Features{}, err
-	}
-	if err := db.QueryRowContext(ctx, `
-		SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
-		       COALESCE(SUM(cache_create_tokens), 0), COALESCE(SUM(cache_read_tokens), 0),
-		       COALESCE(SUM(duration_ms), 0) / 1000
-		FROM usage_events WHERE ts >= ? AND ts < ?`, startTS, endTS).Scan(
-		&f.InputTokens, &f.OutputTokens, &f.CacheCreateTokens, &f.CacheReadTokens, &f.GenerationSeconds,
-	); err != nil {
-		return Features{}, err
-	}
-	return f, nil
-}
-
 func loadBaseline(ctx context.Context, db *sql.DB, before string, limit int) ([]Features, error) {
 	rows, err := db.QueryContext(ctx, `
 		SELECT day, timezone, session_count, turn_count, tool_calls, source_count,
@@ -376,88 +322,6 @@ func loadBaseline(ctx context.Context, db *sql.DB, before string, limit int) ([]
 		values = append(values, f)
 	}
 	return values, rows.Err()
-}
-
-func selectConcept(features Features, baseline []Features, generatedAt int64) Result {
-	result := Result{
-		SchemaVersion: ContractVersion,
-		Day:           features.Day,
-		State:         "ready",
-		Timezone:      features.Timezone,
-		Features:      features,
-		BaselineDays:  len(baseline),
-		GeneratedAt:   generatedAt,
-		EngineVersion: EngineVersion,
-	}
-	if features.Empty() {
-		result.State = "empty"
-		return result
-	}
-	p := percentiles(features, baseline)
-	result.Percentiles = p
-	confidence := math.Min(0.55+float64(len(baseline))*0.4/30, 0.95)
-
-	type candidate struct {
-		score   float64
-		concept Concept
-	}
-	var candidates []candidate
-	add := func(score float64, id, title, explanation string, tags []string, evidence []Evidence) {
-		candidates = append(candidates, candidate{score: score, concept: Concept{
-			ID: id, Title: title, Explanation: explanation, Tags: tags,
-			Evidence: evidence, Confidence: round(confidence),
-		}})
-	}
-
-	if features.SourceCount >= 2 {
-		add(0.72+math.Min(float64(features.SourceCount-2)*0.03, 0.12),
-			"multi_agent_orchestrator", "多智能体编排的一天",
-			"你在多个 AI 来源之间切换并推进工作，今天的核心能力是协调与编排。",
-			[]string{"multi-agent", "orchestration"}, []Evidence{
-				{Metric: "source_count", Value: float64(features.SourceCount), Unit: "agents"},
-				{Metric: "session_count", Value: float64(features.SessionCount), Unit: "sessions"},
-			})
-	}
-	if (len(baseline) >= 5 && p["turn_count"] >= 0.8) || features.TurnCount >= 20 {
-		add(0.65+p["turn_count"]*0.2, "deep_collaboration", "深度共创的一天",
-			"连续多轮交互构成了今天的主旋律，你和 AI 共同把问题推向了更深处。",
-			[]string{"collaboration", "deep-work"}, []Evidence{
-				{Metric: "turn_count", Value: float64(features.TurnCount), Unit: "turns", Comparison: percentileText(p["turn_count"])},
-				{Metric: "generation_seconds", Value: float64(features.GenerationSeconds), Unit: "seconds"},
-			})
-	}
-	if (len(baseline) >= 5 && p["total_tokens"] >= 0.8) || (len(baseline) < 5 && features.TotalTokens() >= 1_000_000) {
-		add(0.6+p["total_tokens"]*0.25, "high_load", "高负载推进的一天",
-			"今天处理的信息量明显偏高，AI 承担了密集的理解与生成工作。",
-			[]string{"high-load", "throughput"}, []Evidence{
-				{Metric: "total_tokens", Value: float64(features.TotalTokens()), Unit: "tokens", Comparison: percentileText(p["total_tokens"])},
-				{Metric: "output_tokens", Value: float64(features.OutputTokens), Unit: "tokens"},
-			})
-	}
-	if len(baseline) >= 5 && p["total_tokens"] <= 0.2 && p["turn_count"] <= 0.2 {
-		add(0.7, "ai_rest_day", "AI 低负载的一天",
-			"相对你近期的使用节奏，今天更轻量，给注意力留出了恢复空间。",
-			[]string{"low-load", "recovery"}, []Evidence{
-				{Metric: "total_tokens", Value: float64(features.TotalTokens()), Unit: "tokens", Comparison: percentileText(p["total_tokens"])},
-				{Metric: "turn_count", Value: float64(features.TurnCount), Unit: "turns", Comparison: percentileText(p["turn_count"])},
-			})
-	}
-	if len(candidates) == 0 {
-		add(0.55, "steady_collaboration", "稳定共创的一天",
-			"今天保持了稳定的 AI 协作节奏，推进来自持续而清晰的互动。",
-			[]string{"steady", "collaboration"}, []Evidence{
-				{Metric: "session_count", Value: float64(features.SessionCount), Unit: "sessions"},
-				{Metric: "turn_count", Value: float64(features.TurnCount), Unit: "turns"},
-			})
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].score == candidates[j].score {
-			return candidates[i].concept.ID < candidates[j].concept.ID
-		}
-		return candidates[i].score > candidates[j].score
-	})
-	result.Concept = &candidates[0].concept
-	return result
 }
 
 func percentiles(current Features, baseline []Features) map[string]float64 {

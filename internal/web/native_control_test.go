@@ -136,24 +136,3 @@ func TestNativeControlPathAndMethodWhitelist(t *testing.T) {
 		t.Fatalf("browser Guard surface = %d calls=%d", response.Code, calls.Load())
 	}
 }
-
-func TestNativeControlRespectsReadOnlyWorkspaceGate(t *testing.T) {
-	var calls atomic.Int32
-	server := startTestServer(t, nil)
-	server.options.AllowWrites = false
-	server.options.DataUpgradeRequired = true
-	server.options.NativeControl = func(context.Context, application.Call, string, json.RawMessage) (any, error) {
-		calls.Add(1)
-		return struct{}{}, nil
-	}
-	for _, path := range []string{"/api/v1/control/session/sync"} {
-		response := httptest.NewRecorder()
-		server.ServeHTTP(response, nativeControlRequest(server, http.MethodPost, path, `{}`))
-		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), "serve migrate") {
-			t.Fatalf("read-only %s = %d %s", path, response.Code, response.Body.String())
-		}
-	}
-	if calls.Load() != 0 {
-		t.Fatalf("read-only native writes reached callback: %d", calls.Load())
-	}
-}

@@ -10,7 +10,7 @@ import (
 
 // collectionRuntimeNotifications translates the executor's private completion
 // projection into durable presence transitions. A scheduled no-op stays quiet;
-// auth failures replace generic failures, matching the legacy native app.
+// authentication failures replace generic failures with an actionable result.
 func collectionRuntimeNotifications(job background.Job) []presence.Notification {
 	if job.Kind != background.CollectionRun || !job.Terminal() || job.Collection == nil {
 		return nil

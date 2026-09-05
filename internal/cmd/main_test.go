@@ -18,6 +18,6 @@ func TestMain(m *testing.M) {
 
 func TestCommandTestsDisableLocalNotificationsByDefault(t *testing.T) {
 	if !skipLocalNotification() {
-		t.Fatal("command tests must not emit desktop notifications")
+		t.Fatal("command tests must not emit system notifications")
 	}
 }

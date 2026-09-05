@@ -7,7 +7,7 @@ import (
 )
 
 // MaxCredentialBytes is the largest text-model credential accepted by any
-// adapter. Keeping the limit at the application boundary means the CLI and IPC
+// adapter. Keeping the limit at the application boundary means the CLI and Web
 // cannot quietly disagree about what is valid.
 const MaxCredentialBytes = 64 << 10
 
@@ -24,7 +24,7 @@ type CredentialStatus struct {
 
 // CredentialStatus reports whether the built-in text model has a key saved on
 // disk. Environment overrides are deliberately not included: this service owns
-// the local credential configured by the App and CLI.
+// the local credential configured by the browser workspace and CLI.
 func (Service) CredentialStatus() (CredentialStatus, error) {
 	configured, err := TextModelAPIKeyConfigured()
 	if err != nil {

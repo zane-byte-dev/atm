@@ -108,42 +108,6 @@ func sessionCWDCounts(sessions []Session) map[string]int {
 	return counts
 }
 
-// equalTimeCanFollow is only a compatibility rule for old v1 senders that
-// rounded every event to a whole second. New senders retain nanoseconds, so
-// eventAt decides their order directly. For an old sender we keep lifecycle
-// transitions monotonic within a turn. Started is always accepted because it
-// is the observable boundary of a new turn; suppressing it after a same-second
-// completion would leave the next turn permanently completed.
-func equalTimeCanFollow(previous, incoming agentevent.Kind) bool {
-	if incoming == agentevent.KindStarted {
-		return true
-	}
-	return eventOrder(incoming) >= eventOrder(previous)
-}
-
-func eventOrder(kind agentevent.Kind) int {
-	switch kind {
-	case agentevent.KindSessionStart:
-		return 0
-	case agentevent.KindStarted:
-		return 1
-	case agentevent.KindAttention:
-		return 2
-	case agentevent.KindResumed:
-		return 3
-	case agentevent.KindCompleted:
-		return 4
-	case agentevent.KindSessionEnd:
-		return 5
-	default:
-		return -1
-	}
-}
-
-func legacyWholeSecond(at string) bool {
-	return at != "" && !strings.Contains(at, ".")
-}
-
 // Apply accepts the existing newline socket envelope. Session identity always
 // includes its source. Directory fallback is used only by events with no ID,
 // and can never mark another agent in the same repository as waiting.
@@ -196,9 +160,6 @@ func (r *Runtime) Apply(event agentevent.Envelope) error {
 		return nil
 	}
 	if exists && eventAt.Equal(previous.eventAt) && event.Event == previous.event.Event && event.Text == previous.event.Text && event.Reason == previous.event.Reason && event.Tool == previous.event.Tool {
-		return nil
-	}
-	if exists && eventAt.Equal(previous.eventAt) && legacyWholeSecond(previous.event.At) && legacyWholeSecond(event.At) && !equalTimeCanFollow(previous.event.Event, event.Event) {
 		return nil
 	}
 	lastEvent := now

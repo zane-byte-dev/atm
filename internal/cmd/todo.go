@@ -83,7 +83,7 @@ func init() {
 	todoEditCmd.Flags().StringVar(&todoEditProjectFlag, "project", "", "new project name")
 	todoEditCmd.Flags().StringVar(&todoEditSourceFlag, "source", "", "new source")
 	todoEditCmd.Flags().StringVar(&todoEditCreatorFlag, "creator", "", "verified creator for legacy rows: "+strings.Join(store.TodoCreatorVocabulary, ", "))
-	todoEditCmd.Flags().StringVar(&todoEditStatusFlag, "status", "", "return lifecycle status to open (other transitions use start, submit, done, or archive)")
+	todoEditCmd.Flags().StringVar(&todoEditStatusFlag, "status", "", "return in-progress work to open; only open is accepted")
 	todoEditCmd.Flags().StringVar(&todoEditWakeFlag, "wake", "", "waiting-style condition for in_progress (empty clears it)")
 	todoEditCmd.Flags().StringVar(&todoEditReviewAtFlag, "review-at", "", "new review date YYYY-MM-DD (empty clears it)")
 	todoEditCmd.Flags().IntVar(&todoEditMaintenanceLimitFlag, "maintenance-limit", 0, "bounded maintenance batch size (0 clears maintenance)")
@@ -223,14 +223,15 @@ snapshot can be used to resume work, hand it off, or begin a review.`,
 
 var todoEditCmd = &cobra.Command{
 	Use:   "edit <id>",
-	Short: "Edit a todo's metadata and work state",
-	Long: `Edit metadata, waiting information, maintenance scope, or return work to open.
+	Short: "Edit a todo's metadata and waiting information",
+	Long: `Edit metadata, waiting information, maintenance scope, or return in-progress work to open.
 
---status is intentionally limited to open. Use start for in_progress, submit
-for review, human-only done for acceptance, and archive for retention.`,
+--status accepts only open and cannot be mixed with metadata edits. Other
+lifecycle changes use start, submit, done, archive, or restore. Reopening review
+or completed work requires start --reopen-reason.`,
 	Example: `  atm todo edit t42 --priority P0 --project atm
-  atm todo edit t42 --wake "deployment 123 finishes"
-  atm todo edit t42 --status open`,
+	  atm todo edit t42 --wake "deployment 123 finishes"
+	  atm todo edit t42 --status open`,
 	Args: cobra.ExactArgs(1),
 	RunE: runTodoEdit,
 }

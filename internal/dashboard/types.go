@@ -10,7 +10,7 @@ import (
 // windows; selecting ranges avoids aggregating windows the client is not showing.
 // The summary section reads only today's day_stats bucket for the menu bar,
 // independently of the historical charts and breakdowns in stats.
-// SessionID is optional because the desktop app can run without an Agent session
+// SessionID is optional because the browser workspace can run without an Agent session
 // in its environment.
 type Request struct {
 	Sections []string `json:"sections,omitempty"`
@@ -29,7 +29,6 @@ type WorkSummary struct {
 	InProgress  int `json:"in_progress"`
 	Waiting     int `json:"waiting"`
 	Review      int `json:"review"`
-	Blocked     int `json:"blocked"`
 	Due         int `json:"due"`
 	Maintenance int `json:"maintenance"`
 }
@@ -40,7 +39,6 @@ type WorkView struct {
 	Working     []store.Todo `json:"working"`
 	Waiting     []store.Todo `json:"waiting"`
 	Review      []store.Todo `json:"review"`
-	Blocked     []store.Todo `json:"blocked"`
 	Due         []store.Todo `json:"due"`
 	Summary     WorkSummary  `json:"summary"`
 }
@@ -83,8 +81,7 @@ type Range struct {
 	Quality      StatsQuality             `json:"quality"`
 }
 
-// StatsQuality makes the limits of a dashboard range explicit. It is additive
-// to the existing range payload so older desktop clients keep decoding it.
+// StatsQuality makes the limits of a dashboard range explicit.
 type StatsQuality struct {
 	ActiveSessions       int      `json:"active_sessions"`
 	TokenSessions        int      `json:"token_sessions"`
@@ -190,8 +187,8 @@ type IndexHealth struct {
 	Sync        SyncState `json:"sync"`
 }
 
-// Snapshot is the transport-neutral result shared by CLI JSON and typed IPC.
-// Its JSON tags are part of the existing desktop dashboard schema.
+// Snapshot is the transport-neutral result shared by CLI JSON and Web APIs.
+// Its JSON tags are part of the published dashboard schema.
 type Snapshot struct {
 	SchemaVersion    int                           `json:"schema_version"`
 	GeneratedAt      string                        `json:"generated_at"`

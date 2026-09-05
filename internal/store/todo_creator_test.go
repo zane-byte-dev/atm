@@ -107,45 +107,6 @@ func TestTodoCreatorSurvivesWriteAndRead(t *testing.T) {
 	}
 }
 
-func TestMigrateV32ToV33AddsCreatorWithoutGuessingHistory(t *testing.T) {
-	db := openTempDB(t)
-	// Simulate a v32 database: insert a row the way v32 did, then drop the column
-	// v33 adds and pin the version back.
-	if _, err := db.Exec(`INSERT INTO todos (id,position,title,priority,status,created,source)
-		VALUES ('t1',0,'Filed before creator existed','P1','open','2026-07-01','session:abc')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE todos DROP COLUMN creator`); err != nil {
-		t.Fatalf("simulate v32 todos table: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version = 32`); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v32→v33: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	// The existing row keeps no creator: its source says where the request came
-	// from, not who typed it, and backfilling from that would be a guess.
-	var creator string
-	if err := db.QueryRow(`SELECT creator FROM todos WHERE id='t1'`).Scan(&creator); err != nil {
-		t.Fatalf("creator column missing after migration: %v", err)
-	}
-	if creator != "" {
-		t.Errorf("migrated row creator = %q, want empty", creator)
-	}
-	if _, err := db.Exec(`UPDATE todos SET creator='me' WHERE id='t1'`); err != nil {
-		t.Fatalf("creator column is not writable: %v", err)
-	}
-}
-
 func TestTodoDocCarriesTheCreatorAndStaysLintClean(t *testing.T) {
 	oldDir, oldOwner := config.AtmDir, config.OwnerName
 	config.AtmDir = t.TempDir()

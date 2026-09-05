@@ -30,7 +30,7 @@ ATM 的主界面由浏览器承载，同一个 Go 二进制提供 CLI、Web API�
 页面通过 SSE 订阅当前路由相关域；服务内提交主动失效，外部 CLI/文件变化在有订阅时每 2 秒检查域版本与文件内容指纹。
 事件只带变更域，不推会话正文。重连支持有界重放/reset，后台标签页断开，回到前台重新查询；轮询和重新聚焦仍作兜底。
 
-升级到 schema 56 后，默认 `serve` 接管会话同步、自动采集、AI Day、Agent Hook 和通知路由。
+`serve` 接管会话同步、自动采集、AI Day、Agent Hook 和通知路由。
 后台约每 5 分钟同步、每 7 分钟更新 AI Day，采集按已启用来源的到期规则执行；Hook 即时更新并每 8 秒回补状态。
 关闭页面不停止这些工作。手动操作通过白名单 `jobs.run/list/show/cancel` 执行，包括 `session.sync`、`collect.run`、
 `collect.reprocess`、`day.rebuild`、`quota.refresh` 和 `todo.refine`。执行记录落 SQLite，有界队列、取消、超时和重启中断状态；
@@ -38,7 +38,8 @@ ATM 的主界面由浏览器承载，同一个 Go 二进制提供 CLI、Web API�
 
 CLI 和 Web 复用业务服务、同步/采集执行锁及模型记账；Go 负责通知事实、去重和渠道路由。
 可选 [ATM Menu](../menubar/README.md) 负责原生显示，独立 [ATM Voice](../voice/README.md) 负责全局语音。
-旧 `app/macos` 保留回退源码与已有性能改动，新 Go/Web/Menu/Voice 产品构建不依赖旧主工作区。
+旧 `app/macos` 只保留源码与已有性能改动供历史参考，新 Go/Web/Menu/Voice 产品构建不依赖旧主工作区，
+当前 Go 也不再提供旧主工作区使用的 runtime 或 IPC 接口。
 API 不提供任意命令、配置键、Guard 审批或任意文件读取入口。
 
 ## 构建完整程序
@@ -58,17 +59,17 @@ bin/atm serve --open
 默认 `go build`、`go install` 和 `make build-cli` 不带 `webui`，无需前端依赖或 `dist` 也可编译。
 这类产物可以使用 CLI；启动新的 Web 实例时会提示安装完整构建。
 
-`make build` 和 `make build-cli` 默认都输出 `bin/atm`。若该路径正在被日常 CLI 或 macOS App 使用，
+`make build` 和 `make build-cli` 默认都输出 `bin/atm`。若该路径正在被日常 CLI 或 Go 服务使用，
 开发时指定独立目录并保留可执行文件名 `atm`，避免覆盖日用 CLI，也兼容按文件名授权的本机安全策略：
 
 ```sh
 NPM_CONFIG_CACHE=/private/tmp/atm-web-npm-cache make build BIN_DIR=bin/atm-web
-bin/atm-web/atm serve --data-dir /private/tmp/atm-web-data --background=false --port 0 --open
+bin/atm-web/atm serve --data-dir /private/tmp/atm-web-data --port 0 --open
 ```
 
 `NPM_CONFIG_CACHE` 可选；这里使用单独缓存，避免默认 npm 缓存的权限问题。`--data-dir` 只适用于
-`serve` 及其子命令，不改 HOME。示例通过 `--background=false` 关闭后台调度；它不是只读开关，当前 schema
-仍允许业务写入。写入验收使用空目录或脱敏副本，切勿把临时测试实例指向日用库。
+`serve` 及其子命令，不改 HOME。每个 `serve` 实例都会启动 Go 后台职责并允许业务写入；写入验收使用
+空目录或脱敏副本，切勿把临时测试实例指向日用库。
 
 ## 页面修改与验证
 
@@ -86,10 +87,11 @@ go build -tags webui -o bin/atm-web-check/atm ./cmd/atm
 
 ```sh
 bin/atm-web-check/atm serve stop --data-dir /private/tmp/atm-web-data
-bin/atm-web-check/atm serve --data-dir /private/tmp/atm-web-data --background=false --port 0 --open
+bin/atm-web-check/atm serve --data-dir /private/tmp/atm-web-data --port 0 --open
 ```
 
-浏览器第一次连接和实例重启后都通过 `serve --open` 建立会话。直接打开地址可能显示连接提示。
+浏览器第一次连接和会话到期后通过 `serve --open` 建立会话。有效会话由本地持久密钥签名，Go 实例
+重启或重新构建后仍可继续使用；直接打开从未授权的地址会显示连接提示。
 生产资源的完整端到端验证仍使用上面的嵌入构建；日常页面调整可以使用下面的同源热更新。
 
 ### Go 同源热更新
@@ -107,7 +109,7 @@ npm run dev --prefix app/web
 mkdir -p bin/atm-web-dev
 go build -o bin/atm-web-dev/atm ./cmd/atm
 ./scripts/codesign-local.sh bin/atm-web-dev/atm
-bin/atm-web-dev/atm serve --data-dir /private/tmp/atm-web-dev-data --port 47322 --background=false --dev-ui http://127.0.0.1:5173 --open
+bin/atm-web-dev/atm serve --data-dir /private/tmp/atm-web-dev-data --port 47322 --dev-ui http://127.0.0.1:5173 --open
 ```
 
 在 `serve --open` 打开的 Go 地址中使用页面。HTML、模块和 `/__atm_hmr` WebSocket 均由 Go 转发到
@@ -123,19 +125,15 @@ React Refresh 的内联初始化脚本，并限定 WebSocket 为 Go 同源；未
 应验证真实任务闭环、CLI 并行修改、编辑冲突、草稿恢复、创建重试、归档恢复和服务重启。
 生命周期写入只在隔离数据目录进行。页面不提供 Guard 授权或任意本机文件读取入口。
 
-## 升级数据与登录服务
+## 数据基线与登录服务
 
-schema 54/55 旧库首次通过 `serve --open` 打开时只读，不会自动迁移或接管后台。准备切换时：
+当前构建创建并只接受 schema v57。历史迁移梯子和旧 schema 的只读 Web 模式已经删除：旧库不会被
+猜测性打开，也不能由当前二进制跨多个历史版本升级。需要保留旧库时，先用仍支持它的历史版本升级，
+或按错误提示备份不可重建数据并重建当前数据库。`atm serve migrate` 只为以后明确注册的单阶迁移保留；
+当前 v57 基线执行它只会报告无需迁移。
 
-1. 停止对应 Web 实例，退出旧 macOS App，暂停其他 ATM 写入并等待正在执行的旧工作结束。
-2. 将日用 CLI 和所有调用方统一到同一份支持 schema 56 的新完整二进制，固定其稳定路径。
-3. 执行 `atm serve migrate`。升级前备份写入数据目录 `backups/`，备份成功后才升级到 schema 56。
-4. 执行 `atm serve --open` 验证写入、同步与 Hook 接管；或使用下方登录服务命令常驻运行。
-   已接管后不要恢复旧 App 的后台调度；旧源码识别 Go owner 标记并保留专门的回退路径。
-
-schema 55 提供创建幂等记录，schema 56 增加后台执行记录和域变更版本。旧版二进制不能直接打开升级后的库。
-回退前停止所有写入、另存新数据，再恢复升级前备份；前端不做 schema 降级，不自动丢弃备份之后的修改。
-所有步骤使用自定义数据目录时均传入相同 `--data-dir`。新建空工作区无需迁移。
+旧版二进制不能直接打开更新的库。回退前停止所有写入并另存新数据；前端不做 schema 降级。
+所有步骤使用自定义数据目录时均传入相同 `--data-dir`。新建空工作区会直接创建当前 schema。
 
 macOS 用户级 LaunchAgent 使用执行安装命令的那个完整二进制的绝对路径，不复制二进制：
 
@@ -165,6 +163,6 @@ swift app/macos/Scripts/export-web-preferences.swift > bin/atm-native-preference
 `usage_filter_project`。文件最多 2 MB，排序最多 1,000 项；未知字段、错误版本和无效格式会被拒绝。
 文件仅在浏览器解析，不上传到 Go；排序中已删除的 ID 忽略，新条目追加在后。
 
-用量筛选复用已有模型/项目时间桶。与旧 App 相同，选中项目时项目汇总和趋势优先，不把独立的模型与项目
-记录伪造成联合统计。偏好保存在当前浏览器，其他浏览器需要各自导入；主题、业务配置和凭证不在这个文件中。
+用量筛选复用已有模型/项目时间桶。选中项目时项目汇总和趋势优先，不把独立的模型与项目记录伪造成
+联合统计。偏好保存在当前浏览器，其他浏览器需要各自导入；主题、业务配置和凭证不在这个文件中。
 窗口尺寸和原生面板折叠采用新网页布局；语音的七项偏好和模型、菜单栏的通知/音效/呼出快捷键分别在独立 App 导入。

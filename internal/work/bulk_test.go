@@ -167,7 +167,7 @@ func TestBulkRollsBackTodosBindingsWakeAndOutboxTogether(t *testing.T) {
 	}
 }
 
-func TestBulkOwnsReasonStatusWaitingAndTransitionValidation(t *testing.T) {
+func TestBulkOwnsReasonAndRejectsRemovedActions(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t,
 		store.Todo{ID: "t1", Title: "Validate first", Priority: "P1", Status: store.TodoStatusOpen, Created: store.Today()},
@@ -179,16 +179,6 @@ func TestBulkOwnsReasonStatusWaitingAndTransitionValidation(t *testing.T) {
 		Action: BulkDone, TodoIDs: []string{"t1"}, Reason: "depends on t404", Confirmed: true,
 	}); !errors.Is(err, application.ErrInvalidArgument) {
 		t.Fatalf("unknown reason reference error = %v", err)
-	}
-	if _, err := Default.Bulk(context.Background(), call, BulkInput{
-		Action: BulkEdit, TodoIDs: []string{"t1"}, Status: store.TodoStatusWaiting, Confirmed: true,
-	}); !errors.Is(err, application.ErrInvalidArgument) {
-		t.Fatalf("invalid waiting edit error = %v", err)
-	}
-	if _, err := Default.Bulk(context.Background(), call, BulkInput{
-		Action: BulkEdit, TodoIDs: []string{"t1"}, Status: store.TodoStatusReview, Confirmed: true,
-	}); !errors.Is(err, application.ErrInvalidArgument) {
-		t.Fatalf("bulk lifecycle bypass error = %v", err)
 	}
 	if _, err := Default.Bulk(context.Background(), call, BulkInput{
 		Action: BulkDone, TodoIDs: []string{"t2"}, Confirmed: true,
@@ -209,7 +199,7 @@ func TestBulkOwnsReasonStatusWaitingAndTransitionValidation(t *testing.T) {
 	}
 }
 
-func TestBulkMoveAndEditReturnDurableUpdateEffects(t *testing.T) {
+func TestBulkMoveReturnsDurableUpdateEffectsWithoutChangingLifecycle(t *testing.T) {
 	withTempWorkStore(t)
 	seedWorkTodos(t,
 		store.Todo{ID: "t1", Title: "Move one", Priority: "P1", Status: store.TodoStatusInProgress, Project: "old", Created: store.Today()},
@@ -230,17 +220,13 @@ func TestBulkMoveAndEditReturnDurableUpdateEffects(t *testing.T) {
 			t.Fatalf("move effect = %+v", effect)
 		}
 	}
-	edited, err := Default.Bulk(context.Background(), lifecycleCall(application.ActorAgent, "bulk-edit"), BulkInput{
-		Action: BulkEdit, TodoIDs: []string{"t2"}, Status: "OPEN", Confirmed: true,
-	})
-	if err != nil || len(edited.Effects) != 1 || edited.Todos[0].Status != store.TodoStatusOpen {
-		t.Fatalf("edit = %+v, err=%v", edited, err)
+	if binding, err := store.CurrentTodoBinding("bulk-edit"); err != nil || binding == nil || binding.TodoID != "t2" {
+		t.Fatalf("binding after bulk move = %+v, err=%v", binding, err)
 	}
-	if edited.Effects[0].ID != moved.Effects[1].ID || edited.Effects[0].Todo.Status != store.TodoStatusOpen {
-		t.Fatalf("coalesced edit effect = %+v, prior = %+v", edited.Effects, moved.Effects)
-	}
-	if binding, err := store.CurrentTodoBinding("bulk-edit"); err != nil || binding != nil {
-		t.Fatalf("binding after bulk edit = %+v, err=%v", binding, err)
+	for _, todo := range moved.Todos {
+		if todo.Status != store.TodoStatusInProgress {
+			t.Fatalf("bulk move changed lifecycle: %+v", moved.Todos)
+		}
 	}
 }
 
@@ -255,7 +241,8 @@ func TestBulkReturnsOlderSelectedTodoProjectionsBeforeNewMutation(t *testing.T) 
 			return err
 		}
 		stale := cloneTodo(*todo)
-		stale.Status = store.TodoStatusWaiting
+		stale.Status = store.TodoStatusInProgress
+		stale.WakeCondition = "external release"
 		return transaction.enqueueEffect(lifecycleCall(application.ActorAgent, "older-projection"), EffectTodoWaiting, stale, "")
 	}); err != nil {
 		t.Fatal(err)

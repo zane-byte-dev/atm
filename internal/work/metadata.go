@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
@@ -12,14 +13,13 @@ import (
 )
 
 // MetadataEffectKind describes an after-commit signal produced by Todo metadata
-// mutations. It deliberately says what happened without choosing a desktop,
+// mutations. It deliberately says what happened without choosing a UI,
 // terminal, or JSON presentation; adapters decide whether and how to notify a
 // human.
 type MetadataEffectKind string
 
 const (
-	MetadataEffectCreated       MetadataEffectKind = "todo_created"
-	MetadataEffectEnteredReview MetadataEffectKind = "todo_entered_review"
+	MetadataEffectCreated MetadataEffectKind = "todo_created"
 )
 
 type MetadataEffect struct {
@@ -82,7 +82,6 @@ type EditPatch struct {
 	Project          *string `json:"project,omitempty"`
 	Source           *string `json:"source,omitempty"`
 	Creator          *string `json:"creator,omitempty"`
-	Status           *string `json:"status,omitempty"`
 	WakeCondition    *string `json:"wake_condition,omitempty"`
 	ReviewAt         *string `json:"review_at,omitempty"`
 	MaintenanceLimit *int    `json:"maintenance_limit,omitempty"`
@@ -95,9 +94,7 @@ type EditInput struct {
 }
 
 type EditResult struct {
-	Todo           Todo             `json:"todo"`
-	PreviousStatus string           `json:"previous_status"`
-	Effects        []MetadataEffect `json:"-"`
+	Todo Todo `json:"todo"`
 }
 
 type MoveInput struct {
@@ -287,8 +284,8 @@ func (service Service) BatchAdd(ctx context.Context, call application.Call, inpu
 	return result, nil
 }
 
-// Edit applies a sparse metadata patch and owns the lifecycle rule that a Todo
-// leaving in_progress cannot remain actively bound to an Agent session.
+// Edit applies a sparse metadata patch. Lifecycle state changes use Start,
+// Submit, Done, Wake, Archive, or Restore instead of sharing this generic path.
 func (service Service) Edit(ctx context.Context, call application.Call, input EditInput) (EditResult, error) {
 	if err := validateMetadataCall(ctx, call); err != nil {
 		return EditResult{}, err
@@ -306,7 +303,7 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 	}
 	if !patch.changed() {
 		return EditResult{}, metadataInvalidArgument(
-			"nothing to update, use --title, --desc, --priority, --project, --source, --status, --wake, --review-at, or --maintenance-limit",
+			"nothing to update, use --title, --desc, --priority, --project, --source, --wake, --review-at, or --maintenance-limit",
 			"patch", input.Patch,
 		)
 	}
@@ -320,7 +317,6 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 		if expectedETag != "" && TodoETag(*todo) != expectedETag {
 			return todoETagConflict(*todo, expectedETag)
 		}
-		result.PreviousStatus = todo.Status
 		patch.apply(todo)
 		if patch.MaintenanceLimit != nil {
 			if *patch.MaintenanceLimit == 0 {
@@ -349,15 +345,6 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 			todo.WakeCondition = ""
 			todo.ReviewAt = ""
 		}
-		shouldUnbind := patch.Status != nil && todo.Status != store.TodoStatusInProgress
-		shouldUnbind = shouldUnbind || (todo.Status == store.TodoStatusInProgress &&
-			(todo.WakeCondition != "" || todo.ReviewAt != "") &&
-			(patch.WakeCondition != nil || patch.ReviewAt != nil))
-		if shouldUnbind {
-			if _, unbindErr := transaction.UnbindTodoSessions(todo.ID, "status-style:"+todo.Status); unbindErr != nil {
-				return fmt.Errorf("unbind todo sessions before status change: %w", unbindErr)
-			}
-		}
 		result.Todo = cloneTodo(*todo)
 		return nil
 	})
@@ -366,9 +353,6 @@ func (service Service) Edit(ctx context.Context, call application.Call, input Ed
 	}
 	if err := syncTodoDocumentIfPresent(&result.Todo); err != nil {
 		return EditResult{}, err
-	}
-	if result.PreviousStatus != store.TodoStatusReview && result.Todo.Status == store.TodoStatusReview {
-		result.Effects = []MetadataEffect{{Kind: MetadataEffectEnteredReview, Todo: cloneTodo(result.Todo)}}
 	}
 	return result, nil
 }
@@ -414,7 +398,6 @@ type normalizedEditPatch struct {
 	Project          *string
 	Source           *string
 	Creator          *string
-	Status           *string
 	WakeCondition    *string
 	ReviewAt         *string
 	MaintenanceLimit *int
@@ -422,7 +405,7 @@ type normalizedEditPatch struct {
 
 func (patch normalizedEditPatch) changed() bool {
 	return patch.Title != nil || patch.Description != nil || patch.Priority != nil || patch.Project != nil ||
-		patch.Source != nil || patch.Creator != nil || patch.Status != nil || patch.WakeCondition != nil || patch.ReviewAt != nil || patch.MaintenanceLimit != nil
+		patch.Source != nil || patch.Creator != nil || patch.WakeCondition != nil || patch.ReviewAt != nil || patch.MaintenanceLimit != nil
 }
 
 func (patch normalizedEditPatch) apply(todo *Todo) {
@@ -443,9 +426,6 @@ func (patch normalizedEditPatch) apply(todo *Todo) {
 	}
 	if patch.Creator != nil {
 		todo.Creator = *patch.Creator
-	}
-	if patch.Status != nil {
-		todo.Status = *patch.Status
 	}
 	if patch.WakeCondition != nil {
 		todo.WakeCondition = *patch.WakeCondition
@@ -495,13 +475,6 @@ func normalizeEditPatch(input EditPatch) (normalizedEditPatch, error) {
 			return patch, metadataInvalidArgument(err.Error(), "creator", *input.Creator)
 		}
 		patch.Creator = &value
-	}
-	if input.Status != nil {
-		value, err := normalizeMetadataStatus(*input.Status)
-		if err != nil {
-			return patch, err
-		}
-		patch.Status = &value
 	}
 	if input.WakeCondition != nil {
 		value := strings.TrimSpace(*input.WakeCondition)
@@ -588,15 +561,16 @@ func normalizePriority(value string) (string, error) {
 	}
 }
 
-func normalizeMetadataStatus(value string) (string, error) {
-	status := strings.ToLower(strings.TrimSpace(value))
-	if status == store.TodoStatusOpen {
-		return status, nil
+// ValidateReviewAt validates the calendar date used to derive waiting and due
+// presentation for in-progress work. Empty clears the date.
+func ValidateReviewAt(value string) error {
+	if value == "" {
+		return nil
 	}
-	return "", metadataInvalidArgument(
-		fmt.Sprintf("metadata edits may only return a todo to open; use start, submit, or done for status %q", value),
-		"status", value,
-	)
+	if _, err := time.ParseInLocation("2006-01-02", value, config.Loc); err != nil {
+		return fmt.Errorf("invalid review date %q (use YYYY-MM-DD)", value)
+	}
+	return nil
 }
 
 func validateMetadataCall(ctx context.Context, call application.Call) error {

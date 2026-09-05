@@ -152,9 +152,8 @@ func (service Service) SetItemsArchived(
 }
 
 // DeleteItems requires both trusted adapter provenance and explicit
-// confirmation. Human@IPC is attribution rather than strong authentication:
-// the replayable desktop bridge prevents accidental deletion but cannot defend
-// against another local process running the same method.
+// confirmation. The confirmation is a workflow guard; adapter authentication
+// is enforced independently at the transport boundary.
 func (service Service) DeleteItems(
 	ctx context.Context,
 	call application.Call,

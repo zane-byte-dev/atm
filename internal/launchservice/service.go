@@ -71,7 +71,7 @@ func makeWorkspaceServicePlan(opts workspaceServiceOptions, install bool) (works
 	hash := sha256.Sum256([]byte(dataDir))
 	label := "com.atm.workspace." + hex.EncodeToString(hash[:8])
 	plan := workspaceServicePlan{Label: label, PlistPath: filepath.Join(home, "Library", "LaunchAgents", label+".plist"), DataDir: dataDir,
-		Arguments: []string{executable, "serve", "--background", "--data-dir", dataDir, "--port", strconv.Itoa(opts.Port)},
+		Arguments: []string{executable, "serve", "--data-dir", dataDir, "--port", strconv.Itoa(opts.Port)},
 		Stdout:    filepath.Join(dataDir, "runtime", "serve.stdout.log"), Stderr: filepath.Join(dataDir, "runtime", "serve.stderr.log"), Domain: fmt.Sprintf("gui/%d", opts.UID), Path: workspaceServicePath(opts.Path, home)}
 	return plan, nil
 }
@@ -409,7 +409,7 @@ func uninstallWorkspaceService(ctx context.Context, opts workspaceServiceOptions
 		}
 	}
 	// Only the verified plist is removed. The Go owner's durable marker must
-	// survive so a legacy App cannot silently reclaim workers or Agent hooks.
+	// survive so a stale ATM runtime cannot silently reclaim workers or Agent hooks.
 	if _, err := readManagedWorkspaceService(plan); err != nil {
 		return err
 	}
@@ -447,7 +447,7 @@ func Canonical(path string) (string, error) { return canonicalServicePath(path) 
 func MakePlan(opts Options, install bool) (Plan, error) {
 	return makeWorkspaceServicePlan(opts, install)
 }
-func Render(plan Plan) ([]byte, error) { return renderWorkspaceService(plan) }
+func Render(plan Plan) ([]byte, error)  { return renderWorkspaceService(plan) }
 func Owned(data []byte, plan Plan) bool { return ownedWorkspaceService(data, plan) }
 func Install(ctx context.Context, opts Options, plan Plan, plist []byte) error {
 	return installWorkspaceService(ctx, opts, plan, plist)

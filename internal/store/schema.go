@@ -5,89 +5,15 @@ import (
 	"fmt"
 )
 
-// SchemaVersion is the shape createSchema produces. Changing the schema means
-// bumping this, adding a step to migrate(), running it on the live database, then
-// raising minUpgradableVersion and deleting the step again. `atm sync status`
-// reports it.
+// SchemaVersion is the current createSchema shape. ATM is a single-user tool
+// with one live database, so old migration rungs are removed after that database
+// reaches the new baseline. Older and newer schemas fail fast instead of being
+// guessed at by compatibility code.
+const SchemaVersion = 57
 
-// minUpgradableVersion is the oldest existing database migrate() can still bring
-// forward. ATM is a single-user tool with one live database.
-//
-// v22 adds usage_events.duration_ms so request throughput can be measured, v23
-// indexes event timestamps for event-time dashboard queries, and v24 adds
-// quota_history so a rate limit reading can carry a direction. v25 adds the
-// connector collection ledger used by local automatic requirement intake, v26
-// adds per-source exclusion patterns, v27 adds the synced chat archive that
-// makes reading and searching a conversation work offline, and v28 adds
-// collection_items.proposed_action so an on-demand analysis can hold a decision
-// for a human to confirm, plus collection_sources.instruction for what a
-// particular source should be watched for. v29 adds per-source processing
-// strategy and cadence. v30 gives collection a second destination: the
-// 'insight' decision, which distils chat worth remembering into the knowledge
-// base instead of forcing it into a Todo or dropping it. v31 removes the
-// service-specific source-kind constraint so registered connectors own their
-// vocabulary. v32 adds collection_sources.decision_unit so a notification feed
-// can be decided per message instead of per time window. v33 adds todos.creator
-// so "who filed this" becomes a field that can be filtered and counted, instead
-// of a guess read out of the free-text source. v34 adds
-// collection_items.attempts so a batch the classifier cannot process stops
-// being retried forever. v35 drops todos.lane: the work/personal lane was a
-// second, weaker classification living alongside the tag table — nothing
-// branched on it, the value was derived rather than chosen (the app took the
-// dominant lane of the project, the collector hardcoded "work"), and the only
-// reader was an optional --lane filter. v35 also drops todos.feature_path, which
-// no code has read or written for as long as it has existed — it survived only
-// because dropping it alone did not justify a schema bump, and this one is
-// already paid for. v36 restores explicit Agent task runs: one row is the
-// durable claim, process record and outcome for one manual Todo dispatch. v37
-// lets each task-producing collection source explicitly opt into dispatching a
-// newly created Todo, and records that handoff separately from classification.
-// v40 adds the derived AI Day feature and result tables. They deliberately hold
-// only daily aggregates and selected concept metadata: transcripts remain in the
-// existing session mirror and are never copied into this product surface. v41
-// completes that projection with content-free normalized events, session
-// aggregates, badge history/progress, feedback, source permissions and settings.
-// v43 stops treating an insight as an automatic knowledge write: each collection
-// item records the knowledge document created only after the user explicitly
-// saves its conclusion. v44 adds collection_items.read_at so newly collected
-// Todos, supplements and conclusions remain visibly pending until the user has
-// actually opened or acknowledged them. v45 adds approvals, the outbound action
-// gate's ledger: one row per attempt by an agent to run a command that reaches
-// someone else, plus what the user decided about it. Nothing is backfilled —
-// before v45 nothing was gated, so there are no historical decisions to invent.
-// v46 adds collection_sources.muted so one noisy source can be taken out of the
-// desktop notifications without being taken out of collection: unread counts and
-// badges are untouched, only the banner is. Nothing is backfilled — 0 is the
-// behaviour every source had before. v47 adds collection_items.archived_at so a
-// person can settle a collected result without deleting its audit trail or
-// releasing its messages for collection again. v48 adds todo_images, the
-// normalized metadata for locally managed Todo image files. v49 adds the Work
-// effect outbox: lifecycle transitions and their filesystem/UI effects are
-// committed together, so a process crash cannot make a successful transition
-// permanently lose its follow-up work. v50 adds append-only Todo plan revisions.
-// A plan is execution state, not Todo lifecycle: completing every item never
-// submits or closes the Todo. v52 removes the background-dispatch subsystem:
-// task_runs, the collection dispatch columns and todo_plan_revisions.run_id all
-// go, because ATM no longer starts an Agent and nothing can write them. v53
-// persists session lineage, parser/content quality, structured result state and
-// message provenance so a copied subagent history is no longer presented or
-// counted as the child's own conversation. v54 adds a content-free CLI
-// invocation ledger: command paths and stable outcome classes are observable,
-// while arguments, error messages, working directories and user content are not
-// representable in the schema. v55 records immutable Todo creation responses so
-// a retried Web request cannot create a second Todo or return later edits. v56
-// adds durable background execution receipts and domain change revisions.
-//
-// Keep the minimum at 21 while those upgrade steps exist; after the live database
-// has been upgraded, raise this to SchemaVersion and delete the steps. Note what a
-// hard
-// reject costs: session tables rebuild from agent logs on the next `atm sync`,
-// but todos, memory and knowledge are this database's own records and have
-// nowhere to rebuild from.
-const (
-	SchemaVersion        = 56
-	minUpgradableVersion = 21
-)
+// MinUpgradableVersion is the oldest schema this build can open. It equals the
+// current baseline while no one-step migration is intentionally in flight.
+const MinUpgradableVersion = SchemaVersion
 
 // datePattern matches the 'YYYY-MM-DD' form used by every date-only column.
 // Empty string is the domain's "unset" value and is allowed alongside it.
@@ -405,7 +331,7 @@ func createSchema(tx *sql.Tx) error {
 			description       TEXT NOT NULL DEFAULT '',
 			priority          TEXT NOT NULL CHECK (priority IN ('','P0','P1','P2','P3')),
 			status            TEXT NOT NULL CHECK (status IN
-				('open','in_progress','waiting','review','blocked','done','dropped')),
+				('open','in_progress','review','done')),
 			project           TEXT NOT NULL DEFAULT '',
 			wake_condition    TEXT NOT NULL DEFAULT '',
 			review_at         TEXT NOT NULL DEFAULT ''
@@ -638,7 +564,7 @@ func createSchema(tx *sql.Tx) error {
 			priority    TEXT NOT NULL DEFAULT 'P2'
 				CHECK (priority IN ('P0','P1','P2','P3')),
 			enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-			-- Whether this source's new results stay out of desktop notifications.
+			-- Whether this source's new results stay out of system notifications.
 			-- Only the banner: muted results still collect, still count as unread
 			-- and still raise the sidebar and menubar badges. Deliberately absent
 			-- from the upsert's conflict update so editing a source cannot undo it.

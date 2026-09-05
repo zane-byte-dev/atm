@@ -72,7 +72,7 @@ func TestActivityMissingIndexDoesNotCreateIt(t *testing.T) {
 	}
 }
 
-func TestActivityReadsSchema54WithoutChangingDatabaseOrFiles(t *testing.T) {
+func TestActivityReadsCurrentSchemaWithoutChangingDatabaseOrFiles(t *testing.T) {
 	h := testHost(t)
 	db, err := store.Open()
 	if err != nil {
@@ -113,9 +113,7 @@ func TestActivityReadsSchema54WithoutChangingDatabaseOrFiles(t *testing.T) {
 	}, time.Unix(now, 0)); err != nil {
 		t.Fatal(err)
 	}
-	// v55 only added this table. Exercise the exact legacy schema without ever
-	// asking the host to migrate it.
-	for _, statement := range []string{`DROP TABLE work_create_idempotency`, `UPDATE schema_version SET version=54`, `PRAGMA wal_checkpoint(TRUNCATE)`, `PRAGMA journal_mode=DELETE`} {
+	for _, statement := range []string{`PRAGMA wal_checkpoint(TRUNCATE)`, `PRAGMA journal_mode=DELETE`} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatal(err)
 		}
@@ -164,7 +162,7 @@ func TestActivityReadsSchema54WithoutChangingDatabaseOrFiles(t *testing.T) {
 		t.Fatalf("next transcript page=%+v", next)
 	}
 	status := invoke("session.status", `{}`).(SessionStatus)
-	if status.Health.SchemaVersion != 54 || status.Health.IndexedSessions != 2 || len(status.Agents) != 1 || len(status.Projects) != 2 {
+	if status.Health.SchemaVersion != store.SchemaVersion || status.Health.IndexedSessions != 2 || len(status.Agents) != 1 || len(status.Projects) != 2 {
 		t.Fatalf("status=%+v", status)
 	}
 	if len(status.Bindings) != 1 || status.Bindings[0].State != "todo_not_in_progress" || status.Bindings[0].Binding.CWD != "" {

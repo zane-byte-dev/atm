@@ -60,7 +60,7 @@ type ServiceOptions struct {
 }
 
 // Service owns Guard query validation and the approval state-machine
-// orchestration. Cobra and IPC adapters only construct calls and render the
+// orchestration. Cobra and Web adapters only construct calls and render the
 // returned records.
 type Service struct {
 	openRead  func() (*sql.DB, error)
@@ -74,7 +74,7 @@ type Service struct {
 	pid       func() int
 }
 
-// Default is shared by the CLI today and typed IPC callers as they migrate.
+// Default is shared by CLI and Web callers.
 var Default = NewService(ServiceOptions{})
 
 func NewService(options ServiceOptions) Service {
@@ -136,7 +136,7 @@ type DecisionInput struct {
 	Approve bool   `json:"approve"`
 	Run     bool   `json:"run"`
 	Reason  string `json:"reason,omitempty"`
-	// DecidedBy is an audit-surface label retained for the current CLI/App
+	// DecidedBy is an audit-surface label retained for the current CLI/browser
 	// contract. It never participates in authorization; authority comes only
 	// from Call.Actor, which the trusted adapter constructs.
 	DecidedBy string `json:"decided_by,omitempty"`
@@ -218,8 +218,8 @@ func (service Service) Decide(ctx context.Context, call application.Call, input 
 	if err := validateGuardCall(ctx, call); err != nil {
 		return DecisionResult{}, err
 	}
-	// `_ipc`, browser, and native-control identities do not prove that a person is
-	// present at the Guard prompt. Decisions remain restricted to the CLI edge.
+	// Browser and native-control identities do not prove that a person is present
+	// at the Guard prompt. Decisions remain restricted to the CLI edge.
 	if call.Actor.Kind != application.ActorHuman || call.Actor.Origin != application.OriginCLI {
 		err := application.NewError(application.CodeForbidden, "only a human at the Guard CLI edge may approve or deny a gated action")
 		err.Details = map[string]any{

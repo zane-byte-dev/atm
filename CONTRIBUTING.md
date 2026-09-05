@@ -17,15 +17,20 @@ Thank you for helping improve ATM.
 
 ## Development setup
 
-The CLI requires Go 1.25 or newer. The macOS application uses Swift Package
-Manager and requires macOS 13 or newer with a Swift 5.9-compatible toolchain.
+The CLI and Web workspace require Go 1.25 or newer; building embedded Web assets
+also requires Node.js 24 and npm. The optional ATM Menu and VoxCaret apps use
+Swift Package Manager and require macOS 13.4 or newer. `app/macos` is retained
+as historical source only and is not part of the supported build or test matrix.
 
 Run the focused tests while developing:
 
 ```bash
 go test ./...
 go vet ./...
-swift test --package-path app/macos
+npm run check --prefix app/web
+npm run test --prefix app/web
+swift test --package-path app/menubar
+swift test --package-path app/voice
 ```
 
 Before requesting review, run the complete release contract:
@@ -35,8 +40,8 @@ Before requesting review, run the complete release contract:
 ```
 
 The script tests the Go packages, vets and builds the CLI, cross-compiles the
-release targets, verifies installer naming, and tests the macOS package when
-run on macOS.
+release targets, verifies installer naming, and tests the current Web and
+optional native products when run in their supported environments.
 
 ## Pull requests
 
@@ -50,4 +55,3 @@ and agree that it is licensed under the repository's MIT license.
 
 Security vulnerabilities and sensitive data exposures should be reported using
 the process in [SECURITY.md](SECURITY.md), not through a public issue.
-

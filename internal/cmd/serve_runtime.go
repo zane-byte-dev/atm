@@ -14,8 +14,9 @@ import (
 	webapp "github.com/zane-byte-dev/atm/internal/web"
 )
 
-// Compose ownership while the HTTP instance lock is held. A live legacy socket
-// fails startup before any scheduler is started or durable job is accepted.
+// Compose ownership while the HTTP instance lock is held. A socket owned by
+// another ATM runtime fails startup before any scheduler is started or durable
+// job is accepted.
 func workspaceRuntime(parent context.Context, host *apphost.Host) func(webapp.Instance, func(...string)) (func(context.Context) error, error) {
 	return func(info webapp.Instance, invalidate func(...string)) (func(context.Context) error, error) {
 		ctx, cancel := context.WithCancel(parent)
@@ -33,7 +34,7 @@ func workspaceRuntime(parent context.Context, host *apphost.Host) func(webapp.In
 		})
 		if err != nil {
 			cancel()
-			return nil, fmt.Errorf("claim Agent hooks (quit the old ATM app before handover): %w", err)
+			return nil, fmt.Errorf("claim Agent hooks (another ATM runtime still owns them): %w", err)
 		}
 		manager, err := background.New(background.Options{DataDir: info.DataDir, WithConfig: host.WithConfig, Refine: host.RefineOptions(), Schedule: true,
 			OnChange: func(job background.Job) {

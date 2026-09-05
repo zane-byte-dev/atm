@@ -12,7 +12,6 @@ import {
   LoaderCircle,
   Pencil,
   Plus,
-  RefreshCw,
   Search,
   Sparkles,
   X,
@@ -20,6 +19,7 @@ import {
 import { ApiError, call, errorText } from '../api'
 import type { Bootstrap } from '../types'
 import { Markdown, Notice } from '../editor'
+import { QueryLoading } from '../query-loading'
 import type {
   KnowledgeCollection,
   KnowledgeDocument,
@@ -116,9 +116,8 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
     nativePreferences.knowledge_collection_order,
   )
   const activeCollection = catalog.data?.find((item) => item.id === collection)
-  const total = (catalog.data || []).reduce((sum, item) => sum + item.document_count, 0)
+  const total = catalog.data?.reduce((sum, item) => sum + item.document_count, 0)
   const closeEditor = () => route({ compose: undefined })
-  const refresh = () => void queryClient.invalidateQueries({ queryKey: ['knowledge'] })
   const onCreatedDocument = async (result: KnowledgeDocument) => {
     await queryClient.invalidateQueries({ queryKey: ['knowledge'] })
     setParams((previous) => {
@@ -152,16 +151,6 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
           <p>整理可复用的文档、经验与项目约定。</p>
         </div>
         <div className="knowledge-header-actions">
-          <button
-            type="button"
-            className="button"
-            onClick={refresh}
-            disabled={busy}
-            aria-label="刷新知识与记忆"
-          >
-            <RefreshCw size={15} />
-            刷新
-          </button>
           {writable && (
             <button
               type="button"
@@ -190,7 +179,7 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
           onClick={() => route({ tab: undefined, q: undefined, compose: undefined })}
         >
           <BookOpen size={16} />
-          中心知识<span>{total}</span>
+          中心知识<span>{total ?? '—'}</span>
         </button>
         <button
           type="button"
@@ -273,9 +262,11 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
               >
                 <Layers size={16} />
                 <span>全部文档</span>
-                <small>{total}</small>
+                <small>{total ?? '—'}</small>
               </button>
-              {catalog.isPending && <Loading label="读取集合…" />}
+              {catalog.isPending && (
+                <Loading label="读取集合…" retry={() => void catalog.refetch()} />
+              )}
               {catalog.error && (
                 <Notice error={catalog.error} retry={() => void catalog.refetch()} />
               )}
@@ -370,7 +361,9 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
           <div className="knowledge-results-scroll" ref={resultsRef}>
             {memoryTab ? (
               <>
-                {memories.isPending && <Loading label="读取共享记忆…" />}
+                {memories.isPending && (
+                  <Loading label="读取共享记忆…" retry={() => void memories.refetch()} />
+                )}
                 {memories.error && (
                   <Notice error={memories.error} retry={() => void memories.refetch()} />
                 )}
@@ -406,7 +399,9 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
               </>
             ) : (
               <>
-                {documents.isPending && <Loading label="读取文档…" />}
+                {documents.isPending && (
+                  <Loading label="读取文档…" retry={() => void documents.refetch()} />
+                )}
                 {documents.error && (
                   <Notice error={documents.error} retry={() => void documents.refetch()} />
                 )}
@@ -593,13 +588,8 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
   )
 }
 
-function Loading({ label }: { label: string }) {
-  return (
-    <p className="knowledge-loading" role="status">
-      <LoaderCircle size={17} className="spin" />
-      {label}
-    </p>
-  )
+function Loading({ label, retry }: { label: string; retry?: () => void }) {
+  return <QueryLoading className="knowledge-loading" text={label} onRetry={retry} />
 }
 function Empty({
   icon,
@@ -632,7 +622,7 @@ function DetailRequest({
 }) {
   return (
     <>
-      {pending && <Loading label="读取完整内容…" />}
+      {pending && <Loading label="读取完整内容…" retry={retry} />}
       {error ? <Notice error={error} retry={retry} /> : null}
     </>
   )
@@ -673,73 +663,77 @@ function DocumentDetail({
   const meta = document.metadata
   return (
     <article className="knowledge-document">
-      <div className="knowledge-document-kicker">
-        <span>{document.collection}</span>
-        <span className={`knowledge-status ${meta.status}`}>
-          {statusLabels[meta.status] || meta.status}
-        </span>
-      </div>
-      <h2>{meta.title}</h2>
-      <div className="knowledge-document-actions">
-        <span>更新于 {formatDate(meta.updatedAt)}</span>
-        {writable && (
-          <div className="knowledge-edit-actions">
-            {document.editable && (
-              <button type="button" className="button subtle" onClick={onEdit}>
-                <Pencil size={14} />
-                编辑文档
+      <header className="knowledge-document-header">
+        <div className="knowledge-document-kicker">
+          <span>{document.collection}</span>
+          <span className={`knowledge-status ${meta.status}`}>
+            {statusLabels[meta.status] || meta.status}
+          </span>
+        </div>
+        <h2>{meta.title}</h2>
+        <div className="knowledge-document-actions">
+          <span>更新于 {formatDate(meta.updatedAt)}</span>
+          {writable && (
+            <div className="knowledge-edit-actions">
+              {document.editable && (
+                <button type="button" className="button subtle" onClick={onEdit}>
+                  <Pencil size={14} />
+                  编辑文档
+                </button>
+              )}
+              <button type="button" className="button subtle" onClick={onCopy}>
+                <Copy size={14} />
+                创建副本
               </button>
+            </div>
+          )}
+        </div>
+      </header>
+      <div className="knowledge-document-surface">
+        <Tags values={meta.tags} />
+        <div className="knowledge-metadata">
+          <span>
+            项目<strong>{meta.projects?.join('、') || '未指定'}</strong>
+          </span>
+          <span>
+            领域<strong>{meta.domains?.join('、') || '未指定'}</strong>
+          </span>
+          <span>
+            创建者<strong>{meta.producer || '—'}</strong>
+          </span>
+        </div>
+        <div className="knowledge-document-body">
+          <Markdown text={document.content || '此文档没有正文。'} />
+        </div>
+        <details className="knowledge-provenance">
+          <summary>文档信息</summary>
+          <dl>
+            <dt>文档 ID</dt>
+            <dd>{meta.id}</dd>
+            <dt>创建时间</dt>
+            <dd>{formatDate(meta.createdAt)}</dd>
+            {meta.source && (
+              <>
+                <dt>来源类型</dt>
+                <dd>{meta.source.type}</dd>
+                <dt>来源</dt>
+                <dd>{meta.source.uri}</dd>
+                {meta.source.importedAt && (
+                  <>
+                    <dt>导入时间</dt>
+                    <dd>{formatDate(meta.source.importedAt)}</dd>
+                  </>
+                )}
+              </>
             )}
-            <button type="button" className="button subtle" onClick={onCopy}>
-              <Copy size={14} />
-              创建副本
-            </button>
-          </div>
+          </dl>
+        </details>
+        {writable && !document.editable && (
+          <p className="knowledge-detail-note">
+            此文档来自外部来源。可以创建副本进行编辑，保留来源原文。
+          </p>
         )}
       </div>
-      <Tags values={meta.tags} />
-      <div className="knowledge-metadata">
-        <span>
-          项目<strong>{meta.projects?.join('、') || '未指定'}</strong>
-        </span>
-        <span>
-          领域<strong>{meta.domains?.join('、') || '未指定'}</strong>
-        </span>
-        <span>
-          创建者<strong>{meta.producer || '—'}</strong>
-        </span>
-      </div>
-      <div className="knowledge-document-body">
-        <Markdown text={document.content || '此文档没有正文。'} />
-      </div>
-      <details className="knowledge-provenance">
-        <summary>文档信息</summary>
-        <dl>
-          <dt>文档 ID</dt>
-          <dd>{meta.id}</dd>
-          <dt>创建时间</dt>
-          <dd>{formatDate(meta.createdAt)}</dd>
-          {meta.source && (
-            <>
-              <dt>来源类型</dt>
-              <dd>{meta.source.type}</dd>
-              <dt>来源</dt>
-              <dd>{meta.source.uri}</dd>
-              {meta.source.importedAt && (
-                <>
-                  <dt>导入时间</dt>
-                  <dd>{formatDate(meta.source.importedAt)}</dd>
-                </>
-              )}
-            </>
-          )}
-        </dl>
-      </details>
-      {writable && !document.editable && (
-        <p className="knowledge-detail-note">
-          此文档来自外部来源。可以创建副本进行编辑，保留来源原文。
-        </p>
-      )}
     </article>
   )
 }
@@ -755,44 +749,50 @@ function MemoryDetail({
 }) {
   return (
     <article className="knowledge-document">
-      <div className="knowledge-document-kicker">
-        <span>共享记忆</span>
-        <span className="knowledge-pill">{memory.scope}</span>
+      <header className="knowledge-document-header">
+        <div className="knowledge-document-kicker">
+          <span>共享记忆</span>
+          <span className="knowledge-pill">{memory.scope}</span>
+        </div>
+        <h2>一条可以复用的经验</h2>
+        <div className="knowledge-document-actions">
+          <span>{formatDate(memory.created_at)}</span>
+          {writable && (
+            <button type="button" className="button subtle" onClick={onEdit}>
+              <Pencil size={14} />
+              修订记忆
+            </button>
+          )}
+        </div>
+      </header>
+      <div className="knowledge-document-surface">
+        <Tags values={memory.tags} />
+        <div className="knowledge-document-body">
+          <Markdown text={memory.content} />
+        </div>
+        <details className="knowledge-provenance">
+          <summary>记忆信息</summary>
+          <dl>
+            <dt>记忆 ID</dt>
+            <dd>{memory.id}</dd>
+            <dt>作用范围</dt>
+            <dd>{memory.scope}</dd>
+            <dt>来源</dt>
+            <dd>{memory.metadata?.source || memory.source}</dd>
+            {Object.entries(memory.metadata || {})
+              .filter(([key]) => key !== 'source')
+              .map(([key, value]) => (
+                <div key={key}>
+                  <dt>{key}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+          </dl>
+        </details>
+        <p className="knowledge-detail-note">
+          修订会追加一条新记录并替代当前记忆，历史记录仍保留。
+        </p>
       </div>
-      <h2>一条可以复用的经验</h2>
-      <div className="knowledge-document-actions">
-        <span>{formatDate(memory.created_at)}</span>
-        {writable && (
-          <button type="button" className="button subtle" onClick={onEdit}>
-            <Pencil size={14} />
-            修订记忆
-          </button>
-        )}
-      </div>
-      <Tags values={memory.tags} />
-      <div className="knowledge-document-body">
-        <Markdown text={memory.content} />
-      </div>
-      <details className="knowledge-provenance">
-        <summary>记忆信息</summary>
-        <dl>
-          <dt>记忆 ID</dt>
-          <dd>{memory.id}</dd>
-          <dt>作用范围</dt>
-          <dd>{memory.scope}</dd>
-          <dt>来源</dt>
-          <dd>{memory.metadata?.source || memory.source}</dd>
-          {Object.entries(memory.metadata || {})
-            .filter(([key]) => key !== 'source')
-            .map(([key, value]) => (
-              <div key={key}>
-                <dt>{key}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
-        </dl>
-      </details>
-      <p className="knowledge-detail-note">修订会追加一条新记录并替代当前记忆，历史记录仍保留。</p>
     </article>
   )
 }

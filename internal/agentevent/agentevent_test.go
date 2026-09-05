@@ -387,7 +387,7 @@ func TestFromHookRejectsUnusablePayloads(t *testing.T) {
 	if _, _, err := FromHook(Input{Source: SourceClaude, Raw: []byte(`not json`), Now: fixedNow}); err == nil {
 		t.Error("expected an error for a non-JSON payload")
 	}
-	// Neither identifier means the app could create an attention signal it can
+	// Neither identifier means the runtime could create an attention signal it can
 	// never join to a row or clear.
 	if _, _, err := FromHook(Input{
 		Source: SourceClaude,

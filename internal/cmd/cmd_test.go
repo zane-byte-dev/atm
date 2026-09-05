@@ -42,7 +42,6 @@ func withTempAtmDir(t *testing.T) {
 	t.Helper()
 	oldDir, oldDB, oldConfig := config.AtmDir, config.AtmDB, config.ConfigPath
 	oldGuard := config.Guard
-	oldIPCServer := ipcServer
 	dir := t.TempDir()
 	config.AtmDir = dir
 	config.AtmDB = filepath.Join(dir, "atm.db")
@@ -53,16 +52,11 @@ func withTempAtmDir(t *testing.T) {
 	// test does — and the gate then reports itself off for a tool it is guarding.
 	config.ConfigPath = filepath.Join(dir, "config.json")
 	config.Guard = config.GuardConfig{}
-	// appipc receives a concrete Knowledge service at composition time, so a
-	// test that changes the data root must rebuild that composition as well.
-	// Otherwise typed Knowledge calls escape into the developer's real ~/.atm.
-	ipcServer = newAppIPCServer()
 	t.Cleanup(func() {
 		config.AtmDir = oldDir
 		config.AtmDB = oldDB
 		config.ConfigPath = oldConfig
 		config.Guard = oldGuard
-		ipcServer = oldIPCServer
 	})
 }
 
@@ -93,7 +87,6 @@ func withHumanCLI(t *testing.T) {
 func withIsolatedCommandEnv(t *testing.T) {
 	t.Helper()
 	oldDir, oldDB, oldConfigPath := config.AtmDir, config.AtmDB, config.ConfigPath
-	oldIPCServer := ipcServer
 	oldClaude, oldCodex, oldCopilot, oldPi := config.ClaudeProjects, config.CodexSessions, config.CopilotWorkspaces, config.PiSessions
 	oldQoder, oldQoderCLI, oldQoderWork := config.QoderDB, config.QoderCLIProjects, config.QoderWorkDB
 	oldGrok := config.GrokSessions
@@ -109,7 +102,6 @@ func withIsolatedCommandEnv(t *testing.T) {
 	config.QoderCLIProjects = filepath.Join(dir, "qodercli-projects")
 	config.QoderWorkDB = filepath.Join(dir, "qoderwork", "agents.db")
 	config.GrokSessions = filepath.Join(dir, "grok-sessions")
-	ipcServer = newAppIPCServer()
 	for _, p := range []string{config.ClaudeProjects, config.CodexSessions, config.CopilotWorkspaces, config.PiSessions, config.QoderCLIProjects, config.GrokSessions} {
 		if err := os.MkdirAll(p, 0755); err != nil {
 			t.Fatalf("mkdir %s: %v", p, err)
@@ -125,7 +117,6 @@ func withIsolatedCommandEnv(t *testing.T) {
 		config.PiSessions = oldPi
 		config.QoderDB, config.QoderCLIProjects, config.QoderWorkDB = oldQoder, oldQoderCLI, oldQoderWork
 		config.GrokSessions = oldGrok
-		ipcServer = oldIPCServer
 	})
 }
 
@@ -198,11 +189,11 @@ func withCommandFlags(t *testing.T) {
 	oldExportDays, oldExportFormat := exportDaysFlag, exportFormatFlag
 	oldExportSince, oldExportUntil := exportSinceFlag, exportUntilFlag
 	oldExportProject, oldExportRole, oldExportQuery := exportProjectFlag, exportRoleFlag, exportQueryFlag
-	oldExportLimit, oldExportOffset, oldExportEnvelope := exportLimitFlag, exportOffsetFlag, exportEnvelopeFlag
+	oldExportLimit, oldExportOffset := exportLimitFlag, exportOffsetFlag
 	oldThinking, oldShowTurns := showThinking, showTurnsFlag
 	oldShowLast, oldShowMaxChars := showLastFlag, showMaxCharsFlag
 	oldListAll, oldListOrder := sessionListAllFlag, sessionListOrder
-	oldListLimit, oldListOffset, oldListEnvelope := sessionListLimit, sessionListOffset, sessionListEnvelope
+	oldListLimit, oldListOffset := sessionListLimit, sessionListOffset
 	oldToolsFailed, oldToolsDays, oldToolsSince := sessionToolsFailed, sessionToolsDays, sessionToolsSince
 	oldToolsLimit, oldToolsOffset := sessionToolsLimit, sessionToolsOffset
 	t.Cleanup(func() {
@@ -210,7 +201,6 @@ func withCommandFlags(t *testing.T) {
 		sessionListOrder = oldListOrder
 		sessionListLimit = oldListLimit
 		sessionListOffset = oldListOffset
-		sessionListEnvelope = oldListEnvelope
 		sessionToolsFailed = oldToolsFailed
 		sessionToolsDays = oldToolsDays
 		sessionToolsSince = oldToolsSince
@@ -241,7 +231,6 @@ func withCommandFlags(t *testing.T) {
 		exportQueryFlag = oldExportQuery
 		exportLimitFlag = oldExportLimit
 		exportOffsetFlag = oldExportOffset
-		exportEnvelopeFlag = oldExportEnvelope
 		showThinking = oldThinking
 		showTurnsFlag = oldShowTurns
 		showLastFlag = oldShowLast
@@ -272,12 +261,10 @@ func withCommandFlags(t *testing.T) {
 	exportQueryFlag = ""
 	exportLimitFlag = 0
 	exportOffsetFlag = 0
-	exportEnvelopeFlag = false
 	sessionListAllFlag = false
 	sessionListOrder = "activity-desc"
 	sessionListLimit = defaultSessionListLimit
 	sessionListOffset = 0
-	sessionListEnvelope = false
 	sessionToolsFailed = false
 	sessionToolsDays = 7
 	sessionToolsSince = ""
@@ -431,15 +418,18 @@ func TestReadCommandsUseSeededDatabase(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("runList: %v", runErr)
 	}
-	var listRows []struct {
-		ShortID string `json:"short_id"`
-		Project string `json:"project"`
-		QCount  int    `json:"q_count"`
-		Summary string `json:"summary"`
+	var listPayload struct {
+		Sessions []struct {
+			ShortID string `json:"short_id"`
+			Project string `json:"project"`
+			QCount  int    `json:"q_count"`
+			Summary string `json:"summary"`
+		} `json:"sessions"`
 	}
-	if err := json.Unmarshal([]byte(listOut), &listRows); err != nil {
+	if err := json.Unmarshal([]byte(listOut), &listPayload); err != nil {
 		t.Fatalf("unmarshal list: %v\n%s", err, listOut)
 	}
+	listRows := listPayload.Sessions
 	if len(listRows) != 1 || listRows[0].ShortID != "cmdsess" || listRows[0].Project != "atm" ||
 		listRows[0].QCount != 1 || listRows[0].Summary != "Seeded command session" {
 		t.Fatalf("list rows = %#v", listRows)
@@ -537,10 +527,13 @@ func TestReadCommandsUseSeededDatabase(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("runExport: %v", runErr)
 	}
-	var exportRows []store.ExportRow
-	if err := json.Unmarshal([]byte(exportOut), &exportRows); err != nil {
+	var exportPayload struct {
+		Messages []store.ExportRow `json:"messages"`
+	}
+	if err := json.Unmarshal([]byte(exportOut), &exportPayload); err != nil {
 		t.Fatalf("unmarshal export: %v\n%s", err, exportOut)
 	}
+	exportRows := exportPayload.Messages
 	if len(exportRows) != 2 || exportRows[0].SessionID != "cmdsess" || exportRows[0].Role != "user" ||
 		exportRows[1].Role != "assistant" {
 		t.Fatalf("export rows = %#v", exportRows)
@@ -585,11 +578,13 @@ func TestSessionReviewFiltersPendingSessions(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("list pending: %v", runErr)
 	}
-	var pending []map[string]any
+	var pending struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
 	if err := json.Unmarshal([]byte(pendingOut), &pending); err != nil {
 		t.Fatalf("pending output = %q: %v", pendingOut, err)
 	}
-	if len(pending) != 0 {
+	if len(pending.Sessions) != 0 {
 		t.Fatalf("pending sessions = %#v", pending)
 	}
 
@@ -680,7 +675,7 @@ func TestPrintNowShowsWaitingWakeCondition(t *testing.T) {
 			ID:            "t65",
 			Title:         "Wait for dependency",
 			Priority:      "P0",
-			Status:        store.TodoStatusWaiting,
+			Status:        store.TodoStatusInProgress,
 			WakeCondition: "waiting for todos: t79",
 		}},
 	}
@@ -1067,7 +1062,7 @@ func TestRunTodoDeleteConfirmationAndYesFlag(t *testing.T) {
 	}
 }
 
-func TestRunTodoTrashRestoreAndPermanentDelete(t *testing.T) {
+func TestRunTodoArchiveRestoreAndPermanentDelete(t *testing.T) {
 	withTempAtmDir(t)
 	if err := seedTodos(store.Todo{
 		ID: "t1", Title: "Recover me", Priority: "P1", Status: "open", Created: store.Today(),
@@ -1075,17 +1070,17 @@ func TestRunTodoTrashRestoreAndPermanentDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	trashOut := captureStdout(t, func() {
-		if err := runTodoTrash(todoTrashCmd, []string{"t1"}); err != nil {
-			t.Fatalf("trash: %v", err)
+	archiveOut := captureStdout(t, func() {
+		if err := runTodoArchive(todoArchiveCmd, []string{"t1"}); err != nil {
+			t.Fatalf("archive: %v", err)
 		}
 	})
-	if trashOut != "Archived t1\n" {
-		t.Fatalf("trash output = %q", trashOut)
+	if archiveOut != "Archived t1\n" {
+		t.Fatalf("archive output = %q", archiveOut)
 	}
 	archived, err := store.LoadArchivedTodos()
 	if err != nil || len(archived) != 1 || archived[0].Status != "open" {
-		t.Fatalf("trash contents = %#v, err=%v", archived, err)
+		t.Fatalf("archive contents = %#v, err=%v", archived, err)
 	}
 
 	restoreOut := captureStdout(t, func() {
@@ -1101,18 +1096,18 @@ func TestRunTodoTrashRestoreAndPermanentDelete(t *testing.T) {
 		t.Fatalf("restored working set = %#v, err=%v", todos, err)
 	}
 
-	if err := runTodoTrash(todoTrashCmd, []string{"t1"}); err != nil {
+	if err := runTodoArchive(todoArchiveCmd, []string{"t1"}); err != nil {
 		t.Fatal(err)
 	}
 	oldYes := todoDeleteYesFlag
 	t.Cleanup(func() { todoDeleteYesFlag = oldYes })
 	todoDeleteYesFlag = true
 	if err := runTodoDelete(todoDeleteCmd, []string{"t1"}); err != nil {
-		t.Fatalf("delete from trash: %v", err)
+		t.Fatalf("delete from archive: %v", err)
 	}
 	archived, err = store.LoadArchivedTodos()
 	if err != nil || len(archived) != 0 {
-		t.Fatalf("trash after permanent delete = %#v, err=%v", archived, err)
+		t.Fatalf("archive after permanent delete = %#v, err=%v", archived, err)
 	}
 }
 
@@ -1133,7 +1128,7 @@ func TestTodoShowListsExplicitlyBoundSessions(t *testing.T) {
 	todo := store.Todo{
 		ID:          "t1",
 		Title:       "Ship command tests",
-		Description: "The same todo shape must be available at the top level.",
+		Description: "The todo appears once in the canonical nested response.",
 		Priority:    "P1",
 		Status:      "done",
 		Project:     "atm",
@@ -1160,11 +1155,9 @@ func TestTodoShowListsExplicitlyBoundSessions(t *testing.T) {
 	}
 
 	var got struct {
-		ID          string                   `json:"id"`
-		Description string                   `json:"description"`
-		Todo        store.Todo               `json:"todo"`
-		Sessions    []store.TodoBoundSession `json:"sessions"`
-		Summary     struct {
+		Todo     store.Todo               `json:"todo"`
+		Sessions []store.TodoBoundSession `json:"sessions"`
+		Summary  struct {
 			Sessions  int     `json:"sessions"`
 			Queries   int     `json:"queries"`
 			ToolCalls int     `json:"tool_calls"`
@@ -1174,8 +1167,17 @@ func TestTodoShowListsExplicitlyBoundSessions(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("unmarshal todo show: %v\n%s", err, out)
 	}
-	if got.ID != got.Todo.ID || got.Description != got.Todo.Description ||
-		got.Todo.ID != "t1" || len(got.Sessions) != 1 || got.Sessions[0].SessionID != "cmd-session-full" ||
+	var shape map[string]any
+	if err := json.Unmarshal([]byte(out), &shape); err != nil {
+		t.Fatal(err)
+	}
+	if _, duplicated := shape["id"]; duplicated {
+		t.Fatalf("todo fields leaked into the response root: %s", out)
+	}
+	if _, ok := shape["todo"]; !ok {
+		t.Fatalf("canonical todo envelope missing: %s", out)
+	}
+	if got.Todo.ID != "t1" || got.Todo.Description != todo.Description || len(got.Sessions) != 1 || got.Sessions[0].SessionID != "cmd-session-full" ||
 		got.Sessions[0].ShortID != "cmdsess" || !got.Sessions[0].Indexed || got.Sessions[0].BindingCount != 1 ||
 		got.Sessions[0].Queries != 1 || got.Sessions[0].ToolCalls != 2 {
 		t.Fatalf("todo show = %#v", got)
@@ -1271,11 +1273,13 @@ func TestTodoShowNamesBoundSessionsWithoutStoredSummary(t *testing.T) {
 func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 	withTempAtmDir(t)
 	oldJSON := jsonOutput
-	oldWaitWake, oldWaitReview := todoWaitWakeFlag, todoWaitReviewAtFlag
+	oldEditWake, oldEditReview := todoEditWakeFlag, todoEditReviewAtFlag
 	oldMaintenanceLimit := todoEditMaintenanceLimitFlag
 	t.Cleanup(func() {
 		jsonOutput = oldJSON
-		todoWaitWakeFlag, todoWaitReviewAtFlag = oldWaitWake, oldWaitReview
+		todoEditWakeFlag, todoEditReviewAtFlag = oldEditWake, oldEditReview
+		todoEditCmd.Flags().Lookup("wake").Changed = false
+		todoEditCmd.Flags().Lookup("review-at").Changed = false
 		todoEditMaintenanceLimitFlag = oldMaintenanceLimit
 		todoEditCmd.Flags().Lookup("maintenance-limit").Changed = false
 	})
@@ -1296,12 +1300,16 @@ func TestTodoWorkStateCommandsAndNow(t *testing.T) {
 		t.Fatalf("start: %v", commandErr)
 	}
 
-	todoWaitWakeFlag = "new business input"
-	todoWaitReviewAtFlag = time.Now().In(config.Loc).AddDate(0, 0, 2).Format("2006-01-02")
-	captureStdout(t, func() { commandErr = runTodoWait(todoWaitCmd, []string{"t2"}) })
+	todoEditWakeFlag = "new business input"
+	todoEditReviewAtFlag = time.Now().In(config.Loc).AddDate(0, 0, 2).Format("2006-01-02")
+	todoEditCmd.Flags().Lookup("wake").Changed = true
+	todoEditCmd.Flags().Lookup("review-at").Changed = true
+	captureStdout(t, func() { commandErr = runTodoEdit(todoEditCmd, []string{"t2"}) })
 	if commandErr != nil {
-		t.Fatalf("wait: %v", commandErr)
+		t.Fatalf("edit waiting metadata: %v", commandErr)
 	}
+	todoEditCmd.Flags().Lookup("wake").Changed = false
+	todoEditCmd.Flags().Lookup("review-at").Changed = false
 
 	todoEditMaintenanceLimitFlag = 2
 	todoEditCmd.Flags().Lookup("maintenance-limit").Changed = true
@@ -1362,7 +1370,9 @@ func TestReadCommandsRequireExplicitSyncWhenDatabaseIsMissing(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("read with explicit sync: %v", runErr)
 	}
-	var sessions []any
+	var sessions struct {
+		Sessions []any `json:"sessions"`
+	}
 	if err := json.Unmarshal([]byte(out), &sessions); err != nil {
 		t.Fatalf("json output = %q: %v", out, err)
 	}

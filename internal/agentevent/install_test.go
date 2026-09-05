@@ -454,24 +454,6 @@ func TestStatusReportsMissingHooksWithoutWriting(t *testing.T) {
 	}
 }
 
-func TestStatusFlagsAnotherToolOwningTheDecisionEvent(t *testing.T) {
-	// Ping Island holds PermissionRequest open for 24 hours to let the user
-	// decide. Knowing that is a prerequisite for ever adding in-notch approval,
-	// so the installer surfaces it now rather than discovering it later.
-	home := writeHome(t, ".claude/settings.json", realWorldClaudeSettings)
-	result, err := Status(SourceClaude, home, atmBinary)
-	if err != nil {
-		t.Fatalf("Status: %v", err)
-	}
-	if len(result.Conflicts) != 1 {
-		t.Fatalf("expected one conflict, got %v", result.Conflicts)
-	}
-	if !strings.Contains(result.Conflicts[0], "PermissionRequest") ||
-		!strings.Contains(result.Conflicts[0], "ping-island") {
-		t.Errorf("unexpected conflict text: %q", result.Conflicts[0])
-	}
-}
-
 func TestCodexUsesItsOwnConfigFile(t *testing.T) {
 	home := t.TempDir()
 	path, err := ConfigPath(SourceCodex, home)

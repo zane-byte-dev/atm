@@ -59,7 +59,6 @@ func SetVersion(v string) {
 
 func Execute() {
 	started := time.Now()
-	refreshAppIPCServer()
 	applyCommandGroups()
 	bufferBuiltinModelCalls()
 	cliCommandEnteredRun.Store(false)
@@ -164,9 +163,6 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&sessionIDFlag, "agent-session", "", "current agent session ID (defaults to ATM_SESSION_ID or agent environment)")
 	rootCmd.AddCommand(versionCmd)
 
-	cobra.OnInitialize(func() {
-		output.JSONMode = jsonOutput
-	})
 }
 
 func resolveAgent() (string, error) {

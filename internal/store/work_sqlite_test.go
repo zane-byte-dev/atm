@@ -1,9 +1,7 @@
 package store
 
 import (
-	"database/sql"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 )
@@ -59,6 +57,22 @@ func TestSchemaRejectsUnknownStatusAndPriority(t *testing.T) {
 	}
 }
 
+func TestSchemaRejectsRemovedLifecycleStatuses(t *testing.T) {
+	for _, status := range []string{"waiting", "blocked", "dropped"} {
+		t.Run(status, func(t *testing.T) {
+			withTempStore(t)
+			seedTodos(t, openTodo("t1", "Valid"))
+			err := UpdateWorkState(func(state *WorkStateTx) error {
+				FindTodo(state.Todos, "t1").Status = status
+				return nil
+			})
+			if err == nil || !strings.Contains(err.Error(), "constraint failed") {
+				t.Fatalf("removed status %q error = %v", status, err)
+			}
+		})
+	}
+}
+
 func TestSchemaRejectsMalformedDates(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t, openTodo("t1", "Valid"))
@@ -92,16 +106,24 @@ func TestWriteTodosRejectsDuplicateAndEmptyIDs(t *testing.T) {
 	}
 }
 
-// Versions below minUpgradableVersion are hard-rejected. The step immediately
-// below SchemaVersion may still be upgradable while migration rungs exist.
-func TestMigrateRejectsUnsupportedSchemaVersions(t *testing.T) {
-	db := openTempDB(t)
-	if _, err := db.Exec(`UPDATE schema_version SET version = ?`, 8); err != nil {
-		t.Fatal(err)
-	}
-	err := migrate(db)
-	if err == nil || !strings.Contains(err.Error(), "no longer supported") {
-		t.Fatalf("migrate from v8 error = %v", err)
+func TestEnsureSchemaRejectsUnsupportedVersions(t *testing.T) {
+	for _, test := range []struct {
+		name, want string
+		version    int
+	}{
+		{name: "previous", version: SchemaVersion - 1, want: "no longer supported"},
+		{name: "newer", version: SchemaVersion + 1, want: "newer"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := openTempDB(t)
+			if _, err := db.Exec(`UPDATE schema_version SET version = ?`, test.version); err != nil {
+				t.Fatal(err)
+			}
+			err := ensureSchema(db)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("schema v%d error = %v, want %q", test.version, err, test.want)
+			}
+		})
 	}
 }
 
@@ -123,71 +145,21 @@ func TestFreshSchemaIncludesWorkEffectOutbox(t *testing.T) {
 	}
 }
 
-func TestMigrateV48ToV49AddsWorkEffectOutbox(t *testing.T) {
+func TestFreshSchemaIncludesTodoPlanRevisions(t *testing.T) {
 	db := openTempDB(t)
-	for _, statement := range []string{
-		`DROP TABLE work_effect_outbox`,
-		`UPDATE schema_version SET version = 48`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("prepare v48 (%s): %v", statement, err)
-		}
-	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v48→v49: %v", err)
-	}
-	var version, tables int
+	var version, tables, columns int
 	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
-		WHERE type='table' AND name='work_effect_outbox'`).Scan(&tables); err != nil {
+		WHERE type='table' AND name='todo_plan_revisions'`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if version != SchemaVersion || tables != 1 {
-		t.Fatalf("migrated outbox: version=%d tables=%d", version, tables)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('todo_plan_revisions')`).Scan(&columns); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestFreshSchemaAndV49MigrationIncludeTodoPlanRevisions(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		prepare bool
-	}{
-		{name: "fresh"},
-		{name: "migrate v49", prepare: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			db := openTempDB(t)
-			if test.prepare {
-				for _, statement := range []string{
-					`DROP TABLE todo_plan_revisions`,
-					`UPDATE schema_version SET version = 49`,
-				} {
-					if _, err := db.Exec(statement); err != nil {
-						t.Fatalf("prepare v49 (%s): %v", statement, err)
-					}
-				}
-				if err := migrate(db); err != nil {
-					t.Fatalf("migrate v49→v50: %v", err)
-				}
-			}
-			var version, tables, columns int
-			if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
-				WHERE type='table' AND name='todo_plan_revisions'`).Scan(&tables); err != nil {
-				t.Fatal(err)
-			}
-			if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('todo_plan_revisions')`).Scan(&columns); err != nil {
-				t.Fatal(err)
-			}
-			// 12, not 13: v52 dropped run_id along with the dispatch subsystem.
-			if version != SchemaVersion || tables != 1 || columns != 12 {
-				t.Fatalf("plan schema: version=%d tables=%d columns=%d", version, tables, columns)
-			}
-		})
+	if version != SchemaVersion || tables != 1 || columns != 12 {
+		t.Fatalf("plan schema: version=%d tables=%d columns=%d", version, tables, columns)
 	}
 }
 
@@ -225,218 +197,6 @@ func TestWorkEffectOutboxTracksFailureAndAcknowledgement(t *testing.T) {
 	}
 }
 
-func TestMigrateV21ToV22AddsUsageEventDuration(t *testing.T) {
-	db := openTempDB(t)
-	// Simulate a v21 database: drop the v22 column and pin the version.
-	if _, err := db.Exec(`CREATE TABLE usage_events_v21 AS SELECT id, session_id, model, ts,
-		input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, cost_usd, fingerprint,
-		request_count FROM usage_events`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DROP TABLE usage_events`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE usage_events_v21 RENAME TO usage_events`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version = 21`); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v21→v22: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	if _, err := db.Exec(`INSERT INTO sessions (id, short_id, agent, file_path) VALUES ('s','s','pi','/tmp/s')`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO usage_events (session_id, duration_ms) VALUES ('s', 4200)`); err != nil {
-		t.Fatalf("duration_ms column missing: %v", err)
-	}
-	// Rows migrated from v21 have no measurement, and 0 has to keep meaning
-	// "unknown" rather than a zero-length response.
-	var carried, added int64
-	if err := db.QueryRow(`SELECT COALESCE(SUM(duration_ms),0) FROM usage_events WHERE session_id!='s'`).Scan(&carried); err != nil {
-		t.Fatal(err)
-	}
-	if carried != 0 {
-		t.Fatalf("pre-existing rows got a duration: %d", carried)
-	}
-	if err := db.QueryRow(`SELECT duration_ms FROM usage_events WHERE session_id='s'`).Scan(&added); err != nil || added != 4200 {
-		t.Fatalf("duration_ms = %d, err = %v", added, err)
-	}
-}
-
-func TestMigrateV22ToV23AddsUsageEventTimestampIndex(t *testing.T) {
-	db := openTempDB(t)
-	if _, err := db.Exec(`DROP INDEX idx_usage_events_ts`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version = 22`); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v22→v23: %v", err)
-	}
-
-	var version, found int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	if err := db.QueryRow(
-		`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_usage_events_ts'`,
-	).Scan(&found); err != nil {
-		t.Fatal(err)
-	}
-	if found != 1 {
-		t.Fatal("idx_usage_events_ts was not created")
-	}
-}
-
-func TestMigrateV24ToV25AddsCollectionDomain(t *testing.T) {
-	db := openTempDB(t)
-	for _, statement := range []string{
-		`DROP TABLE collection_items`,
-		`DROP TABLE collection_runs`,
-		`DROP TABLE collection_checkpoints`,
-		`DROP TABLE collection_sources`,
-		`UPDATE schema_version SET version = 24`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("prepare v24: %v", err)
-		}
-	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v24→v25: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	source, err := UpsertCollectionSource(db, CollectionSource{Connector: "test",
-		Kind: "group", ExternalID: "cid-migrated", ExcludePattern: "robot", Priority: "P2", Enabled: true})
-	if err != nil || source.ExcludePattern != "robot" {
-		t.Fatalf("migrated collection source = %+v, err=%v", source, err)
-	}
-}
-
-func TestMigrateV26ToV27AddsSyncedChatArchive(t *testing.T) {
-	db := openTempDB(t)
-	for _, statement := range []string{
-		`DROP TABLE collection_messages`,
-		`UPDATE schema_version SET version = 26`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("prepare v26: %v", err)
-		}
-	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v26→v27: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	// The archive starts empty: past runs kept only the excerpt each decision was
-	// made from, and the connector is the authoritative place the rest of those chats still exists.
-	stats, err := CollectionMessageStatsFor(db)
-	if err != nil || stats.Total != 0 {
-		t.Fatalf("migrated archive stats = %+v, err=%v", stats, err)
-	}
-	if _, err := PutCollectionMessages(db, []CollectionMessage{syncedMessage("m1", 1_000, "识衣", "发布完毕")}); err != nil {
-		t.Fatalf("write into migrated archive: %v", err)
-	}
-}
-
-func TestMigrateV25ToV26AddsCollectionSourceExclusion(t *testing.T) {
-	db := openTempDB(t)
-	source, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-v25",
-		Name: "v25 source", Priority: "P2", Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE collection_sources DROP COLUMN exclude_pattern`); err != nil {
-		t.Fatalf("prepare v25 collection_sources: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version = 25`); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v25→v26: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	migrated, err := GetCollectionSource(db, source.ID)
-	if err != nil || migrated.ExcludePattern != "" {
-		t.Fatalf("migrated collection source = %+v, err=%v", migrated, err)
-	}
-
-	// A short-lived development v25 schema already contained the column. Its
-	// migration must only bump the version and preserve configured exclusions.
-	migrated.ExcludePattern = "robot"
-	if _, err := UpsertCollectionSource(db, migrated); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version = 25`); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v25 with existing column: %v", err)
-	}
-	migrated, err = GetCollectionSource(db, source.ID)
-	if err != nil || migrated.ExcludePattern != "robot" {
-		t.Fatalf("existing exclusion was not preserved: %+v, err=%v", migrated, err)
-	}
-}
-
-func TestMigrateV28ToV29AddsCollectionSourceStrategy(t *testing.T) {
-	db := openTempDB(t)
-	if _, err := db.Exec(`ALTER TABLE collection_sources DROP COLUMN interval_minutes`); err != nil {
-		t.Fatalf("drop interval_minutes: %v", err)
-	}
-	if _, err := db.Exec(`ALTER TABLE collection_sources DROP COLUMN strategy`); err != nil {
-		t.Fatalf("drop strategy: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version = 28`); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v28→v29: %v", err)
-	}
-	source, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-observe",
-		Strategy: CollectionStrategyObserve, IntervalMinutes: 60, Priority: "P2", Enabled: true,
-	})
-	if err != nil || source.Strategy != CollectionStrategyObserve || source.IntervalMinutes != 60 {
-		t.Fatalf("migrated source strategy=%+v err=%v", source, err)
-	}
-}
-
-// A request must not be counted twice when a forked Codex thread or a continued
-// Claude session replays an earlier transcript into a new file.
 func TestUsageEventFingerprintIsUnique(t *testing.T) {
 	db := openTempDB(t)
 	if _, err := db.Exec(`INSERT INTO sessions (id, short_id, agent, file_path) VALUES ('s2','s2','codex','/tmp/s2.jsonl')`); err != nil {
@@ -496,7 +256,7 @@ func TestArchiveRemovesFromWorkingSetButKeepsTheRow(t *testing.T) {
 	}
 
 	if err := UpdateWorkState(func(state *WorkStateTx) error {
-		_, err := state.UnarchiveTodos([]string{"t2"})
+		_, err := state.RestoreTodos([]string{"t2"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -523,7 +283,7 @@ func TestArchiveAcceptsActiveTodos(t *testing.T) {
 	}
 }
 
-func TestTrashAndRestorePreserveActiveTodoAndCloseBinding(t *testing.T) {
+func TestArchiveAndRestorePreserveActiveTodoAndCloseBinding(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t, openTodo("t1", "Recoverable"))
 
@@ -533,12 +293,12 @@ func TestTrashAndRestorePreserveActiveTodoAndCloseBinding(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		trashed, err := state.TrashTodos([]string{"t1"})
+		archived, err := state.ArchiveTodos([]string{"t1"})
 		if err != nil {
 			return err
 		}
-		if len(trashed) != 1 || FindTodo(state.Todos, "t1") != nil {
-			t.Fatalf("trashed = %#v, todo still live = %v", trashed, FindTodo(state.Todos, "t1") != nil)
+		if len(archived) != 1 || FindTodo(state.Todos, "t1") != nil {
+			t.Fatalf("archived = %#v, todo still live = %v", archived, FindTodo(state.Todos, "t1") != nil)
 		}
 		return nil
 	}); err != nil {
@@ -550,11 +310,11 @@ func TestTrashAndRestorePreserveActiveTodoAndCloseBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(bindings) != 1 || bindings[0].UnboundAt == nil || bindings[0].Reason != "todo archived" {
-		t.Fatalf("binding after trash = %#v", bindings)
+		t.Fatalf("binding after archive = %#v", bindings)
 	}
 	archived, err := LoadArchivedTodos()
 	if err != nil || len(archived) != 1 || archived[0].Status != TodoStatusOpen {
-		t.Fatalf("trash contents = %#v, err=%v", archived, err)
+		t.Fatalf("archive contents = %#v, err=%v", archived, err)
 	}
 
 	if err := UpdateWorkState(func(state *WorkStateTx) error {
@@ -573,7 +333,7 @@ func TestPermanentlyDeleteArchivedTodo(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t, openTodo("t1", "Disposable"))
 	if err := UpdateWorkState(func(state *WorkStateTx) error {
-		_, err := state.TrashTodos([]string{"t1"})
+		_, err := state.ArchiveTodos([]string{"t1"})
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -586,7 +346,7 @@ func TestPermanentlyDeleteArchivedTodo(t *testing.T) {
 	}
 	archived, err := LoadArchivedTodos()
 	if err != nil || len(archived) != 0 {
-		t.Fatalf("trash after permanent delete = %#v, err=%v", archived, err)
+		t.Fatalf("archive after permanent delete = %#v, err=%v", archived, err)
 	}
 	todos, err := LoadTodosReadOnly()
 	if err != nil {
@@ -743,372 +503,5 @@ func TestErrorForArchivedTodoPointsAtRestore(t *testing.T) {
 	}
 	if err := TodoNotFoundError(todos, "t404"); err.Error() != "todo not found: t404" {
 		t.Fatalf("missing todo error = %v", err)
-	}
-}
-
-// The v30 rebuild of collection_items is the first migration here that recreates
-// a table rather than adding a column. The items table is the audit trail for why
-// each Todo exists, so this asserts the rows, their todo links and the UNIQUE
-// constraint all survive — and that the relaxed CHECK actually accepts 'insight'.
-func TestMigrateV29ToV30RebuildsCollectionItemsWithoutLosingAudit(t *testing.T) {
-	db := openTempDB(t)
-	if _, err := db.Exec(`INSERT INTO todos (id, position, title, priority, status, created)
-		VALUES ('t1',1,'已有任务','P1','open','2026-08-01')`); err != nil {
-		t.Fatal(err)
-	}
-	// Simulate v29: rebuild collection_items with the pre-insight CHECK, drop the
-	// v30 additions, and pin the version.
-	for _, statement := range []string{
-		`CREATE TABLE collection_items_v29 (
-			id TEXT PRIMARY KEY, source_id TEXT NOT NULL, connector TEXT NOT NULL,
-			conversation_id TEXT NOT NULL DEFAULT '', fingerprint TEXT NOT NULL,
-			message_ids TEXT NOT NULL DEFAULT '[]', sender TEXT NOT NULL DEFAULT '',
-			occurred_at INTEGER NOT NULL DEFAULT 0, raw_context TEXT NOT NULL DEFAULT '',
-			action TEXT NOT NULL DEFAULT 'pending'
-				CHECK (action IN ('pending','create','append','ignore','failed','reverted')),
-			proposed_action TEXT NOT NULL DEFAULT '' CHECK (proposed_action IN ('','create','append')),
-			title TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '',
-			item_type TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '',
-			priority TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
-			confidence REAL NOT NULL DEFAULT 0,
-			todo_id TEXT REFERENCES todos(id) ON DELETE SET NULL,
-			status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processed','failed')),
-			error TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-			UNIQUE (connector, fingerprint)
-		)`,
-		`DROP TABLE collection_items`,
-		`ALTER TABLE collection_items_v29 RENAME TO collection_items`,
-		`INSERT INTO collection_items (id,source_id,connector,fingerprint,action,title,todo_id,
-			status,created_at,updated_at)
-		 VALUES ('ci_kept','cs_1','example','fp-kept','create','已建任务','t1','processed',1,2),
-		        ('ci_gone','cs_1','example','fp-gone','ignore','闲聊',NULL,'processed',3,4)`,
-		`DROP TABLE collection_digests`,
-		`ALTER TABLE collection_sources DROP COLUMN knowledge_collection`,
-		`ALTER TABLE collection_runs DROP COLUMN insight_count`,
-		`UPDATE schema_version SET version = 29`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("simulate v29 (%s): %v", statement, err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO collection_items (id,source_id,connector,fingerprint,action,
-		created_at,updated_at) VALUES ('ci_reject','cs_1','example','fp-reject','insight',5,6)`); err == nil {
-		t.Fatal("v29 CHECK should not accept 'insight'")
-	}
-
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v29→v30: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	var kept, total int
-	var todoID sql.NullString
-	if err := db.QueryRow(`SELECT COUNT(*) FROM collection_items`).Scan(&total); err != nil {
-		t.Fatal(err)
-	}
-	if total != 2 {
-		t.Fatalf("rebuild lost audit rows: %d", total)
-	}
-	if err := db.QueryRow(`SELECT COUNT(*),todo_id FROM collection_items WHERE id='ci_kept'`).
-		Scan(&kept, &todoID); err != nil {
-		t.Fatal(err)
-	}
-	if kept != 1 || todoID.String != "t1" {
-		t.Fatalf("rebuild dropped the Todo link: count=%d todo=%v", kept, todoID)
-	}
-	// The relaxed CHECK, the recreated UNIQUE constraint, the new columns and the
-	// new table all have to be in place.
-	if _, err := db.Exec(`INSERT INTO collection_items (id,source_id,connector,fingerprint,action,
-		created_at,updated_at) VALUES ('ci_new','cs_1','example','fp-new','insight',5,6)`); err != nil {
-		t.Fatalf("v30 CHECK rejects 'insight': %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO collection_items (id,source_id,connector,fingerprint,action,
-		created_at,updated_at) VALUES ('ci_dupe','cs_1','example','fp-new','ignore',5,6)`); err == nil {
-		t.Fatal("rebuild lost the UNIQUE(connector,fingerprint) constraint")
-	}
-	if _, err := db.Exec(`INSERT INTO collection_digests (source_id,digest_date,document_id,
-		created_at,updated_at) VALUES ('cs_1','2026-08-03','document:1',1,2)`); err != nil {
-		t.Fatalf("collection_digests missing: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE collection_sources SET knowledge_collection='example'`); err != nil {
-		t.Fatalf("knowledge_collection missing: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE collection_runs SET insight_count=1`); err != nil {
-		t.Fatalf("insight_count missing: %v", err)
-	}
-}
-
-func TestMigrateV30ToV31RelaxesSourceKindsAndKeepsCheckpoints(t *testing.T) {
-	db := openTempDB(t)
-	source, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-v30",
-		Name: "existing", Priority: "P1", Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := SaveCollectionCheckpoint(db, CollectionCheckpoint{
-		SourceID: source.ID, CursorTime: 123, Cursor: "next",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	statements := []string{
-		`CREATE TABLE collection_sources_v30 (
-			id TEXT PRIMARY KEY, connector TEXT NOT NULL,
-			kind TEXT NOT NULL CHECK (kind IN ('group','user','open_example_id')),
-			external_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', project TEXT NOT NULL DEFAULT '',
-			exclude_pattern TEXT NOT NULL DEFAULT '', instruction TEXT NOT NULL DEFAULT '',
-			knowledge_collection TEXT NOT NULL DEFAULT '',
-			strategy TEXT NOT NULL DEFAULT 'tasks' CHECK (strategy IN ('tasks','observe')),
-			interval_minutes INTEGER NOT NULL DEFAULT 5 CHECK (interval_minutes BETWEEN 1 AND 1440),
-			priority TEXT NOT NULL DEFAULT 'P2' CHECK (priority IN ('P0','P1','P2','P3')),
-			enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0,1)),
-			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-			UNIQUE (connector,kind,external_id)
-		)`,
-		// Columns are named, not starred: the live table grows over time (v32
-		// added decision_unit) and a star-select would break this simulation
-		// every time it does.
-		`INSERT INTO collection_sources_v30
-			(id,connector,kind,external_id,name,project,exclude_pattern,instruction,
-			 knowledge_collection,strategy,interval_minutes,priority,enabled,created_at,updated_at)
-		 SELECT id,connector,kind,external_id,name,project,exclude_pattern,instruction,
-			 knowledge_collection,strategy,interval_minutes,priority,enabled,created_at,updated_at
-		 FROM collection_sources`,
-		`DROP TABLE collection_checkpoints`,
-		`DROP TABLE collection_sources`,
-		`ALTER TABLE collection_sources_v30 RENAME TO collection_sources`,
-		`CREATE INDEX idx_collection_sources_connector ON collection_sources(connector,enabled,name)`,
-		`CREATE TABLE collection_checkpoints (
-			source_id TEXT PRIMARY KEY REFERENCES collection_sources(id) ON DELETE CASCADE,
-			cursor_time INTEGER NOT NULL DEFAULT 0, cursor TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0
-		)`,
-		fmt.Sprintf(`INSERT INTO collection_checkpoints (source_id,cursor_time,cursor,updated_at)
-			VALUES ('%s',123,'next',124)`, source.ID),
-		`UPDATE schema_version SET version=30`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("simulate v30 (%s): %v", statement, err)
-		}
-	}
-	if _, err := db.Exec(`INSERT INTO collection_sources
-		(id,connector,kind,external_id,created_at,updated_at) VALUES ('reject','slack','channel','C1',1,1)`); err == nil {
-		t.Fatal("v30 source CHECK should reject connector-defined kinds")
-	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v30→v31: %v", err)
-	}
-	checkpoint, err := GetCollectionCheckpoint(db, source.ID)
-	if err != nil || checkpoint.CursorTime != 123 || checkpoint.Cursor != "next" {
-		t.Fatalf("checkpoint after migration=%+v err=%v", checkpoint, err)
-	}
-	if _, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "slack", Kind: "channel", ExternalID: "C1", Priority: "P2",
-	}); err != nil {
-		t.Fatalf("v31 rejected connector-defined kind: %v", err)
-	}
-	if _, err := db.Exec(`DELETE FROM collection_sources WHERE id=?`, source.ID); err != nil {
-		t.Fatal(err)
-	}
-	deletedCheckpoint, err := GetCollectionCheckpoint(db, source.ID)
-	if err != nil || deletedCheckpoint.CursorTime != 0 || deletedCheckpoint.Cursor != "" {
-		t.Fatalf("checkpoint cascade was not restored: checkpoint=%+v err=%v", deletedCheckpoint, err)
-	}
-}
-
-// TestMigrateV34ToV35DropsLaneAndFeaturePath is the only test that reaches the
-// DROP COLUMN itself. Every other migration test starts from the fresh schema,
-// where these two columns no longer exist, so migrateV34ToV35 finds nothing to
-// drop and skips — the statement would first run for real against a live
-// database, which is the one place it cannot be taken back.
-func TestMigrateV34ToV35DropsLaneAndFeaturePath(t *testing.T) {
-	db := openTempDB(t)
-	// Simulate v34: put the two columns back and fill them the way v34 did.
-	statements := []string{
-		`ALTER TABLE todos ADD COLUMN lane TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE todos ADD COLUMN feature_path TEXT`,
-		`INSERT INTO todos (id,position,title,priority,status,created,lane,feature_path)
-			VALUES ('t1',0,'Filed while lanes existed','P1','open','2026-07-01','work','app/macos')`,
-		`UPDATE schema_version SET version = 34`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("simulate v34 (%s): %v", statement, err)
-		}
-	}
-
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v34→v35: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	var remaining int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('todos')
-		WHERE name IN ('lane','feature_path')`).Scan(&remaining); err != nil {
-		t.Fatal(err)
-	}
-	if remaining != 0 {
-		t.Fatalf("%d of the dropped columns are still on todos", remaining)
-	}
-	// Dropping a column must not cost the row it was on: the lane label goes, the
-	// todo it labelled stays.
-	var title string
-	if err := db.QueryRow(`SELECT title FROM todos WHERE id='t1'`).Scan(&title); err != nil {
-		t.Fatalf("todo did not survive the migration: %v", err)
-	}
-	if title != "Filed while lanes existed" {
-		t.Fatalf("title = %q", title)
-	}
-	// The rest of the row has to survive too, and a Todo is read through the
-	// loader rather than the raw column list.
-	todos, err := LoadTodosReadOnly()
-	if err != nil {
-		t.Fatalf("load todos after migration: %v", err)
-	}
-	if todo := FindTodo(todos, "t1"); todo == nil || todo.Status != TodoStatusOpen {
-		t.Fatalf("migrated todo = %+v", todo)
-	}
-}
-
-func TestMigrateV50ToV51CollapsesLifecycleAndArchivesDropped(t *testing.T) {
-	db := openTempDB(t)
-	for _, statement := range []string{
-		`INSERT INTO todos (id,position,title,priority,status,created,wake_condition,review_at)
-			VALUES ('t1',0,'External wait','P1','waiting','2026-08-20','release ships','2026-09-01')`,
-		`INSERT INTO todos (id,position,title,priority,status,created,wake_condition)
-			VALUES ('t2',1,'Parked','P1','waiting','2026-08-20','暂不处理')`,
-		`INSERT INTO todos (id,position,title,priority,status,created,wake_condition)
-			VALUES ('t3',2,'Blocked','P1','blocked','2026-08-20','needs access')`,
-		`INSERT INTO todos (id,position,title,priority,status,created,closed,closed_reason,done_ts)
-			VALUES ('t4',3,'Discarded','P1','dropped','2026-08-20','2026-08-20','obsolete',1)`,
-		`UPDATE schema_version SET version=50`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("simulate v50 (%s): %v", statement, err)
-		}
-	}
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v50→v51: %v", err)
-	}
-	todos, err := LoadTodosReadOnly()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if todo := FindTodo(todos, "t1"); todo == nil || todo.Status != TodoStatusInProgress || todo.WakeCondition != "release ships" {
-		t.Fatalf("external wait = %+v", todo)
-	}
-	if todo := FindTodo(todos, "t2"); todo == nil || todo.Status != TodoStatusOpen || todo.WakeCondition != "" {
-		t.Fatalf("parked wait = %+v", todo)
-	}
-	if todo := FindTodo(todos, "t3"); todo == nil || todo.Status != TodoStatusInProgress || todo.WakeCondition != "needs access" {
-		t.Fatalf("blocked = %+v", todo)
-	}
-	if status, archived := ArchivedStatus(todos, "t4"); !archived || status != TodoStatusOpen {
-		t.Fatalf("dropped archive = status %q archived %v", status, archived)
-	}
-}
-
-// v52 removes the background-dispatch subsystem. The two migrations this
-// replaces asserted that v37 added the dispatch columns and that v38 let a run
-// record an interrupted outcome; both described a feature that no longer exists,
-// and their end-state assertions became false the moment v52 dropped it. What is
-// still worth pinning is the property every destructive migration has to have:
-// the columns and the table go, and the records they hung off survive.
-func TestMigrateV51ToV52DropsBackgroundDispatch(t *testing.T) {
-	db := openTempDB(t)
-	// Simulate v51: put the dispatch columns and task_runs back, then fill them
-	// the way a database that had actually dispatched an Agent would be.
-	statements := []string{
-		`ALTER TABLE collection_sources
-			ADD COLUMN auto_dispatch INTEGER NOT NULL DEFAULT 0 CHECK (auto_dispatch IN (0,1))`,
-		`ALTER TABLE collection_items
-			ADD COLUMN dispatch_status TEXT NOT NULL DEFAULT ''
-			CHECK (dispatch_status IN ('','pending','dispatched','failed'))`,
-		`ALTER TABLE collection_items ADD COLUMN dispatch_error TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE todo_plan_revisions ADD COLUMN run_id TEXT NOT NULL DEFAULT ''`,
-		`CREATE TABLE task_runs (
-			id         TEXT PRIMARY KEY,
-			todo_id    TEXT NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
-			agent      TEXT NOT NULL,
-			project    TEXT NOT NULL DEFAULT '',
-			work_dir   TEXT NOT NULL,
-			prompt     TEXT NOT NULL DEFAULT '',
-			policy     TEXT NOT NULL CHECK (policy IN ('guarded','trusted')),
-			log_path   TEXT NOT NULL,
-			status     TEXT NOT NULL CHECK (status IN ('starting','running','completed','failed','interrupted')),
-			pid        INTEGER NOT NULL DEFAULT 0,
-			start_ts   INTEGER NOT NULL,
-			end_ts     INTEGER,
-			exit_code  INTEGER,
-			message    TEXT NOT NULL DEFAULT '',
-			session_id TEXT,
-			resume_session_id TEXT
-		)`,
-		`INSERT INTO todos (id,position,title,priority,status,created)
-			VALUES ('t1',0,'Dispatched while runs existed','P1','in_progress','2026-08-10')`,
-		`INSERT INTO task_runs (id,todo_id,agent,work_dir,policy,log_path,status,start_ts)
-			VALUES ('run-1','t1','codex','/tmp','guarded','/tmp/run.log','running',1)`,
-		`UPDATE schema_version SET version = 51`,
-	}
-	for _, statement := range statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("simulate v51 (%s): %v", statement, err)
-		}
-	}
-
-	if err := migrate(db); err != nil {
-		t.Fatalf("migrate v51→v52: %v", err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	var tables int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master
-		WHERE type='table' AND name='task_runs'`).Scan(&tables); err != nil {
-		t.Fatal(err)
-	}
-	if tables != 0 {
-		t.Fatal("task_runs survived the migration")
-	}
-	for _, column := range []struct{ table, name string }{
-		{"collection_sources", "auto_dispatch"},
-		{"collection_items", "dispatch_status"},
-		{"collection_items", "dispatch_error"},
-		{"todo_plan_revisions", "run_id"},
-	} {
-		var remaining int
-		if err := db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM pragma_table_info('%s')
-			WHERE name='%s'`, column.table, column.name)).Scan(&remaining); err != nil {
-			t.Fatal(err)
-		}
-		if remaining != 0 {
-			t.Fatalf("%s.%s is still there", column.table, column.name)
-		}
-	}
-	// Dropping the run must not cost the Todo it ran against: run rows were
-	// execution evidence beside the lifecycle, never the record of the work.
-	todos, err := LoadTodosReadOnly()
-	if err != nil {
-		t.Fatalf("load todos after migration: %v", err)
-	}
-	if todo := FindTodo(todos, "t1"); todo == nil ||
-		todo.Title != "Dispatched while runs existed" ||
-		todo.Status != TodoStatusInProgress {
-		t.Fatalf("migrated todo = %+v", todo)
 	}
 }

@@ -18,7 +18,7 @@ type Service struct{}
 
 var Default Service
 
-// Settings is every effective setting the desktop app reads, after config file
+// Settings is every effective setting the browser workspace reads, after config file
 // and environment overrides have been applied.
 //
 // TextModelAPIKeyConfigured is a fact about the credential rather than a
@@ -64,7 +64,7 @@ type settingDefinition struct {
 
 // settingDefinitions is the single registry for readable and writable settings.
 // It belongs to the application service rather than either transport so CLI and
-// IPC cannot disagree about accepted values.
+// adapters cannot disagree about accepted values.
 var settingDefinitions = map[string]settingDefinition{
 	"owner_name":                        stringSetting(parseNonEmptyStringValue),
 	"grok_live_quota":                   boolSetting(),

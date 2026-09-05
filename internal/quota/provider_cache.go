@@ -23,14 +23,14 @@ const (
 	// Long enough to cover a gap in any provider's data, short enough that a
 	// provider left in config but abandoned stops haunting the grid.
 	providerCacheTTL = 7 * 24 * time.Hour
-	// `atm quota` runs on the App's one-minute refresh timer, so rewriting an
+	// The server refreshes quota on a timer, so rewriting an
 	// identical file on every tick is pure churn. The freshness stamp therefore
 	// advances at most this often — coarse against the TTL, which is all that
 	// reads it.
 	providerCacheStampInterval = time.Hour
 )
 
-// Why a card has no reading. The App turns these into its own wording.
+// Why a card has no reading. The browser turns these into its own wording.
 const (
 	ProviderReasonEmpty = "empty"
 	ProviderReasonError = "error"
@@ -74,7 +74,7 @@ func loadProviderCache() providerCache {
 		cache.Providers = map[string]providerCacheEntry{}
 	}
 	for providerID, entry := range cache.Providers {
-		// A card read back from disk reaches the App on the same path as one a
+		// A card read back from disk reaches the browser on the same path as one a
 		// provider just sent, so it passes the same validation.
 		if !providerToken.MatchString(providerID) ||
 			normalizeProviderCards(providerID, entry.Cards) != nil ||

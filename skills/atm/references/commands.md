@@ -7,8 +7,7 @@
 ```bash
 atm now --json
 atm session status --json
-atm session list --days 7 --json             # latest activity first; default page is 200
-atm session list --days 7 --json --envelope  # schema + total/returned/offset/limit
+atm session list --days 7 --json             # latest activity first; page defaults to 200 and includes schema/pagination metadata
 atm session list --days 7 --project <repo> --json
 atm session list --since <RFC3339-or-date> --review pending --json
 atm session search <keyword> --json
@@ -25,7 +24,6 @@ atm session tools --failed --days 7 --json       # ATM CLI failures plus the fil
 atm session tools <session-id> --json             # one Agent session's content-free CLI invocations
 atm session export --days 7 --format json
 atm session export --since 2026-08-01 --until 2026-09-01 --project <repo> --role user --query <text> --limit 500 --offset 0 --format jsonl
-atm session export --days 7 --format json --envelope
 atm session review <session-id> --outcome none|memory|knowledge|mixed --note "<result>" --json
 ```
 
@@ -111,28 +109,26 @@ atm todo done <id> --reason "<acceptance evidence>" # human only；首次完成�
 atm todo edit <id> --wake "<condition>" # waiting 仅是 in_progress 的显示样式
 atm todo edit <id> --review-at YYYY-MM-DD
 atm todo edit <id> --maintenance-limit 3    # 范围标签；0 清除
-atm todo edit <id> --priority P1 --status open
+atm todo edit <id> --status open             # dedicated lifecycle path; do not mix with metadata edits
 atm todo edit <id> --project <repo>
 atm todo archive <id>...                    # archive any phase; reversible, no confirmation
 atm todo list --status archived --json      # inspect the archive
 atm todo restore <id>...                    # restore the original lifecycle state
-# compatibility aliases: drop/trash -> archive; unarchive -> restore
 atm todo depend add <id> <dependency-id>   # open stays backlog; started work gets waiting style
 atm todo depend remove <id> <dependency-id>
 atm todo depend list <id> --json
-atm todo wake <id> --reason "<observable event>" # compatibility: clear waiting metadata
-atm todo reconcile --json
+atm todo edit <id> --wake "" --review-at "" # clear a manually managed external wait
 atm todo bulk done <id>... --reason "<acceptance evidence>" # human only；同样拒绝空泛完成原因
 atm todo bulk move <id>... --project <repo>
 ```
 
-会话绑定后，`log/show/doc/lint/submit` 都可省略 `<id>`；人的 `done` 也支持省略或写 `current`。隐藏的兼容别名 `wait/drop` 同样支持省略。`submit`、`done`、`archive` 和设置等待元数据会自动解绑并保留绑定历史。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
+会话绑定后，`log/show/doc/lint/submit` 都可省略 `<id>`；人的 `done` 也支持省略或写 `current`。`submit`、`done` 和 `archive` 会关闭活动绑定并保留历史；设置 `--wake` 或 `--review-at` 保持当前绑定。SessionStart hook 应使用 `atm todo match --prompt --limit 3`，不要注入完整 `atm now --json`。
 
 `match` 的两种用途不可互换。`--prompt` 服务启动注入，总是返回 `--limit` 条候选（同项目本身加 100 分），所以它答不了「该不该新建」。查重用 `--dedup`：跨项目搜索、要求 `query_score` 达到下限（默认 30，可用 `--min-query-score` 调整）、无匹配时明确输出「可以新建」，且忽略当前会话绑定。`--json` 同时给出 `duplicate` 布尔和每条候选的 `query_score`（query 自身得分，不含项目/状态/优先级加成）。
 
-非 JSON 模式下，单条 `atm todo add` 会把新 ID 单独写到 stdout，并把可读的 `Created <id>: <title>` 提示写到 stderr，脚本可直接使用 `id=$(atm todo add ...)`。`--refine` 是显式的：命令行添加默认不调用模型，避免拖慢 Agent 建卡和 `id=$(...)`。桌面上优化是 Todo 详情页动作栏的按钮，弹窗里可以写一句本次要求（对应 `todo refine --hint`）；只有打开 `todo_refine_on_add`（默认 false）时桌面添加才会自动 `todo refine`。不带 `--hint` 重跑一张已经结构化的卡通常回 `already clear`，`--json` 里 `changed` 为 false。`todo refine` 是一次 ATM 内置 DeepSeek 文本服务的 schema 调用（App 在“设置 → 模型”把 Key 保存到权限为 `0600` 的 `~/.atm/credentials.json`；`DEEPSEEK_API_KEY` 可临时覆盖），不是 Agent 循环；`in_progress` 只润色不拆分。普通移出工作集使用无确认、可恢复的 `atm todo archive`，再用 `atm todo restore` 恢复；`trash/drop` 与 `unarchive` 仅保留为隐藏的兼容别名，不再出现在 `--help` 里。`atm todo delete` 是永久删除并要求确认，非交互调用必须显式传 `-y/--yes`。默认不要永久删除。`atm todo handoff --copy` 只输出并复制那行指针，不打开任何窗口，可以随时调用。创建固定为 `open`：`add` 不接受 `--status`/`--wake`，开始和提交验收走 `todo start` / `todo submit`。
+非 JSON 模式下，单条 `atm todo add` 会把新 ID 单独写到 stdout，并把可读的 `Created <id>: <title>` 提示写到 stderr，脚本可直接使用 `id=$(atm todo add ...)`。`--refine` 是显式的：命令行添加默认不调用模型，避免拖慢 Agent 建卡和 `id=$(...)`。Web 中优化是 Todo 详情页动作栏的按钮，弹窗里可以写一句本次要求（对应 `todo refine --hint`）；只有打开 `todo_refine_on_add`（默认 false）时页面添加才会自动 `todo refine`。不带 `--hint` 重跑一张已经结构化的卡通常回 `already clear`，`--json` 里 `changed` 为 false。`todo refine` 是一次 ATM 内置 DeepSeek 文本服务的 schema 调用（Web 在“设置 → 模型”把 Key 保存到权限为 `0600` 的 `~/.atm/credentials.json`；`DEEPSEEK_API_KEY` 可临时覆盖），不是 Agent 循环；`in_progress` 只润色不拆分。普通移出工作集使用无确认、可恢复的 `atm todo archive`，再用 `atm todo restore` 恢复。`atm todo delete` 是永久删除并要求确认，非交互调用必须显式传 `-y/--yes`。默认不要永久删除。`atm todo handoff --copy` 只输出并复制那行指针，不打开任何窗口，可以随时调用。创建固定为 `open`：`add` 不接受 `--status`/`--wake`，开始和提交验收走 `todo start` / `todo submit`。
 
-`--image` 会先校验文件扩展名、实际内容、10 MB 单文件上限和 10 张总数，再复制到 `~/.atm/todos/assets/<todo-id>/`；数据库只保存关联元数据和受管文件名。`todo show/list --json` 的 Todo 对象通过 `images` 返回原文件名、绝对读取路径、媒体类型和字节数；桌面 App 从自己的 typed snapshot 读取同一字段。归档保留图片，永久删除 Todo 才删除资源目录。桌面新建任务同时支持文件选择、拖拽和粘贴截图，详情页点击缩略图打开 Quick Look。
+`--image` 会先校验文件扩展名、实际内容、10 MB 单文件上限和 10 张总数，再复制到 `~/.atm/todos/assets/<todo-id>/`；数据库只保存关联元数据和受管文件名。`todo show/list --json` 的 Todo 对象通过 `images` 返回原文件名、绝对读取路径、媒体类型和字节数；Web 通过授权附件接口读取。归档保留图片，永久删除 Todo 才删除资源目录。Web 新建任务同时支持文件选择、拖拽和粘贴截图。
 
 `creator` 记录「谁建的」，与自由文本 `source`（为什么/从哪来）正交，取值只有 `me`、`collect` 和 agent 名。创建时自动判定：环境里有 agent session 就记该 agent，否则记 `me`；连接器收集记 `collect`。环境探测不到自己的 agent（例如 CLI 不导出 session ID）时用 `--creator <agent>` 显式声明，不要让它落成 `me`。展示时 `me` 会渲染成 `atm config set owner_name <昵称>` 配置的昵称（未配置为「我」），存储值始终是 `me`。creator 字段是 v33 新增的，之前创建的 todo 保持为空，不做回填。
 

@@ -19,17 +19,14 @@ var eventDomains = map[string]bool{"todos": true, "sessions": true, "usage": tru
 type changeEvent struct {
 	Sequence uint64
 	Kind     string
-	Domains  []string
 }
 type eventSubscriber struct {
-	domains map[string]bool
-	queue   chan changeEvent
+	queue chan changeEvent
 }
 type eventBroker struct {
 	mu       sync.Mutex
 	instance string
 	sequence uint64
-	history  []changeEvent
 	subs     map[*eventSubscriber]bool
 	done     chan struct{}
 	closed   bool
@@ -51,49 +48,24 @@ func (b *eventBroker) close() {
 		delete(b.subs, s)
 	}
 }
-func (s *eventSubscriber) matches(e changeEvent) bool {
-	for _, d := range e.Domains {
-		if s.domains[d] {
-			return true
-		}
-	}
-	return e.Kind == "reset"
-}
-func (b *eventBroker) publish(domains []string) {
+
+// publish coalesces every workspace change into a reset. The browser already
+// knows which queries are visible on its route, so reproducing that dependency
+// graph in Go made missed invalidations much more likely than an extra refetch.
+func (b *eventBroker) publish() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.closed {
 		return
 	}
-	set := map[string]bool{}
-	for _, d := range domains {
-		if eventDomains[d] {
-			set[d] = true
-		}
-	}
-	domains = nil
-	for d := range set {
-		domains = append(domains, d)
-	}
-	sort.Strings(domains)
-	if len(domains) == 0 {
-		return
-	}
 	b.sequence++
-	e := changeEvent{Sequence: b.sequence, Kind: "resource.changed", Domains: domains}
-	b.history = append(b.history, e)
-	if len(b.history) > 128 {
-		b.history = append([]changeEvent(nil), b.history[len(b.history)-128:]...)
-	}
+	e := changeEvent{Sequence: b.sequence, Kind: "reset"}
 	for s := range b.subs {
-		if !s.matches(e) {
-			continue
-		}
 		select {
 		case s.queue <- e:
 		default:
-			close(s.queue)
-			delete(b.subs, s)
+			// A reset supersedes every earlier reset, so a pending notification is
+			// sufficient even when a browser tab is temporarily slow.
 		}
 	}
 }
@@ -103,27 +75,14 @@ func (b *eventBroker) subscribe(domains []string, last string) (*eventSubscriber
 	if b.closed || len(b.subs) >= 32 {
 		return nil, nil
 	}
-	s := &eventSubscriber{domains: map[string]bool{}, queue: make(chan changeEvent, 16)}
-	for _, d := range domains {
-		s.domains[d] = true
-	}
+	s := &eventSubscriber{queue: make(chan changeEvent, 1)}
 	b.subs[s] = true
 	prefix := b.instance + ":"
 	seq, err := strconv.ParseUint(strings.TrimPrefix(last, prefix), 10, 64)
-	reset := !strings.HasPrefix(last, prefix) || err != nil || seq > b.sequence
-	if len(b.history) > 0 && seq+1 < b.history[0].Sequence {
-		reset = true
+	if !strings.HasPrefix(last, prefix) || err != nil || seq != b.sequence {
+		return s, []changeEvent{{Sequence: b.sequence, Kind: "reset"}}
 	}
-	if reset {
-		return s, []changeEvent{{Sequence: b.sequence, Kind: "reset", Domains: domains}}
-	}
-	var initial []changeEvent
-	for _, e := range b.history {
-		if e.Sequence > seq && s.matches(e) {
-			initial = append(initial, e)
-		}
-	}
-	return s, initial
+	return s, nil
 }
 func (b *eventBroker) unsubscribe(s *eventSubscriber) {
 	b.mu.Lock()
@@ -133,17 +92,15 @@ func (b *eventBroker) unsubscribe(s *eventSubscriber) {
 		close(s.queue)
 	}
 }
-func (b *eventBroker) domains() []string {
+func (b *eventBroker) hasSubscribers() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	set := map[string]bool{}
-	for s := range b.subs {
-		for d := range s.domains {
-			set[d] = true
-		}
-	}
-	var result []string
-	for d := range set {
+	return len(b.subs) > 0
+}
+
+func allEventDomains() []string {
+	result := make([]string, 0, len(eventDomains))
+	for d := range eventDomains {
 		result = append(result, d)
 	}
 	sort.Strings(result)
@@ -158,11 +115,16 @@ func (server *Server) Invalidate(domains ...string) {
 	// not emit the same change again two seconds later. Failure is harmless: the
 	// poller will conservatively publish a second event.
 	if server.options.Fingerprints != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-		_, _ = server.refreshFingerprintChanges(ctx, domains)
-		cancel()
+		if len(domains) == 0 && server.events.hasSubscribers() {
+			domains = allEventDomains()
+		}
+		if len(domains) > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			_, _ = server.refreshFingerprintChanges(ctx, domains)
+			cancel()
+		}
 	}
-	server.events.publish(domains)
+	server.events.publish()
 }
 
 func (server *Server) refreshFingerprintChanges(ctx context.Context, domains []string) ([]string, error) {
@@ -188,6 +150,23 @@ func (server *Server) refreshFingerprintChanges(ctx context.Context, domains []s
 	}
 	return changed, nil
 }
+
+func (server *Server) pollFingerprintChanges(ctx context.Context) error {
+	if server.events == nil || !server.events.hasSubscribers() {
+		return nil
+	}
+	changed, err := server.refreshFingerprintChanges(ctx, allEventDomains())
+	if err != nil {
+		return err
+	}
+	if len(changed) > 0 {
+		// Publish directly: calling Invalidate would re-read the fingerprints
+		// that this scan just established.
+		server.events.publish()
+	}
+	return nil
+}
+
 func (server *Server) watchChanges() {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -197,19 +176,15 @@ func (server *Server) watchChanges() {
 			return
 		case <-ticker.C:
 		}
-		domains := server.events.domains()
-		if len(domains) == 0 {
+		if !server.events.hasSubscribers() {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-		changed, err := server.refreshFingerprintChanges(ctx, domains)
+		err := server.pollFingerprintChanges(ctx)
 		cancel()
 		if err != nil {
 			continue
 		}
-		// Publish directly: calling Invalidate would re-read the fingerprints that
-		// this scan just established.
-		server.events.publish(changed)
 	}
 }
 func (server *Server) serveEvents(w http.ResponseWriter, r *http.Request, session browserSession) {
@@ -255,7 +230,7 @@ func (server *Server) serveEvents(w http.ResponseWriter, r *http.Request, sessio
 	write := func(e changeEvent) error {
 		_ = control.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		defer control.SetWriteDeadline(time.Time{})
-		data, _ := json.Marshal(map[string]any{"domains": e.Domains})
+		data, _ := json.Marshal(struct{}{})
 		if _, err := fmt.Fprintf(w, "id: %s:%d\nevent: %s\ndata: %s\n\n", server.info.InstanceID, e.Sequence, e.Kind, data); err != nil {
 			return err
 		}
@@ -276,7 +251,7 @@ func (server *Server) serveEvents(w http.ResponseWriter, r *http.Request, sessio
 	_ = control.SetWriteDeadline(time.Time{})
 	heartbeat := time.NewTicker(20 * time.Second)
 	defer heartbeat.Stop()
-	expire := time.NewTimer(time.Until(session.expires))
+	expire := time.NewTimer(time.Until(session.expiresAt))
 	defer expire.Stop()
 	for {
 		select {

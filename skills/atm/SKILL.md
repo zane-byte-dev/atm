@@ -45,9 +45,9 @@ TODO 只使用四个生命周期状态：
 - `review`：等待人审阅、验收或决策。
 - `done`：已完成。
 
-`waiting` 不是状态：`in_progress` 带 `wake_condition` 或 `review_at` 时，App
-仅把它显示成橙色“等待中”，仍留在工作中分组。`blocked` 合并为这种表达；不再用“暂不处理”
-制造等待状态。暂时不做的事项回到 `open`。任何阶段都可归档，归档不是生命周期状态。
+`waiting` 不是状态：`in_progress` 带 `wake_condition` 或 `review_at` 时，界面
+仅把它显示成橙色“等待中”，仍留在工作中分组。暂时不做的事项回到 `open`。任何阶段都可归档，
+归档不是生命周期状态。
 
 `maintenance` 是范围标签，不是状态；使用 `atm todo edit <id> --maintenance-limit <n>` 设置（0 清除）。
 
@@ -147,8 +147,8 @@ ATM 不代为启动任何会话。收到这样一行指针时，按它列出的�
 任务依赖另一个 ATM todo 时，使用 `atm todo depend add <id> <dependency-id>` 保存结构化关系，
 不要只把 `tNN` 写进自由文本 wake condition。未开始的依赖任务仍是 `open`，依赖满足前不能 start/bind；
 已开始的任务保留 `in_progress`，仅显示等待样式，依赖完成后清除该样式。依赖就绪不表示实现已提交 review。
-完成实现后用 `atm todo submit` 显式提交确认；旧集成可用 `wake` 清除等待元数据，异常恢复时可运行
-`atm todo reconcile`。
+完成实现后用 `atm todo submit` 显式提交确认。人工外部等待用 `todo edit --wake` 或
+`--review-at` 管理；依赖满足后 ATM 自动清除派生的等待条件。
 
 重复执行同一 `depend add` 是幂等的；派生的 `waiting for todos: ...` 会按完整依赖集合刷新。
 Todo 离开 `in_progress` 时 ATM 会先关闭 binding 再保存新状态。需要审计迁移时读取
@@ -169,7 +169,7 @@ Todo 离开 `in_progress` 时 ATM 会先关闭 binding 再保存新状态。需�
 atm todo log "结果：<交付变化>；证据：<验证边界>；下一步：<唯一动作>"
 ```
 
-会话已绑定时，`log/show/doc/lint/submit/done` 均可省略 ID；显式 ID 仍兼容。隐藏的兼容别名 `wait/drop` 同样支持省略。
+会话已绑定时，`log/show/doc/lint/submit/done` 均可省略 ID，也可以显式指定 ID。
 
 进展日志必须遵守：
 
@@ -211,8 +211,7 @@ atm todo edit <id> --wake "<可观察的唤醒条件>"
 主线、优先级、状态或维护范围发生变化时，使用 `start`、`edit --status open` 或 `edit --maintenance-limit`。`edit --status` 不代替 `start`、`submit` 或人的 `done`。不要只在回复里描述状态变化而不更新 ATM。
 
 普通移出工作集使用无确认、可恢复的 `atm todo archive`，需要时以 `atm todo restore` 取回。
-`trash/drop` 是 archive 的兼容别名，`unarchive` 是 restore 的兼容别名。永久删除只针对已归档数据，
-且是破坏性操作；除非用户明确要求删除错误数据，否则优先归档或完成。
+永久删除只针对已归档数据，且是破坏性操作；除非用户明确要求删除错误数据，否则优先归档或完成。
 
 ## 4. 在 ATM 任务中执行代码 Review
 

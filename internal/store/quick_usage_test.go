@@ -76,7 +76,7 @@ func TestReadQuickUsageSummaryCountsCrossDaySessionOnceAndMatchesDayStats(t *tes
 	want.Sessions = len(listed)
 	for _, day := range days {
 		want.Queries += day.Queries
-		want.InputTokens += day.InputTokens
+		want.InputTokens += day.TotalInputTokens
 		want.OutputTokens += day.OutputTokens
 		want.CacheReadTokens += day.CacheReadTokens
 		want.CostUSD += day.CostUSD
@@ -154,7 +154,7 @@ func TestReadQuickUsageSummaryUsesAggregateFallbackAndEventTimeBounds(t *testing
 	var cost float64
 	for _, day := range days {
 		queries += day.Queries
-		input += day.InputTokens
+		input += day.TotalInputTokens
 		output += day.OutputTokens
 		cacheRead += day.CacheReadTokens
 		cost += day.CostUSD

@@ -65,7 +65,7 @@ func TestCallQuotaProviderNormalizesCardsAndComputesPercent(t *testing.T) {
 	}
 }
 
-// The App opens this URL in the browser, so a scheme it should never launch has
+// The browser opens this URL, so a scheme it should never launch has
 // to be refused before it reaches either the card or the on-disk cache.
 func TestCallQuotaProviderRejectsANonHTTPCardURL(t *testing.T) {
 	t.Setenv("GO_WANT_QUOTA_PROVIDER_HELPER", "1")

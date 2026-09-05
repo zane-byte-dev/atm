@@ -38,7 +38,7 @@ func TestCollectionSourceMuteOnlySilencesNotifications(t *testing.T) {
 		t.Fatalf("mute must not pause collection: %+v", muted)
 	}
 
-	// The App's save path is `collect source add`, so an edit reaches the same
+	// The browser's save path is `collect source add`, so an edit reaches the same
 	// upsert. If it carried muted through excluded.muted, changing an interval
 	// would put a silenced group back into the notifications.
 	edited, err := UpsertCollectionSource(db, CollectionSource{
@@ -87,59 +87,5 @@ func TestCollectionSourceMuteOnlySilencesNotifications(t *testing.T) {
 	}
 	if err := SetCollectionSourceMuted(db, "cs_missing", true); err == nil {
 		t.Fatal("muting an unknown source must report not found")
-	}
-}
-
-// An upgraded database must behave exactly as it did before the column existed:
-// every source it already had keeps notifying.
-func TestMigrateV45ToV46LeavesExistingSourcesNotifying(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-legacy",
-		Name: "老来源", Priority: "P2", Enabled: true,
-	}); err != nil {
-		t.Fatalf("seed source: %v", err)
-	}
-	// SQLite cannot drop a column inside this schema, so the pre-v46 shape is
-	// rebuilt as the migration will find it: rows present, column absent.
-	if _, err := db.Exec(`ALTER TABLE collection_sources DROP COLUMN muted`); err != nil {
-		t.Fatalf("drop muted column: %v", err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version = 45`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err = Open()
-	if err != nil {
-		t.Fatalf("migrate v45 forward: %v", err)
-	}
-	defer db.Close()
-
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion {
-		t.Fatalf("version = %d, want %d", version, SchemaVersion)
-	}
-	sources, err := ListCollectionSources(db, "", false)
-	if err != nil {
-		t.Fatalf("list sources: %v", err)
-	}
-	if len(sources) != 1 {
-		t.Fatalf("sources = %d, want 1", len(sources))
-	}
-	if sources[0].Muted {
-		t.Fatalf("migration muted an existing source: %+v", sources[0])
-	}
-	if err := SetCollectionSourceMuted(db, sources[0].ID, true); err != nil {
-		t.Fatalf("mute against migrated table: %v", err)
 	}
 }

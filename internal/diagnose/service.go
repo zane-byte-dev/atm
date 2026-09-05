@@ -14,7 +14,6 @@ import (
 
 	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
-	"github.com/zane-byte-dev/atm/internal/contract"
 	doctorapp "github.com/zane-byte-dev/atm/internal/doctor"
 	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/store"
@@ -79,9 +78,9 @@ func NewService(options ServiceOptions) Service {
 
 // Report collects everything the bundle carries.
 //
-// Nothing here fails on a broken install: an unreadable database, an
-// uninspectable app bundle, and a failing self-check all become fields, because
-// a broken install is exactly what this is for.
+// Nothing here fails on a broken install: an unreadable database and a failing
+// self-check both become fields, because a broken install is exactly what this
+// is for.
 func (service Service) Report(
 	ctx context.Context,
 	call application.Call,
@@ -112,7 +111,6 @@ func (service Service) Report(
 			GoVersion: runtime.Version(),
 			CPUs:      runtime.NumCPU(),
 		},
-		App:  inspectApp(),
 		Logs: collectLogs(),
 		Redaction: []string{
 			"paths under $HOME are rewritten to ~",
@@ -236,32 +234,25 @@ func (service Service) defaultBundleName() string {
 }
 
 func collectLogs() map[string]Log {
-	out := map[string]Log{}
-	for name, path := range map[string]string{
-		"cli": logging.Path(),
-		"app": filepath.Join(logging.Dir(), "app.log"),
-	} {
-		entry := Log{Path: path}
-		if _, err := os.Stat(path); err == nil {
-			entry.Exists = true
-		}
-		lines, err := logging.Tail(path, logTailLines)
-		if err != nil {
-			entry.Lines = []string{fmt.Sprintf("could not read log: %v", err)}
-			out[name] = entry
-			continue
-		}
-		// Empty rather than null: a consumer reading this bundle should not have to
-		// distinguish "no failures logged" from "field missing".
-		entry.Lines = lines
-		if entry.Lines == nil {
-			entry.Lines = []string{}
-		}
-		// Say so rather than let a capped view read as the whole history.
-		entry.Truncated = len(lines) == logTailLines
-		out[name] = entry
+	path := logging.Path()
+	entry := Log{Path: path}
+	if _, err := os.Stat(path); err == nil {
+		entry.Exists = true
 	}
-	return out
+	lines, err := logging.Tail(path, logTailLines)
+	if err != nil {
+		entry.Lines = []string{fmt.Sprintf("could not read log: %v", err)}
+		return map[string]Log{"cli": entry}
+	}
+	// Empty rather than null: a consumer reading this bundle should not have to
+	// distinguish "no failures logged" from "field missing".
+	entry.Lines = lines
+	if entry.Lines == nil {
+		entry.Lines = []string{}
+	}
+	// Say so rather than let a capped view read as the whole history.
+	entry.Truncated = len(lines) == logTailLines
+	return map[string]Log{"cli": entry}
 }
 
 func dataDir() ([]DataEntry, error) {
@@ -291,68 +282,6 @@ func dataDir() ([]DataEntry, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
-}
-
-// appSearchPaths are where an installed ATM.app would be. The bundle reports
-// which were tried, so "app: not found" can be told apart from "app installed
-// somewhere ATM does not look".
-func appSearchPaths() []string {
-	paths := []string{"/Applications/ATM.app"}
-	if config.Home != "" {
-		paths = append(paths, filepath.Join(config.Home, "Applications", "ATM.app"))
-	}
-	if override := strings.TrimSpace(os.Getenv("ATM_APP_PATH")); override != "" {
-		paths = append([]string{override}, paths...)
-	}
-	return paths
-}
-
-func inspectApp() App {
-	app := App{
-		DashboardV:    contract.DashboardSchemaVersion,
-		SearchedPaths: appSearchPaths(),
-	}
-	for _, path := range app.SearchedPaths {
-		plist := filepath.Join(path, "Contents", "Info.plist")
-		data, err := os.ReadFile(plist)
-		if err != nil {
-			continue
-		}
-		app.Found = true
-		app.Path = path
-		app.ShortVersion = plistString(data, "CFBundleShortVersionString")
-		app.BundleVersion = plistString(data, "CFBundleVersion")
-		if app.ShortVersion == "" && app.BundleVersion == "" {
-			// A bundle whose Info.plist is binary rather than XML lands here. Say
-			// so instead of reporting the app as versionless.
-			app.InspectError = "could not read a version from Info.plist (binary plist?)"
-		}
-		return app
-	}
-	return app
-}
-
-// plistString pulls one value out of an XML plist without a plist parser: the
-// only consumer is a version string from a bundle ATM builds itself, and a
-// dependency for two fields is not worth it. A binary plist yields "", which
-// inspectApp reports rather than hides.
-func plistString(data []byte, key string) string {
-	marker := []byte("<key>" + key + "</key>")
-	index := bytes.Index(data, marker)
-	if index < 0 {
-		return ""
-	}
-	rest := data[index+len(marker):]
-	start := bytes.Index(rest, []byte("<string>"))
-	if start < 0 {
-		return ""
-	}
-	rest = rest[start+len("<string>"):]
-	end := bytes.Index(rest, []byte("</string>"))
-	if end < 0 {
-		return ""
-	}
-	return string(rest[:end])
 }
 
 func invalid(field string, value any, message string) *application.Error {

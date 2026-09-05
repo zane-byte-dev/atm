@@ -3,15 +3,17 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>ATM Voice</string>
+	<string>VoxCaret</string>
 	<key>CFBundleExecutable</key>
-	<string>ATMVoice</string>
+	<string>VoxCaret</string>
 	<key>CFBundleIdentifier</key>
-	<string>dev.zanebyte.atm.voice</string>
+	<string>dev.zanebyte.voxcaret</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>ATM Voice</string>
+	<string>VoxCaret</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

@@ -93,7 +93,7 @@ func TestAntigravityQuotaFromJSON(t *testing.T) {
 		t.Fatalf("source = %q", got.Source)
 	}
 	// The Claude/GPT group is deliberately dropped rather than squeezed into
-	// Products: the App renders products as segments of the primary window's own
+	// Products: the browser renders products as segments of the primary window's own
 	// bar, so a separate pool there would draw a false claim. See
 	// antigravityQuotaFromJSON.
 	if len(got.Products) != 0 {

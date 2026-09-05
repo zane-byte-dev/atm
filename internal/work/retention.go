@@ -106,7 +106,7 @@ func (service Service) moveRetention(
 		case RetentionArchive:
 			result.Moved, moveErr = transaction.ArchiveTodos(move)
 		case RetentionRestore:
-			result.Moved, moveErr = transaction.UnarchiveTodos(move)
+			result.Moved, moveErr = transaction.RestoreTodos(move)
 		}
 		return moveErr
 	})
@@ -181,7 +181,7 @@ func (Service) PlanDelete(ctx context.Context, call application.Call, selector D
 }
 
 // Delete permanently removes the exact confirmed plan. The Confirmed boolean
-// is a workflow guard, not proof of human identity: CLI flags and IPC payloads
+// is a workflow guard, not proof of human identity: CLI flags and Web payloads
 // are replayable. Adapters remain responsible for obtaining the confirmation.
 func (service Service) Delete(ctx context.Context, call application.Call, input DeleteInput) (DeleteResult, error) {
 	if err := validateLifecycleCall(ctx, call); err != nil {

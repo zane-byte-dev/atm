@@ -24,16 +24,12 @@ type QuotaSampler interface {
 
 // ServiceOptions are the refresh's clock, persistence, and cross-domain ports.
 type ServiceOptions struct {
-	Now       func() time.Time
-	OpenRead  func() (*sql.DB, error)
-	OpenWrite func() (*sql.DB, error)
-	SyncAll   func(*sql.DB) (int, error)
-	SyncAgent func(*sql.DB, string) (int, error)
-	Sampler   QuotaSampler
-	// Context-aware ports let a runtime stop waiting for another process's job
-	// during shutdown. Legacy ports above remain supported for existing embedders.
+	Now              func() time.Time
+	OpenRead         func() (*sql.DB, error)
+	OpenWrite        func() (*sql.DB, error)
 	SyncAllContext   func(context.Context, *sql.DB) (int, error)
 	SyncAgentContext func(context.Context, *sql.DB, string) (int, error)
+	Sampler          QuotaSampler
 	// IndexExists reports whether the index file is on disk. Separate from
 	// OpenRead because the answer decides whether to open at all, and separate
 	// from a plain bool because "not there yet" and "there but unreadable" are
@@ -68,19 +64,9 @@ func NewService(options ServiceOptions) Service {
 	}
 	if options.SyncAllContext == nil {
 		options.SyncAllContext = store.SyncAllContext
-		if options.SyncAll != nil {
-			options.SyncAllContext = func(_ context.Context, db *sql.DB) (int, error) {
-				return options.SyncAll(db)
-			}
-		}
 	}
 	if options.SyncAgentContext == nil {
 		options.SyncAgentContext = store.SyncAgentContext
-		if options.SyncAgent != nil {
-			options.SyncAgentContext = func(_ context.Context, db *sql.DB, agent string) (int, error) {
-				return options.SyncAgent(db, agent)
-			}
-		}
 	}
 	if options.Sampler == nil {
 		options.Sampler = quota.Default
@@ -105,7 +91,7 @@ func NewService(options ServiceOptions) Service {
 
 // Run refreshes the session index and samples quota history alongside it.
 //
-// Sampling rides on the refresh rather than a timer of its own: the desktop app
+// Sampling rides on the refresh rather than a timer of its own: the workspace
 // already syncs every few minutes, which is resolution enough for an hourly rate.
 func (service Service) Run(
 	ctx context.Context,
@@ -151,7 +137,7 @@ func (service Service) Run(
 
 // sample records quota history. A failure here must not fail the refresh —
 // history is a convenience, the session index is the point — but it must not
-// vanish either: nobody reads stderr when the App runs this on a timer, and
+// vanish either: nobody reads stderr when the server runs this on a timer, and
 // quota history silently never accumulating is exactly the kind of fault that
 // needs a record.
 func (service Service) sample(db *sql.DB) string {

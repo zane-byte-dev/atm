@@ -294,7 +294,7 @@ type antigravityQuotaPayload struct {
 //
 //   - QuotaInfo carries exactly two windowed readings. The remaining field that
 //     could hold more, Products, means something specific to its only consumer:
-//     the App draws products as stacked segments *inside* the primary window's
+//     the browser draws products as stacked segments *inside* the primary window's
 //     bar, scaled so they never exceed it, with the tooltip "占本周额度池 X%".
 //     They are a breakdown of one pool. The Claude/GPT group is a separate pool,
 //     so putting it there would render a claim that is simply false.

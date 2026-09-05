@@ -84,7 +84,7 @@ ATM 已于 2026-08-04 在 `zane-byte-dev/atm` 公开发布，当前适合早期�
 - 为 `atm config init` 增加交互式向导。
 - 为 Copilot 和 Qoder 补齐更多 usage/cost 明细，前提是上游数据源提供可靠字段。
 - 增加 shell completion 安装说明。
-- 增加更多端到端测试，覆盖真实 CLI 输出和迁移升级路径。
+- 增加更多端到端测试，覆盖真实 CLI 输出、当前 schema 基线和不支持版本的拒绝路径。
 
 ## 验证命令
 
@@ -99,7 +99,5 @@ HOME=/tmp/atm-smoke /tmp/atm-check stats --json
 ```
 
 `release-check.sh` 会运行 Go 测试与 vet、带版本注入的 CLI 构建、GoReleaser 全目标交叉编译、
-安装器资产命名检查；在 macOS 上还会让 Swift 测试直接调用刚构建的真实 CLI，验证
-versioned `dashboard` 聚合协议的 JSON 解码、代表性 v4 Todo/Binding/Comment 到 SQLite schema v12
-迁移、旧文件备份保留，以及 CLI 错误在 App 中保留原始原因。期望空数据命令输出有效 JSON，列表字段
-为空时为 `[]`。
+安装器资产命名检查和当前 Web 构建检查；在 macOS 上，原生回归只覆盖独立的 ATM Menu 与 VoxCaret。
+旧 Swift 主工作区不在发布矩阵中，当前 Go 也不保留它的进程协议或命令契约。期望空数据命令输出有效 JSON，列表字段为空时为 `[]`。

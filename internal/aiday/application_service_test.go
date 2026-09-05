@@ -28,7 +28,7 @@ func TestApplicationServiceDashboardSyncsAndAggregates(t *testing.T) {
 			openWriteCalls++
 			return opener()
 		},
-		Sync: func(db *sql.DB) (int, error) {
+		SyncContext: func(_ context.Context, db *sql.DB) (int, error) {
 			syncCalls++
 			serviceMustExec(t, db, `INSERT INTO sessions
 				(id,short_id,agent,project,file_path,created_ts,last_ts)

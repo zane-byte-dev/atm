@@ -17,7 +17,8 @@ While working:
 - When work pauses on an external condition, run `atm todo edit <id> --wake "<observable condition>"` while the todo remains `in_progress`.
 - Use `atm todo start <id>` to begin open work. Reopening review/done requires `--reopen-reason`; binding a review Todo requires the same flag. Use `atm todo edit <id> --status open` to return work to the backlog, and `atm todo edit` for priority, scope, or maintenance metadata.
 
-Bound commands may omit the todo ID. `submit`, `archive`, and waiting metadata automatically unbind the session.
+Bound commands may omit the todo ID. `submit` and `archive` close the active binding; setting `--wake` or
+`--review-at` keeps the current binding.
 
 Control task count:
 

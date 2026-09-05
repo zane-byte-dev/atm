@@ -35,7 +35,7 @@ type HistoryResult struct {
 	Stale    bool          `json:"stale,omitempty"`
 	Error    string        `json:"error,omitempty"`
 	// SyncedFiles belongs to the CLI root --sync presentation and is not part of
-	// the desktop contract.
+	// the browser contract.
 	SyncedFiles int `json:"-"`
 }
 

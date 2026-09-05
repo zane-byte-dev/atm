@@ -44,7 +44,7 @@ func RebuildableTables() []string {
 
 // ReadSchemaVersionAt reports a database file's schema version without opening
 // it through Open, which would migrate it. Backup has to work on exactly the
-// databases Open refuses — one below minUpgradableVersion is the case that needs
+// databases Open refuses — one below MinUpgradableVersion is the case that needs
 // an escape hatch most — so it must never take the migrating path.
 //
 // A file with no schema_version table reports 0 rather than an error: that is
@@ -85,8 +85,8 @@ func ReadSchemaVersionAt(dbPath string) (int, error) {
 	return version, nil
 }
 
-// openNoMigrate opens a database file directly, skipping migrate(). Read-only
-// mode deliberately omits query_only: VACUUM INTO writes only to its
+// openNoMigrate opens a database file directly, skipping schema validation.
+// Read-only mode deliberately omits query_only: VACUUM INTO writes only to its
 // destination, and the pragma would refuse the statement anyway.
 func openNoMigrate(dbPath string, readOnly bool) (*sql.DB, error) {
 	if _, err := os.Stat(dbPath); err != nil {

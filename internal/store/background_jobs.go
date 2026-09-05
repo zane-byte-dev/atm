@@ -27,25 +27,6 @@ const backgroundJobsSchema = `CREATE TABLE IF NOT EXISTS background_jobs (
 	automatic INTEGER NOT NULL DEFAULT 0
 )`
 
-func migrateV55ToV56(db *sql.DB) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, statement := range []string{backgroundJobsSchema,
-		`CREATE INDEX IF NOT EXISTS idx_background_jobs_created ON background_jobs(created_at DESC)`,
-		`UPDATE schema_version SET version = 56`} {
-		if _, err := tx.Exec(statement); err != nil {
-			return err
-		}
-	}
-	if err := InstallWorkspaceChangeTracking(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
-}
-
 func InsertBackgroundJob(ctx context.Context, db *sql.DB, r BackgroundJobRecord) error {
 	_, err := db.ExecContext(ctx, `INSERT INTO background_jobs
 		(id,idempotency_key,payload_hash,kind,status,request_json,result_json,created_at,automatic)

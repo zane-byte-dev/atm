@@ -98,6 +98,15 @@ type statusView struct {
 	Bindings    []sessionBindingContext `json:"bindings"`
 }
 
+// statusSnapshot is the single collected fact set behind both JSON and text
+// output. Keeping process discovery, session retention, process matching, and
+// binding resolution here prevents the two renderers from quietly disagreeing.
+type statusSnapshot struct {
+	View           statusView
+	OtherProcesses []aiProcess
+	GeneratedAt    time.Time
+}
+
 func newStatusSessionView(session parser.Session, pid string) statusSessionView {
 	var cleanTopics []string
 	for _, topic := range session.Topics {
@@ -139,6 +148,14 @@ func newStatusSessionView(session parser.Session, pid string) statusSessionView 
 }
 
 func buildStatusView(agent string) (statusView, error) {
+	snapshot, err := buildStatusSnapshot(agent)
+	if err != nil {
+		return statusView{}, err
+	}
+	return snapshot.View, nil
+}
+
+func buildStatusSnapshot(agent string) (statusSnapshot, error) {
 	procs := findAIProcesses()
 	// Match Ping Island's primary-session retention: activity becomes idle
 	// quickly, but the session remains available for navigation for 30 minutes.
@@ -161,7 +178,7 @@ func buildStatusView(agent string) (statusView, error) {
 	now := time.Now().In(config.Loc)
 	bindingContexts, bindingMatches, err := loadSessionBindingContexts(all)
 	if err != nil {
-		return statusView{}, err
+		return statusSnapshot{}, err
 	}
 	bindingBySession := map[int]*sessionBindingContext{}
 	for bindingIndex, sessionIndex := range bindingMatches {
@@ -196,11 +213,21 @@ func buildStatusView(agent string) (statusView, error) {
 		}
 		sessions = append(sessions, view)
 	}
-	return statusView{
-		GeneratedAt: now.Format(time.RFC3339),
-		Time:        now.Format("15:04:05"),
-		Sessions:    sessions,
-		Bindings:    bindingContexts,
+	otherProcesses := make([]aiProcess, 0, len(procs))
+	for index, process := range procs {
+		if !usedProcs[index] {
+			otherProcesses = append(otherProcesses, process)
+		}
+	}
+	return statusSnapshot{
+		View: statusView{
+			GeneratedAt: now.Format(time.RFC3339),
+			Time:        now.Format("15:04:05"),
+			Sessions:    sessions,
+			Bindings:    bindingContexts,
+		},
+		OtherProcesses: otherProcesses,
+		GeneratedAt:    now,
 	}, nil
 }
 
@@ -299,7 +326,7 @@ func findAIProcesses() []aiProcess {
 		} else if isGrokProcessCommand(cmd) {
 			// Grok Build's CLI process is often just "grok" (or a versioned
 			// download binary under ~/.grok/downloads/). Matching it is what
-			// lets the notch resolve TTY + terminal App for "回到会话".
+			// lets the activity feed resolve TTY + terminal app for "回到会话".
 			name = "grokbuild"
 		}
 		if name == "" {
@@ -381,122 +408,82 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if jsonOutput {
-		view, err := buildStatusView(agent)
-		if err != nil {
-			return err
-		}
-		output.JSON(view)
-		return nil
-	}
-
-	procs := findAIProcesses()
-	maxAge := 10 * time.Minute
-	var all []parser.Session
-	for _, a := range parser.All() {
-		if agent != "" && agent != a.Name() {
-			continue
-		}
-		d := maxAge
-		if a.Name() == "copilot" {
-			d = 5 * time.Minute
-		}
-		all = append(all, a.LiveSessions(d)...)
-	}
-	for index := range all {
-		all[index].Project = config.CanonicalProject(all[index].Project)
-	}
-
-	now := time.Now().In(config.Loc)
-	bindingContexts, bindingMatches, err := loadSessionBindingContexts(all)
+	snapshot, err := buildStatusSnapshot(agent)
 	if err != nil {
 		return err
 	}
-	bindingBySession := map[int]*sessionBindingContext{}
-	for bindingIndex, sessionIndex := range bindingMatches {
-		bindingBySession[sessionIndex] = &bindingContexts[bindingIndex]
-	}
-
-	fmt.Printf("AI Live Status  (%s)\n", now.Format("15:04:05"))
-	fmt.Println(strings.Repeat("=", 60))
-
-	if len(all) == 0 && len(procs) == 0 && len(bindingContexts) == 0 {
-		fmt.Println("\nNo AI activity.")
+	if jsonOutput {
+		output.JSON(snapshot.View)
 		return nil
 	}
+	renderStatusText(snapshot)
+	return nil
+}
 
-	usedProcs := make([]bool, len(procs))
+func renderStatusText(snapshot statusSnapshot) {
+	view := snapshot.View
+	fmt.Printf("AI Live Status  (%s)\n", view.Time)
+	fmt.Println(strings.Repeat("=", 60))
 
-	for sessionIndex, s := range all {
-		agentKey := sessionAgentKey(s.Tool)
-		pid := ""
-		for i, p := range procs {
-			if !usedProcs[i] && p.Name == agentKey {
-				pid = p.PID
-				usedProcs[i] = true
-				break
-			}
-		}
+	if len(view.Sessions) == 0 && len(snapshot.OtherProcesses) == 0 && len(view.Bindings) == 0 {
+		fmt.Println("\nNo AI activity.")
+		return
+	}
 
-		sid := shortSessionID(s.SessionID)
+	for _, session := range view.Sessions {
+		sid := shortSessionID(session.SessionID)
 
 		fmt.Println()
-		fmt.Printf("  %-14s %-16s %s   %s", s.Tool, s.Project, sid, formatAge(s.AgeSeconds))
-		if s.Model != "" {
-			fmt.Printf("   %s", s.Model)
+		fmt.Printf("  %-14s %-16s %s   %s", session.Tool, session.Project, sid, formatAge(session.AgeSeconds))
+		if session.Model != "" {
+			fmt.Printf("   %s", session.Model)
 		}
-		if pid != "" {
-			fmt.Printf("   PID %s", pid)
+		if session.PID != "" {
+			fmt.Printf("   PID %s", session.PID)
 		}
-		if context := bindingBySession[sessionIndex]; context != nil {
-			fmt.Printf("   binding=%s:%s", context.State, context.Binding.TodoID)
+		if session.Binding != nil {
+			fmt.Printf("   binding=%s:%s", session.BindingState, session.Binding.TodoID)
 		}
 		fmt.Println()
-		title := s.Summary
+		title := session.Summary
 		usedFirstQ := false
-		if title == "" && s.FirstQ != "" {
-			title = truncLine(cleanMsg(s.FirstQ), 60)
+		if title == "" && session.FirstQ != "" {
+			title = truncLine(session.FirstQ, 60)
 			usedFirstQ = true
 		}
 		if title != "" {
 			fmt.Printf("    :: %s\n", title)
 		}
-		if q := cleanMsg(s.LastUserMsg); q != "" {
-			if !(usedFirstQ && q == cleanMsg(s.FirstQ)) {
+		if q := session.LastQ; q != "" {
+			if !(usedFirstQ && q == session.FirstQ) {
 				fmt.Printf("    Q: %s\n", truncLine(q, 80))
 			}
 		}
-		if a := cleanMsg(s.LastAssistant); a != "" {
+		if a := session.LastA; a != "" {
 			fmt.Printf("    A: %s\n", truncLine(a, 80))
 		}
-		if len(s.Topics) > 0 {
+		if len(session.Topics) > 0 {
 			fmt.Print("    Topics:")
-			for _, t := range s.Topics {
-				fmt.Printf(" [%s]", truncLine(cleanMsg(t), 40))
+			for _, topic := range session.Topics {
+				fmt.Printf(" [%s]", truncLine(topic, 40))
 			}
 			fmt.Println()
 		}
-		if len(s.RecentTools) > 0 {
-			fmt.Printf("    Tools: %s\n", compactTools(s.RecentTools))
+		if len(session.Tools) > 0 {
+			fmt.Printf("    Tools: %s\n", compactTools(session.Tools))
 		}
 	}
 
-	var unmatched []aiProcess
-	for i, p := range procs {
-		if !usedProcs[i] {
-			unmatched = append(unmatched, p)
-		}
-	}
-	if len(unmatched) > 0 {
-		fmt.Printf("\n  Other AI processes (%d):\n", len(unmatched))
-		for _, p := range unmatched {
-			age := int(now.Sub(p.StartTime).Seconds())
+	if len(snapshot.OtherProcesses) > 0 {
+		fmt.Printf("\n  Other AI processes (%d):\n", len(snapshot.OtherProcesses))
+		for _, p := range snapshot.OtherProcesses {
+			age := int(snapshot.GeneratedAt.Sub(p.StartTime).Seconds())
 			fmt.Printf("    PID %-6s  %s  %s\n", p.PID, p.Name, formatAge(age))
 		}
 	}
 
 	var unobservedBindings []sessionBindingContext
-	for _, context := range bindingContexts {
+	for _, context := range view.Bindings {
 		if !context.Observed {
 			unobservedBindings = append(unobservedBindings, context)
 		}
@@ -508,10 +495,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if len(all) == 0 {
+	if len(view.Sessions) == 0 {
 		fmt.Println("\n  No active sessions.")
 	}
-	return nil
 }
 
 func statusActivityState(ageSeconds int) string {

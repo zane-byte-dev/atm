@@ -136,7 +136,7 @@ func TestServiceCollectionSaveImportAndGovernance(t *testing.T) {
 		t.Fatal(err)
 	}
 	documents, err := service.ImportDocument(context.Background(), ImportDocumentInput{
-		Path: source, Collection: "research", Producer: "atm-desktop",
+		Path: source, Collection: "research", Producer: "atm-browser",
 	})
 	if err != nil || len(documents) != 1 || documents[0].Collection != "research" {
 		t.Fatalf("import = %#v, err = %v", documents, err)

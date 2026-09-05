@@ -9,7 +9,7 @@ import (
 )
 
 // withTodoMarkerLock serializes the marker check and document write across ATM
-// processes. A process-local mutex would still allow the App and a CLI retry to
+// processes. A process-local mutex would still allow the server and a CLI retry to
 // append the same collection side effect concurrently.
 func withTodoMarkerLock(todoID string, run func() error) error {
 	directory := store.TodoDocDir()

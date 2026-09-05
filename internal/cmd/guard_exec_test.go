@@ -545,7 +545,7 @@ func firstPendingApprovalID() string {
 	return approvals[0].ID
 }
 
-// guardSocketRecorder stands in for the app, so a test can assert how many
+// guardSocketRecorder stands in for the presence runtime, so a test can assert how many
 // notifications one decision produced.
 func guardSocketRecorder(t *testing.T) (string, func() []string) {
 	t.Helper()

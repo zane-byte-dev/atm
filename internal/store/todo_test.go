@@ -9,9 +9,8 @@ import (
 	"github.com/zane-byte-dev/atm/internal/config"
 )
 
-// The todo JSON is a contract two codebases read: `atm todo list --json` feeds
-// both shell one-liners and the desktop app's Swift decoder. Keys are snake_case
-// throughout — closedReason used to be the one camelCase straggler sitting next to
+// Todo JSON is consumed by shell one-liners and the browser API. Keys are
+// snake_case throughout — closedReason used to be the one camelCase straggler next to
 // wake_condition, which is the kind of inconsistency that is only ever discovered
 // by a script reading the wrong key and printing nothing.
 func TestTodoJSONKeysAreSnakeCase(t *testing.T) {
@@ -34,7 +33,7 @@ func TestTodoJSONKeysAreSnakeCase(t *testing.T) {
 	}
 	for key := range keyed {
 		if strings.ToLower(key) != key {
-			t.Errorf("key %q is not snake_case; the Swift decoder keys off these names", key)
+			t.Errorf("key %q is not snake_case", key)
 		}
 	}
 	if _, ok := keyed["closed_reason"]; !ok {

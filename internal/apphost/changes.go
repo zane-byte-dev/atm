@@ -23,13 +23,10 @@ const (
 	workspaceContentVerifyEvery = time.Minute
 )
 
-// ChangeTracker keeps one connection for PRAGMA data_version. Comparing values
-// from different pooled connections would miss other-process commits.
 type ChangeTracker struct {
 	mu    sync.Mutex
 	dir   string
 	db    *sql.DB
-	conn  *sql.Conn
 	files map[string]*workspaceHashState
 }
 
@@ -51,10 +48,6 @@ func NewChangeTracker(dataDir string) *ChangeTracker {
 func (tracker *ChangeTracker) Close() {
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
-	if tracker.conn != nil {
-		_ = tracker.conn.Close()
-		tracker.conn = nil
-	}
 	if tracker.db != nil {
 		_ = tracker.db.Close()
 		tracker.db = nil
@@ -66,7 +59,7 @@ func (tracker *ChangeTracker) Fingerprints(ctx context.Context, domains []string
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
 	result := map[string]string{}
-	if tracker.conn == nil {
+	if tracker.db == nil {
 		path := filepath.Join(tracker.dir, "atm.db")
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 			for _, domain := range domains {
@@ -81,34 +74,22 @@ func (tracker *ChangeTracker) Fingerprints(ctx context.Context, domains []string
 		if err != nil {
 			return nil, err
 		}
-		conn, err := db.Conn(ctx)
-		if err != nil {
+		if err := db.PingContext(ctx); err != nil {
 			db.Close()
 			return nil, err
 		}
-		tracker.db, tracker.conn = db, conn
-	}
-	var version int64
-	if err := tracker.conn.QueryRowContext(ctx, `PRAGMA data_version`).Scan(&version); err != nil {
-		return nil, err
-	}
-	var tracked int
-	if err := tracker.conn.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE type='table' AND name='workspace_changes'`).Scan(&tracked); err != nil {
-		return nil, err
+		tracker.db = db
 	}
 	for _, domain := range domains {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		value := strconv.FormatInt(version, 10)
-		if tracked != 0 {
-			var revision int64
-			err := tracker.conn.QueryRowContext(ctx, `SELECT revision FROM workspace_changes WHERE domain=?`, domain).Scan(&revision)
-			if err != nil && !errors.Is(err, sql.ErrNoRows) {
-				return nil, err
-			}
-			value = strconv.FormatInt(revision, 10)
+		var revision int64
+		err := tracker.db.QueryRowContext(ctx, `SELECT revision FROM workspace_changes WHERE domain=?`, domain).Scan(&revision)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
 		}
+		value := strconv.FormatInt(revision, 10)
 		var paths []string
 		switch domain {
 		case "todos":

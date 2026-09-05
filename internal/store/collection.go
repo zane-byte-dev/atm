@@ -52,7 +52,7 @@ type CollectionSource struct {
 	IntervalMinutes int    `json:"interval_minutes"`
 	Priority        string `json:"priority"`
 	Enabled         bool   `json:"enabled"`
-	// Muted keeps this source's new results out of the desktop notifications and
+	// Muted keeps this source's new results out of system notifications and
 	// nothing else: they are still collected, still count as unread and still
 	// raise the sidebar and menubar badges. Disabled is the other axis — it stops
 	// the collecting itself. The zero value notifies, so a source that predates
@@ -164,7 +164,7 @@ type CollectionItem struct {
 	UpdatedAt    int64  `json:"updated_at"`
 	// TodoStatus and TodoArchived are the linked Todo's current lifecycle state,
 	// read back on every query rather than stored. A Todo can be finished,
-	// dropped or archived from the CLI, the App or any agent, and none of those
+	// dropped or archived from the CLI, browser workspace or any agent, and none of those
 	// routes should have to remember to write into this ledger — nor could a
 	// stored copy explain the records that predate the feedback. Empty and false
 	// when the item never touched a Todo.
@@ -278,7 +278,7 @@ func UpsertCollectionSource(db *sql.DB, source CollectionSource) (CollectionSour
 	}
 	source.UpdatedAt = now
 	// muted is written on insert but deliberately left out of the conflict update:
-	// this upsert is also how an existing source is edited (the App's save runs
+	// this upsert is also how an existing source is edited (the browser save runs
 	// `collect source add`), and re-saving an interval must not quietly put a
 	// muted source back into the notifications. SetCollectionSourceMuted owns it.
 	_, err := db.Exec(`INSERT INTO collection_sources
@@ -345,7 +345,7 @@ func SetCollectionSourceEnabled(db *sql.DB, id string, enabled bool) error {
 	return err
 }
 
-// SetCollectionSourceMuted takes one source in or out of the desktop
+// SetCollectionSourceMuted takes one source in or out of system
 // notifications. Separate from SetCollectionSourceEnabled because they answer
 // different questions: enabled is whether this source is watched at all, muted is
 // only whether a banner is raised for what it finds. Unread state is untouched

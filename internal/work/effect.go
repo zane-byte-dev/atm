@@ -109,8 +109,8 @@ func (transaction *Transaction) enqueueEffectWithCause(
 }
 
 // enqueueOrReplaceEffect coalesces an undelivered projection of the same kind.
-// Wait uses this when a caller updates the condition before its earlier document
-// sync has run; the stable row then carries the latest Todo snapshot.
+// Lifecycle and dependency mutations use it when a newer snapshot supersedes a
+// projection that has not been delivered yet.
 func (transaction *Transaction) enqueueOrReplaceEffect(call application.Call, kind EffectKind, todo store.Todo, message string) error {
 	records, err := transaction.state.PendingWorkEffects(todo.ID)
 	if err != nil {

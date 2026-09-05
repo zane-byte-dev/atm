@@ -30,7 +30,7 @@ refuses to read it when the permissions are wider. Config output, `atm backup`
 archives and `atm diagnose` bundles all leave the file out, so a routine backup
 or a support bundle cannot carry a live key. Manage it with `atm config
 credential status | set | delete` — `set` reads stdin, so the key never reaches a
-command line or shell history — or in ATM.app under 设置 → 模型.
+command line or shell history — or in the ATM Web workspace under 设置 → 模型.
 `DEEPSEEK_API_KEY` overrides the file for one command without writing to disk.
 
 Indexed agent sessions can outlive their upstream transcript files. Use

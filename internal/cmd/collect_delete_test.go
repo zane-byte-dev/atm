@@ -22,9 +22,9 @@ func decodeCollectionDeletion(payload string) (collectionDeletion, error) {
 	return deletion, err
 }
 
-// The App deletes with --yes because it already asked, so the flag has to be the
+// The browser deletes with --yes because it already asked, so the flag has to be the
 // only thing standing between the command and the row. Without stdin a prompt
-// would otherwise fail, and the record would look undeletable from the desktop —
+// would otherwise fail, and the record would look undeletable from the browser —
 // which is the complaint this command answers.
 func TestCollectItemDeleteRemovesTheRecordAndKeepsItsTodo(t *testing.T) {
 	withTempAtmDir(t)
@@ -81,7 +81,7 @@ func TestCollectItemDeleteRemovesTheRecordAndKeepsItsTodo(t *testing.T) {
 	}
 }
 
-// Clearing a group in the App hands the whole batch to one command, so the ids
+// Clearing a group in the browser hands the whole batch to one command, so the ids
 // have to go together: a per-record loop would spawn a process per row, and a
 // batch that stops halfway would leave a group nobody can tell apart from one
 // that was never cleared.

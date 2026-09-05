@@ -1,52 +1,50 @@
 import AppKit
 import SwiftUI
 
-/// The legacy ATM status item glyph, kept locally so the lightweight Menu app
-/// does not depend on the old monolithic macOS target.
+/// Monochrome adaptation of Web's `mark.svg`. The rounded tile and cut-out A
+/// keep the same silhouette while remaining a native macOS template image.
 private struct ATMCompanionBrandGlyph: View {
     var body: some View {
         Canvas { context, size in
             let side = min(size.width, size.height)
-            let center = CGPoint(x: size.width / 2, y: size.height / 2)
-            let ringRadius = side * 0.32
-            let ringWidth = max(side * 0.085, 1)
-            let connectorWidth = max(side * 0.07, 1)
-            let nodeRadius = side * 0.082
-            let centerRadius = side * 0.052
-            let angles = [-Double.pi / 2, Double.pi / 6, 5 * Double.pi / 6]
+            let scale = side / 64
+            let origin = CGPoint(x: (size.width - side) / 2, y: (size.height - side) / 2)
             let color = Color.black
 
-            let ring = CGRect(
-                x: center.x - ringRadius,
-                y: center.y - ringRadius,
-                width: ringRadius * 2,
-                height: ringRadius * 2
+            let tile = CGRect(
+                x: origin.x,
+                y: origin.y,
+                width: side,
+                height: side
             )
-            context.stroke(Path(ellipseIn: ring), with: .color(color), lineWidth: ringWidth)
+            var silhouette = Path(roundedRect: tile, cornerRadius: 17 * scale)
+            var mark = Path()
+            mark.move(to: point(15, 45, origin: origin, scale: scale))
+            mark.addLine(to: point(27, 18, origin: origin, scale: scale))
+            mark.addLine(to: point(37, 18, origin: origin, scale: scale))
+            mark.addLine(to: point(49, 45, origin: origin, scale: scale))
+            mark.addLine(to: point(38, 45, origin: origin, scale: scale))
+            mark.addLine(to: point(32, 28, origin: origin, scale: scale))
+            mark.addLine(to: point(26, 45, origin: origin, scale: scale))
+            mark.closeSubpath()
+            silhouette.addPath(mark)
+            context.fill(silhouette, with: .color(color), style: FillStyle(eoFill: true))
 
-            var connectors = Path()
-            for angle in angles {
-                let node = CGPoint(
-                    x: center.x + cos(angle) * ringRadius,
-                    y: center.y + sin(angle) * ringRadius
-                )
-                connectors.move(to: center)
-                connectors.addLine(to: node)
-                context.fill(Path(ellipseIn: circle(node, nodeRadius)), with: .color(color))
-            }
+            var crossbar = Path()
+            crossbar.move(to: point(26, 39, origin: origin, scale: scale))
+            crossbar.addLine(to: point(38, 39, origin: origin, scale: scale))
             context.stroke(
-                connectors,
+                crossbar,
                 with: .color(color),
-                style: StrokeStyle(lineWidth: connectorWidth, lineCap: .round)
+                style: StrokeStyle(lineWidth: max(4 * scale, 1), lineCap: .butt)
             )
-            context.fill(Path(ellipseIn: circle(center, centerRadius)), with: .color(color))
         }
         .aspectRatio(1, contentMode: .fit)
         .accessibilityHidden(true)
     }
 
-    private func circle(_ center: CGPoint, _ radius: CGFloat) -> CGRect {
-        CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2)
+    private func point(_ x: CGFloat, _ y: CGFloat, origin: CGPoint, scale: CGFloat) -> CGPoint {
+        CGPoint(x: origin.x + x * scale, y: origin.y + y * scale)
     }
 }
 
@@ -56,7 +54,7 @@ enum ATMCompanionBrandAssets {
         let pointSize = NSSize(width: 18, height: 18)
         let renderer = ImageRenderer(
             content: ATMCompanionBrandGlyph()
-                .frame(width: pointSize.width, height: pointSize.height)
+                .frame(width: 16, height: 16)
                 .padding(1)
         )
         renderer.scale = scale

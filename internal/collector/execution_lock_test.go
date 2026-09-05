@@ -19,7 +19,7 @@ func TestCollectionEntrypointsShareExecutionLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Close()
-	service := Service{Extractor: &fakeExtractor{}, Fetcher: &fakeFetcher{}}
+	service := Service{Extractor: &fakeExtractor{}, Connectors: testRegistry(&fakeFetcher{})}
 	for _, test := range []struct {
 		name string
 		run  func(context.Context) error
@@ -67,6 +67,8 @@ type heldCollectionFetcher struct {
 	calls   atomic.Int32
 }
 
+func (*heldCollectionFetcher) ID() string { return "test" }
+
 func (fetcher *heldCollectionFetcher) Fetch(ctx context.Context, _ store.CollectionSource, _ int64) ([]Message, int64, error) {
 	if fetcher.calls.Add(1) == 1 {
 		close(fetcher.entered)
@@ -83,7 +85,7 @@ func TestOverlappingDueRunsRecheckCadenceAfterLockAcquisition(t *testing.T) {
 	withCollectorStore(t)
 	source := addCollectorSource(t)
 	fetcher := &heldCollectionFetcher{entered: make(chan struct{}), release: make(chan struct{})}
-	service := Service{Extractor: &fakeExtractor{}, Fetcher: fetcher}
+	service := Service{Extractor: &fakeExtractor{}, Connectors: testRegistry(fetcher)}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	type result struct {

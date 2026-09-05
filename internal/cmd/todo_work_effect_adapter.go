@@ -11,12 +11,12 @@ import (
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
-// localWorkEffectExecutor is the controlled filesystem/desktop/shell edge for
+// localWorkEffectExecutor is the controlled filesystem/system-notification/shell edge for
 // durable Work effects. Work application services describe the required
 // projection; they never import command rendering or execute user-configured
 // shell text.
 type localWorkEffectExecutor struct {
-	// NotifyTodo replaces only desktop notification delivery. A nil value keeps
+	// NotifyTodo replaces only system notification delivery. A nil value keeps
 	// the CLI's normal notifier; a workspace can supply a no-op while the macOS
 	// app owns notifications. Document and on-done effects always run normally.
 	NotifyTodo func(*store.Todo, string)

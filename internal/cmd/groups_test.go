@@ -51,9 +51,8 @@ func TestEveryVisibleCommandUnderAGroupedParentIsGrouped(t *testing.T) {
 				continue
 			}
 			// Hidden commands are not in the list a person reads, so they need no
-			// group. `dashboard` is a versioned payload for the app's refresh loop
-			// with no human reader; the todo compatibility aliases are kept working
-			// for text already written elsewhere without being advertised again.
+			// group. `dashboard` is a versioned payload for the browser refresh loop
+			// with no human reader.
 			if command.Hidden {
 				continue
 			}

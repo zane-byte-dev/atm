@@ -223,7 +223,7 @@ func TestTurnWaitKeepsSessionsApart(t *testing.T) {
 	}
 }
 
-// The per-bucket speed the desktop chart draws comes from two sums rather than a
+// The per-bucket speed the browser chart draws comes from two sums rather than a
 // stored rate, so that merging models, clients or hours divides totals instead of
 // averaging averages. Only sampled requests may contribute to them.
 func TestModelDayStatsCarrySampledSpeedComponents(t *testing.T) {

@@ -23,9 +23,9 @@ type HookSpec struct {
 
 // DesiredHooks lists what a source needs installed.
 //
-// Still narrow, but on one criterion only: does the notch use what the event
-// says. PermissionRequest is left out because a decision-capable hook is a
-// separate feature — reporting the block is enough to light the notch up, and
+// Still narrow, but on one criterion only: does the activity feed use what the
+// event says. PermissionRequest is left out because a decision-capable hook is a
+// separate feature — reporting the block is enough to raise attention, and
 // staying non-blocking means installing ATM cannot change how the agent
 // behaves. An unmatched PreToolUse is left out because PostToolUse already
 // covers the same ground.
@@ -35,12 +35,12 @@ type HookSpec struct {
 // was measured and is not the real number: the hook is one process that writes
 // one line to a unix socket, ~11ms wall and well under a millisecond of CPU,
 // against an agent turn measured in seconds. The cost that does matter is on
-// the app side — an event nudges the app to re-run `atm session status` — and
-// that is handled where it belongs, by not refreshing on `resumed`.
+// the runtime side — an event nudges the live activity projection — and that is
+// handled where it belongs, by not refreshing on `resumed`.
 //
 // Without it there is no way to know the user dealt with a permission prompt:
 // answering one is not a new prompt and does not end the turn, so `started` and
-// `completed` both stay silent while the notch keeps saying "waiting for you".
+// `completed` both stay silent while the activity feed keeps saying "waiting for you".
 func DesiredHooks(source string) []HookSpec {
 	switch source {
 	case SourceClaude:
@@ -145,20 +145,9 @@ type InstallResult struct {
 	Added   []string
 	Removed []string
 	Kept    []string
-	// Conflicts names other tools already registered for a decision-capable
-	// event, where two responders would fight over the outcome.
-	Conflicts []string
 }
 
 func (r InstallResult) Changed() bool { return len(r.Added) > 0 || len(r.Removed) > 0 }
-
-// conflictingEvents are the events where a second decision-capable hook would
-// actually collide. Ping Island registers PermissionRequest with a 24-hour
-// timeout to hold a tool call open while the user decides; a second responder on
-// the same event would mean two approval prompts racing. ATM does not install
-// here yet, but the installer reports the situation so the ground truth is known
-// before that feature lands.
-var conflictingEvents = []string{"PermissionRequest"}
 
 // Install adds ATM's hooks to an agent config, leaving every other entry alone.
 //
@@ -243,7 +232,7 @@ func Status(source, home, executable string) (InstallResult, error) {
 	if err != nil {
 		return InstallResult{}, err
 	}
-	result := InstallResult{Path: path, Conflicts: findConflicts(document, executable)}
+	result := InstallResult{Path: path}
 	for _, spec := range DesiredHooks(source) {
 		command := hookCommand(home, executable, source, spec.Reason)
 		if hasHook(document, spec, command) {
@@ -280,7 +269,7 @@ func mutate(source, home, executable string, adding bool) (InstallResult, error)
 		return InstallResult{}, err
 	}
 
-	result := InstallResult{Path: path, Conflicts: findConflicts(document, executable)}
+	result := InstallResult{Path: path}
 	for _, spec := range specs {
 		command := hookCommand(home, executable, source, spec.Reason)
 		switch {
@@ -300,16 +289,6 @@ func mutate(source, home, executable string, adding bool) (InstallResult, error)
 	}
 
 	if result.Changed() {
-		// Grok owns a dedicated file. After a full uninstall leave no empty
-		// leftover — a zero-byte or `{}` file still shows up in /hooks and
-		// confuses users about what is installed.
-		if !adding && source == SourceGrokbuild && hooksRoot(document, false) == nil {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return result, err
-			}
-			_ = os.Remove(grokRunnerPath(home))
-			return result, nil
-		}
 		if err := writeConfig(path, document); err != nil {
 			return result, err
 		}
@@ -666,26 +645,4 @@ func ownsCommand(command, source, home, executable string) bool {
 	}
 	// Require the separator so `--source claude` never claims `--source claudex`.
 	return strings.HasPrefix(command, prefix+" ")
-}
-
-// findConflicts lists other tools registered on decision-capable events.
-func findConflicts(document map[string]any, executable string) []string {
-	var conflicts []string
-	for _, event := range conflictingEvents {
-		for _, entry := range groupsFor(document, event) {
-			group, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			for _, hookEntry := range hooksIn(group) {
-				command := commandOf(hookEntry)
-				if command == "" || strings.Contains(command, executable) {
-					continue
-				}
-				conflicts = append(conflicts, event+": "+command)
-			}
-		}
-	}
-	sort.Strings(conflicts)
-	return conflicts
 }

@@ -76,7 +76,7 @@ func TestServeServicePlistUsesEscapedAbsoluteArgumentsWithoutSideEffects(t *test
 	if !bytes.Contains(plist, []byte("<key>ExitTimeOut</key><integer>45</integer>")) {
 		t.Fatal("launchd shutdown deadline must cover HTTP drain and background cancellation budgets")
 	}
-	want := []string{opts.Executable, "serve", "--background", "--data-dir", opts.DataDir, "--port", "47321"}
+	want := []string{opts.Executable, "serve", "--data-dir", opts.DataDir, "--port", "47321"}
 	if !reflect.DeepEqual(plan.Arguments, want) {
 		t.Fatalf("argv=%q", plan.Arguments)
 	}

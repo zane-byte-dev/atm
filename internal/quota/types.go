@@ -1,5 +1,5 @@
 // Package quota owns rate-limit and credit readings and the policy for turning
-// them into something a person can act on. Command and IPC adapters choose how
+// them into something a person can act on. Command and Web adapters choose how
 // to render these values; they do not read agent logs, open the quota history,
 // or run provider commands.
 package quota
@@ -14,7 +14,7 @@ type Input struct {
 
 // Snapshot is one reading of everything ATM can see. Agents is keyed by agent
 // name; a nil value means that agent reported nothing, which serializes as null
-// and is how the desktop tells "no data" from "not asked for".
+// and is how the browser workspace tells "no data" from "not asked for".
 type Snapshot struct {
 	Agents map[string]*AgentQuota
 	// Order is the agents that reported a rate-limit window, in ATM's fixed
@@ -28,7 +28,7 @@ type Snapshot struct {
 }
 
 // AgentQuota is one agent's reading. The JSON tags are the published shape the
-// desktop decodes, so a field added here changes that contract on purpose.
+// browser workspace decodes, so a field added here changes that contract on purpose.
 type AgentQuota struct {
 	// DisplayName is the heading a text view prints. It belongs here rather than
 	// in the renderer because the name carries meaning — Antigravity's reading

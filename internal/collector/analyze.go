@@ -198,21 +198,14 @@ func (service Service) analyzeMessages(ctx context.Context, db *sql.DB, source s
 	return messages, nil
 }
 
-// Historian reports whether the legacy configured fetcher can also read a
-// bounded window of history. Registry-backed callers use historianFor.
-func (service Service) Historian() (Historian, bool) {
-	historian, ok := service.Fetcher.(Historian)
-	return historian, ok
-}
-
-func (service Service) historianFor(source store.CollectionSource) (Historian, bool) {
-	if service.Connectors != nil {
-		connector, err := service.Connectors.Resolve(source.Connector)
-		if err != nil {
-			return nil, false
-		}
-		historian, ok := connector.(Historian)
-		return historian, ok
+func (service Service) historianFor(source store.CollectionSource) (HistoryConnector, bool) {
+	if service.Connectors == nil {
+		return nil, false
 	}
-	return service.Historian()
+	connector, err := service.Connectors.Resolve(source.Connector)
+	if err != nil {
+		return nil, false
+	}
+	historian, ok := connector.(HistoryConnector)
+	return historian, ok
 }

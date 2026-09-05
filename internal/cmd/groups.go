@@ -7,9 +7,9 @@ import (
 )
 
 // Help is navigation for a person at a terminal; it is not the Agent's capability
-// catalog. App-only actions use typed IPC and do not need public Cobra mirrors,
-// while commands retained here have an Agent, human repair, or diagnostic
-// consumer. Grouping makes that surface scannable.
+// catalog. Browser-only actions call the application host directly and do not
+// need public Cobra mirrors, while commands retained here have an Agent, human
+// repair, or diagnostic consumer. Grouping makes that surface scannable.
 //
 // parent is the command path the group hangs under, "" for the root. Order is
 // significant: cobra prints groups in the order they are added, so the table

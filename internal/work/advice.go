@@ -16,7 +16,7 @@ import (
 const maxAdviceReviews = 5
 
 // Advice is an observation, never a lifecycle transition. Previous contains
-// only the last successful comment observations, persisted by the desktop.
+// only the last successful comment observations, persisted by the client.
 type AdviceInput struct {
 	TodoID   string                  `json:"todo_id"`
 	Previous []AdviceCommentBaseline `json:"previous,omitempty"`

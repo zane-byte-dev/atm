@@ -70,7 +70,7 @@ func TestCollectionLoginReplacesGenericFailureAndUsesOutageIdentity(t *testing.T
 		}
 	}
 
-	// Without a declared login action, the legacy app leaves the problem in the
+	// Without a declared login action, the runtime leaves the problem in the
 	// collection workspace and does not replace it with an inert system banner.
 	quiet := collectionRuntimeNotifications(collectionJob("failed", &background.CollectionCompletion{Runs: []background.CollectionNotificationRun{
 		{ID: "cr-auth-no-action", Connector: "chat", Status: "failed", FailureKind: "auth_required"},

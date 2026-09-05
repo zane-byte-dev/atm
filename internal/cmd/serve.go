@@ -24,11 +24,10 @@ import (
 )
 
 var (
-	servePort       int
-	serveOpen       bool
-	serveDataDir    string
-	serveBackground bool
-	serveDevUI      string
+	servePort    int
+	serveOpen    bool
+	serveDataDir string
+	serveDevUI   string
 )
 
 var serveCmd = &cobra.Command{
@@ -37,16 +36,15 @@ var serveCmd = &cobra.Command{
 	Long: `Serve ATM's browser workspace on this Mac. The CLI continues to work independently.
 
 The workspace serves tasks, collection, Agent sessions, knowledge, usage,
-AI Day, and settings. After a backed-up database upgrade, Go owns background
-sync, collection, Agent hooks, and notification routing. Quit the old macOS
-app before the first handover. Use --background=false for a viewer instance.
+AI Day, and settings. Go owns background sync, collection, Agent hooks, and
+notification routing.
 
 Use --open to establish a browser connection. An existing workspace for the
 same data directory is reused. --data-dir selects an isolated ATM data directory
 without changing HOME or Agent source directories.
 
-An older database opens read-only. Use atm serve stop, then atm serve migrate
-to create a backup and explicitly upgrade it before enabling Web changes.`,
+A stale database is rejected at startup. Use atm serve migrate to create a
+backup and explicitly upgrade it before opening the workspace.`,
 	Args: noSubcommandArgs,
 	RunE: runServe,
 }
@@ -55,7 +53,6 @@ func init() {
 	serveCmd.PersistentFlags().IntVar(&servePort, "port", 47321, "loopback port (0 selects an available port)")
 	serveCmd.PersistentFlags().BoolVar(&serveOpen, "open", false, "open an authenticated browser page")
 	serveCmd.PersistentFlags().StringVar(&serveDataDir, "data-dir", "", "ATM data directory (default: configured directory)")
-	serveCmd.Flags().BoolVar(&serveBackground, "background", true, "own background jobs, Agent hooks, and notification routing")
 	serveCmd.Flags().StringVar(&serveDevUI, "dev-ui", "", "proxy a local Vite server (http://127.0.0.1:5173) for frontend HMR")
 	serveCmd.AddCommand(&cobra.Command{Use: "status", Short: "Show this data directory's running workspace", Args: cobra.NoArgs, RunE: runServeStatus})
 	serveCmd.AddCommand(&cobra.Command{Use: "stop", Short: "Gracefully stop this data directory's workspace", Args: cobra.NoArgs, RunE: runServeStop})
@@ -63,9 +60,8 @@ func init() {
 		Use: "migrate", Short: "Back up and explicitly upgrade an existing workspace database", Args: cobra.NoArgs, RunE: runServeMigrate,
 		Long: `Back up an existing ATM data directory, then upgrade its database for this build.
 
-Stop the workspace with atm serve stop first. Before upgrading, update both the
-CLI you run and the CLI used by the macOS app to this same version. Pause other
-ATM writers while upgrading. This command does not stop or update the macOS app.
+Stop the workspace with atm serve stop first and pause other ATM writers while
+upgrading.
 
 A normal atm backup archive is created in <data-dir>/backups before any schema
 change. If the backup fails, the database is not migrated. Keep the archive for
@@ -92,12 +88,15 @@ func runServe(command *cobra.Command, args []string) error {
 		fmt.Fprintf(command.OutOrStdout(), "ATM workspace is already running at %s\n", status.Instance.Origin)
 		return nil
 	}
-	assets, err := webassets.Assets()
-	if err != nil && serveDevUI == "" {
-		return err
-	}
 	database, err := readWorkspaceDatabase()
 	if err != nil {
+		return err
+	}
+	if !database.Missing && database.Version < store.SchemaVersion {
+		return fmt.Errorf("database schema v%d must be upgraded to v%d before serving; run `atm serve migrate --data-dir %s`", database.Version, store.SchemaVersion, config.AtmDir)
+	}
+	assets, err := webassets.Assets()
+	if err != nil && serveDevUI == "" {
 		return err
 	}
 	host := apphost.New(rootCmd.Version)
@@ -105,16 +104,14 @@ func runServe(command *cobra.Command, args []string) error {
 	host.SetPresenceLoader(loadDashboardLiveStatus)
 	tracker := apphost.NewChangeTracker(config.AtmDir)
 	defer tracker.Close()
-	options := webapp.Options{DataDir: config.AtmDir, Version: rootCmd.Version, Port: servePort, Assets: assets, Dispatch: host.Call, Attachment: host.Attachment, AllowWrites: !database.UpgradeRequired, DataUpgradeRequired: database.UpgradeRequired,
+	options := webapp.Options{DataDir: config.AtmDir, Version: rootCmd.Version, Port: servePort, Assets: assets, Dispatch: host.Call, Attachment: host.Attachment,
 		DevUI:        serveDevUI,
 		Fingerprints: tracker.Fingerprints, Capabilities: host.RuntimeCapabilities, Companion: host.Companion, NativeControl: host.NativeControl,
 		Upload: func(ctx context.Context, call application.Call, id, etag, name string, data []byte) (any, error) {
 			return host.UploadTodoImage(ctx, call, apphost.UploadImageInput{TodoID: id, ExpectedETag: etag, Name: name, Data: data})
 		},
 	}
-	if serveBackground && !database.UpgradeRequired {
-		options.StartRuntime = workspaceRuntime(ctx, host)
-	}
+	options.StartRuntime = workspaceRuntime(ctx, host)
 	server, err := webapp.Start(options)
 	if errors.Is(err, webapp.ErrAlreadyRunning) && serveOpen {
 		return openExistingWorkspace(ctx, config.AtmDir)
@@ -125,14 +122,7 @@ func runServe(command *cobra.Command, args []string) error {
 	defer server.Close()
 	cliCommandLongRunning.Store(true)
 	fmt.Fprintf(command.OutOrStdout(), "ATM workspace: %s\n", server.Info().Origin)
-	if serveBackground && !database.UpgradeRequired {
-		fmt.Fprintln(command.OutOrStdout(), "Mode: Go runtime; background jobs, Agent hooks, and notifications are owned by this process.")
-	} else {
-		fmt.Fprintln(command.OutOrStdout(), "Mode: workspace viewer; background jobs are disabled.")
-	}
-	if database.UpgradeRequired {
-		fmt.Fprintf(command.OutOrStdout(), "Database v%d is read-only. Run atm serve stop, then atm serve migrate to back up and upgrade to v%d.\n", database.Version, store.SchemaVersion)
-	}
+	fmt.Fprintln(command.OutOrStdout(), "Mode: Go runtime; background jobs, Agent hooks, and notifications are owned by this process.")
 	if serveOpen {
 		browserURL, err := server.BrowserURL()
 		if err != nil {
@@ -185,13 +175,12 @@ func runServeStop(command *cobra.Command, args []string) error {
 }
 
 type workspaceDatabase struct {
-	Version         int
-	Missing         bool
-	UpgradeRequired bool
+	Version int
+	Missing bool
 }
 
-// The startup path must not call store.Open: opening a page is not permission
-// to migrate an existing database shared with the CLI and macOS app.
+// Startup inspects schema without migrating it. A stale workspace must cross
+// serve migrate's stopped-instance lock and pre-migration backup boundary.
 func readWorkspaceDatabase() (workspaceDatabase, error) {
 	version, err := store.ReadSchemaVersionAt(config.AtmDB)
 	if errors.Is(err, store.ErrDatabaseMissing) {
@@ -206,7 +195,10 @@ func readWorkspaceDatabase() (workspaceDatabase, error) {
 	if version > store.SchemaVersion {
 		return workspaceDatabase{}, fmt.Errorf("database schema v%d is newer than this ATM build (v%d); update ATM before opening this workspace", version, store.SchemaVersion)
 	}
-	return workspaceDatabase{Version: version, UpgradeRequired: version < store.SchemaVersion}, nil
+	if version < store.MinUpgradableVersion {
+		return workspaceDatabase{}, fmt.Errorf("database schema v%d is no longer supported by this ATM build (minimum v%d); use a release that supports this schema to create a backup or upgrade it", version, store.MinUpgradableVersion)
+	}
+	return workspaceDatabase{Version: version}, nil
 }
 
 type serveMigrationResult struct {
@@ -252,10 +244,10 @@ func runServeMigrate(command *cobra.Command, args []string) error {
 			return fmt.Errorf("ATM database disappeared before migration: %s", config.AtmDB)
 		}
 		result.FromSchema = database.Version
-		if !database.UpgradeRequired {
+		if database.Version == store.SchemaVersion {
 			return nil
 		}
-		fmt.Fprintln(command.ErrOrStderr(), "Before upgrading, use this ATM version for both your CLI and the macOS app's CLI, and pause other ATM writers. The macOS app is not stopped automatically.")
+		fmt.Fprintln(command.ErrOrStderr(), "Before upgrading, pause other ATM writers using this data directory.")
 		result.Archive, err = backupBeforeServeMigration(database.Version)
 		if err != nil {
 			return fmt.Errorf("pre-upgrade backup failed; database was not migrated: %w", err)

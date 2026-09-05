@@ -17,7 +17,7 @@ func dashboardTestCall() application.Call {
 		RequestID: "test-dashboard-1",
 		Actor: application.Actor{
 			Kind:   application.ActorHuman,
-			Origin: application.OriginIPC,
+			Origin: application.OriginWeb,
 		},
 	}
 }
@@ -122,7 +122,7 @@ func TestBuildStatsQualityCarriesCoveragePricingAndSpeedSamples(t *testing.T) {
 		},
 		[]store.ModelStatsResult{
 			{Model: "gpt-5.5", CostUSD: 1, PricingSource: store.PricingExact},
-			{Model: "gpt-5.6-sol", CostUSD: 99, CostEstimated: true, PricingSource: store.PricingFamily},
+			{Model: "mixed", CostUSD: 99, CostEstimated: true, EstimatedCostUSD: 9, PricingSource: store.PricingMixed},
 		},
 		store.SpeedReport{Models: []store.SpeedStatsResult{{Requests: 8, Sampled: 6}}, Untimed: 1, OutOfWindow: 1},
 	)
@@ -130,10 +130,10 @@ func TestBuildStatsQualityCarriesCoveragePricingAndSpeedSamples(t *testing.T) {
 		quality.ActiveAgents != 2 || quality.TokenAgents != 1 || quality.AgentCoveragePct != 50 ||
 		quality.RequestCoveragePct != 80 || quality.SpeedRequests != 8 ||
 		quality.SpeedSampledRequests != 6 || quality.SpeedSamplePct != 75 ||
-		quality.EstimatedCostUSD != 99 || quality.EstimatedCostShare != 0.99 {
+		quality.EstimatedCostUSD != 9 || quality.EstimatedCostShare != 0.09 {
 		t.Fatalf("quality = %+v", quality)
 	}
-	if len(quality.PricingSources) != 2 || quality.PricingSources[0] != "exact" || quality.PricingSources[1] != "family" {
+	if len(quality.PricingSources) != 2 || quality.PricingSources[0] != "exact" || quality.PricingSources[1] != "mixed" {
 		t.Fatalf("pricing sources = %#v", quality.PricingSources)
 	}
 }

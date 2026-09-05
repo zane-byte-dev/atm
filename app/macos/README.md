@@ -1,8 +1,6 @@
 # ATM for macOS
 
-> 迁移状态（2026-09）：日用主界面改为 Go 服务提供的 [Web 工作区](../web/README.md)。原生新产品分别位于 [ATM Menu](../menubar/README.md) 与 [ATM Voice](../voice/README.md)，可独立构建；本目录保留旧工作区和性能修复作为迁移验收/回退来源，不是新产品的构建依赖。下方为旧产品说明，包含历史能力描述。
->
-> 更新后的旧 App 在构造 Store/Hook 前检查 `runtime/presence-owner.json` 或本域的 `ATMRuntimeOwner=go`。Go 曾接管后，即使服务已停止也不会重新启动旧任务扫描、同步或采集。旧模式与 Go 持有同一 `runtime/presence.lock`，监听器还持有 socket 同名 `.lock`；只清理自己的 socket inode。`ATM_VOICE_ONLY=1` 仅用于沿用旧权限的临时语音过渡，不初始化 Store/Hook，并且只注册语音热键。不要同时启用旧语音与新 Voice 的相同热键。
+> 归档状态（2026-09）：日用主界面已经改为 Go 服务提供的 [Web 工作区](../web/README.md)，当前原生产品是独立的 [ATM Menu](../menubar/README.md) 与 [ATM Voice](../voice/README.md)。本目录只保留旧工作区源码和既有性能修复作为历史实现参考，不参与当前构建、测试或发布；当前 Go 已删除它依赖的 runtime、进程协议和命令契约，因此不要把这里的 App 作为当前数据目录的客户端启动。下方内容只记录旧界面的设计，不是当前操作说明。
 >
 > `Scripts/export-web-preferences.swift [--dev]` 只把知识/来源顺序及用量筛选白名单输出为版本化 JSON，供 Web 外观设置中的文件导入使用。它不包含秘密、运行令牌、语音权限或业务正文。新服务接管验收完成前，不删除旧源代码或旧模型。
 
@@ -89,7 +87,7 @@ Agent 自己写进索引的会话标题，Codex 不写标题就读它的 thread 
 
 “收集”工作区采用来源、处理记录、详情三栏布局。来源管理列表支持拖拽或右键上移/下移，调整后的顺序会同步到处理记录分组并跨启动保留。顶部的齿轮入口集中控制自动收集、后台检查频率并展示
 分类模型和连接器健康；来源开关、处理规则和连接器错误留在对应来源详情中，设置页不再重复维护一份。
-添加来源时填写 `collection_connectors` 中配置的连接器、来源类型和稳定 ID；连接器支持发现能力时，弹窗通过 typed IPC 搜索并列出候选。来源右键“查看消息记录”、
+添加来源时填写 `collection_connectors` 中配置的连接器、来源类型和稳定 ID；连接器支持发现能力时，弹窗曾通过旧桥接搜索并列出候选。来源右键“查看消息记录”、
 或处理记录详情“来源”卡片里的同名入口，会读最近 50 条聊天原文，用来补齐 `raw_context` 之外的上下文。
 来源可选择高频“任务提取”或低频“收集结论”；后者在配置层被限制为只能形成结论或忽略，永不创建 Todo，
 模型判成建任务也会被降级成结论。结论先留在收集详情，用户明确保存后才写入来源配置的知识库集合。
@@ -97,8 +95,8 @@ Agent 自己写进索引的会话标题，Codex 不写标题就读它的 thread 
 处理记录，任务详情可查看实时状态并重试。委派关联到 Agent 会话后，详情页可直接“回到会话”；输入、授权和
 其他交互控制继续由原生 Agent 提供，ATM 只保留任务状态、执行证据和日志。已有执行可填写新的修改要求，
 恢复同一个 Codex 线程继续处理，每轮仍保留独立执行记录。成功只进入“待验收”，不会自动标记完成。
-弹窗分两段：先通过 `collect.history` typed IPC 从本地已同步的记录读取，再调用同一 use case 的在线模式以连接器结果替换并同步进本地库（默认保留 90 天，公开 CLI 的 `atm collect search` 仍可检索）；
-读取中副标题写“正在读取最新…”，连接器不可用时转成橙色说明这批是本地记录，而不是当成最新状态。App 常驻期间即使主窗口关闭，也只定时调用 `collect.run` typed IPC；知识保存始终由用户触发。
+弹窗分两段：先从本地已同步的记录读取，再以连接器结果替换并同步进本地库（默认保留 90 天，公开 CLI 的 `atm collect search` 仍可检索）；
+读取中副标题写“正在读取最新…”，连接器不可用时转成橙色说明这批是本地记录，而不是当成最新状态。App 常驻期间即使主窗口关闭，也会定时请求一次采集；知识保存始终由用户触发。
 新 Todo、Todo 补充和新结论会分别以来源、类型和具体标题发出原生通知，点击直接定位对应处理记录；持久未读数
 显示在侧栏与菜单栏，打开对应记录即标为已读，也可右键改回未读或一键“全部已读”。失败仍单独提示具体来源和错误。处理记录支持查看原始聊天、打开
 Todo、重新处理、转成 Todo、修正元数据、保留审计的撤销，以及可恢复的「了结记录」；了结后进入
@@ -109,7 +107,7 @@ Todo、重新处理、转成 Todo、修正元数据、保留审计的撤销，�
 同一 Todo 的补充记录收进新建主记录的详情，不再和新建平铺；没有对应新建记录的历史补充仍单独显示。
 中栏三种分组（来源、“其他来源”、“已保存与已了结”）标题右侧的省略号菜单都有“清空记录”，删掉的是这一组当前
 列出的记录，来源配置和记录写出的 Todo 都保留——所以来源菜单里的两条销毁动作分别叫“清空记录”和“删除来源”。
-确认框会说明有多少条、其中几条的 Todo 保留；一整组走一次 `collect.item.delete` typed IPC，Collector
+确认框会说明有多少条、其中几条的 Todo 保留；一整组走一次收集删除 use case，Collector
 service 在一个事务中删除，不会出现半清空的分组，并再次校验 `confirmed=true`。
 
 列表行与导航行的选中/悬停表面统一由 [`ATMListRow.swift`](Sources/ATMMenuBarApp/ATMListRow.swift)
@@ -202,17 +200,8 @@ App 在启动时装载主菜单（[`ATMMainMenu.swift`](Sources/ATMMenuBarApp/AT
 macOS 的 `⌘V`/`⌘C`/`⌘X`/`⌘A`/`⌘Z` 由编辑菜单项分发而不是由输入框自己处理，所以没有主菜单时
 任务标题、描述、知识编辑器和搜索框都无法粘贴——菜单是这些快捷键的唯一来源，不要移除。
 
-App 每 60 秒通过一次 `_ipc dashboard.snapshot` 获取带版本号的完整只读快照，并按 5 分钟节奏执行
-完整同步。请求通过 JSON stdin 传 section 与可选 Session ID；协议的 JSON Schema 位于
-[`docs/contracts/dashboard-v1.schema.json`](../../docs/contracts/dashboard-v1.schema.json)。
-打开主窗口、快速面板或右键菜单时也会先触发一次增量同步，让用户主动查看时的 Token 用量
-不必等待下一轮后台刷新。
-
-同一次刷新里并发调用一次 `atm quota --json`。额度没有并进快照协议：Codex/Grok 来自各自日志，
-外部服务可通过 `quota_providers` 提供通用多指标卡片。因此 CLI 与 App 可以继续分步升级
-（快照协议是版本硬握手，版本不匹配会导致整个快照解析失败）。
-
-所有读写操作仍由 `atm` CLI 负责，不复制 ATM 的业务规则。
+旧界面过去通过已删除的 Go 子进程桥接读取快照并写入数据。该桥接及其契约不再维护；当前 Web、Menu
+和 CLI 直接复用 Go application services，旧 Swift 源码不能据此推断当前 API。
 
 任务详情顶部的消息区通过 `todo.advice` 主动展示建议结论，不需要切换页签。
 打开任务时从任务标题、描述、来源、
@@ -228,61 +217,10 @@ App 每 60 秒通过一次 `_ipc dashboard.snapshot` 获取带版本号的完整
 同一 CR 的消息原位更新；可随时点消息区的“刷新”。失败也遵循间隔，避免持续失败重复触发查询。
 建议查询不改变任务、评审或评论状态，也不自动启动 Agent。
 
-## 运行
+## 源码边界
 
-要求 macOS 13.4+，并确保 `atm` 已安装在常见路径。开发运行：
-
-```bash
-swift run --package-path app/macos
-```
-
-> 下限是 13.4 而不是 13.0，因为语音识别依赖的 `sherpa-onnx-spm` 提供的是按 13.4 编译的预建
-> onnxruntime 切片：链进 13.0 的 target 合法，但每次链接会刷约 690 条
-> “built for newer macOS version” 警告，把所有值得看的警告全埋掉。13.4 发布于 2023 年 5 月，
-> 下限只挪了几周。
->
-> 首次构建会拉约 89MB 的 xcframework。里面是静态库（上游把 onnxruntime 合进了
-> `libsherpa-onnx.a`），所以直接静态链进可执行文件，`Scripts/build-app.sh` 不需要额外拷
-> `Contents/Frameworks` 或改 rpath；代价是产物体积明显变大。
-
-> `swift run` 以裸可执行文件运行，没有 app bundle，因此系统通知功能会自动禁用（仅打印一行日志），
-> **语音输入也用不了**：可执行文件本身是 ad-hoc 签名的、Info.plist 也链进了
-> `__TEXT,__info_plist`，但进程不是 bundle、没注册进 Launch Services，TCC 的麦克风授权框因此
-> 弹不出来，而那个请求的回调也就永远不来。按下语音快捷键会直接告诉你这件事并让你换运行方式，
-> 而不是停在「正在打开麦克风…」上等；设置 → 语音的权限区同样会横幅提示。
-> 需要验证图标、通知、语音输入、辅助功能或 UI 自动化时，运行
-> `app/macos/Scripts/run-dev-app.sh`。它默认使用 Debug 构建，放进独立的
-> `ATM Dev.app`，使用开发 bundle ID，终端日志也会保留。
-
-复测任务切换和滚动性能时，可使用开启编译优化的 Release 开发包：
-
-```bash
-ATM_BUILD_CONFIGURATION=release app/macos/Scripts/run-dev-app.sh
-```
-
-`ATM_BUILD_CONFIGURATION` 只接受 `debug` 或 `release`。两种构建都输出到
-`app/macos/.build/dev-app/ATM Dev.app`，使用同一个开发 bundle ID，保留既有偏好。
-如需由 UI 自动化或 Finder 启动，设置 `ATM_BUILD_ONLY=1`，脚本完成打包与签名后退出：
-
-```bash
-ATM_BUILD_CONFIGURATION=release ATM_BUILD_ONLY=1 app/macos/Scripts/run-dev-app.sh
-```
-
-如果 `atm` 不在 `/usr/local/bin`、`/opt/homebrew/bin` 或 `~/.local/bin`，可显式指定：
-
-```bash
-ATM_EXECUTABLE=/path/to/atm swift run --package-path app/macos
-```
-
-## 构建可启动 App
-
-```bash
-app/macos/Scripts/build-app.sh
-open app/macos/dist/ATM.app
-```
-
-构建脚本优先使用钥匙串中的 Apple Development 身份，没有时回退到 ad hoc；可用
-`ATM_CODESIGN_IDENTITY` 显式指定。正式分发时仍需 Developer ID 签名和公证流程。
+本目录没有受支持的运行或发布流程。需要维护当前产品时使用 `make build`、`app/menubar` 或
+`app/voice`；不要为让本目录重新运行而恢复已经删除的 Go 兼容接口。
 
 ## 设计来源
 

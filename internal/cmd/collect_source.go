@@ -231,9 +231,9 @@ var collectSourceMuteCmd = collectionSourceMuteCommand("mute", true)
 var collectSourceUnmuteCmd = collectionSourceMuteCommand("unmute", false)
 
 func collectionSourceMuteCommand(name string, muted bool) *cobra.Command {
-	short := "Stop desktop notifications for one collection source"
+	short := "Stop system notifications for one collection source"
 	if !muted {
-		short = "Resume desktop notifications for one collection source"
+		short = "Resume system notifications for one collection source"
 	}
 	return &cobra.Command{
 		Use:   name + " <source-id>",

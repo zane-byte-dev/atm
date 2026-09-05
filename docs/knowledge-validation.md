@@ -18,7 +18,7 @@ Covered behavior:
 - unrelated recent memories are excluded from lexical recall;
 - artifacts use unique IDs and atomic writes under `~/.atm/artifacts`;
 - Knowledge and Memory are exposed through one deterministic CLI surface;
-- schema v9 removes legacy session FTS objects and session search treats code and paths literally.
+- session search treats code and paths literally without maintaining a second FTS compatibility index.
 
 ## Data ownership
 

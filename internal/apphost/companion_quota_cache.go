@@ -36,6 +36,10 @@ func projectCompanionQuotaCache(result *CompanionQuota, cache background.QuotaCa
 			if window.Agent != agent {
 				continue
 			}
+			selectedAt, selectedErr := time.Parse(time.RFC3339, window.ObservedAt)
+			if selectedErr == nil && observed.Before(selectedAt) {
+				continue
+			}
 			window.Source = boundedCompanionText(value.Source, 64)
 			window.Plan = boundedCompanionText(value.Plan, 80)
 			for _, cachedWindow := range value.Windows() {

@@ -2,6 +2,26 @@ import XCTest
 @testable import ATMCompanion
 
 final class MenuSummaryTests: XCTestCase {
+    @MainActor
+    func testMenuBarBrandImageIsATemplateAtNativeSize() {
+        let image = ATMCompanionBrandAssets.menuBarImage(scale: 2)
+
+        XCTAssertTrue(image.isTemplate)
+        XCTAssertEqual(image.size.width, 18)
+        XCTAssertEqual(image.size.height, 18)
+    }
+
+    func testServiceTitleOmitsZeroAttention() {
+        XCTAssertEqual(
+            CompanionMenuPresentation.serviceTitle(active: 10, attention: 0),
+            "服务运行中 · 10 个会话"
+        )
+        XCTAssertEqual(
+            CompanionMenuPresentation.serviceTitle(active: 2, attention: 3),
+            "服务运行中 · 2 个会话 · 3 项待处理"
+        )
+    }
+
     func testCompanionPayloadDecodesTaskStatesAndQuotaWindows() throws {
         let json = #"""
         {
@@ -42,6 +62,20 @@ final class MenuSummaryTests: XCTestCase {
         XCTAssertTrue(row.detail.hasPrefix("已用 0%"))
     }
 
+    func testQuotaSummaryShowsAtMostThreeRows() throws {
+        let json = #"""
+        {"source":"cache","generated_at":"now","windows":[
+          {"agent":"codex","window_minutes":300,"used_percent":10,"stale":false,"reset_elapsed":false},
+          {"agent":"codex","window_minutes":10080,"used_percent":20,"stale":false,"reset_elapsed":false},
+          {"agent":"claude","window_minutes":300,"used_percent":30,"stale":false,"reset_elapsed":false},
+          {"agent":"claude","window_minutes":10080,"used_percent":40,"stale":false,"reset_elapsed":false}
+        ],"truncated":false}
+        """#
+        let quota = try JSONDecoder().decode(CompanionQuota.self, from: Data(json.utf8))
+
+        XCTAssertEqual(CompanionMenuPresentation.quotaRows(quota).count, 3)
+    }
+
     func testStatusBarSummaryIsBoundedAndUsesTightestLiveWindow() throws {
         let quotaJSON = #"""
         {"source":"cache","generated_at":"now","windows":[
@@ -54,13 +88,11 @@ final class MenuSummaryTests: XCTestCase {
         let todos = try JSONDecoder().decode(CompanionTodos.self, from: Data(todosJSON.utf8))
 
         let title = CompanionMenuPresentation.statusBarTitle(
-            active: 3,
             attention: 2,
-            todos: todos,
             quota: quota,
             todayTokens: .value(387_000_000)
         )
-        XCTAssertEqual(title, "待 2 · 任务 4 · Codex 87% · 387M")
+        XCTAssertEqual(title, "待 2 · Codex 87% · 387M")
         XCTAssertLessThanOrEqual(title.count, 42)
         XCTAssertEqual(
             CompanionMenuPresentation.statusBarTooltip(
@@ -76,16 +108,16 @@ final class MenuSummaryTests: XCTestCase {
 
     func testStatusBarOnlyShowsCurrentQuotaAtLegacyWarningThreshold() throws {
         let below = try decodeQuota(window: #""agent":"codex","window_minutes":300,"used_percent":74.9,"remaining_percent":25.1,"resets_at":4102444800,"observed_at":"now","stale":false,"reset_elapsed":false"#)
-        XCTAssertEqual(CompanionMenuPresentation.statusBarTitle(active: 0, attention: 0, todos: nil, quota: below, todayTokens: .loading), "")
+        XCTAssertEqual(CompanionMenuPresentation.statusBarTitle(attention: 0, quota: below, todayTokens: .loading), "")
 
         let warning = try decodeQuota(window: #""agent":"codex","window_minutes":300,"used_percent":75,"remaining_percent":25,"resets_at":4102444800,"observed_at":"now","stale":false,"reset_elapsed":false"#)
-        XCTAssertEqual(CompanionMenuPresentation.statusBarTitle(active: 0, attention: 0, todos: nil, quota: warning, todayTokens: .loading), "Codex 75%")
+        XCTAssertEqual(CompanionMenuPresentation.statusBarTitle(attention: 0, quota: warning, todayTokens: .loading), "Codex 75%")
 
         let expired = try decodeQuota(window: #""agent":"codex","window_minutes":300,"used_percent":99,"remaining_percent":1,"resets_at":1,"observed_at":"old","stale":true,"reset_elapsed":true"#)
-        XCTAssertEqual(CompanionMenuPresentation.statusBarTitle(active: 0, attention: 0, todos: nil, quota: expired, todayTokens: .loading), "")
+        XCTAssertEqual(CompanionMenuPresentation.statusBarTitle(attention: 0, quota: expired, todayTokens: .loading), "")
 
         let stale = try decodeQuota(window: #""agent":"codex","window_minutes":300,"used_percent":90,"remaining_percent":10,"resets_at":4102444800,"observed_at":"old","stale":true,"reset_elapsed":false"#)
-        XCTAssertEqual(CompanionMenuPresentation.statusBarTitle(active: 0, attention: 0, todos: nil, quota: stale, todayTokens: .loading), "")
+        XCTAssertEqual(CompanionMenuPresentation.statusBarTitle(attention: 0, quota: stale, todayTokens: .loading), "")
         XCTAssertTrue(CompanionMenuPresentation.quotaRows(stale).first?.detail.contains("记录较旧") == true)
     }
 
@@ -105,36 +137,14 @@ final class MenuSummaryTests: XCTestCase {
         ])
     }
 
-    func testStatusBarTodayTokensShowRealZeroAndHideUnavailableStates() {
+    func testStatusBarDefaultsToTokenWithoutTaskOrSessionCounts() {
         XCTAssertEqual(
-            CompanionMenuPresentation.statusBarTitle(
-                active: 0,
-                attention: 0,
-                todos: nil,
-                quota: nil,
-                todayTokens: .value(0)
-            ),
-            "0"
+            CompanionMenuPresentation.statusBarTitle(attention: 0, quota: nil, todayTokens: .value(387_000_000)),
+            "387M"
         )
         XCTAssertEqual(
-            CompanionMenuPresentation.statusBarTitle(
-                active: 1,
-                attention: 0,
-                todos: nil,
-                quota: nil,
-                todayTokens: .loading
-            ),
-            "进行 1"
-        )
-        XCTAssertEqual(
-            CompanionMenuPresentation.statusBarTitle(
-                active: 1,
-                attention: 0,
-                todos: nil,
-                quota: nil,
-                todayTokens: .unavailable("用量暂不可用")
-            ),
-            "进行 1"
+            CompanionMenuPresentation.statusBarTitle(attention: 3, quota: nil, todayTokens: .value(387_000_000)),
+            "待 3 · 387M"
         )
         XCTAssertEqual(
             CompanionMenuPresentation.statusBarTooltip(
@@ -157,17 +167,11 @@ final class MenuSummaryTests: XCTestCase {
         )
     }
 
-    func testStatusBarLimitPreservesQuotaAndTokenSuffix() throws {
+    func testStatusBarLimitPreservesQuotaWarning() throws {
         let quota = try decodeQuota(window: #""agent":"codex","window_minutes":300,"used_percent":92,"remaining_percent":8,"resets_at":4102444800,"observed_at":"now","stale":false,"reset_elapsed":false"#)
-        let todos = try JSONDecoder().decode(
-            CompanionTodos.self,
-            from: Data(#"{"items":[],"total":123456789,"truncated":true}"#.utf8)
-        )
 
         let title = CompanionMenuPresentation.statusBarTitle(
-            active: 99,
             attention: 123456789,
-            todos: todos,
             quota: quota,
             todayTokens: .value(387_000_000)
         )

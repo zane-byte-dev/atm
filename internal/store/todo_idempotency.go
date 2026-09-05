@@ -47,28 +47,3 @@ func (state *WorkStateTx) RecordTodoCreate(record TodoCreateRecord) error {
 		VALUES(?,?,?,?,?)`, record.Key, record.PayloadHash, record.TodoID, record.ResultJSON, record.CreatedAt)
 	return err
 }
-
-// migrateV54ToV55 adds the durable create-response ledger without backfilling:
-// older creates had no client key from which a retry identity could be inferred.
-func migrateV54ToV55(db *sql.DB) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, statement := range []string{
-		`CREATE TABLE IF NOT EXISTS work_create_idempotency (
-			idempotency_key TEXT PRIMARY KEY,
-			payload_hash    TEXT NOT NULL,
-			todo_id         TEXT NOT NULL,
-			result_json     TEXT NOT NULL,
-			created_at      INTEGER NOT NULL
-		)`,
-		`UPDATE schema_version SET version = 55`,
-	} {
-		if _, err := tx.Exec(statement); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}

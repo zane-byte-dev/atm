@@ -14,7 +14,7 @@ import (
 // filed it — which is what makes `todo list --creator` a real question.
 const (
 	// TodoCreatorMe is the human behind this installation, whether they typed
-	// `atm todo add` in a terminal or used the desktop app. Stored as a stable
+	// `atm todo add` in a terminal or used the browser workspace. Stored as a stable
 	// token rather than a name: config.OwnerName only decorates the display, so
 	// renaming yourself never rewrites a record.
 	TodoCreatorMe = "me"

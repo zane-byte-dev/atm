@@ -44,9 +44,6 @@ type QuotaInfo struct {
 	Products []QuotaProduct
 }
 
-// CodexQuotaInfo is a compatibility alias for QuotaInfo.
-type CodexQuotaInfo = QuotaInfo
-
 // codexQuotaCacheFresh mirrors the Grok live-quota cache policy: a reading
 // this young is served straight from disk, skipping the sessions-tree scan.
 const codexQuotaCacheFresh = 2 * time.Minute

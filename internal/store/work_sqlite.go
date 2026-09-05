@@ -358,7 +358,7 @@ type WorkStateTx struct {
 }
 
 // WorkEffectRecord is one durable request to update a projection outside the
-// WorkStateTx database (currently Todo Markdown and desktop notifications).
+// WorkStateTx database (currently Todo Markdown and user notifications).
 // Consumers must acknowledge a row only after applying its whole payload. A
 // failed or crashed delivery remains pending and may therefore run more than
 // once.
@@ -667,15 +667,6 @@ func (state *WorkStateTx) ArchiveTodos(ids []string) ([]string, error) {
 	return state.moveTodosOutOfWorkingSet(ids, false, "todo archived")
 }
 
-// TrashTodos moves todos of any lifecycle status out of the working set. Unlike
-// ArchiveTodos this is the recoverable counterpart of Delete: the lifecycle
-// state is preserved so RestoreTodos can put the exact task back. Any live
-// session binding is closed because an invisible todo must not remain the
-// session's current focus.
-func (state *WorkStateTx) TrashTodos(ids []string) ([]string, error) {
-	return state.ArchiveTodos(ids)
-}
-
 func (state *WorkStateTx) moveTodosOutOfWorkingSet(ids []string, requireClosed bool, unbindReason string) ([]string, error) {
 	now := time.Now().In(config.Loc).Unix()
 	archived := []string{}
@@ -699,9 +690,9 @@ func (state *WorkStateTx) moveTodosOutOfWorkingSet(ids []string, requireClosed b
 	return archived, nil
 }
 
-// UnarchiveTodos brings todos back into the working set. They reappear on the
-// next load, not in this snapshot.
-func (state *WorkStateTx) UnarchiveTodos(ids []string) ([]string, error) {
+// RestoreTodos brings archived todos back into the working set. They reappear
+// on the next load, not in this snapshot.
+func (state *WorkStateTx) RestoreTodos(ids []string) ([]string, error) {
 	restored := []string{}
 	for _, id := range ids {
 		if _, archived := ArchivedStatus(state.Todos, id); !archived {
@@ -714,13 +705,6 @@ func (state *WorkStateTx) UnarchiveTodos(ids []string) ([]string, error) {
 		restored = append(restored, id)
 	}
 	return restored, nil
-}
-
-// RestoreTodos is the product-language counterpart of UnarchiveTodos. Both
-// restore the same retained row; keeping the alias lets existing archive users
-// continue to use the older command vocabulary.
-func (state *WorkStateTx) RestoreTodos(ids []string) ([]string, error) {
-	return state.UnarchiveTodos(ids)
 }
 
 // PermanentlyDeleteTodos removes live or archived rows. Callers are responsible

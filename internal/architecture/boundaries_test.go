@@ -93,49 +93,6 @@ func TestApplicationPrimitivesRemainIndependent(t *testing.T) {
 	})
 }
 
-func TestIPCTransportDoesNotDependOnCobraOrCommands(t *testing.T) {
-	root, module := repository(t)
-	imports := scanProductionImports(t, root)
-	commandImport := module + "/internal/cmd"
-
-	assertNoImports(t, imports, func(item sourceImport) string {
-		if !withinPackageDir(item.packageDir, "ipc") {
-			return ""
-		}
-		switch {
-		case importWithin(item.path, cobraImport):
-			return fmt.Sprintf("%s imports Cobra %q", item.file, item.path)
-		case importWithin(item.path, commandImport):
-			return fmt.Sprintf("%s imports command adapter %q", item.file, item.path)
-		default:
-			return ""
-		}
-	})
-}
-
-func TestAppIPCCompositionDoesNotDependOnCommandAdapters(t *testing.T) {
-	root, module := repository(t)
-	imports := scanProductionImports(t, root)
-	commandImport := module + "/internal/cmd"
-	outputImport := module + "/internal/output"
-
-	assertNoImports(t, imports, func(item sourceImport) string {
-		if !withinPackageDir(item.packageDir, "appipc") {
-			return ""
-		}
-		switch {
-		case importWithin(item.path, cobraImport):
-			return fmt.Sprintf("%s imports Cobra %q", item.file, item.path)
-		case importWithin(item.path, commandImport):
-			return fmt.Sprintf("%s imports command adapter %q", item.file, item.path)
-		case importWithin(item.path, outputImport):
-			return fmt.Sprintf("%s imports command renderer %q", item.file, item.path)
-		default:
-			return ""
-		}
-	})
-}
-
 // Migrated adapters are kept on an explicit allowlist while the rest of cmd is
 // moved incrementally. Once a command file has a service boundary, importing
 // SQLite or store again would silently put orchestration back in Cobra.

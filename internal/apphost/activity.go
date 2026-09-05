@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -375,42 +376,38 @@ func activityUsage(ctx context.Context, call application.Call, input UsageInput)
 	return result, nil
 }
 
-func activityQuota(ctx context.Context, input CachedQuotaInput) (CachedQuota, error) {
-	if utf8.RuneCountInString(input.Agent) > 100 {
-		return CachedQuota{}, invalid("agent filter is too long")
-	}
-	now := time.Now().UTC()
+// readCachedQuotaHistory is the single database projection used by the Web and
+// menu companion. The quick variant only changes the connection's busy budget;
+// it does not change which rows are considered latest.
+func readCachedQuotaHistory(ctx context.Context, now time.Time, agent string, quick bool) (CachedQuota, error) {
 	result := CachedQuota{Source: "quota_history", GeneratedAt: now.Format(time.RFC3339), Windows: []CachedQuotaWindow{}}
-	db, err := store.OpenReadOnly()
+	open := store.OpenReadOnly
+	if quick {
+		open = store.OpenQuickReadOnly
+	}
+	db, err := open()
 	if errors.Is(err, store.ErrDatabaseMissing) {
 		return result, nil
 	}
 	if err != nil {
-		return result, unavailable(err)
+		return result, err
 	}
 	defer db.Close()
 	if err := store.BoundReadWait(ctx, db, 200*time.Millisecond); err != nil {
-		return result, unavailable(err)
-	}
-	var exists int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'quota_history'`).Scan(&exists); err != nil {
-		return result, unavailable(err)
-	}
-	if exists == 0 {
-		return result, nil
+		return result, err
 	}
 	// Fixed local table, no provider process or transcript discovery. Keep the
 	// observation unchanged after reset: expired readings are unknown, not zero.
-	rows, err := db.QueryContext(ctx, `SELECT q.agent, q.window_minutes, q.used_percent, q.resets_at, q.ts FROM quota_history q JOIN (SELECT agent, window_minutes, MAX(ts) ts FROM quota_history GROUP BY agent, window_minutes) latest USING (agent, window_minutes, ts) WHERE (? = '' OR q.agent = ?) ORDER BY q.agent, q.window_minutes LIMIT 100`, input.Agent, input.Agent)
+	rows, err := db.QueryContext(ctx, `SELECT q.agent, q.window_minutes, q.used_percent, q.resets_at, q.ts FROM quota_history q JOIN (SELECT agent, window_minutes, MAX(ts) ts FROM quota_history GROUP BY agent, window_minutes) latest USING (agent, window_minutes, ts) WHERE (? = '' OR q.agent = ?) ORDER BY q.agent, q.window_minutes LIMIT 100`, agent, agent)
 	if err != nil {
-		return result, unavailable(err)
+		return result, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item CachedQuotaWindow
 		var ts int64
 		if err := rows.Scan(&item.Agent, &item.WindowMinutes, &item.UsedPercent, &item.ResetsAt, &ts); err != nil {
-			return result, unavailable(err)
+			return result, err
 		}
 		item.ObservedAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
 		item.Stale = now.Sub(time.Unix(ts, 0)) > store.DefaultSyncStaleAfter
@@ -421,63 +418,84 @@ func activityQuota(ctx context.Context, input CachedQuotaInput) (CachedQuota, er
 }
 
 func (h *Host) cachedQuota(ctx context.Context, input CachedQuotaInput) (CachedQuota, error) {
-	result, err := activityQuota(ctx, input)
+	if utf8.RuneCountInString(input.Agent) > 100 {
+		return CachedQuota{}, invalid("agent filter is too long")
+	}
+	result, _, err := h.readCachedQuotaSources(ctx, time.Now().UTC(), strings.TrimSpace(input.Agent), false)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return CachedQuota{}, ctxErr
+	}
 	if err != nil {
-		return result, err
+		return result, unavailable(err)
 	}
-	// This is only the explicitly produced runtime cache. A page read never
-	// starts a quota provider, and historical windows stay as a fallback for
-	// agents omitted by a targeted refresh.
-	cache, err := background.ReadQuotaCache(h.dataDir)
-	if err != nil {
-		return result, nil
+	return result, nil
+}
+
+// readCachedQuotaSources reads history and the explicitly refreshed runtime
+// cache independently. Either source is enough to serve a read; when both are
+// available, mergeCachedQuota resolves each window by observation time.
+func (h *Host) readCachedQuotaSources(ctx context.Context, now time.Time, agent string, quick bool) (CachedQuota, *background.QuotaCache, error) {
+	history, historyErr := readCachedQuotaHistory(ctx, now, agent, quick)
+	cache, cacheErr := background.ReadQuotaCache(h.dataDir)
+	if historyErr != nil && cacheErr != nil {
+		return CachedQuota{}, nil, errors.Join(historyErr, cacheErr)
 	}
-	now := time.Now().UTC()
-	index := make(map[string]map[int]int)
-	for i, window := range result.Windows {
-		if index[window.Agent] == nil {
-			index[window.Agent] = make(map[int]int)
-		}
-		index[window.Agent][window.WindowMinutes] = i
+	if historyErr != nil {
+		return runtimeCachedQuota(cache, now, agent), &cache, nil
 	}
-	agents := make([]string, 0, len(cache.Snapshot.Agents))
-	for agent := range cache.Snapshot.Agents {
-		agents = append(agents, agent)
+	if cacheErr != nil {
+		return history, nil, nil
 	}
-	sort.Strings(agents)
-	used := false
-	for _, agent := range agents {
-		if input.Agent != "" && input.Agent != agent {
+	return mergeCachedQuota(history, runtimeCachedQuota(cache, now, agent)), &cache, nil
+}
+
+func runtimeCachedQuota(cache background.QuotaCache, now time.Time, filterAgent string) CachedQuota {
+	result := CachedQuota{Source: "runtime_quota_cache", GeneratedAt: cache.UpdatedAt, Windows: []CachedQuotaWindow{}}
+	for agent, value := range cache.Snapshot.Agents {
+		if value == nil || (filterAgent != "" && agent != filterAgent) {
 			continue
 		}
 		observed, err := time.Parse(time.RFC3339, cache.UpdatedAtFor(agent))
 		if err != nil || observed.After(now.Add(time.Minute)) {
 			continue
 		}
-		agentQuota := cache.Snapshot.Agents[agent]
-		for _, window := range agentQuota.Windows() {
-			if window.WindowMinutes <= 0 {
+		for _, window := range value.Windows() {
+			if window == nil || window.WindowMinutes <= 0 {
 				continue
 			}
-			next := CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: agentQuota.Source, Plan: agentQuota.Plan, Trend: quotaTrendDTO(window.Trend)}
-			if existing, ok := index[agent][window.WindowMinutes]; ok {
-				prior, _ := time.Parse(time.RFC3339, result.Windows[existing].ObservedAt)
-				if !observed.Before(prior) {
-					result.Windows[existing] = next
-					used = true
-				}
-			} else if len(result.Windows) < 100 {
-				if index[agent] == nil {
-					index[agent] = make(map[int]int)
-				}
-				index[agent][window.WindowMinutes] = len(result.Windows)
-				result.Windows = append(result.Windows, next)
-				used = true
-			}
+			result.Windows = append(result.Windows, CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: value.Source, Plan: value.Plan, Trend: quotaTrendDTO(window.Trend)})
 		}
 	}
-	if used {
-		result.Source = "runtime_quota_cache"
+	return result
+}
+
+// mergeCachedQuota selects the latest observation for each agent/window. Both
+// browser and companion consumers must use this exact precedence rule.
+func mergeCachedQuota(history, runtime CachedQuota) CachedQuota {
+	result := history
+	index := make(map[string]int, len(result.Windows))
+	for i, window := range result.Windows {
+		index[window.Agent+"\x00"+strconv.Itoa(window.WindowMinutes)] = i
+	}
+	usedRuntime := false
+	for _, window := range runtime.Windows {
+		key := window.Agent + "\x00" + strconv.Itoa(window.WindowMinutes)
+		if at, ok := index[key]; ok {
+			observed, observedErr := time.Parse(time.RFC3339, window.ObservedAt)
+			prior, priorErr := time.Parse(time.RFC3339, result.Windows[at].ObservedAt)
+			if observedErr != nil || (priorErr == nil && observed.Before(prior)) {
+				continue
+			}
+			result.Windows[at] = window
+			usedRuntime = true
+		} else if len(result.Windows) < 100 {
+			index[key] = len(result.Windows)
+			result.Windows = append(result.Windows, window)
+			usedRuntime = true
+		}
+	}
+	if usedRuntime {
+		result.Source, result.GeneratedAt = runtime.Source, runtime.GeneratedAt
 	}
 	sort.Slice(result.Windows, func(i, j int) bool {
 		if result.Windows[i].Agent != result.Windows[j].Agent {
@@ -485,7 +503,7 @@ func (h *Host) cachedQuota(ctx context.Context, input CachedQuotaInput) (CachedQ
 		}
 		return result.Windows[i].WindowMinutes < result.Windows[j].WindowMinutes
 	})
-	return result, nil
+	return result
 }
 
 func syncHealthDTO(value store.SyncHealth) SyncHealth {

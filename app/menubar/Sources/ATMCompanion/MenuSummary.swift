@@ -7,6 +7,14 @@ struct CompanionMenuRow: Equatable {
 }
 
 enum CompanionMenuPresentation {
+    private static let quotaRowLimit = 3
+
+    static func serviceTitle(active: Int, attention: Int) -> String {
+        var parts = ["服务运行中", "\(max(0, active)) 个会话"]
+        if attention > 0 { parts.append("\(attention) 项待处理") }
+        return parts.joined(separator: " · ")
+    }
+
     static func taskRows(_ todos: CompanionTodos?) -> [CompanionMenuRow] {
         guard let todos else { return [] }
         return todos.items.prefix(5).map { todo in
@@ -20,7 +28,7 @@ enum CompanionMenuPresentation {
 
     static func quotaRows(_ quota: CompanionQuota?, now: Date = Date()) -> [CompanionMenuRow] {
         guard let quota else { return [] }
-        return quota.windows.prefix(12).map { window in
+        return quota.windows.prefix(quotaRowLimit).map { window in
             let agent = agentDisplayName(window.agent)
             let title = window.windowMinutes > 0 ? "\(agent) · \(quotaWindowName(window.windowMinutes))" : agent
             let usage: String
@@ -61,23 +69,15 @@ enum CompanionMenuPresentation {
         return "Agent 额度 · \(Set(quota.windows.map(\.agent)).count)"
     }
 
-    /// A deliberately short readout for crowded menu bars. The task and
-    /// attention counts carry the actionable state; the quota suffix uses the
-    /// most consumed live window, matching the legacy app's exhaustion rule.
+    /// Keep the ordinary state to today's compact Token total. Attention and
+    /// quota warnings may expand it, while task/session counts stay in the menu.
     static func statusBarTitle(
-        active: Int,
         attention: Int,
-        todos: CompanionTodos?,
         quota: CompanionQuota?,
         todayTokens: TodayTokenMenuState
     ) -> String {
         var leadingParts: [String] = []
         if attention > 0 { leadingParts.append("待 \(attention)") }
-        if let total = todos?.total, total > 0 {
-            leadingParts.append("任务 \(total)")
-        } else if active > 0 {
-            leadingParts.append("进行 \(active)")
-        }
 
         var suffixParts: [String] = []
         if let window = tightestQuotaWindow(quota), displayPercent(window) >= 75 {
@@ -118,8 +118,8 @@ enum CompanionMenuPresentation {
         window.resetElapsed ? 0 : min(max(window.usedPercent ?? 0, 0), 100)
     }
 
-    /// Keep the stable quota and usage suffix intact when an unusually large
-    /// task count would otherwise push it past the menu bar's compact budget.
+    /// Keep the quota warning and Token suffix intact when an unusually large
+    /// attention count would otherwise push it past the compact budget.
     private static func boundedStatusBarTitle(leading: [String], suffix: [String], limit: Int = 42) -> String {
         let separator = " · "
         let leadingText = leading.joined(separator: separator)

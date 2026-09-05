@@ -287,131 +287,6 @@ func TestRecentlyArchivedCollectionItemRemainsInLimitedOverview(t *testing.T) {
 	}
 }
 
-func TestMigrateV46AddsCollectionItemArchiveState(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DROP INDEX idx_collection_items_archived`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE collection_items DROP COLUMN archived_at`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version=46`); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	db, err = Open()
-	if err != nil {
-		t.Fatalf("migrate v46: %v", err)
-	}
-	defer db.Close()
-	var version, columns int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('collection_items') WHERE name='archived_at'`).Scan(&columns); err != nil {
-		t.Fatal(err)
-	}
-	if version != SchemaVersion || columns != 1 {
-		t.Fatalf("version=%d archived_at columns=%d", version, columns)
-	}
-}
-
-func TestMigrateV43MarksHistoricalCollectionItemsRead(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "read-migration", Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, _, err := PutCollectionItem(db, CollectionItem{
-		SourceID: source.ID, Connector: "test", Fingerprint: "historical",
-		MessageIDs: []string{"m1"}, Action: "insight", Status: "processed",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`DROP INDEX idx_collection_items_unread`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE collection_items DROP COLUMN read_at`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`UPDATE schema_version SET version=43`); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-
-	db, err = Open()
-	if err != nil {
-		t.Fatalf("migrate v43: %v", err)
-	}
-	defer db.Close()
-	migrated, err := GetCollectionItem(db, item.ID)
-	if err != nil || migrated.ReadAt == 0 {
-		t.Fatalf("historical item was not marked read: %+v err=%v", migrated, err)
-	}
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil || version != SchemaVersion {
-		t.Fatalf("version=%d err=%v", version, err)
-	}
-}
-
-func TestMigrateV42AddsExplicitKnowledgeSaveLink(t *testing.T) {
-	withTempStore(t)
-	db, err := Open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := UpsertCollectionSource(db, CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "migration", Enabled: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	item, _, err := PutCollectionItem(db, CollectionItem{
-		SourceID: source.ID, Connector: "test", Fingerprint: "migration-item",
-		MessageIDs: []string{"m1"}, Action: "insight", Status: "processed", Summary: "保留的结论",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, statement := range []string{
-		`ALTER TABLE collection_items DROP COLUMN knowledge_document_id`,
-		`ALTER TABLE collection_items DROP COLUMN knowledge_collection`,
-		`UPDATE schema_version SET version=42`,
-	} {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatalf("prepare v42: %v", err)
-		}
-	}
-	db.Close()
-
-	db, err = Open()
-	if err != nil {
-		t.Fatalf("migrate v42: %v", err)
-	}
-	defer db.Close()
-	var version int
-	if err := db.QueryRow(`SELECT version FROM schema_version`).Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	migrated, err := GetCollectionItem(db, item.ID)
-	if err != nil || version != SchemaVersion || migrated.Summary != "保留的结论" ||
-		migrated.KnowledgeDocumentID != "" || migrated.KnowledgeCollection != "" {
-		t.Fatalf("version=%d item=%+v err=%v", version, migrated, err)
-	}
-}
-
 func TestCollectionOverviewKeepsLatestRunForEverySource(t *testing.T) {
 	withTempStore(t)
 	db, err := Open()
@@ -522,7 +397,7 @@ func TestCollectionItemsFollowTheirTodoThroughItsLifecycle(t *testing.T) {
 		t.Fatalf("finish todo: %v", err)
 	}
 
-	// Every read path, because the App reads the overview and the collector reads
+	// Every read path, because the browser reads the overview and the collector reads
 	// single records — one of them silently missing the join would be worse than
 	// none of them having it.
 	reread, err := GetCollectionItem(db, filed.ID)

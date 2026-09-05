@@ -58,18 +58,18 @@ type Runtime struct {
 	// Banners at or below this sequence were already queued when the user
 	// disabled notifications. Keep rejecting them after a rapid re-enable.
 	suppressedFallbackThrough uint64
-	closed                      bool
-	stop                        chan struct{}
-	changed                     chan struct{}
-	deliver                     chan Notification
-	wg                          sync.WaitGroup
-	closeOnce                   sync.Once
-	closeErr                    error
+	closed                    bool
+	stop                      chan struct{}
+	changed                   chan struct{}
+	deliver                   chan Notification
+	wg                        sync.WaitGroup
+	closeOnce                 sync.Once
+	closeErr                  error
 }
 
 // Start refuses a live socket, takes OS locks for both the data directory and
-// socket path, then publishes the permanent Go ownership choice. It never starts
-// an old App, scans transcripts, migrates a database, or sends startup banners.
+// socket path, then publishes the permanent Go ownership choice. It never scans
+// transcripts, migrates a database, or sends startup banners.
 func Start(opts Options) (_ *Runtime, err error) {
 	if strings.TrimSpace(opts.DataDir) == "" {
 		return nil, errors.New("presence requires a data directory")
@@ -219,8 +219,8 @@ func (r *Runtime) Close() error {
 		r.mu.Unlock()
 		r.wg.Wait()
 		r.removeOwnSocket()
-		// Ownership is a user migration choice. Keep it after shutdown so an old
-		// App cannot silently resume its timers/socket during a Go restart.
+		// Ownership is a durable runtime choice. Keep it after shutdown so a stale
+		// ATM runtime cannot silently resume its timers/socket during a Go restart.
 		r.owner.Running = false
 		r.owner.ExpiresAt = r.opts.Now().UTC()
 		r.closeErr = r.writeOwner()

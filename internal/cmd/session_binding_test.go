@@ -89,12 +89,13 @@ func TestSessionBindingDrivesCurrentTodoCommands(t *testing.T) {
 	oldSession, oldJSON := sessionIDFlag, jsonOutput
 	oldAgent, oldProject, oldCWD := sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag
 	oldMatchProject, oldMatchLimit, oldMatchPrompt := todoMatchProjectFlag, todoMatchLimitFlag, todoMatchPromptFlag
-	oldLogSection, oldWake := todoLogSectionFlag, todoWaitWakeFlag
+	oldLogSection, oldWake := todoLogSectionFlag, todoEditWakeFlag
 	t.Cleanup(func() {
 		sessionIDFlag, jsonOutput = oldSession, oldJSON
 		sessionBindAgentFlag, sessionBindProjectFlag, sessionBindCWDFlag = oldAgent, oldProject, oldCWD
 		todoMatchProjectFlag, todoMatchLimitFlag, todoMatchPromptFlag = oldMatchProject, oldMatchLimit, oldMatchPrompt
-		todoLogSectionFlag, todoWaitWakeFlag = oldLogSection, oldWake
+		todoLogSectionFlag, todoEditWakeFlag = oldLogSection, oldWake
+		todoEditCmd.Flags().Lookup("wake").Changed = false
 	})
 	sessionIDFlag = "session-binding-test"
 	jsonOutput = false
@@ -148,12 +149,13 @@ func TestSessionBindingDrivesCurrentTodoCommands(t *testing.T) {
 		t.Fatalf("current log doc = %q, err=%v", doc, err)
 	}
 
-	todoWaitWakeFlag = "external approval"
-	if err := runTodoWait(todoWaitCmd, nil); err != nil {
-		t.Fatalf("current wait: %v", err)
+	todoEditWakeFlag = "external approval"
+	todoEditCmd.Flags().Lookup("wake").Changed = true
+	if err := runTodoEdit(todoEditCmd, []string{"t1"}); err != nil {
+		t.Fatalf("current edit waiting metadata: %v", err)
 	}
 	current, err := store.CurrentTodoBinding(sessionIDFlag)
-	if err != nil || current != nil {
+	if err != nil || current == nil || current.TodoID != "t1" {
 		t.Fatalf("binding after wait = %#v, err=%v", current, err)
 	}
 }

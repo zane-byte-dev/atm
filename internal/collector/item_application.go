@@ -38,7 +38,7 @@ type SaveConclusionInput struct {
 	Collection string `json:"collection,omitempty"`
 }
 
-// ItemResult is shared by CLI and future typed IPC adapters. Keeping the
+// ItemResult is shared by CLI and Web adapters. Keeping the
 // result explicit leaves room for after-commit events without changing the
 // persisted CollectionItem shape or the CLI's existing JSON output.
 type ItemResult struct {

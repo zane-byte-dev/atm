@@ -42,7 +42,7 @@ type Service struct {
 	sources    func() []string
 }
 
-// Default is shared by the CLI and the desktop bridge.
+// Default is shared by the CLI and browser workspace host.
 var Default = NewService(ServiceOptions{})
 
 func NewService(options ServiceOptions) Service {
@@ -65,8 +65,8 @@ func NewService(options ServiceOptions) Service {
 }
 
 // RegistrationInput narrows the work to one agent. Empty means every agent ATM
-// knows how to wire up, which is what both the CLI default and the desktop
-// settings pane ask for.
+// knows how to wire up, which is what both the CLI default and the browser
+// workspace ask for.
 type RegistrationInput struct {
 	Source string `json:"source,omitempty"`
 }
@@ -81,7 +81,6 @@ type Registration struct {
 	Missing   []string `json:"missing,omitempty"`
 	Added     []string `json:"added,omitempty"`
 	Removed   []string `json:"removed,omitempty"`
-	Conflicts []string `json:"conflicts,omitempty"`
 	// Manual is set for agents that load an extension instead of reading a hooks
 	// config file, where there is nothing for ATM to write.
 	Manual string `json:"manual,omitempty"`
@@ -98,8 +97,8 @@ type RegistrationReport struct {
 // Install registers ATM's reporting hooks with the selected agents.
 //
 // Deliberately not gated to a human at the CLI edge the way Guard installation
-// is: wiring the notch up is exactly what the desktop settings pane exists to
-// do, and every hook installed here is a reporting hook that cannot block a tool
+// is: wiring live activity up is exactly what the browser workspace asks for,
+// and every hook installed here is a reporting hook that cannot block a tool
 // call or change a permission decision. There is nothing to escalate to.
 func (service Service) Install(
 	ctx context.Context, call application.Call, input RegistrationInput,
@@ -217,7 +216,6 @@ func registerSource(action RegistrationAction, source, home, executable string) 
 
 	entry.Path = result.Path
 	entry.Installed = result.Kept
-	entry.Conflicts = result.Conflicts
 	if action == ActionStatus {
 		// Status borrows Added to mean "not registered yet".
 		entry.Missing = result.Added

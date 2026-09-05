@@ -52,8 +52,8 @@ type ProviderCard struct {
 	ObservedAt string `json:"observed_at"`
 	Source     string `json:"source,omitempty"`
 	// Where this reading came from, so a card can send the reader to the page
-	// that owns the number instead of only showing it. http(s) only: the App
-	// hands this to the system browser.
+	// that owns the number instead of only showing it. Only http(s) links are
+	// handed to the browser.
 	URL     string           `json:"url,omitempty"`
 	Metrics []ProviderMetric `json:"metrics"`
 	// Set by ATM, never by a provider: this is the last card the provider
@@ -240,7 +240,7 @@ func callProvider(parent context.Context, providerID string,
 }
 
 // filterProviderMetrics applies the user's display preference before the
-// cards reach either CLI output or the App. Metric IDs are provider-defined and
+// cards reach either CLI output or the browser workspace. Metric IDs are provider-defined and
 // stable; cards with no selected metrics disappear instead of rendering empty.
 func filterProviderMetrics(providerID string, visible []string,
 	cards []ProviderCard) ([]ProviderCard, error) {
@@ -280,8 +280,8 @@ func filterProviderMetrics(providerID string, visible []string,
 	return filtered, nil
 }
 
-// validateProviderCardURL keeps a card's link to something a browser can
-// open. The App passes it to NSWorkspace, so a provider bug — or a hand-edited
+// validateProviderCardURL keeps a card's link to something a browser can open.
+// A provider bug — or a hand-edited
 // quota_provider_cards.json, which comes back through this same function — must
 // not be able to launch a file:// path or a custom scheme handler.
 func validateProviderCardURL(raw string) error {

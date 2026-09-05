@@ -37,7 +37,7 @@ func TestStatsJSONShapesAcrossGroups(t *testing.T) {
 
 	for _, group := range []string{
 		"", "model", "model-day", "model-hour", "skill", "session",
-		"session-usage", "request", "speed", "day", "hour", "wrapped",
+		"request", "speed", "day", "hour", "wrapped",
 	} {
 		t.Run(groupName(group), func(t *testing.T) {
 			statsByFlag = group
@@ -121,7 +121,7 @@ func TestStatsJSONRowsExposeCacheSafeTokenBreakdown(t *testing.T) {
 		t.Fatal("request stats are empty")
 	}
 	for _, key := range []string{
-		"input_tokens", "fresh_input_tokens", "cache_create_tokens", "cache_read_tokens",
+		"fresh_input_tokens", "cache_create_tokens", "cache_read_tokens",
 		"total_input_tokens", "total_tokens", "cost_estimated", "pricing_source",
 		"sampled_requests", "untimed_requests", "out_of_window_requests",
 	} {

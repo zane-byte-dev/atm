@@ -63,8 +63,10 @@ grep -Fq 'checksums_url="https://github.com/${REPO}/releases/download/${tag}/che
 grep -Fq 'actual_checksum" = "$expected_checksum' install.sh
 
 if [ "$(uname -s)" = "Darwin" ]; then
-  ATM_CONTRACT_EXECUTABLE="$BUILD_ROOT/atm-web" swift test --package-path app/macos
-  swift build --package-path app/macos -c release
+  swift test --package-path app/menubar
+  swift build --package-path app/menubar -c release
+  swift test --package-path app/voice
+  swift build --package-path app/voice -c release
 fi
 
 printf '%s\n' "release contract check passed"

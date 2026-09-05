@@ -961,6 +961,124 @@
     max-height: 3em;
   }
 }
+
+/* Native macOS parity: the mode header belongs to the navigator, not the page. */
+.collection-workspace {
+  position: relative;
+}
+.collection-heading {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  left: 0;
+  width: var(--navigator-width);
+  min-height: 64px;
+  padding: 14px 13px;
+  border-right: 1px solid var(--line);
+  background: var(--canvas);
+}
+.collection-heading h1 {
+  display: none;
+}
+.collection-heading-main {
+  flex: 1;
+}
+.collection-mode-switch {
+  width: fit-content;
+}
+.collection-heading .workspace-actions {
+  flex-wrap: nowrap;
+  gap: 3px;
+}
+.collection-heading .workspace-actions .button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  overflow: hidden;
+  border-color: transparent;
+  background: transparent;
+  font-size: 0;
+}
+.collection-heading .workspace-actions .button:hover {
+  background: var(--row-hover);
+}
+.collection-heading .workspace-actions .button svg {
+  width: 15px;
+  height: 15px;
+}
+.collection-metrics,
+.collection-background {
+  display: none;
+}
+.collection-view-items .collection-results,
+.collection-view-sources .collection-sources,
+.collection-view-history .collection-sources {
+  padding-top: 64px;
+}
+.collection-sources,
+.collection-results {
+  background: var(--canvas);
+}
+.collection-detail-bar {
+  display: none;
+}
+.collection-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0 16px;
+  min-height: 108px;
+  padding: 17px 24px 18px;
+}
+.collection-detail-meta {
+  grid-column: 1;
+  grid-row: 1;
+  min-height: 28px;
+}
+.collection-detail-header h2 {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  max-height: none;
+  margin: 8px 0 0;
+}
+.collection-detail-header > .collection-muted {
+  grid-column: 1 / -1;
+  grid-row: 3;
+  margin-top: 5px;
+}
+.collection-actions {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+  flex-wrap: nowrap;
+  margin: 0;
+}
+.collection-actions .button {
+  min-height: 28px;
+  padding: 4px 8px;
+}
+
+@media (max-width: 900px) {
+  .collection-heading {
+    width: 100%;
+    border-right: 0;
+  }
+  .collection-view-items .collection-results,
+  .collection-view-sources .collection-sources,
+  .collection-view-history .collection-sources {
+    padding-top: 64px;
+  }
+  .collection-detail-bar {
+    display: flex;
+  }
+  .collection-detail-header {
+    display: block;
+    min-height: 0;
+  }
+  .collection-actions {
+    margin-top: 12px;
+  }
+}
 @media (max-height: 680px) {
   .collection-workspace {
     padding-top: 12px;
@@ -977,5 +1095,286 @@
   }
   .collection-detail-header h2 {
     max-height: 3em;
+  }
+}
+
+/* Unified object workspace: navigator beside a calm reading canvas. */
+.collection-workspace {
+  max-width: none;
+  padding: 0;
+  background: var(--canvas);
+}
+.collection-heading {
+  min-height: 64px;
+  margin: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  flex-wrap: nowrap;
+}
+.collection-heading-main {
+  gap: 14px;
+}
+.collection-heading h1 {
+  font-size: 17px;
+  font-weight: 560;
+  letter-spacing: -0.1px;
+}
+.collection-mode-switch {
+  padding: 3px;
+  border-radius: 9px;
+}
+.collection-mode-switch button {
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 7px;
+}
+.collection-metrics {
+  margin: 12px 14px 0;
+  border-radius: 10px;
+}
+.collection-background {
+  margin: 9px 14px 11px;
+}
+.collection-layout,
+.has-selection .collection-layout,
+.collection-view-sources .collection-layout,
+.collection-view-history .collection-layout {
+  grid-template-columns: var(--navigator-width) minmax(0, 1fr);
+  border: 0;
+  border-radius: 0;
+  background: var(--canvas);
+}
+.collection-results,
+.collection-sources {
+  background: var(--list-pane);
+  border-right: 1px solid var(--line);
+}
+.collection-results-heading {
+  min-height: 47px;
+  padding: 12px 13px 0;
+}
+.collection-results-heading h2 {
+  font-size: 13px;
+  font-weight: 560;
+}
+.collection-search {
+  height: 34px;
+  margin: 10px 13px 7px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: var(--surface);
+}
+.collection-tabs {
+  gap: 2px;
+  margin: 0 13px 5px;
+  padding: 3px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--soft);
+}
+.collection-tabs button {
+  flex: 1;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--muted);
+}
+.collection-tabs button[aria-pressed='true'] {
+  border: 0;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 1px 4px var(--shadow-color);
+  font-weight: 540;
+}
+.collection-count {
+  padding: 6px 16px;
+  font-size: 11px;
+}
+.collection-item-list {
+  padding: 0 8px 10px;
+}
+.collection-item {
+  margin-bottom: 3px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 10px;
+}
+.collection-item.selected {
+  background: var(--content-selected);
+  box-shadow: none;
+}
+
+.collection-item {
+  transition: background 100ms ease-out;
+}
+.collection-item:hover:not(.selected) {
+  background: var(--row-hover);
+}
+.collection-item h3 {
+  margin: 6px 0 4px;
+  font-size: 13px;
+  font-weight: 520;
+  line-height: 1.42;
+}
+.collection-item > p {
+  margin: 3px 0 6px;
+  font-size: 11px;
+  line-height: 1.45;
+  -webkit-line-clamp: 1;
+}
+.collection-item-top,
+.collection-item-meta,
+.collection-kind,
+.collection-item time {
+  font-size: 11px;
+}
+.collection-detail {
+  background: var(--canvas);
+}
+.collection-detail-bar {
+  min-height: 39px;
+  padding: 0 24px;
+  background: var(--surface);
+}
+.collection-detail-header {
+  padding: 17px 24px 18px;
+  background: var(--surface);
+}
+.collection-detail h2 {
+  max-width: 780px;
+  margin: 9px 0 6px;
+  font-size: 20px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+.collection-actions {
+  margin-top: 12px;
+}
+.collection-detail-scroll {
+  flex: 0 1 auto;
+  max-width: 900px;
+  width: calc(100% - 48px);
+  min-height: 0;
+  max-height: calc(100% - 132px);
+  height: fit-content;
+  margin: 12px 24px 24px;
+  padding: 18px 20px 22px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px #00000009;
+}
+.collection-detail-section {
+  margin: 0;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+}
+.collection-detail-section:last-child {
+  border-bottom: 0;
+}
+.collection-detail:not(:has(.collection-detail-header)) .collection-detail-scroll {
+  max-height: calc(100% - 24px);
+}
+.collection-detail-scroll > .collection-empty:only-child {
+  flex: none;
+  min-height: 180px;
+}
+.collection-results,
+.collection-sources,
+.collection-item-list,
+.collection-detail-scroll {
+  scrollbar-width: none;
+}
+.collection-results::-webkit-scrollbar,
+.collection-sources::-webkit-scrollbar,
+.collection-item-list::-webkit-scrollbar,
+.collection-detail-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+@media (max-width: 900px) {
+  .collection-workspace {
+    padding: 0;
+  }
+  .collection-layout,
+  .has-selection .collection-layout {
+    display: flex;
+  }
+  .collection-detail-scroll {
+    width: calc(100% - 32px);
+    margin: 10px 16px 18px;
+  }
+}
+
+@media (max-width: 560px) {
+  .collection-heading {
+    padding: 10px;
+  }
+  .collection-heading .workspace-actions .button {
+    padding-inline: 7px;
+  }
+  .collection-heading .workspace-actions .button:not(:last-child) {
+    display: none;
+  }
+}
+
+/* Match the native grouped navigator's continuous list surface. */
+.collection-heading,
+.collection-results,
+.collection-sources,
+.collection-pagination {
+  background: var(--list-pane);
+}
+.collection-heading {
+  padding-inline: 20px;
+}
+.collection-mode-switch,
+.collection-tabs {
+  background: var(--segment-track);
+}
+.collection-item.selected {
+  background: var(--content-selected);
+  box-shadow: none;
+}
+
+/* Keep the idle detail state as a compact reading sheet instead of stretching it
+   into an otherwise empty canvas. Content-bearing details retain their normal
+   intrinsic height and overflow behavior. */
+.collection-detail > .collection-detail-scroll:has(> .collection-empty:only-child) {
+  box-sizing: border-box;
+  flex: 0 0 180px;
+  height: 180px;
+  min-height: 180px;
+  max-height: 180px;
+  padding: 0 20px;
+  overflow: auto;
+}
+.collection-detail
+  > .collection-detail-scroll:has(> .collection-empty:only-child)
+  > .collection-empty {
+  flex: 1 1 auto;
+  height: 100%;
+  min-height: 0;
+  padding: 20px;
+}
+
+@media (max-width: 900px) {
+  /* At compact widths the navigator header participates in layout. Reserving
+     the same 64px again as list padding produced a large dead band above the
+     source filters. */
+  .collection-heading {
+    position: relative;
+    inset: auto;
+    flex-shrink: 0;
+  }
+  .collection-view-items .collection-results {
+    padding-top: 0;
+  }
+  .collection-view-sources .collection-sources,
+  .collection-view-history .collection-sources {
+    padding-top: 8px;
   }
 }

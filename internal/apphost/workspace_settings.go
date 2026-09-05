@@ -2,7 +2,6 @@ package apphost
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -124,12 +123,6 @@ func workspaceSettingsReadError(message string, cause error) error {
 	return application.WrapError(application.CodeUnavailable, message, cause)
 }
 
-func workspaceHasTable(ctx context.Context, db *sql.DB, name string) (bool, error) {
-	var count int
-	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&count)
-	return count > 0, err
-}
-
 func (h *Host) AIDaySnapshot(ctx context.Context, call application.Call, input AIDayRangeInput) (AIDaySnapshot, error) {
 	h.gate.RLock()
 	defer h.gate.RUnlock()
@@ -150,13 +143,6 @@ func (h *Host) AIDaySnapshot(ctx context.Context, call application.Call, input A
 	}
 	defer db.Close()
 	result.Indexed = true
-	exists, err := workspaceHasTable(ctx, db, "ai_day_results")
-	if err != nil {
-		return result, workspaceSettingsReadError("AI Day data could not be read", err)
-	}
-	if !exists {
-		return result, nil
-	}
 	// The range query is bounded and avoids loading/recomputing every day's
 	// coverage and percentiles just to render the history picker.
 	rows, err := db.QueryContext(ctx, `SELECT f.day,r.state,r.title,r.explanation,r.concept_id,r.origin,
@@ -275,13 +261,6 @@ func (h *Host) AIDayLedger(ctx context.Context, call application.Call, input AID
 		return result, workspaceSettingsReadError("AI Day events could not be read", err)
 	}
 	defer db.Close()
-	exists, err := workspaceHasTable(ctx, db, "ai_day_events")
-	if err != nil {
-		return result, workspaceSettingsReadError("AI Day events could not be read", err)
-	}
-	if !exists {
-		return result, nil
-	}
 	start, end := day.Unix(), day.AddDate(0, 0, 1).Unix()
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ai_day_events WHERE occurred_at>=? AND occurred_at<?`, start, end).Scan(&result.Total); err != nil {
 		return result, workspaceSettingsReadError("AI Day events could not be read", err)

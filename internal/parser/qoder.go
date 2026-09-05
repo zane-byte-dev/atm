@@ -87,7 +87,7 @@ func qoderIsSubagent(db *sql.DB, sid string) bool {
 // did not have. Tool calls stay put for the same reason — the parent already
 // counts the one call that did the delegating, and the child's calls are that
 // call's internals, not additional work at this level.
-func qoderAddSubagentUsage(db *sql.DB, sid string, usage *Usage) {
+func qoderAddSubagentUsage(db *sql.DB, sid string, usage *Usage, usageEvents *[]UsageEvent) {
 	if !qoderHasColumn(db, "chat_session", "parent_session_id") {
 		return
 	}
@@ -97,39 +97,78 @@ func qoderAddSubagentUsage(db *sql.DB, sid string, usage *Usage) {
 			SELECT c.session_id FROM chat_session c
 				JOIN descendants d ON c.parent_session_id = d.id
 		)
-		SELECT m.token_info, m.model_info FROM chat_message m
+		SELECT m.id, m.gmt_create, m.token_info, m.model_info FROM chat_message m
 			WHERE m.session_id IN (SELECT id FROM descendants)
-				AND m.token_info IS NOT NULL AND m.token_info != ''`, sid)
+				AND m.token_info IS NOT NULL AND m.token_info != ''
+			ORDER BY m.gmt_create, m.id`, sid)
 	if err != nil {
 		return
 	}
 	defer rows.Close()
 
 	for rows.Next() {
+		var messageID string
+		var msgTS int64
 		var tokenInfo, modelInfo sql.NullString
-		if rows.Scan(&tokenInfo, &modelInfo) != nil {
+		if rows.Scan(&messageID, &msgTS, &tokenInfo, &modelInfo) != nil {
 			continue
 		}
-		var ti struct {
-			PromptTokens     int64 `json:"prompt_tokens"`
-			CompletionTokens int64 `json:"completion_tokens"`
-			CachedTokens     int64 `json:"cached_tokens"`
-		}
-		if json.Unmarshal([]byte(tokenInfo.String), &ti) != nil {
+		event, ok := qoderUsageEvent(messageID, msgTS, tokenInfo, modelInfo)
+		if !ok {
 			continue
 		}
-		usage.InputTokens += ti.PromptTokens - ti.CachedTokens
-		usage.OutputTokens += ti.CompletionTokens
-		usage.CacheReadTokens += ti.CachedTokens
-		usage.RequestCount++
-		if modelInfo.Valid && modelInfo.String != "" && usage.Model == "" {
-			var mi struct {
-				ModelKey string `json:"model_key"`
-			}
-			if json.Unmarshal([]byte(modelInfo.String), &mi) == nil && mi.ModelKey != "" {
-				usage.Model = "qoder-" + mi.ModelKey
-			}
+		qoderAddUsageEvent(usage, event)
+		*usageEvents = append(*usageEvents, event)
+	}
+}
+
+// qoderUsageEvent maps the billing payload attached to one chat_message onto
+// the request that produced it. Qoder stores gmt_create in milliseconds and id
+// is the table's primary key, so together they provide honest event time and a
+// stable identity across full re-parses of the virtual qoder:// source.
+func qoderUsageEvent(messageID string, msgTS int64, tokenInfo, modelInfo sql.NullString) (UsageEvent, bool) {
+	if !tokenInfo.Valid || tokenInfo.String == "" {
+		return UsageEvent{}, false
+	}
+	var ti struct {
+		PromptTokens     int64 `json:"prompt_tokens"`
+		CompletionTokens int64 `json:"completion_tokens"`
+		CachedTokens     int64 `json:"cached_tokens"`
+	}
+	if json.Unmarshal([]byte(tokenInfo.String), &ti) != nil {
+		return UsageEvent{}, false
+	}
+	model := ""
+	if modelInfo.Valid && modelInfo.String != "" {
+		var mi struct {
+			ModelKey string `json:"model_key"`
 		}
+		if json.Unmarshal([]byte(modelInfo.String), &mi) == nil && mi.ModelKey != "" {
+			model = "qoder-" + mi.ModelKey
+		}
+	}
+	fingerprint := ""
+	if messageID != "" {
+		fingerprint = "qoder:" + messageID
+	}
+	return UsageEvent{
+		Model:           model,
+		TS:              msgTS / 1000,
+		InputTokens:     ti.PromptTokens - ti.CachedTokens,
+		OutputTokens:    ti.CompletionTokens,
+		CacheReadTokens: ti.CachedTokens,
+		Fingerprint:     fingerprint,
+	}, true
+}
+
+func qoderAddUsageEvent(usage *Usage, event UsageEvent) {
+	usage.InputTokens += event.InputTokens
+	usage.OutputTokens += event.OutputTokens
+	usage.CacheCreateTokens += event.CacheCreateTokens
+	usage.CacheReadTokens += event.CacheReadTokens
+	usage.RequestCount++
+	if usage.Model == "" && event.Model != "" {
+		usage.Model = event.Model
 	}
 }
 
@@ -168,7 +207,7 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 		shortID = shortID[:8]
 	}
 
-	rows, err := db.Query(`SELECT role, content, token_info, model_info, gmt_create
+	rows, err := db.Query(`SELECT id, role, content, token_info, model_info, gmt_create
 		FROM chat_message WHERE session_id = ? ORDER BY gmt_create`, sid)
 	if err != nil {
 		return nil
@@ -183,14 +222,16 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 	// against 154 replies on a real database, of which the pairing would keep 27.
 	var messages []TranscriptMessage
 	var usage Usage
+	var usageEvents []UsageEvent
 	var lastTS int64
 	tools := map[string]int{}
 
 	for rows.Next() {
+		var messageID string
 		var role string
 		var content, tokenInfo, modelInfo sql.NullString
 		var msgTS int64
-		if rows.Scan(&role, &content, &tokenInfo, &modelInfo, &msgTS) != nil {
+		if rows.Scan(&messageID, &role, &content, &tokenInfo, &modelInfo, &msgTS) != nil {
 			continue
 		}
 		ts := msgTS / 1000
@@ -223,26 +264,9 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 			tools["tool_call"]++
 		}
 
-		if tokenInfo.Valid && tokenInfo.String != "" {
-			var ti struct {
-				PromptTokens     int64 `json:"prompt_tokens"`
-				CompletionTokens int64 `json:"completion_tokens"`
-				CachedTokens     int64 `json:"cached_tokens"`
-			}
-			if json.Unmarshal([]byte(tokenInfo.String), &ti) == nil {
-				usage.InputTokens += ti.PromptTokens - ti.CachedTokens
-				usage.OutputTokens += ti.CompletionTokens
-				usage.CacheReadTokens += ti.CachedTokens
-				usage.RequestCount++
-			}
-		}
-		if modelInfo.Valid && modelInfo.String != "" && usage.Model == "" {
-			var mi struct {
-				ModelKey string `json:"model_key"`
-			}
-			if json.Unmarshal([]byte(modelInfo.String), &mi) == nil && mi.ModelKey != "" {
-				usage.Model = "qoder-" + mi.ModelKey
-			}
+		if event, ok := qoderUsageEvent(messageID, msgTS, tokenInfo, modelInfo); ok {
+			qoderAddUsageEvent(&usage, event)
+			usageEvents = append(usageEvents, event)
 		}
 	}
 
@@ -250,7 +274,7 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 	// against a row of its own, and that row is no longer indexed, so without the
 	// rollup those tokens would go unreported by every caller: 1.8M prompt tokens
 	// across five subagent rows on a live database.
-	qoderAddSubagentUsage(db, sid, &usage)
+	qoderAddSubagentUsage(db, sid, &usage, &usageEvents)
 
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 && len(inputs) == 0 {
 		return nil
@@ -263,20 +287,21 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 	}
 
 	return &ParsedFile{
-		SessionID: sid,
-		ShortID:   shortID,
-		Agent:     "qoder",
-		Project:   config.CanonicalProject(project),
-		CreatedAt: createdAt,
-		CreatedTS: createdTS,
-		LastTS:    lastTS,
-		Summary:   title,
-		Inputs:    inputs,
-		Outputs:   outputs,
-		Messages:  messages,
-		Tools:     tools,
-		Usage:     usage,
-		EndOffset: endOffset,
+		SessionID:   sid,
+		ShortID:     shortID,
+		Agent:       "qoder",
+		Project:     config.CanonicalProject(project),
+		CreatedAt:   createdAt,
+		CreatedTS:   createdTS,
+		LastTS:      lastTS,
+		Summary:     title,
+		Inputs:      inputs,
+		Outputs:     outputs,
+		Messages:    messages,
+		Tools:       tools,
+		Usage:       usage,
+		UsageEvents: usageEvents,
+		EndOffset:   endOffset,
 	}
 }
 
@@ -321,7 +346,7 @@ func QoderLiveSessions(maxAge time.Duration) []Session {
 		}
 		// Qoder's hook payload carries the full session_id while SessionID is
 		// truncated for display, so the untruncated one goes in ResumeID — the
-		// field the notch joins hook events on.
+		// field the activity feed joins hook events on.
 		sessions = append(sessions, Session{
 			Tool:       "Qoder",
 			Project:    config.CanonicalProject(project),

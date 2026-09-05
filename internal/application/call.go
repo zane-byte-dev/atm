@@ -33,10 +33,9 @@ type Origin string
 
 const (
 	OriginCLI Origin = "cli"
-	OriginIPC Origin = "ipc"
 	OriginWeb Origin = "web"
 	// OriginNativeControl is reserved for adapters that have authenticated the
-	// per-instance native control capability. Merely reaching a local IPC or HTTP
+	// per-instance native control capability. Merely reaching a local HTTP
 	// transport is not enough to derive this origin.
 	OriginNativeControl Origin = "native_control"
 	OriginController    Origin = "controller"
@@ -46,7 +45,7 @@ const (
 // Valid reports whether origin is one of the stable application origins.
 func (origin Origin) Valid() bool {
 	switch origin {
-	case OriginCLI, OriginIPC, OriginWeb, OriginNativeControl, OriginController, OriginHook:
+	case OriginCLI, OriginWeb, OriginNativeControl, OriginController, OriginHook:
 		return true
 	default:
 		return false

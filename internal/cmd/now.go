@@ -17,7 +17,6 @@ type nowSummary struct {
 	InProgress  int `json:"in_progress"`
 	Waiting     int `json:"waiting"`
 	Review      int `json:"review"`
-	Blocked     int `json:"blocked"`
 	Due         int `json:"due"`
 	Maintenance int `json:"maintenance"`
 }
@@ -28,7 +27,6 @@ type nowView struct {
 	Working     []store.Todo `json:"working"`
 	Waiting     []store.Todo `json:"waiting"`
 	Review      []store.Todo `json:"review"`
-	Blocked     []store.Todo `json:"blocked"`
 	Due         []store.Todo `json:"due"`
 	Summary     nowSummary   `json:"summary"`
 }
@@ -67,7 +65,6 @@ func buildNowView(tf *store.TodoFile, now time.Time) nowView {
 		Working:     []store.Todo{},
 		Waiting:     []store.Todo{},
 		Review:      []store.Todo{},
-		Blocked:     []store.Todo{},
 		Due:         []store.Todo{},
 	}
 
@@ -81,8 +78,8 @@ func buildNowView(tf *store.TodoFile, now time.Time) nowView {
 			if t.ReviewAt != "" && t.ReviewAt <= today {
 				view.Due = append(view.Due, t)
 			} else if strings.TrimSpace(t.WakeCondition) != "" || t.ReviewAt != "" {
-				// Compatibility projection for clients that render waiting attention.
-				// The same Todo remains present in Working and counts as in_progress.
+				// Waiting is an attention projection of in-progress work, not a
+				// separate lifecycle state.
 				view.Waiting = append(view.Waiting, t)
 			}
 		case store.TodoStatusReview:
@@ -92,7 +89,7 @@ func buildNowView(tf *store.TodoFile, now time.Time) nowView {
 		}
 	}
 
-	for _, items := range [][]store.Todo{view.Working, view.Review, view.Blocked, view.Due, view.Waiting, view.Open} {
+	for _, items := range [][]store.Todo{view.Working, view.Review, view.Due, view.Waiting, view.Open} {
 		sortTodosForWork(items)
 	}
 	maintenance := 0
@@ -106,7 +103,6 @@ func buildNowView(tf *store.TodoFile, now time.Time) nowView {
 		InProgress:  len(view.Working),
 		Waiting:     len(view.Waiting),
 		Review:      len(view.Review),
-		Blocked:     0,
 		Due:         len(view.Due),
 		Maintenance: maintenance,
 	}
@@ -144,10 +140,9 @@ func printNow(view nowView) {
 		fmt.Println("  none")
 	}
 
-	needsAction := len(view.Review) + len(view.Blocked) + len(view.Due)
+	needsAction := len(view.Review) + len(view.Due)
 	fmt.Printf("\nNeeds action (%d)\n", needsAction)
 	printNowTodos("review", view.Review)
-	printNowTodos("blocked", view.Blocked)
 	printNowTodos("due", view.Due)
 	if needsAction == 0 {
 		fmt.Println("  none")

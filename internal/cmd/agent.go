@@ -14,19 +14,19 @@ import (
 
 var agentCmd = &cobra.Command{
 	Use:   "agent",
-	Short: "Wire AI agents into the ATM notch",
+	Short: "Wire AI agents into ATM's live activity feed",
 	Args:  noSubcommandArgs,
 	RunE:  showHelp,
 }
 
 var agentHookCmd = &cobra.Command{
 	Use:   "hook",
-	Short: "Forward one agent hook event to the ATM notch",
-	Long: `Reads a hook payload on stdin and forwards it to the running ATM app.
+	Short: "Forward one agent hook event to ATM's live activity feed",
+	Long: `Reads a hook payload on stdin and forwards it to the running ATM service.
 
 Meant to be invoked by an agent's hook system, not by hand. It never writes to
 stdout and always exits 0, so installing it cannot change how the agent behaves:
-if the app is not running the event is simply dropped.
+if the service is not running the event is simply dropped.
 
   atm agent hook --source claude < payload.json`,
 	// This one both forwards an event and parents install/status/uninstall, so a
@@ -69,7 +69,7 @@ func init() {
 
 var agentHookInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Register ATM's notch hooks with an agent",
+	Short: "Register ATM's activity hooks with an agent",
 	Long: `Adds ATM's hooks to the agent's own config, leaving every other entry alone.
 
 Only reporting hooks are installed: none of them can block a tool call or change
@@ -82,7 +82,7 @@ a permission decision, so the agent behaves exactly as before.`,
 
 var agentHookUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "Remove ATM's notch hooks from an agent",
+	Short: "Remove ATM's activity hooks from an agent",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runHookRegistration(cmd, agentevent.ActionUninstall)
@@ -91,7 +91,7 @@ var agentHookUninstallCmd = &cobra.Command{
 
 var agentHookStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show which notch hooks are registered",
+	Short: "Show which activity hooks are registered",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		return runHookRegistration(cmd, agentevent.ActionStatus)
@@ -139,7 +139,7 @@ func runHookRegistration(cmd *cobra.Command, action agentevent.RegistrationActio
 }
 
 func printHookRegistrationReport(writer io.Writer, report agentevent.RegistrationReport) {
-	fmt.Fprintf(writer, "notch socket: %s\n", report.SocketPath)
+	fmt.Fprintf(writer, "presence socket: %s\n", report.SocketPath)
 	for _, entry := range report.Sources {
 		fmt.Fprintf(writer, "\n%s\n", entry.Source)
 		if entry.Manual != "" {
@@ -167,11 +167,6 @@ func printHookRegistrationReport(writer io.Writer, report agentevent.Registratio
 			if len(entry.Added) == 0 && len(entry.Removed) == 0 && len(entry.Installed) == 0 {
 				fmt.Fprintf(writer, "  no change\n")
 			}
-		}
-		for _, conflict := range entry.Conflicts {
-			// Worth saying out loud: another tool already answers this event, so
-			// in-notch approval would mean two prompts racing for one decision.
-			fmt.Fprintf(writer, "  note: another tool owns %s\n", conflict)
 		}
 	}
 }

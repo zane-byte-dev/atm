@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,7 +163,7 @@ func TestCollectStatusReportsWhetherFiledTodosAreStillOpen(t *testing.T) {
 	}
 }
 
-func TestCollectStatusMigratesV25DatabaseBeforeReading(t *testing.T) {
+func TestCollectStatusRejectsOldSchemaBeforeReading(t *testing.T) {
 	withTempAtmDir(t)
 	oldJSON, oldLimit := jsonOutput, collectLimit
 	t.Cleanup(func() {
@@ -172,17 +173,6 @@ func TestCollectStatusMigratesV25DatabaseBeforeReading(t *testing.T) {
 	db, err := store.Open()
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := store.UpsertCollectionSource(db, store.CollectionSource{
-		Connector: "test", Kind: "group", ExternalID: "cid-old-v25",
-		Name: "old v25 source", Priority: "P2", Enabled: true,
-	}); err != nil {
-		db.Close()
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`ALTER TABLE collection_sources DROP COLUMN exclude_pattern`); err != nil {
-		db.Close()
-		t.Fatalf("prepare v25 collection_sources: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE schema_version SET version = 25`); err != nil {
 		db.Close()
@@ -194,21 +184,21 @@ func TestCollectStatusMigratesV25DatabaseBeforeReading(t *testing.T) {
 
 	jsonOutput, collectLimit = true, 20
 	var runErr error
-	statusJSON := captureStdout(t, func() {
+	statusOut := captureStdout(t, func() {
 		runErr = collectStatusCmd.RunE(collectStatusCmd, nil)
 	})
-	if runErr != nil {
-		t.Fatalf("collect status against v25 database: %v", runErr)
+	foundSchemaError := false
+	for cause := runErr; cause != nil; cause = errors.Unwrap(cause) {
+		if strings.Contains(cause.Error(), "database schema v25 is no longer supported") {
+			foundSchemaError = true
+			break
+		}
 	}
-	var status struct {
-		Summary store.CollectionSummary  `json:"summary"`
-		Sources []store.CollectionSource `json:"sources"`
+	if runErr == nil || !foundSchemaError {
+		t.Fatalf("collect status against v25 database error = %v", runErr)
 	}
-	if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
-		t.Fatalf("decode status: %v\n%s", err, statusJSON)
-	}
-	if status.Summary.Sources != 1 || len(status.Sources) != 1 || status.Sources[0].ExternalID != "cid-old-v25" {
-		t.Fatalf("unexpected migrated status: %+v", status)
+	if statusOut != "" {
+		t.Fatalf("old schema produced partial output: %q", statusOut)
 	}
 }
 

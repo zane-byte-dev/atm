@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,28 @@ func TestNormalizeProcessTTY(t *testing.T) {
 func TestStatusSessionRetentionMatchesPrimaryAgentHistoryWindow(t *testing.T) {
 	if statusSessionRetention != 30*time.Minute {
 		t.Fatalf("statusSessionRetention = %s, want 30m", statusSessionRetention)
+	}
+}
+
+func TestStatusTextRendersTheCanonicalSnapshot(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	snapshot := statusSnapshot{
+		GeneratedAt: now,
+		View: statusView{
+			Time: "20:00:00",
+			Sessions: []statusSessionView{{
+				Tool: "Codex", SessionID: "canonical-session", Project: "atm",
+				AgeSeconds: 20 * 60, Model: "gpt-test", PID: "42",
+				FirstQ: "canonical question", Tools: []string{"read", "read"},
+			}},
+		},
+		OtherProcesses: []aiProcess{{PID: "77", Name: "claude", StartTime: now.Add(-time.Minute)}},
+	}
+	out := captureStdout(t, func() { renderStatusText(snapshot) })
+	for _, want := range []string{"20:00:00", "canonical", "canonical question", "PID 42", "read×2", "PID 77"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("status text = %q, want %q", out, want)
+		}
 	}
 }
 

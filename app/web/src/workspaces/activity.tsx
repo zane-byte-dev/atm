@@ -7,12 +7,12 @@ import {
   Bot,
   Clock3,
   MessageSquare,
-  RefreshCw,
   Search,
   X,
 } from 'lucide-react'
 import { call } from '../api'
 import { Markdown, Notice } from '../editor'
+import { QueryLoading } from '../query-loading'
 import type { Bootstrap } from '../types'
 import type {
   CachedQuota,
@@ -124,6 +124,7 @@ function PageControls({
   offset,
   limit,
   total,
+  pending = false,
   maxOffset = 10000,
   onChange,
   label = '条记录',
@@ -131,6 +132,7 @@ function PageControls({
   offset: number
   limit: number
   total: number
+  pending?: boolean
   maxOffset?: number
   onChange: (offset: number) => void
   label?: string
@@ -138,15 +140,17 @@ function PageControls({
   return (
     <div className="activity-pagination">
       <span>
-        {total
-          ? `${int(offset + 1)}–${int(Math.min(offset + limit, total))} / ${int(total)} ${label}`
-          : `0 ${label}`}
+        {pending
+          ? `— ${label}`
+          : total
+            ? `${int(offset + 1)}–${int(Math.min(offset + limit, total))} / ${int(total)} ${label}`
+            : `0 ${label}`}
       </span>
       <button
         type="button"
         className="button subtle"
         aria-label="上一页"
-        disabled={!offset}
+        disabled={pending || !offset}
         onClick={() => onChange(Math.max(0, offset - limit))}
       >
         <ArrowLeft size={14} />
@@ -155,7 +159,7 @@ function PageControls({
         type="button"
         className="button subtle"
         aria-label="下一页"
-        disabled={offset + limit >= total || offset + limit > maxOffset}
+        disabled={pending || offset + limit >= total || offset + limit > maxOffset}
         onClick={() => onChange(offset + limit)}
       >
         <ArrowRight size={14} />
@@ -224,7 +228,7 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
     enabled: !!selected,
   })
   const active = query ? search : list
-  const total = (query ? search.data?.total : list.data?.total) || 0
+  const total = query ? search.data?.total : list.data?.total
   const items: (SessionSummary & { snippet?: string; role?: string })[] = query
     ? (search.data?.matches || []).map((row) => ({
         ...row,
@@ -233,12 +237,6 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
         role: row.role,
       }))
     : list.data?.sessions || []
-  const refresh = () => {
-    void status.refetch()
-    void active.refetch()
-    if (selected) void detail.refetch()
-  }
-
   return (
     <section className="activity-workspace activity-agents" aria-label="Agent 和会话">
       <div className="activity-heading">
@@ -252,10 +250,6 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
             kinds={['session.sync']}
             actions={[{ input: { kind: 'session.sync', ...(agent ? { agent } : {}) } }]}
           />
-          <button type="button" className="button" onClick={refresh} disabled={active.isFetching}>
-            <RefreshCw size={15} className={active.isFetching ? 'spin' : ''} />
-            刷新
-          </button>
         </div>
       </div>
       {status.data && (
@@ -402,13 +396,15 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
           <div className="activity-panel-heading">
             <h2>{query ? '搜索结果' : '最近会话'}</h2>
             <span>
-              {int(total)} {query ? '条匹配' : '个会话'}
+              {active.isPending ? '—' : int(total ?? 0)} {query ? '条匹配' : '个会话'}
             </span>
           </div>
           {active.isPending && (
-            <div className="activity-loading" role="status">
-              正在读取会话…
-            </div>
+            <QueryLoading
+              className="activity-loading"
+              text="正在读取会话…"
+              onRetry={() => void active.refetch()}
+            />
           )}
           {active.isError && <Notice error={active.error} retry={() => void active.refetch()} />}
           {active.isSuccess && !items.length && (
@@ -462,11 +458,12 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
           <PageControls
             offset={offset}
             limit={limit}
-            total={total}
+            total={total ?? 0}
+            pending={active.isPending}
             maxOffset={query ? 1000 : 10000}
             onChange={(value) => update({ offset: String(value) })}
           />
-          {query && offset + limit > 1000 && total > offset + limit && (
+          {query && offset + limit > 1000 && (total ?? 0) > offset + limit && (
             <p className="activity-source-note">匹配较多，请缩小关键词或时间范围继续查看。</p>
           )}
         </section>
@@ -486,9 +483,11 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
                 返回会话列表
               </button>
               {detail.isPending && (
-                <div className="activity-loading" role="status">
-                  正在读取对话…
-                </div>
+                <QueryLoading
+                  className="activity-loading"
+                  text="正在读取对话…"
+                  onRetry={() => void detail.refetch()}
+                />
               )}
               {detail.isError && (
                 <Notice error={detail.error} retry={() => void detail.refetch()} />
@@ -543,67 +542,69 @@ function Conversation({
             </button>
           )}
         </div>
-        <div className="activity-conversation-meta">
-          {(data.final_result || data.latest_progress) && (
-            <details className="activity-result">
-              <summary>最近结果与进展</summary>
-              <Markdown text={data.final_result || data.latest_progress || ''} />
-            </details>
-          )}
-          {!!tools.length && (
-            <details className="activity-tools">
-              <summary>
-                {tools.length} 种工具 · {int(tools.reduce((sum, row) => sum + row[1], 0))} 次调用
-              </summary>
-              <div>
-                {tools.map(([name, count]) => (
-                  <span className="activity-tool" key={name}>
-                    {name}
-                    <b>{int(count)}</b>
-                  </span>
-                ))}
-              </div>
-            </details>
-          )}
-        </div>
-        {data.content_truncated && (
-          <div className="activity-inline-note" role="status">
-            本页包含较长内容，每轮最多展示 16,000 字符。
-          </div>
-        )}
-        {!data.qa.length && (
-          <EmptyActivity title={data.offset ? '这一页没有可展示的问答' : '还没有可展示的问答'}>
-            {data.content_state === 'metadata_only'
-              ? '该会话目前只有元数据，后续索引可能补充对话内容。'
-              : '当前索引没有保存这个范围的可见对话。'}
-          </EmptyActivity>
-        )}
-        <div className="activity-transcript">
-          {data.qa.map((qa) => (
-            <article className="activity-turn" key={qa.turn}>
-              <div className="activity-turn-label">第 {qa.turn} 轮</div>
-              {qa.q && (
-                <div className="activity-message user">
-                  <span>你</span>
-                  <Markdown text={qa.q} />
-                </div>
-              )}
-              {!!qa.progress?.length && (
-                <details className="activity-progress">
-                  <summary>{qa.progress.length} 条过程记录</summary>
-                  {qa.progress.map((text, i) => (
-                    <Markdown key={i} text={text} />
+        <div className="activity-conversation-surface">
+          <div className="activity-conversation-meta">
+            {(data.final_result || data.latest_progress) && (
+              <details className="activity-result">
+                <summary>最近结果与进展</summary>
+                <Markdown text={data.final_result || data.latest_progress || ''} />
+              </details>
+            )}
+            {!!tools.length && (
+              <details className="activity-tools">
+                <summary>
+                  {tools.length} 种工具 · {int(tools.reduce((sum, row) => sum + row[1], 0))} 次调用
+                </summary>
+                <div>
+                  {tools.map(([name, count]) => (
+                    <span className="activity-tool" key={name}>
+                      {name}
+                      <b>{int(count)}</b>
+                    </span>
                   ))}
-                </details>
-              )}
-              {qa.a && (
-                <div className="activity-message assistant">
-                  <span>{agentName(data.agent)}</span>
-                  <Markdown text={qa.a} />
                 </div>
-              )}
-            </article>
-          ))}
+              </details>
+            )}
+          </div>
+          {data.content_truncated && (
+            <div className="activity-inline-note" role="status">
+              本页包含较长内容，每轮最多展示 16,000 字符。
+            </div>
+          )}
+          {!data.qa.length && (
+            <EmptyActivity title={data.offset ? '这一页没有可展示的问答' : '还没有可展示的问答'}>
+              {data.content_state === 'metadata_only'
+                ? '该会话目前只有元数据，后续索引可能补充对话内容。'
+                : '当前索引没有保存这个范围的可见对话。'}
+            </EmptyActivity>
+          )}
+          <div className="activity-transcript">
+            {data.qa.map((qa) => (
+              <article className="activity-turn" key={qa.turn}>
+                <div className="activity-turn-label">第 {qa.turn} 轮</div>
+                {qa.q && (
+                  <div className="activity-message user">
+                    <span>你</span>
+                    <Markdown text={qa.q} />
+                  </div>
+                )}
+                {!!qa.progress?.length && (
+                  <details className="activity-progress">
+                    <summary>{qa.progress.length} 条过程记录</summary>
+                    {qa.progress.map((text, i) => (
+                      <Markdown key={i} text={text} />
+                    ))}
+                  </details>
+                )}
+                {qa.a && (
+                  <div className="activity-message assistant">
+                    <span>{agentName(data.agent)}</span>
+                    <Markdown text={qa.a} />
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
         </div>
       </div>
       <PageControls
@@ -719,12 +720,6 @@ export function UsageWorkspace({ boot }: { boot: Bootstrap }) {
     [scoped?.summary],
   )
   const days = scoped?.days || []
-  const refresh = () => {
-    void snapshot.refetch()
-    void quota.refetch()
-    void status.refetch()
-  }
-
   return (
     <section className="activity-workspace activity-usage" aria-label="用量和统计">
       <div className="activity-heading">
@@ -738,10 +733,6 @@ export function UsageWorkspace({ boot }: { boot: Bootstrap }) {
             kinds={['quota.refresh']}
             actions={[{ input: { kind: 'quota.refresh', ...(agent ? { agent } : {}) } }]}
           />
-          <button type="button" className="button" onClick={refresh} disabled={snapshot.isFetching}>
-            <RefreshCw size={15} className={snapshot.isFetching ? 'spin' : ''} />
-            刷新记录
-          </button>
         </div>
       </div>
       <div className="activity-usage-filters">
@@ -869,9 +860,11 @@ export function UsageWorkspace({ boot }: { boot: Bootstrap }) {
       ) : snapshot.isError ? (
         <Notice error={snapshot.error} retry={() => void snapshot.refetch()} />
       ) : snapshot.isPending ? (
-        <div className="activity-loading" role="status">
-          正在汇总用量…
-        </div>
+        <QueryLoading
+          className="activity-loading"
+          text="正在汇总用量…"
+          onRetry={() => void snapshot.refetch()}
+        />
       ) : (
         data && (
           <>
@@ -978,9 +971,11 @@ export function UsageWorkspace({ boot }: { boot: Bootstrap }) {
           <span className="activity-tag">本地记录</span>
         </div>
         {quota.isPending && (
-          <div className="activity-loading" role="status">
-            正在读取额度记录…
-          </div>
+          <QueryLoading
+            className="activity-loading"
+            text="正在读取额度记录…"
+            onRetry={() => void quota.refetch()}
+          />
         )}
         {quota.isError && <Notice error={quota.error} retry={() => void quota.refetch()} />}
         {quota.isSuccess && !quota.data.windows.length && (

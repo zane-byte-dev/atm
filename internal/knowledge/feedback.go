@@ -1,27 +1,12 @@
 package knowledge
 
 import (
-	"context"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/store"
 )
-
-func RecordFeedback(dataDir string, input FeedbackInput) (*FeedbackEvent, error) {
-	event, err := NewService(ServiceOptions{DataDir: dataDir}).Feedback(context.Background(), input)
-	if err != nil {
-		return nil, err
-	}
-	return &event, nil
-}
-
-// RecordRetrievals takes no data directory: the hits already carry the document
-// IDs, so nothing needs to be read back from the corpus.
-func RecordRetrievals(sessionID, query string, hits []SearchHit) error {
-	return (sqliteFeedbackStore{}).Record(retrievalFeedbackEvents(time.Now(), sessionID, query, hits))
-}
 
 func retrievalFeedbackEvents(now time.Time, sessionID, query string, hits []SearchHit) []FeedbackEvent {
 	sessionID = strings.TrimSpace(sessionID)

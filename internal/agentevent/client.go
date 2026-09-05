@@ -24,11 +24,11 @@ const DeliverTimeout = 400 * time.Millisecond
 // "invalid argument" from bind/connect, so check it here and say why.
 const maxSocketPathLength = 103
 
-// SocketPath returns the notch socket path.
+// SocketPath returns the presence socket path.
 //
 // The socket lives under ~/.atm rather than /tmp on purpose: /tmp is
 // world-writable, so any local process could pre-create the path and receive
-// events (which carry prompt and reply text) meant for the notch.
+// events (which carry prompt and reply text) meant for the presence runtime.
 func SocketPath() string {
 	if override := os.Getenv(SocketEnvVar); override != "" {
 		return override
@@ -51,12 +51,12 @@ func CheckSocketPath(path string) error {
 	return nil
 }
 
-// Deliver sends one envelope to the notch.
+// Deliver sends one envelope to the presence runtime.
 //
-// Every failure mode is the caller's cue to do nothing: the app is not running,
-// the socket file is stale, the listener is wedged. None of them are the agent's
-// problem, so callers report success regardless — see the CLI command, which
-// exits 0 and writes nothing to stdout no matter what happens here.
+// Every failure mode is the caller's cue to do nothing: the runtime is not
+// running, the socket file is stale, or the listener is wedged. None of them are
+// the agent's problem, so callers report success regardless — see the CLI
+// command, which exits 0 and writes nothing to stdout no matter what happens.
 func Deliver(envelope Envelope) error {
 	line, err := envelope.Line()
 	if err != nil {

@@ -14,7 +14,7 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
-func changeTrackerFixture(t *testing.T, tracked bool) (string, *sql.DB, *ChangeTracker) {
+func changeTrackerFixture(t *testing.T) (string, *sql.DB, *ChangeTracker) {
 	t.Helper()
 	dir := t.TempDir()
 	db, err := sql.Open("sqlite", filepath.Join(dir, "atm.db"))
@@ -27,18 +27,16 @@ func changeTrackerFixture(t *testing.T, tracked bool) (string, *sql.DB, *ChangeT
 			t.Fatal(err)
 		}
 	}
-	if tracked {
-		tx, err := db.Begin()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := store.InstallWorkspaceChangeTracking(tx); err != nil {
-			tx.Rollback()
-			t.Fatal(err)
-		}
-		if err := tx.Commit(); err != nil {
-			t.Fatal(err)
-		}
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InstallWorkspaceChangeTracking(tx); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	tracker := NewChangeTracker(dir)
 	t.Cleanup(tracker.Close)
@@ -86,42 +84,24 @@ func externalTodoCommit(t *testing.T, dir string) {
 	}
 }
 
-func TestChangeTrackerPinnedConnectionDetectsExternalProcessCommits(t *testing.T) {
-	for _, tracked := range []bool{false, true} {
-		name := "legacy data_version"
-		if tracked {
-			name = "tracked domains"
+func TestChangeTrackerDetectsExternalProcessCommits(t *testing.T) {
+	dir, _, tracker := changeTrackerFixture(t)
+	before := fingerprintsForTest(t, tracker, "todos", "sessions")
+	for i := 0; i < 3; i++ {
+		externalTodoCommit(t, dir)
+		after := fingerprintsForTest(t, tracker, "todos", "sessions")
+		if before["todos"] == after["todos"] {
+			t.Fatalf("missed external commit %d: before=%v after=%v", i, before, after)
 		}
-		t.Run(name, func(t *testing.T) {
-			dir, _, tracker := changeTrackerFixture(t, tracked)
-			before := fingerprintsForTest(t, tracker, "todos", "sessions")
-			pinned := tracker.conn
-			if pinned == nil {
-				t.Fatal("fingerprints did not pin a connection")
-			}
-			// Idle pool recycling cannot substitute a new connection whose
-			// PRAGMA data_version starts with an unrelated baseline.
-			tracker.db.SetMaxIdleConns(0)
-			for i := 0; i < 3; i++ {
-				externalTodoCommit(t, dir)
-				after := fingerprintsForTest(t, tracker, "todos", "sessions")
-				if before["todos"] == after["todos"] {
-					t.Fatalf("missed external commit %d: before=%v after=%v", i, before, after)
-				}
-				if tracked && before["sessions"] != after["sessions"] {
-					t.Fatalf("todo commit invalidated sessions: before=%v after=%v", before, after)
-				}
-				if tracker.conn != pinned {
-					t.Fatal("data_version reader switched connections")
-				}
-				before = after
-			}
-		})
+		if before["sessions"] != after["sessions"] {
+			t.Fatalf("todo commit invalidated sessions: before=%v after=%v", before, after)
+		}
+		before = after
 	}
 }
 
 func TestChangeTrackerIgnoresTelemetryAndRolledBackWrites(t *testing.T) {
-	_, db, tracker := changeTrackerFixture(t, true)
+	_, db, tracker := changeTrackerFixture(t)
 	before := fingerprintsForTest(t, tracker, "todos", "sessions", "usage", "knowledge")
 	if _, err := db.Exec(`INSERT INTO cli_invocations(value) VALUES ('read-only CLI telemetry')`); err != nil {
 		t.Fatal(err)
@@ -153,7 +133,7 @@ func TestChangeTrackerIgnoresTelemetryAndRolledBackWrites(t *testing.T) {
 }
 
 func TestChangeTrackerHashesSameLengthEditsAndAtomicReplacement(t *testing.T) {
-	dir, _, tracker := changeTrackerFixture(t, true)
+	dir, _, tracker := changeTrackerFixture(t)
 	docs := filepath.Join(dir, "knowledge")
 	if err := os.MkdirAll(docs, 0700); err != nil {
 		t.Fatal(err)
@@ -284,9 +264,9 @@ func TestWorkspaceHashIgnoresHiddenDocumentsAndDirectories(t *testing.T) {
 }
 
 func TestChangeTrackerCancellationAndCloseReleaseConnection(t *testing.T) {
-	_, _, tracker := changeTrackerFixture(t, true)
+	_, _, tracker := changeTrackerFixture(t)
 	fingerprintsForTest(t, tracker, "todos")
-	connection := tracker.conn
+	database := tracker.db
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := tracker.Fingerprints(ctx, []string{"todos"}); !errors.Is(err, context.Canceled) {
@@ -294,7 +274,7 @@ func TestChangeTrackerCancellationAndCloseReleaseConnection(t *testing.T) {
 	}
 	tracker.Close()
 	tracker.Close()
-	if err := connection.QueryRowContext(context.Background(), `SELECT 1`).Scan(new(int)); !errors.Is(err, sql.ErrConnDone) {
+	if err := database.QueryRowContext(context.Background(), `SELECT 1`).Scan(new(int)); err == nil {
 		t.Fatalf("close left connection usable: %v", err)
 	}
 }

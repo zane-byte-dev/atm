@@ -16,7 +16,7 @@ func TestActorKindAndOriginValidity(t *testing.T) {
 	}
 
 	for _, origin := range []Origin{
-		OriginCLI, OriginIPC, OriginWeb, OriginNativeControl, OriginController, OriginHook,
+		OriginCLI, OriginWeb, OriginNativeControl, OriginController, OriginHook,
 	} {
 		if !origin.Valid() {
 			t.Errorf("Origin(%q).Valid() = false", origin)
@@ -51,7 +51,7 @@ func TestCallValidateReturnsTypedFieldErrors(t *testing.T) {
 	}{
 		{
 			name:  "request id",
-			call:  Call{Actor: Actor{Kind: ActorHuman, Origin: OriginIPC}},
+			call:  Call{Actor: Actor{Kind: ActorHuman, Origin: OriginWeb}},
 			field: "request_id",
 		},
 		{
