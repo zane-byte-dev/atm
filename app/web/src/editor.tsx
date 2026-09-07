@@ -1,16 +1,14 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { Check, Clock3, LoaderCircle } from 'lucide-react'
+import { Check, LoaderCircle } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ApiError, call, errorText } from './api'
-import { createDraftSession, readStorageNotice } from './drafts'
-import type { DraftRecord } from './drafts'
+import { createNewTaskInputStore } from './new-task-input'
 import {
   applyMergeReview,
   buildMergeReview,
   existingCreationID,
-  fieldsFromDetail,
   freshDraft,
   startSeparateCreation,
   unresolvedFields,
@@ -45,18 +43,14 @@ export function Editor({
 }: EditorProps) {
   // A polling refresh must never replace the version the user started editing.
   const original = useRef(initial)
-  const key = original.current ? `todo:${original.current.todo.id}` : 'new-todo'
+  const creating = !original.current
   const [draft, setDraft] = useState(() =>
     freshDraft(original.current, defaultProject, crypto.randomUUID()),
   )
   const draftRef = useRef(draft)
-  const [draftSession] = useState(() => createDraftSession())
-  const [recoveries, setRecoveries] = useState<DraftRecord[]>([])
-  const [recoveryPending, setRecoveryPending] = useState(false)
-  const [damagedDrafts, setDamagedDrafts] = useState(0)
+  const [inputStore] = useState(() => createNewTaskInputStore(() => globalThis.localStorage))
   const [ready, setReady] = useState(false)
   const readyRef = useRef(false)
-  const [restored, setRestored] = useState(false)
   const [storageState, setStorageState] = useState<StorageState>('loading')
   const [preview, setPreview] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -87,16 +81,19 @@ export function Editor({
     setDraft(next)
   }
   const persist = (value: Draft) => {
-    if (!dirty.current) {
+    if (!creating || !dirty.current) {
       setStorageState('saved')
       return Promise.resolve()
     }
     const sequence = ++writeSequence.current
     setStorageState('saving')
-    return draftSession
-      .saveDraft(key, value)
+    return inputStore
+      .save(value)
       .then(() => {
-        if (alive.current && sequence === writeSequence.current) setStorageState('saved')
+        if (alive.current && sequence === writeSequence.current) {
+          if (JSON.stringify(draftRef.current) === JSON.stringify(value)) dirty.current = false
+          setStorageState('saved')
+        }
       })
       .catch(() => {
         if (alive.current && sequence === writeSequence.current) setStorageState('failed')
@@ -106,14 +103,11 @@ export function Editor({
   useEffect(() => {
     let active = true
     alive.current = true
-    draftSession
-      .listDrafts(key)
-      .then(({ records, damaged }) => {
+    ;(creating ? inputStore.read() : Promise.resolve(undefined))
+      .then((value) => {
         if (!active) return
-        setRecoveries(records)
-        setDamagedDrafts(damaged)
-        setRecoveryPending(records.length > 0)
-        persistenceBlocked.current = records.length > 0
+        if (value) replaceDraft(value)
+        persistenceBlocked.current = false
       })
       .catch(() => {
         if (!active) return
@@ -129,10 +123,16 @@ export function Editor({
         }
       })
     const flush = () => {
-      if (!readyRef.current || !dirty.current || completed.current || persistenceBlocked.current)
+      if (
+        !creating ||
+        !readyRef.current ||
+        !dirty.current ||
+        completed.current ||
+        persistenceBlocked.current
+      )
         return
-      // Each editor writes its own localStorage record synchronously during pagehide.
-      void draftSession.saveDraft(key, draftRef.current).catch(() => {
+      // Persist the latest edited content synchronously during pagehide.
+      void inputStore.save(draftRef.current).catch(() => {
         if (alive.current) setStorageState('failed')
       })
     }
@@ -144,11 +144,11 @@ export function Editor({
       window.removeEventListener('pagehide', flush)
       flush()
     }
-  }, [key])
+  }, [creating])
 
   useEffect(() => {
     if (ready && !completed.current && !persistenceBlocked.current) void persist(draft)
-  }, [draft, ready, key])
+  }, [draft, ready, creating])
   useEffect(() => {
     if (ready) titleInput.current?.focus()
   }, [ready])
@@ -197,12 +197,12 @@ export function Editor({
       )
       completed.current = true
       ++writeSequence.current
-      let draftRemoved = false
+      let draftRemoved = !creating
       // A route change can mount a new editor for the same task while this
       // request is in flight. Its newer draft must survive the old response.
-      if (alive.current) {
+      if (creating) {
         try {
-          draftRemoved = await draftSession.removeDraftIfUnchanged(key, submitted)
+          draftRemoved = await inputStore.clearIfUnchanged(submitted)
         } catch {
           /* Keep the draft and report below. */
         }
@@ -239,13 +239,7 @@ export function Editor({
     [onBusyChange],
   )
 
-  const disabled =
-    !ready ||
-    recoveryPending ||
-    mutation.isPending ||
-    uploading ||
-    conflictLocked ||
-    !!savedWithDraft
+  const disabled = !ready || mutation.isPending || uploading || conflictLocked || !!savedWithDraft
   const submit = () => {
     if (!disabled && draftRef.current.title.trim() && !creationConflict && !completed.current)
       mutation.mutate({ ...draftRef.current })
@@ -257,25 +251,6 @@ export function Editor({
     setMerged(false)
   }
   const unresolved = merge ? unresolvedFields(merge, choices) : []
-  const recover = (value?: Draft) => {
-    if (value) {
-      dirty.current = true
-      const current = original.current
-      const restoredDraft =
-        current && !value.base && value.etag === current.etag
-          ? { ...value, base: fieldsFromDetail(current) }
-          : value
-      replaceDraft(restoredDraft)
-      setRestored(true)
-      if (current && restoredDraft.etag !== current.etag) {
-        setMerge(buildMergeReview(restoredDraft, current))
-        setConflictLocked(true)
-      }
-    }
-    persistenceBlocked.current = false
-    setRecoveryPending(false)
-    void persist(draftRef.current)
-  }
 
   return (
     <form
@@ -308,61 +283,9 @@ export function Editor({
         }
       }}
     >
-      {recoveryPending && (
-        <section className="draft-recovery" aria-label="恢复未提交草稿">
-          <h3>发现未提交的草稿</h3>
-          <p>选择一份继续编辑。每份草稿独立保存，恢复不会影响其他窗口。</p>
-          <div className="draft-recovery-list">
-            {recoveries.map((record) => (
-              <div className="draft-recovery-row" key={record.id}>
-                <div>
-                  <strong>{record.draft.title || '未命名任务'}</strong>
-                  <span>
-                    {record.updatedAt
-                      ? new Date(record.updatedAt).toLocaleString()
-                      : '旧版本标签页草稿'}{' '}
-                    · {record.draft.description.length} 字
-                  </span>
-                </div>
-                <button className="button" type="button" onClick={() => recover(record.draft)}>
-                  恢复副本
-                </button>
-              </div>
-            ))}
-          </div>
-          <button className="text-button" type="button" onClick={() => recover()}>
-            开始新草稿，保留已有内容
-          </button>
-        </section>
-      )}
-      {damagedDrafts > 0 && (
-        <p className="notice" role="status">
-          有 {damagedDrafts} 份草稿无法读取，原始记录已保留，其余草稿仍可使用。
-        </p>
-      )}
-      {restored && (
-        <div className="draft-banner">
-          <Clock3 size={14} />
-          <span>已恢复草稿副本，原草稿仍保留</span>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => {
-              // Resetting text never silently changes the identity of a create request.
-              replaceDraft(
-                freshDraft(original.current, defaultProject, draftRef.current.operationID),
-              )
-              setRestored(false)
-              setMerged(false)
-            }}
-          >
-            重新填写
-          </button>
-        </div>
-      )}
       {storageState === 'failed' && !savedWithDraft && (
         <div className="notice" role="alert" style={{ display: 'block' }}>
-          <p>无法读取或保存浏览器草稿。刷新或关闭页面可能丢失当前内容，请先提交或复制。</p>
+          <p>无法记住新建任务的填写内容。刷新或关闭页面可能丢失输入，请先创建任务或复制内容。</p>
           <button
             type="button"
             disabled={mutation.isPending}
@@ -372,16 +295,13 @@ export function Editor({
               void persist(draftRef.current)
             }}
           >
-            用当前内容重建草稿
+            记住当前填写内容
           </button>
         </div>
       )}
       {savedWithDraft && (
         <div className="notice" role="status" style={{ display: 'block' }}>
-          <p>
-            任务 {savedWithDraft}{' '}
-            已保存。浏览器还留有草稿（内容已变化或浏览器无法清理），再次编辑时请核对恢复的内容。
-          </p>
+          <p>任务 {savedWithDraft} 已创建。浏览器中仍有未清除的填写内容，下次新建时请核对。</p>
           <button type="button" onClick={() => onSaved(savedWithDraft, mutation.data?.warnings)}>
             打开已保存任务
           </button>
@@ -447,7 +367,7 @@ export function Editor({
           rows={12}
         />
       )}
-      {imageTodo && !recoveryPending && !conflictLocked ? (
+      {imageTodo && !conflictLocked ? (
         <TaskImageUpload
           ref={imageUpload}
           todo={imageTodo}
@@ -464,24 +384,6 @@ export function Editor({
           <p className="task-upload-status">创建任务后可以添加图片，支持拖入和粘贴。</p>
         )
       )}
-      <div className="editor-helper">
-        <span aria-live="polite">
-          {storageState === 'failed'
-            ? '草稿保存不可用'
-            : storageState === 'saved'
-              ? dirty.current
-                ? '草稿已保存在浏览器'
-                : '修改后自动保存草稿'
-              : storageState === 'saving'
-                ? '正在保存草稿…'
-                : '正在检查草稿…'}
-        </span>
-        <span>Markdown</span>
-      </div>
-      <details style={{ fontSize: 12, marginBottom: 16 }}>
-        <summary>草稿保存范围</summary>
-        <p>{readStorageNotice()} 恢复的创建草稿仍对应同一次创建，重试不会重复新建任务。</p>
-      </details>
       {mutation.error && !creationConflict && <Notice error={mutation.error} />}
       {conflictLocked && (
         <section aria-label="合并任务修改" style={{ marginBlock: 20 }}>
@@ -634,12 +536,13 @@ export function Editor({
               <button type="button" onClick={() => onSaved(creationConflict.todoID!)}>
                 打开已创建任务 {creationConflict.todoID}
               </button>
-              （此标签页的草稿会保留。）
+              （当前填写内容会保留。）
             </p>
           )}
           <button
             type="button"
             onClick={() => {
+              dirty.current = true
               replaceDraft(startSeparateCreation(draftRef.current, crypto.randomUUID()))
               setCreationConflict(undefined)
               setSeparateCreation(true)

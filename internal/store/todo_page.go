@@ -26,7 +26,7 @@ type TodoPage struct {
 }
 
 // ReadTodoPage keeps counts, the selected page and its dependencies on one
-// SQLite snapshot. It never loads descriptions, links, images, tags or the
+// SQLite snapshot. It never loads descriptions, links, images or the
 // complete Todo set merely to render a bounded navigator page.
 func ReadTodoPage(ctx context.Context, input TodoPageQuery) (TodoPage, error) {
 	result := TodoPage{
@@ -106,14 +106,14 @@ func ReadTodoPage(ctx context.Context, input TodoPageQuery) (TodoPage, error) {
 		result.Total = result.Counts[input.Status]
 	}
 	args = append(args, input.Limit, input.Offset)
-	rows, err = tx.QueryContext(ctx, `SELECT id,title,priority,status,project,wake_condition,review_at,created
+	rows, err = tx.QueryContext(ctx, `SELECT id,title,priority,status,project,wake_condition,review_at,created,creator
 		FROM todos`+where+` ORDER BY created DESC,CAST(SUBSTR(id,2) AS INTEGER) DESC,id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return result, err
 	}
 	for rows.Next() {
 		var todo Todo
-		if err := rows.Scan(&todo.ID, &todo.Title, &todo.Priority, &todo.Status, &todo.Project, &todo.WakeCondition, &todo.ReviewAt, &todo.Created); err != nil {
+		if err := rows.Scan(&todo.ID, &todo.Title, &todo.Priority, &todo.Status, &todo.Project, &todo.WakeCondition, &todo.ReviewAt, &todo.Created, &todo.Creator); err != nil {
 			rows.Close()
 			return result, err
 		}
@@ -133,6 +133,26 @@ func ReadTodoPage(ctx context.Context, input TodoPageQuery) (TodoPage, error) {
 		for index := range result.Todos {
 			ids = append(ids, result.Todos[index].ID)
 			byID[result.Todos[index].ID] = &result.Todos[index]
+		}
+		rows, err = tx.QueryContext(ctx, `SELECT todo_id,tag FROM todo_tags WHERE todo_id IN (`+placeholders+`) ORDER BY todo_id,position,tag`, ids...)
+		if err != nil {
+			return result, err
+		}
+		for rows.Next() {
+			var todoID, tag string
+			if err := rows.Scan(&todoID, &tag); err != nil {
+				rows.Close()
+				return result, err
+			}
+			if todo := byID[todoID]; todo != nil {
+				todo.Tags = append(todo.Tags, tag)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return result, err
+		}
+		if err := rows.Err(); err != nil {
+			return result, err
 		}
 		rows, err = tx.QueryContext(ctx, `SELECT todo_id,dependency_id FROM todo_dependencies WHERE todo_id IN (`+placeholders+`) ORDER BY todo_id,position,dependency_id`, ids...)
 		if err != nil {
