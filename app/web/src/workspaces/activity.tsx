@@ -1,16 +1,25 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Select } from '../components/select'
+import { BadgeCalendar } from './badge-calendar'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link, useSearchParams } from 'react-router'
 import {
   ArrowLeft,
   ArrowRight,
+  ArrowDownUp,
   Bot,
+  ChartNoAxesCombined,
+  RefreshCw,
+  Filter,
   Clock3,
+  Copy,
   MessageSquare,
-  Search,
   X,
 } from 'lucide-react'
 import { call } from '../api'
+import { SessionChildren } from '../session-tree'
+import { WorkspaceTitle } from '../workspace-title'
+import { WorkspaceSearchButton } from '../global-search'
 import { Markdown, Notice } from '../editor'
 import { QueryLoading } from '../query-loading'
 import type { Bootstrap } from '../types'
@@ -27,6 +36,7 @@ import type {
   UsageSnapshot,
 } from './activity-types'
 import './activity.css'
+import './usage.css'
 import { RuntimeJobs } from './runtime-jobs'
 import { useNativePreferences } from './native-preferences-react'
 import { saveNativePreferences } from './native-preferences'
@@ -173,7 +183,6 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
   const foreground = useForeground()
   const status = useActivityStatus(foreground)
   const query = params.get('q') || ''
-  const [searchDraft, setSearchDraft] = useState(query)
   const agent = params.get('agent') || ''
   const project = params.get('project') || ''
   const days = Math.max(1, boundedInt(params.get('days'), 7, 365))
@@ -181,6 +190,8 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
   const offset = boundedInt(params.get('offset'), 0, query ? 1000 : 10000)
   const turnOffset = boundedInt(params.get('turn'), 0, 100000)
   const limit = 30
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  const grouped = params.get('children') !== 'all'
   const update = (patch: Record<string, string>, reset = false, replace = false) => {
     setParams(
       (current) => {
@@ -197,16 +208,11 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
       { replace },
     )
   }
-  useEffect(() => setSearchDraft(query), [query])
-  useEffect(() => {
-    if (searchDraft === query) return
-    const timer = setTimeout(() => update({ q: searchDraft.trim() }, true, true), 300)
-    return () => clearTimeout(timer)
-  }, [searchDraft, query])
   const input = { agent, project, days, limit, offset }
   const list = useQuery({
-    queryKey: ['activity-sessions', agent, project, days, offset],
-    queryFn: ({ signal }) => call<SessionList>('session.list', input, signal),
+    queryKey: ['activity-sessions', agent, project, days, offset, grouped],
+    queryFn: ({ signal }) =>
+      call<SessionList>('session.list', { ...input, group_children: grouped }, signal),
     enabled: !query,
     refetchInterval: foreground && !query ? 60000 : false,
     refetchIntervalInBackground: false,
@@ -238,13 +244,25 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
       }))
     : list.data?.sessions || []
   return (
-    <section className="activity-workspace activity-agents" aria-label="Agent 和会话">
+    <section
+      className="activity-workspace activity-agents improved-agents"
+      aria-label="Agent 和会话"
+    >
       <div className="activity-heading">
         <div>
-          <h1>Agent 会话</h1>
+          <WorkspaceTitle icon={Bot}>Agent 会话</WorkspaceTitle>
           <p>搜索会话、阅读问答和查看任务关联。</p>
         </div>
         <div className="workspace-actions">
+          <WorkspaceSearchButton />
+          <button
+            className="button"
+            aria-expanded={filtersOpen}
+            onClick={() => setFiltersOpen(!filtersOpen)}
+          >
+            <Filter size={15} />
+            筛选
+          </button>
           <RuntimeJobs
             boot={boot}
             kinds={['session.sync']}
@@ -252,40 +270,6 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
           />
         </div>
       </div>
-      {status.data && (
-        <div className="activity-agent-strip" role="group" aria-label="按 Agent 筛选会话">
-          <button
-            type="button"
-            className={!agent ? 'activity-agent selected' : 'activity-agent'}
-            onClick={() => update({ agent: '' }, true)}
-            aria-pressed={!agent}
-            aria-label={`全部 Agent，${int(status.data.health.indexed_sessions)} 个会话`}
-          >
-            <Bot size={18} />
-            <span className="activity-agent-info">
-              全部 Agent<strong>{int(status.data.health.indexed_sessions)}</strong>
-            </span>
-          </button>
-          {status.data.agents.map((item) => (
-            <button
-              key={item.agent}
-              type="button"
-              className={agent === item.agent ? 'activity-agent selected' : 'activity-agent'}
-              onClick={() => update({ agent: item.agent }, true)}
-              aria-pressed={agent === item.agent}
-              aria-label={`${agentName(item.agent)}，${int(item.sessions)} 个会话`}
-            >
-              <span className={`activity-avatar ${item.agent}`}>
-                {agentName(item.agent).slice(0, 1)}
-              </span>
-              <span className="activity-agent-info">
-                {agentName(item.agent)}
-                <strong>{int(item.sessions)}</strong>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
       <div className="activity-index-row">
         <div className="activity-source-note">
           <Clock3 size={13} />
@@ -344,52 +328,78 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
         )}
       </div>
       {status.isError && <Notice error={status.error} retry={() => void status.refetch()} />}
-      <div className="activity-filters">
-        <label className="activity-search">
-          <Search size={16} />
-          <input
-            aria-label="搜索会话内容"
-            placeholder="搜索问题、回复或关键词…"
-            maxLength={200}
-            value={searchDraft}
-            onChange={(event) => setSearchDraft(event.target.value)}
-          />
-          {searchDraft && (
-            <button type="button" aria-label="清除搜索" onClick={() => setSearchDraft('')}>
-              <X size={14} />
-            </button>
-          )}
-        </label>
-        <label>
-          项目
-          <input
-            aria-label="按项目筛选会话"
-            list="activity-projects"
-            value={project}
-            maxLength={200}
-            placeholder="全部项目"
-            onChange={(event) => update({ project: event.target.value }, true, true)}
-          />
-          <datalist id="activity-projects">
-            {status.data?.projects.map((name) => (
-              <option key={name} value={name} />
-            ))}
-          </datalist>
-        </label>
-        <label>
-          时间
-          <select
-            aria-label="会话时间范围"
-            value={days}
-            onChange={(event) => update({ days: event.target.value }, true)}
+      <div className="agent-filter-bar">
+        <span>
+          {agent ? agentName(agent) : '全部 Agent'} · {project || '全部项目'} ·{' '}
+          {days === 1 ? '今天' : `最近 ${days} 天`} ·{' '}
+          {query ? '搜索结果' : grouped ? '按主会话聚合' : '全部会话'}
+        </span>
+        {(agent || project || query || days !== 7 || !grouped) && (
+          <button
+            onClick={() => update({ agent: '', project: '', q: '', days: '', children: '' }, true)}
           >
-            <option value="1">今天</option>
-            <option value="7">最近 7 天</option>
-            <option value="30">最近 30 天</option>
-            <option value="90">最近 90 天</option>
-            <option value="365">最近一年</option>
-          </select>
-        </label>
+            清除筛选
+          </button>
+        )}
+        {filtersOpen && (
+          <div className="agent-filter-popover" role="region" aria-label="会话筛选">
+            <label>
+              Agent
+              <Select
+                aria-label="筛选 Agent"
+                value={agent}
+                onChange={(e) => update({ agent: e.target.value }, true)}
+              >
+                <option value="">全部 Agent</option>
+                {status.data?.agents.map((row) => (
+                  <option key={row.agent} value={row.agent}>
+                    {agentName(row.agent)}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label>
+              项目
+              <Select
+                aria-label="按项目筛选会话"
+                value={project}
+                onChange={(e) => update({ project: e.target.value }, true)}
+              >
+                <option value="">全部项目</option>
+                {status.data?.projects.map((name) => (
+                  <option key={name}>{name}</option>
+                ))}
+              </Select>
+            </label>
+            <label>
+              时间
+              <Select
+                aria-label="会话时间范围"
+                value={days}
+                onChange={(e) => update({ days: e.target.value }, true)}
+              >
+                {[1, 7, 30, 90, 365].map((value) => (
+                  <option key={value} value={value}>
+                    {value === 1 ? '今天' : `最近 ${value} 天`}
+                  </option>
+                ))}
+              </Select>
+            </label>
+            <label className="agent-group-control">
+              <input
+                type="checkbox"
+                checked={grouped}
+                disabled={!!query}
+                onChange={(e) => update({ children: e.target.checked ? '' : 'all' }, true)}
+              />
+              聚合子会话
+            </label>
+            {query && <small>搜索显示所有匹配会话，包括子会话。</small>}
+            <button className="button" onClick={() => setFiltersOpen(false)}>
+              收起筛选
+            </button>
+          </div>
+        )}
       </div>
       <div className={`activity-session-grid ${selected ? 'has-selection' : ''}`}>
         <section className="activity-list" aria-label={query ? '搜索结果' : '最近会话'}>
@@ -418,41 +428,54 @@ export function AgentsWorkspace({ boot }: { boot: Bootstrap }) {
           )}
           <div className="activity-session-items">
             {items.map((row, index) => (
-              <button
-                type="button"
-                key={`${row.id}-${index}`}
-                className={`activity-session-row ${selected === row.id ? 'selected' : ''}`}
-                onClick={() => update({ session: row.id, turn: '' })}
-                aria-pressed={selected === row.id}
-              >
-                <div className="activity-session-line">
-                  <span className="activity-tag">{agentName(row.agent)}</span>
-                  <time>{dateTime(row.last_at || row.created_at)}</time>
-                </div>
-                <h3>{row.summary || row.first_q || row.snippet || row.short_id}</h3>
-                {row.snippet ? (
-                  <p className="activity-search-snippet">{row.snippet}</p>
-                ) : (
-                  <p>
-                    {row.latest_progress ||
-                      row.final_result ||
+              <Fragment key={`${row.id}-${index}`}>
+                <button
+                  type="button"
+                  key={`${row.id}-${index}`}
+                  className={`activity-session-row ${selected === row.id ? 'selected' : ''}`}
+                  onClick={() => update({ session: row.id, turn: '' })}
+                  aria-pressed={selected === row.id}
+                >
+                  <div className="activity-session-line">
+                    <span className="activity-tag">{agentName(row.agent)}</span>
+                    <time>{dateTime(row.last_at || row.created_at)}</time>
+                  </div>
+                  <h3>
+                    {row.summary ||
+                      row.agent_nickname ||
                       row.first_q ||
-                      '会话尚未记录可展示的内容'}
-                  </p>
+                      row.snippet ||
+                      `${row.is_subagent ? '子会话' : '会话'} ${row.short_id}`}
+                  </h3>
+                  {(row.latest_progress || row.final_result) && (
+                    <p className="session-latest" title={row.latest_progress || row.final_result}>
+                      {row.latest_progress || row.final_result}
+                    </p>
+                  )}
+                  <div className="activity-session-line">
+                    <span>
+                      {row.project || '未分配项目'} · {row.short_id || row.id.slice(0, 8)}
+                    </span>
+                    <span>
+                      {row.role
+                        ? row.role === 'user'
+                          ? '用户'
+                          : '助手'
+                        : `${row.q_count} 轮${row.is_subagent ? ' · 子 Agent' : ''}`}
+                    </span>
+                  </div>
+                </button>
+                {!query && grouped && (
+                  <SessionChildren
+                    parent={row}
+                    agent={agent}
+                    project={project}
+                    days={days}
+                    selected={selected}
+                    onSelect={(id) => update({ session: id, turn: '' })}
+                  />
                 )}
-                <div className="activity-session-line">
-                  <span>
-                    {row.project || '未分配项目'} · {row.short_id || row.id.slice(0, 8)}
-                  </span>
-                  <span>
-                    {row.role
-                      ? row.role === 'user'
-                        ? '用户'
-                        : '助手'
-                      : `${row.q_count} 轮${row.is_subagent ? ' · 子 Agent' : ''}`}
-                  </span>
-                </div>
-              </button>
+              </Fragment>
             ))}
           </div>
           <PageControls
@@ -517,18 +540,68 @@ function Conversation({
   onSelect: (id: string) => void
 }) {
   const tools = Object.entries(data.tools || {}).sort((a, b) => b[1] - a[1])
+  const [filter, setFilter] = useState<'all' | 'progress' | 'result'>('all')
+  const [newestFirst, setNewestFirst] = useState(false)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  useEffect(() => {
+    setFilter('all')
+    setNewestFirst(false)
+    setCopyState('idle')
+  }, [data.id, data.offset])
+  const timeline = data.qa.flatMap((qa) => [
+    ...(qa.q
+      ? [{ key: `${qa.turn}-question`, kind: 'question', label: `第 ${qa.turn} 轮 · 用户` }]
+      : []),
+    ...(qa.progress ?? []).map((_, index) => ({
+      key: `${qa.turn}-progress-${index}`,
+      kind: 'progress',
+      label: `第 ${qa.turn} 轮 · 过程 ${index + 1}`,
+    })),
+    ...(qa.a
+      ? [
+          {
+            key: `${qa.turn}-answer`,
+            kind: 'answer',
+            label: `第 ${qa.turn} 轮 · ${agentName(data.agent)}`,
+          },
+        ]
+      : []),
+  ])
+  const transcript = [...data.qa]
+    .sort((left, right) => (newestFirst ? right.turn - left.turn : left.turn - right.turn))
+    .filter((qa) => filter === 'all' || (filter === 'progress' ? qa.progress?.length : qa.a))
+  const copyPage = async () => {
+    const text = data.qa
+      .flatMap((qa) => [
+        `第 ${qa.turn} 轮`,
+        qa.q ? `你\n${qa.q}` : '',
+        ...(qa.progress ?? []).map((item) => `过程\n${item}`),
+        qa.a ? `${agentName(data.agent)}\n${qa.a}` : '',
+      ])
+      .filter(Boolean)
+      .join('\n\n')
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+    window.setTimeout(() => setCopyState('idle'), 1600)
+  }
   return (
     <>
       <div className="activity-conversation-body" key={`${data.id}:${data.offset}`}>
         <div className="activity-conversation-heading">
+          <h2 title={data.agent_nickname || data.project || '会话记录'}>
+            {data.agent_nickname || data.project || '会话记录'}
+          </h2>
+        </div>
+        <div className="activity-conversation-surface">
           <div>
             <span className="activity-tag">{agentName(data.agent)}</span>
             <span className="activity-tag">{resultName(data.result_status)}</span>
             {data.is_subagent && <span className="activity-tag">子 Agent</span>}
           </div>
-          <h2 title={data.agent_nickname || data.project || '会话记录'}>
-            {data.agent_nickname || data.project || '会话记录'}
-          </h2>
           <p className="activity-session-id" title={data.id}>
             {data.id}
           </p>
@@ -541,8 +614,68 @@ function Conversation({
               查看父会话
             </button>
           )}
-        </div>
-        <div className="activity-conversation-surface">
+          <div className="activity-run-overview">
+            <div className="activity-run-facts" aria-label="会话执行概览">
+              <span>
+                <b>{int(data.total_turns)}</b>轮对话
+              </span>
+              <span>
+                <b>{int(tools.reduce((sum, row) => sum + row[1], 0))}</b>次工具
+              </span>
+              <span>
+                <b>{timeline.length}</b>个事件
+              </span>
+            </div>
+            <div className="activity-run-controls">
+              <div className="activity-run-filter" role="group" aria-label="筛选会话事件">
+                {(
+                  [
+                    ['all', '全部'],
+                    ['progress', '过程'],
+                    ['result', '结果'],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={filter === value ? 'selected' : ''}
+                    aria-pressed={filter === value}
+                    onClick={() => setFilter(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="button subtle"
+                aria-pressed={newestFirst}
+                onClick={() => setNewestFirst((value) => !value)}
+              >
+                <ArrowDownUp size={13} />
+                {newestFirst ? '最新优先' : '按时间'}
+              </button>
+              <button type="button" className="button subtle" onClick={() => void copyPage()}>
+                <Copy size={13} />
+                {copyState === 'copied'
+                  ? '已复制'
+                  : copyState === 'failed'
+                    ? '复制失败'
+                    : '复制本页'}
+              </button>
+            </div>
+            {timeline.length > 0 && (
+              <div className="activity-run-timeline" aria-label={`${timeline.length} 个会话事件`}>
+                {timeline.map((event) => (
+                  <span
+                    key={event.key}
+                    className={`activity-run-event ${event.kind}`}
+                    title={event.label}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
           <div className="activity-conversation-meta">
             {(data.final_result || data.latest_progress) && (
               <details className="activity-result">
@@ -579,16 +712,16 @@ function Conversation({
             </EmptyActivity>
           )}
           <div className="activity-transcript">
-            {data.qa.map((qa) => (
+            {transcript.map((qa) => (
               <article className="activity-turn" key={qa.turn}>
                 <div className="activity-turn-label">第 {qa.turn} 轮</div>
-                {qa.q && (
+                {filter === 'all' && qa.q && (
                   <div className="activity-message user">
                     <span>你</span>
                     <Markdown text={qa.q} />
                   </div>
                 )}
-                {!!qa.progress?.length && (
+                {filter !== 'result' && !!qa.progress?.length && (
                   <details className="activity-progress">
                     <summary>{qa.progress.length} 条过程记录</summary>
                     {qa.progress.map((text, i) => (
@@ -596,7 +729,7 @@ function Conversation({
                     ))}
                   </details>
                 )}
-                {qa.a && (
+                {filter !== 'progress' && qa.a && (
                   <div className="activity-message assistant">
                     <span>{agentName(data.agent)}</span>
                     <Markdown text={qa.a} />
@@ -631,14 +764,65 @@ const metricValue = (row: Partial<MetricFields>, metric: Metric) =>
 const formatMetric = (value: number, metric: Metric) =>
   metric === 'cost' ? money(value) : compact(value)
 
+function UsageViewTabs() {
+  const [params, setParams] = useSearchParams()
+  const view = params.get('view') || 'usage'
+  return (
+    <div className="usage-view-tabs" role="group" aria-label="统计视图">
+      {(
+        [
+          ['usage', '用量'],
+          ['quota', '额度'],
+          ['badges', '徽章日历'],
+        ] as const
+      ).map(([key, label]) => (
+        <button
+          key={key}
+          className={view === key ? 'selected' : ''}
+          aria-pressed={view === key}
+          onClick={() =>
+            setParams((current) => {
+              const next = new URLSearchParams(current)
+              next.set('view', key)
+              return next
+            })
+          }
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  )
+}
 export function UsageWorkspace({ boot }: { boot: Bootstrap }) {
+  const [params] = useSearchParams()
+  return params.get('view') === 'badges' ? (
+    <section
+      className="activity-workspace activity-usage usage-view-badges"
+      aria-label="用量和统计"
+    >
+      <div className="activity-heading">
+        <WorkspaceTitle icon={ChartNoAxesCombined}>统计</WorkspaceTitle>
+      </div>
+      <div className="activity-usage-filters">
+        <UsageViewTabs />
+      </div>
+      <BadgeCalendar />
+    </section>
+  ) : (
+    <UsageMetrics boot={boot} />
+  )
+}
+
+function UsageMetrics({ boot }: { boot: Bootstrap }) {
   const [params, setParams] = useSearchParams()
   const nativePreferences = useNativePreferences()
   const [preferenceError, setPreferenceError] = useState('')
   const foreground = useForeground()
   const status = useActivityStatus(foreground)
-  const rawRange = params.get('range') || 'last_7_days'
-  const range = ranges.some(([key]) => key === rawRange) ? rawRange : 'last_7_days'
+  const view = params.get('view') === 'quota' ? 'quota' : 'usage'
+  const rawRange = params.get('range') || 'today'
+  const range = ranges.some(([key]) => key === rawRange) ? rawRange : 'today'
   const agent = params.has('agent')
     ? params.get('agent') || ''
     : nativeClientAgent(nativePreferences.usage_filter_client || '')
@@ -721,37 +905,55 @@ export function UsageWorkspace({ boot }: { boot: Bootstrap }) {
   )
   const days = scoped?.days || []
   return (
-    <section className="activity-workspace activity-usage" aria-label="用量和统计">
+    <section
+      className={`activity-workspace activity-usage usage-view-${view}`}
+      aria-label="用量和统计"
+    >
       <div className="activity-heading">
-        <div>
-          <h1>用量统计</h1>
-          <p>查看 Token、费用、模型请求与额度记录。</p>
-        </div>
-        <div className="workspace-actions">
-          <RuntimeJobs
-            boot={boot}
-            kinds={['quota.refresh']}
-            actions={[{ input: { kind: 'quota.refresh', ...(agent ? { agent } : {}) } }]}
-          />
+        <WorkspaceTitle icon={ChartNoAxesCombined}>统计</WorkspaceTitle>
+        <div className="usage-refresh">
+          <span>
+            更新于{' '}
+            {dateTime(view === 'usage' ? snapshot.data?.generated_at : quota.data?.generated_at)}
+          </span>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="刷新统计"
+            disabled={snapshot.isFetching || quota.isFetching}
+            onClick={() => {
+              void snapshot.refetch()
+              void quota.refetch()
+              void status.refetch()
+            }}
+          >
+            <RefreshCw
+              size={16}
+              className={snapshot.isFetching || quota.isFetching ? 'spin' : ''}
+            />
+          </button>
         </div>
       </div>
       <div className="activity-usage-filters">
-        <div className="activity-range-picker" role="group" aria-label="统计时间范围">
-          {ranges.map(([key, label]) => (
-            <button
-              type="button"
-              key={key}
-              className={range === key ? 'selected' : ''}
-              onClick={() => update('range', key)}
-              aria-pressed={range === key}
+        <UsageViewTabs />
+        {view === 'usage' && (
+          <label className="usage-range-select">
+            <Select
+              value={range}
+              aria-label="统计时间范围"
+              onChange={(event) => update('range', event.target.value)}
             >
-              {label}
-            </button>
-          ))}
-        </div>
+              {ranges.map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </Select>
+          </label>
+        )}
         <label>
           Agent
-          <select
+          <Select
             value={agent}
             aria-label="统计 Agent"
             onChange={(event) => update('agent', event.target.value)}
@@ -765,52 +967,57 @@ export function UsageWorkspace({ boot }: { boot: Bootstrap }) {
             {agent && !status.data?.agents.some((row) => row.agent === agent) && (
               <option value={agent}>{agentName(agent)}</option>
             )}
-          </select>
+          </Select>
         </label>
-        <label>
-          模型
-          <select
-            value={model}
-            aria-label="统计模型"
-            onChange={(event) => update('model', event.target.value)}
-          >
-            <option value="">全部模型</option>
-            {[
-              ...new Set([
-                ...(unfiltered?.model_stats.map((row) => row.model) || []),
-                ...(model ? [model] : []),
-              ]),
-            ]
-              .sort()
-              .map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-          </select>
-        </label>
-        <label>
-          项目
-          <select
-            value={project}
-            aria-label="统计项目"
-            onChange={(event) => update('project', event.target.value)}
-          >
-            <option value="">全部项目</option>
-            {[
-              ...new Set([
-                ...(unfiltered?.project_stats.map((row) => usageProjectName(row.project)) || []),
-                ...(project ? [project] : []),
-              ]),
-            ]
-              .sort()
-              .map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-          </select>
-        </label>
+        {view === 'usage' && (
+          <>
+            <label>
+              模型
+              <Select
+                value={model}
+                aria-label="统计模型"
+                onChange={(event) => update('model', event.target.value)}
+              >
+                <option value="">全部模型</option>
+                {[
+                  ...new Set([
+                    ...(unfiltered?.model_stats.map((row) => row.model) || []),
+                    ...(model ? [model] : []),
+                  ]),
+                ]
+                  .sort()
+                  .map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+              </Select>
+            </label>
+            <label>
+              项目
+              <Select
+                value={project}
+                aria-label="统计项目"
+                onChange={(event) => update('project', event.target.value)}
+              >
+                <option value="">全部项目</option>
+                {[
+                  ...new Set([
+                    ...(unfiltered?.project_stats.map((row) => usageProjectName(row.project)) ||
+                      []),
+                    ...(project ? [project] : []),
+                  ]),
+                ]
+                  .sort()
+                  .map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+              </Select>
+            </label>
+          </>
+        )}
         {(agent || model || project) && (
           <button
             type="button"
@@ -842,181 +1049,217 @@ export function UsageWorkspace({ boot }: { boot: Bootstrap }) {
           {preferenceError}
         </p>
       )}
-      {project && model && (
-        <p className="activity-inline-note">
-          已按项目“{project}”汇总与绘图。模型“{model}
-          ”筛选会在清除项目后应用；现有记录不提供模型与项目的联合汇总。
-        </p>
-      )}
-      <div className="activity-source-note">
-        <Clock3 size={13} />
-        {data ? `${data.start_date} — ${data.end_date}` : '按本地日历计算统计范围'}
-        <span>· 索引更新于 {dateTime(status.data?.health.last_success_at)}</span>
-      </div>
-      {status.data?.missing_index ? (
-        <EmptyActivity title="还没有用量记录">
-          完成一次 ATM 同步后，可以查看已索引会话的用量与费用。
-        </EmptyActivity>
-      ) : snapshot.isError ? (
-        <Notice error={snapshot.error} retry={() => void snapshot.refetch()} />
-      ) : snapshot.isPending ? (
-        <QueryLoading
-          className="activity-loading"
-          text="正在汇总用量…"
-          onRetry={() => void snapshot.refetch()}
-        />
-      ) : (
-        data && (
-          <>
-            <div className="activity-metrics">
-              <MetricCard
-                label="总 Token"
-                value={compact(totals.tokens)}
-                note={`缓存读取 ${compact(totals.cache)}`}
-              />
-              <MetricCard
-                label="费用（USD）"
-                value={money(totals.cost)}
-                note={
-                  totals.estimated > 0
-                    ? `其中 ${money(totals.estimated)} 采用估算价格`
-                    : '按记录与模型价格计算'
-                }
-              />
-              <MetricCard
-                label="模型请求"
-                value={int(totals.requests)}
-                note={
-                  model || project
-                    ? '所选范围的请求记录'
-                    : `详细记录覆盖 ${percent(data.quality.request_coverage_percent)}`
-                }
-              />
-              <MetricCard
-                label="活跃会话"
-                value={
-                  project ? int(totals.sessions) : model ? '—' : int(data.quality.active_sessions)
-                }
-                note={
-                  project
-                    ? '所选项目的会话记录'
-                    : model
-                      ? '模型明细不提供去重会话数'
-                      : `${int(data.quality.token_sessions)} 个会话有 Token 记录`
-                }
-              />
+      {view === 'usage' && (
+        <>
+          {project && model && (
+            <p className="activity-inline-note">
+              已按项目“{project}”汇总与绘图。模型“{model}
+              ”筛选会在清除项目后应用；现有记录不提供模型与项目的联合汇总。
+            </p>
+          )}
+          <div className="activity-source-note">
+            <Clock3 size={13} />
+            {data ? `${data.start_date} — ${data.end_date}` : '按本地日历计算统计范围'}
+            <span>· 索引更新于 {dateTime(status.data?.health.last_success_at)}</span>
+          </div>
+          {status.data?.missing_index ? (
+            <div className="usage-empty-state">
+              <ChartNoAxesCombined size={30} />
+              <strong>暂无用量数据</strong>
+              <p>同步会话后，Token 用量与费用会显示在这里。</p>
             </div>
-            <section className="activity-chart-card">
-              <div className="activity-panel-heading">
+          ) : snapshot.isError ? (
+            <Notice error={snapshot.error} retry={() => void snapshot.refetch()} />
+          ) : snapshot.isPending ? (
+            <QueryLoading
+              className="activity-loading"
+              text="正在汇总用量…"
+              onRetry={() => void snapshot.refetch()}
+            />
+          ) : !data ||
+            (!totals.tokens &&
+              !totals.requests &&
+              !totals.cost &&
+              !totals.sessions &&
+              !days.length) ? (
+            <div className="usage-empty-state">
+              <ChartNoAxesCombined size={30} />
+              <strong>暂无用量数据</strong>
+              <p>当前范围内没有用量记录，试试其他时间范围或筛选条件。</p>
+            </div>
+          ) : (
+            data && (
+              <>
+                <div className="activity-metrics">
+                  <MetricCard
+                    label="总 Token"
+                    value={compact(totals.tokens)}
+                    note={`缓存读取 ${compact(totals.cache)}`}
+                  />
+                  <MetricCard
+                    label="费用（USD）"
+                    value={money(totals.cost)}
+                    note={
+                      totals.estimated > 0
+                        ? `其中 ${money(totals.estimated)} 采用估算价格`
+                        : '按记录与模型价格计算'
+                    }
+                  />
+                  <MetricCard
+                    label="模型请求"
+                    value={int(totals.requests)}
+                    note={
+                      model || project
+                        ? '所选范围的请求记录'
+                        : `详细记录覆盖 ${percent(data.quality.request_coverage_percent)}`
+                    }
+                  />
+                  <MetricCard
+                    label="活跃会话"
+                    value={
+                      project
+                        ? int(totals.sessions)
+                        : model
+                          ? '—'
+                          : int(data.quality.active_sessions)
+                    }
+                    note={
+                      project
+                        ? '所选项目的会话记录'
+                        : model
+                          ? '模型明细不提供去重会话数'
+                          : `${int(data.quality.token_sessions)} 个会话有 Token 记录`
+                    }
+                  />
+                </div>
+                <section className="activity-chart-card">
+                  <div className="activity-panel-heading">
+                    <div>
+                      <h2>用量趋势</h2>
+                      <p>{range === 'today' || range === 'yesterday' ? '每小时' : '每日'}记录</p>
+                    </div>
+                    <MetricPicker metric={metric} onChange={(value) => update('metric', value)} />
+                  </div>
+                  <UsageChart
+                    rows={days}
+                    metric={metric}
+                    hourly={range === 'today' || range === 'yesterday'}
+                    today={range === 'today'}
+                  />
+                  {!days.length && (
+                    <EmptyActivity title="这个范围内没有用量记录">
+                      试试更长的时间范围或其他 Agent。
+                    </EmptyActivity>
+                  )}
+                </section>
+                <section className="activity-breakdown-card">
+                  <div className="activity-panel-heading">
+                    <h2>用量明细</h2>
+                    <div className="activity-segment" role="group" aria-label="用量分组">
+                      {(
+                        [
+                          ['agent', 'Agent'],
+                          ['model', '模型'],
+                          ['project', '项目'],
+                          ['skill', '技能'],
+                          ['speed', '速度'],
+                        ] as const
+                      )
+                        .filter(([key]) => availableGroups.includes(key))
+                        .map(([key, label]) => (
+                          <button
+                            type="button"
+                            key={key}
+                            className={group === key ? 'selected' : ''}
+                            onClick={() => update('group', key)}
+                            aria-pressed={group === key}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+                  <UsageBreakdown range={data} group={group} metric={metric} />
+                </section>
+                <div className="activity-quality">
+                  <strong>{model || project ? '当前 Agent 的完整记录覆盖' : '记录覆盖'}</strong>
+                  <span>会话 Token 覆盖 {percent(data.quality.session_coverage_percent)}</span>
+                  <span>请求详情覆盖 {percent(data.quality.request_coverage_percent)}</span>
+                  <span>速度采样 {percent(data.quality.speed_sample_percent)}</span>
+                  <details>
+                    <summary>统计口径</summary>
+                    <p>
+                      费用来自已索引记录及配置的模型价格；未记录的请求和不可计量的会话不计入 Token
+                      总量。
+                    </p>
+                  </details>
+                </div>
+              </>
+            )
+          )}
+        </>
+      )}
+      {view === 'quota' && (
+        <section className="activity-quota-section">
+          <div className="activity-panel-heading">
+            <div>
+              <h2>额度观察</h2>
+              <p>最近一次保存的额度快照</p>
+            </div>
+            <RuntimeJobs
+              boot={boot}
+              kinds={['quota.refresh']}
+              actions={[{ input: { kind: 'quota.refresh', ...(agent ? { agent } : {}) } }]}
+            />
+          </div>
+          {quota.isPending && (
+            <QueryLoading
+              className="activity-loading"
+              text="正在读取额度记录…"
+              onRetry={() => void quota.refetch()}
+            />
+          )}
+          {quota.isError && <Notice error={quota.error} retry={() => void quota.refetch()} />}
+          {quota.isSuccess && !quota.data.windows.length && (
+            <div className="activity-inline-note">
+              还没有保存的额度记录。后续同步采集到额度后，会在这里显示。
+            </div>
+          )}
+          <div className="activity-quotas">
+            {quota.data?.windows.map((window) => (
+              <div
+                className={`activity-quota-card ${window.stale || window.reset_elapsed ? 'stale' : ''}`}
+                key={`${window.agent}-${window.window_minutes}`}
+              >
                 <div>
-                  <h2>用量趋势</h2>
-                  <p>{range === 'today' || range === 'yesterday' ? '每小时' : '每日'}记录</p>
+                  <strong>{agentName(window.agent)}</strong>
+                  <span>
+                    {window.window_minutes >= 1440
+                      ? `${window.window_minutes / 1440} 天`
+                      : `${window.window_minutes / 60} 小时`}
+                    窗口
+                  </span>
                 </div>
-                <MetricPicker metric={metric} onChange={(value) => update('metric', value)} />
-              </div>
-              <UsageChart rows={days} metric={metric} />
-              {!days.length && (
-                <EmptyActivity title="这个范围内没有用量记录">
-                  试试更长的时间范围或其他 Agent。
-                </EmptyActivity>
-              )}
-            </section>
-            <section className="activity-breakdown-card">
-              <div className="activity-panel-heading">
-                <h2>用量明细</h2>
-                <div className="activity-segment" role="group" aria-label="用量分组">
-                  {(
-                    [
-                      ['agent', 'Agent'],
-                      ['model', '模型'],
-                      ['project', '项目'],
-                      ['skill', '技能'],
-                      ['speed', '速度'],
-                    ] as const
-                  )
-                    .filter(([key]) => availableGroups.includes(key))
-                    .map(([key, label]) => (
-                      <button
-                        type="button"
-                        key={key}
-                        className={group === key ? 'selected' : ''}
-                        onClick={() => update('group', key)}
-                        aria-pressed={group === key}
-                      >
-                        {label}
-                      </button>
-                    ))}
+                <p>
+                  <b>{percent(window.used_percent)}</b> 已使用
+                  {window.reset_elapsed && <span className="activity-tag">重置后待更新</span>}
+                  {window.stale && !window.reset_elapsed && (
+                    <span className="activity-tag">记录较旧</span>
+                  )}
+                </p>
+                <div className="activity-meter">
+                  <span style={{ width: `${Math.min(100, Math.max(0, window.used_percent))}%` }} />
                 </div>
+                <small>
+                  记录于 {dateTime(window.observed_at)}
+                  {window.resets_at > 0 &&
+                    ` · 重置 ${dateTime(new Date(window.resets_at * 1000).toISOString())}`}
+                </small>
               </div>
-              <UsageBreakdown range={data} group={group} metric={metric} />
-            </section>
-            <div className="activity-quality">
-              <strong>{model || project ? '当前 Agent 的完整记录覆盖' : '记录覆盖'}</strong>
-              <span>会话 Token 覆盖 {percent(data.quality.session_coverage_percent)}</span>
-              <span>请求详情覆盖 {percent(data.quality.request_coverage_percent)}</span>
-              <span>速度采样 {percent(data.quality.speed_sample_percent)}</span>
-              <p>
-                费用来自已索引记录及配置的模型价格；未记录的请求和不可计量的会话不计入 Token 总量。
-              </p>
-            </div>
-          </>
-        )
+            ))}
+          </div>
+        </section>
       )}
-      <section className="activity-quota-section">
-        <div className="activity-panel-heading">
-          <div>
-            <h2>额度观察</h2>
-            <p>最近一次保存的额度快照</p>
-          </div>
-          <span className="activity-tag">本地记录</span>
-        </div>
-        {quota.isPending && (
-          <QueryLoading
-            className="activity-loading"
-            text="正在读取额度记录…"
-            onRetry={() => void quota.refetch()}
-          />
-        )}
-        {quota.isError && <Notice error={quota.error} retry={() => void quota.refetch()} />}
-        {quota.isSuccess && !quota.data.windows.length && (
-          <div className="activity-inline-note">
-            还没有保存的额度记录。后续同步采集到额度后，会在这里显示。
-          </div>
-        )}
-        <div className="activity-quotas">
-          {quota.data?.windows.map((window) => (
-            <div
-              className={`activity-quota-card ${window.stale || window.reset_elapsed ? 'stale' : ''}`}
-              key={`${window.agent}-${window.window_minutes}`}
-            >
-              <div>
-                <strong>{agentName(window.agent)}</strong>
-                <span>
-                  {window.window_minutes >= 1440
-                    ? `${window.window_minutes / 1440} 天`
-                    : `${window.window_minutes / 60} 小时`}
-                  窗口
-                </span>
-              </div>
-              <p>
-                <b>{percent(window.used_percent)}</b> 已使用
-                {window.reset_elapsed && <span className="activity-tag">重置后待更新</span>}
-                {window.stale && !window.reset_elapsed && (
-                  <span className="activity-tag">记录较旧</span>
-                )}
-              </p>
-              <div className="activity-meter">
-                <span style={{ width: `${Math.min(100, Math.max(0, window.used_percent))}%` }} />
-              </div>
-              <small>
-                记录于 {dateTime(window.observed_at)}
-                {window.resets_at > 0 &&
-                  ` · 重置 ${dateTime(new Date(window.resets_at * 1000).toISOString())}`}
-              </small>
-            </div>
-          ))}
-        </div>
-      </section>
     </section>
   )
 }
@@ -1060,49 +1303,89 @@ function MetricPicker({
   )
 }
 
-function UsageChart({ rows, metric }: { rows: DayStats[]; metric: Metric }) {
+function UsageChart({
+  rows,
+  metric,
+  hourly,
+  today,
+}: {
+  rows: DayStats[]
+  metric: Metric
+  hourly: boolean
+  today: boolean
+}) {
   const [selected, setSelected] = useState<string>()
   if (!rows.length) return null
-  const max = Math.max(...rows.map((row) => metricValue(row, metric)), 1)
+  const peak = Math.max(
+    ...rows.map((row) => metricValue(row, metric)),
+    metric === 'cost' ? 0.0001 : 1,
+  )
+  const magnitude = 10 ** Math.floor(Math.log10(peak / 4))
+  const step = [1, 2, 5, 10].find((factor) => factor * magnitude >= peak / 4)! * magnitude
+  const max = Math.max(metric === 'requests' ? 1 : 0, step) * 4
   const chosen = rows.find((row) => row.date === selected)
+  const slots = hourly
+    ? Array.from({ length: 24 }, (_, hour) => ({
+        label: `${String(hour).padStart(2, '0')}时`,
+        row: rows.find((row) => Number(row.date.slice(11, 13)) === hour),
+        future: today && hour > new Date().getHours(),
+      }))
+    : rows.map((row) => ({ label: row.date.slice(5), row, future: false }))
   return (
     <>
-      <div className="activity-chart" role="group" aria-label="用量趋势柱状图">
-        {rows.map((row, index) => (
-          <button
-            type="button"
-            key={row.date}
-            className={`activity-bar-column ${selected === row.date ? 'selected' : ''}`}
-            onClick={() => setSelected(row.date)}
-            aria-label={`${row.date}：${formatMetric(metricValue(row, metric), metric)}`}
-          >
-            <span className="activity-bar-value">
-              {formatMetric(metricValue(row, metric), metric)}
-            </span>
-            <span className="activity-bar-track">
-              <span
-                className="activity-bar"
-                style={{
-                  height: `${Math.max((metricValue(row, metric) / max) * 100, metricValue(row, metric) > 0 ? 2 : 0)}%`,
-                }}
-              />
-            </span>
-            <span className="activity-bar-label">
-              {rows.length < 12 ||
-              index % Math.ceil(rows.length / 10) === 0 ||
-              index === rows.length - 1
-                ? row.date.length > 10
-                  ? row.date.slice(11, 13) + '时'
-                  : row.date.slice(5)
-                : ' '}
-            </span>
-          </button>
-        ))}
+      <div className="usage-chart-layout">
+        <div className="usage-chart-axis" aria-hidden="true">
+          {[1, 0.75, 0.5, 0.25, 0].map((ratio) => (
+            <span key={ratio}>{formatMetric(max * ratio, metric)}</span>
+          ))}
+        </div>
+        <div className="activity-chart" role="group" aria-label="用量趋势柱状图">
+          {slots.map(({ row, label, future }, index) => (
+            <button
+              type="button"
+              key={row?.date || label}
+              className={`activity-bar-column ${row && selected === row.date ? 'selected' : ''} ${future ? 'usage-future' : ''}`}
+              onClick={() => setSelected(row?.date)}
+              aria-label={
+                row
+                  ? `${row.date}：${formatMetric(metricValue(row, metric), metric)}`
+                  : `${label}：${future ? '尚未到达' : '无记录'}`
+              }
+              aria-pressed={!!row && selected === row.date}
+            >
+              <span className="activity-bar-value">
+                {row
+                  ? metric === 'tokens' || metric === 'requests'
+                    ? int(metricValue(row, metric))
+                    : money(metricValue(row, metric))
+                  : future
+                    ? '尚未到达'
+                    : '无记录'}
+              </span>
+              <span className="activity-bar-track">
+                <span
+                  className="activity-bar"
+                  style={{
+                    height: row
+                      ? `${Math.max((metricValue(row, metric) / max) * 100, metricValue(row, metric) > 0 ? 2 : 0)}%`
+                      : '0%',
+                  }}
+                />
+              </span>
+              <span className="activity-bar-label">
+                {slots.length < 12 ||
+                index % Math.ceil(slots.length / 8) === 0 ||
+                index === slots.length - 1
+                  ? label
+                  : ' '}
+              </span>
+            </button>
+          ))}
+        </div>
       </div>
       <div className="activity-chart-detail" aria-live="polite">
-        {chosen
-          ? `${chosen.date} · ${int(chosen.total_tokens)} Token · ${int(chosen.requests)} 次请求 · ${money(chosen.cost_usd)}`
-          : '点击柱形查看该时段的具体数值'}
+        {chosen &&
+          `${chosen.date} · ${int(chosen.total_tokens)} Token · ${int(chosen.requests)} 次请求 · ${money(chosen.cost_usd)}`}
       </div>
     </>
   )
@@ -1237,10 +1520,12 @@ function UsageBreakdown({
   }
   rows.sort((a, b) => metricValue(b, metric) - metricValue(a, metric))
   if (!rows.length) return <EmptyActivity title="这个范围内没有用量明细" />
-  const max = Math.max(...rows.map((row) => metricValue(row, metric)), 1)
+  const total = rows.reduce((sum, row) => sum + metricValue(row, metric), 0)
   return (
     <div className="activity-table-scroll">
-      <table className="activity-table">
+      <table
+        className={`activity-table usage-numeric-table ${group !== 'agent' ? 'usage-has-agent' : ''}`}
+      >
         <thead>
           <tr>
             <th>{group === 'model' ? '模型' : group === 'project' ? '项目' : 'Agent'}</th>
@@ -1249,7 +1534,7 @@ function UsageBreakdown({
             <th>缓存读取</th>
             <th>请求</th>
             <th>费用（USD）</th>
-            <th>分布</th>
+            <th>{metric === 'tokens' ? 'Token' : metric === 'cost' ? '费用' : '请求'}占比</th>
           </tr>
         </thead>
         <tbody>
@@ -1274,11 +1559,18 @@ function UsageBreakdown({
                 )}
               </td>
               <td>
-                <div
-                  className="activity-table-meter"
-                  title={formatMetric(metricValue(row, metric), metric)}
-                >
-                  <span style={{ width: `${(metricValue(row, metric) / max) * 100}%` }} />
+                <div className="usage-share">
+                  <div
+                    className="activity-table-meter"
+                    title={formatMetric(metricValue(row, metric), metric)}
+                  >
+                    <span
+                      style={{
+                        width: `${(total > 0 ? metricValue(row, metric) / total : 0) * 100}%`,
+                      }}
+                    />
+                  </div>
+                  <span>{percent(total > 0 ? (metricValue(row, metric) / total) * 100 : 0)}</span>
                 </div>
               </td>
             </tr>

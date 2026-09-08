@@ -30,20 +30,21 @@ test('only the explicit new=1 signal is consumed', () => {
   }
 })
 
-test('task layout defaults to list and only accepts the kanban value', () => {
+test('task layout defaults to list and accepts four display modes', () => {
   assert.equal(readTaskLayout(new URLSearchParams()), 'list')
   assert.equal(readTaskLayout(new URLSearchParams('layout=list')), 'list')
   assert.equal(readTaskLayout(new URLSearchParams('layout=unknown')), 'list')
-  assert.equal(readTaskLayout(new URLSearchParams('layout=kanban')), 'kanban')
+  for (const layout of ['kanban', 'table', 'swimlane'])
+    assert.equal(readTaskLayout(new URLSearchParams(`layout=${layout}`)), layout)
 })
 
-test('switching task layout preserves shared filters and clears lane filters for kanban', () => {
+test('switching task layout preserves all filters', () => {
   const original = new URLSearchParams('status=review&project=atm&q=menu&new=1')
 
   const kanban = updateTaskLayout(original, 'kanban')
-  assert.equal(kanban.toString(), 'project=atm&q=menu&new=1&layout=kanban')
+  assert.equal(kanban.toString(), 'status=review&project=atm&q=menu&new=1&layout=kanban')
   assert.equal(original.toString(), 'status=review&project=atm&q=menu&new=1')
 
   const list = updateTaskLayout(kanban, 'list')
-  assert.equal(list.toString(), 'project=atm&q=menu&new=1')
+  assert.equal(list.toString(), 'status=review&project=atm&q=menu&new=1')
 })

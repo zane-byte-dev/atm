@@ -3,20 +3,17 @@ export type NewTaskRequest = {
   params: URLSearchParams
 }
 
-export type TaskLayout = 'list' | 'kanban'
+export type TaskLayout = 'list' | 'kanban' | 'table' | 'swimlane'
 
 export function readTaskLayout(params: URLSearchParams): TaskLayout {
-  return params.get('layout') === 'kanban' ? 'kanban' : 'list'
+  const value = params.get('layout')
+  return value === 'kanban' || value === 'table' || value === 'swimlane' ? value : 'list'
 }
 
 export function updateTaskLayout(current: URLSearchParams, layout: TaskLayout): URLSearchParams {
   const params = new URLSearchParams(current)
-  if (layout === 'kanban') {
-    params.set('layout', 'kanban')
-    params.delete('status')
-  } else {
-    params.delete('layout')
-  }
+  if (layout === 'list') params.delete('layout')
+  else params.set('layout', layout)
   return params
 }
 

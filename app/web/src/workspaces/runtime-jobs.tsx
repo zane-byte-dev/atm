@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, LoaderCircle, Play, X } from 'lucide-react'
+import { Check, LoaderCircle, Play, RefreshCw, X } from 'lucide-react'
 import { call } from '../api'
 import { Notice } from '../editor'
 import type { Bootstrap } from '../types'
@@ -62,11 +62,13 @@ export function RuntimeJobs({
   actions = [],
   kinds,
   history = false,
+  secondaryActions = false,
 }: {
   boot: Bootstrap
   actions?: { label?: string; input: JobInput; disabled?: boolean; title?: string }[]
   kinds: JobKind[]
   history?: boolean
+  secondaryActions?: boolean
 }) {
   const enabled = jobsEnabled(boot)
   const client = useQueryClient()
@@ -112,36 +114,55 @@ export function RuntimeJobs({
   const visible = history
     ? matching.slice(0, 15)
     : matching.filter((job) => active(job) || job.id === run.data?.id).slice(0, 3)
+  const renderAction = (action: NonNullable<typeof actions>[number], index: number) => (
+    <button
+      key={index}
+      type="button"
+      className="button"
+      title={action.title}
+      disabled={
+        action.disabled ||
+        run.isPending ||
+        matching.some((job) => job.kind === action.input.kind && active(job))
+      }
+      onClick={() => {
+        cancel.reset()
+        const signature = JSON.stringify(action.input)
+        let operation = pendingOperations.current.get(signature)
+        if (!operation) {
+          operation = { input: { ...action.input }, key: crypto.randomUUID() }
+          pendingOperations.current.set(signature, operation)
+        }
+        run.mutate(operation)
+      }}
+    >
+      {action.input.kind === 'session.sync' || action.input.kind === 'quota.refresh' ? (
+        <RefreshCw size={13} />
+      ) : (
+        <Play size={13} />
+      )}
+      {action.label || names[action.input.kind]}
+    </button>
+  )
   return (
     <div className={`workspace-jobs ${history ? 'workspace-jobs-history' : ''}`}>
       {!!actions.length && (
         <div className="workspace-actions">
-          {actions.map((action, index) => (
-            <button
-              key={index}
-              type="button"
-              className="button"
-              title={action.title}
-              disabled={
-                action.disabled ||
-                run.isPending ||
-                matching.some((job) => job.kind === action.input.kind && active(job))
-              }
-              onClick={() => {
-                cancel.reset()
-                const signature = JSON.stringify(action.input)
-                let operation = pendingOperations.current.get(signature)
-                if (!operation) {
-                  operation = { input: { ...action.input }, key: crypto.randomUUID() }
-                  pendingOperations.current.set(signature, operation)
-                }
-                run.mutate(operation)
-              }}
-            >
-              <Play size={13} />
-              {action.label || names[action.input.kind]}
-            </button>
-          ))}
+          {secondaryActions ? (
+            <>
+              {actions[0] && renderAction(actions[0], 0)}
+              {actions.length > 1 && (
+                <details className="workspace-more-actions">
+                  <summary>更多</summary>
+                  <div>
+                    {actions.slice(1).map((action, index) => renderAction(action, index + 1))}
+                  </div>
+                </details>
+              )}
+            </>
+          ) : (
+            actions.map(renderAction)
+          )}
         </div>
       )}
       {run.error && (

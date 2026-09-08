@@ -3,6 +3,12 @@ BIN_DIR  ?= bin
 DIST_DIR ?= dist
 NPM      ?= npm
 WEB_DIR  := app/web
+DEV_BIN_DIR ?= bin/atm-web-dev
+DEV_DATA_DIR ?=
+DEV_PORT ?= 47321
+DEV_UI_PORT ?= 5173
+DEV_UI_URL ?= http://127.0.0.1:$(DEV_UI_PORT)
+DEV_OPEN ?= --open
 
 # Derive the version from git so a locally built binary reports the commit it
 # was actually built from, including a -dirty suffix for uncommitted work. A
@@ -15,7 +21,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 PLATFORMS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64
 
-.PHONY: build build-cli install dist clean web-build web-deps
+.PHONY: build build-cli dev dev-ui dev-api install dist clean web-build web-deps
 
 # Keep dependency installation, frontend compilation, and embedding in one
 # dependency chain, including when make runs with -j or builds several targets.
@@ -30,6 +36,20 @@ build: web-build
 	mkdir -p "$(BIN_DIR)"
 	go build -trimpath -tags webui -ldflags "$(LDFLAGS)" -o "$(BIN_DIR)/$(APP)" ./cmd/atm
 	@if [ "$$(uname -s)" = Darwin ]; then ./scripts/codesign-local.sh "$(BIN_DIR)/$(APP)"; fi
+
+# Development uses the configured daily data directory unless explicitly overridden.
+# Node supervises both processes; Go is rebuilt before the old backend is stopped.
+export DEV_BIN_DIR DEV_DATA_DIR DEV_PORT DEV_UI_PORT DEV_UI_URL DEV_OPEN NPM
+export DEV_LDFLAGS = $(LDFLAGS)
+
+dev:
+	node scripts/dev.mjs all
+
+dev-ui:
+	node scripts/dev.mjs ui
+
+dev-api:
+	node scripts/dev.mjs api
 
 # This path deliberately has no frontend dependency and works without Node.js.
 build-cli:

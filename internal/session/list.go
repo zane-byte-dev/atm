@@ -20,19 +20,22 @@ type Review struct {
 }
 
 type ListInput struct {
-	Agent          string `json:"agent,omitempty"`
-	Project        string `json:"project,omitempty"`
-	Days           int    `json:"days,omitempty"`
-	Since          string `json:"since,omitempty"`
-	Review         string `json:"review,omitempty"`
-	All            bool   `json:"all,omitempty"`
-	Order          string `json:"order,omitempty"`
-	Limit          int    `json:"limit,omitempty"`
-	Offset         int    `json:"offset,omitempty"`
-	SyncBeforeRead bool   `json:"sync_before_read,omitempty"`
+	GroupChildren   bool   `json:"group_children,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	Agent           string `json:"agent,omitempty"`
+	Project         string `json:"project,omitempty"`
+	Days            int    `json:"days,omitempty"`
+	Since           string `json:"since,omitempty"`
+	Review          string `json:"review,omitempty"`
+	All             bool   `json:"all,omitempty"`
+	Order           string `json:"order,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	Offset          int    `json:"offset,omitempty"`
+	SyncBeforeRead  bool   `json:"sync_before_read,omitempty"`
 }
 
 type Summary struct {
+	ChildCount         int     `json:"child_count,omitempty"`
 	ID                 string  `json:"id"`
 	ShortID            string  `json:"short_id"`
 	Agent              string  `json:"agent"`
@@ -131,8 +134,53 @@ func (service Service) List(ctx context.Context, input ListInput) (ListResult, e
 		return ListResult{}, unavailable("failed to read session review state", err)
 	}
 
+	// Resolve only explicit parent identities. Orphans remain visible, even when
+	// the parent falls outside the selected window. Group before pagination.
+	identities := make(map[string]string)
+	for _, row := range rows {
+		identities[row.FullID] = row.FullID
+		if row.ResumeID != "" {
+			identities[row.ResumeID] = row.FullID
+		}
+	}
+	parents := make(map[string]string)
+	childCounts := make(map[string]int)
+	for _, row := range rows {
+		if parent := identities[row.ParentSessionID]; parent != "" && parent != row.FullID {
+			parents[row.FullID] = parent
+		}
+	}
+	// Break malformed parent cycles so every component has a visible root.
+	visited := make(map[string]bool)
+	for _, row := range rows {
+		path := make(map[string]bool)
+		for id := row.FullID; id != "" && !visited[id]; id = parents[id] {
+			if path[id] {
+				delete(parents, id)
+				break
+			}
+			path[id] = true
+		}
+		for id := range path {
+			visited[id] = true
+		}
+	}
+	for _, parent := range parents {
+		childCounts[parent]++
+	}
+	parentID := input.ParentSessionID
+	if resolved := identities[parentID]; resolved != "" {
+		parentID = resolved
+	}
 	filtered := rows[:0]
 	for _, row := range rows {
+		if input.ParentSessionID != "" {
+			if parents[row.FullID] != parentID && row.ParentSessionID != input.ParentSessionID {
+				continue
+			}
+		} else if input.GroupChildren && parents[row.FullID] != "" {
+			continue
+		}
 		_, reviewed := reviewRows[row.FullID]
 		if input.Review == "pending" && reviewed {
 			continue
@@ -184,7 +232,7 @@ func (service Service) List(ctx context.Context, input ListInput) (ListResult, e
 			review = &value
 		}
 		sessions = append(sessions, Summary{
-			ID: row.FullID, ShortID: row.ShortID, Agent: row.Agent, Project: row.Project,
+			ChildCount: childCounts[row.FullID], ID: row.FullID, ShortID: row.ShortID, Agent: row.Agent, Project: row.Project,
 			CreatedAt: createdAt, IndexedCreated: row.CreatedAt, LastAt: lastAt,
 			QuestionCount: row.QCount, LocalUserTurnCount: row.QCount, Summary: row.Summary,
 			FirstQuestion: cleanMessage(row.FirstQ), ResumeID: row.ResumeID,

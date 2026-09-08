@@ -1,0 +1,93 @@
+:root {
+  --ui-title-size: 14px;
+  --ui-nav-size: 14px;
+  --ui-menu-size: 13px;
+  --ui-dialog-title-size: 18px;
+  --ui-icon-size: 16px;
+}
+.workspace-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  min-width: 0;
+}
+.workspace-title > svg {
+  color: var(--muted);
+  flex: none;
+}
+.workspace .nav-item {
+  min-height: 34px;
+  gap: 8px;
+  font-size: var(--ui-nav-size);
+  line-height: 20px;
+}
+.workspace .nav-item > svg {
+  width: var(--ui-icon-size);
+  height: var(--ui-icon-size);
+  stroke-width: 1.75;
+}
+.workspace .nav-item.selected {
+  font-weight: 500;
+}
+.workspace .knowledge-branch-title,
+.workspace .knowledge-collection-row {
+  font-size: var(--ui-menu-size);
+}
+.workspace .settings-navigator-heading h1,
+.workspace .settings-detail-identity h1 {
+  font-size: var(--ui-title-size);
+  font-weight: 500;
+  line-height: 20px;
+}
+.workspace .as-settings-nav > button {
+  gap: 8px;
+}
+.workspace .as-settings-nav > button strong {
+  font-size: var(--ui-menu-size);
+  font-weight: 500;
+}
+.workspace .as-settings-nav > button > svg:first-child {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
+}
+.workspace .workbench-heading {
+  min-height: 48px;
+  padding-block: 10px;
+}
+.workspace .workbench-popover > button,
+.workspace .knowledge-page-actions > button,
+.workspace .task-views-menu > button {
+  font-size: var(--ui-menu-size);
+  min-height: 32px;
+}
+.workspace .workbench-popover > button svg,
+.workspace .knowledge-page-actions > button svg,
+.workspace .task-views-menu > button svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.75;
+  flex: none;
+  color: var(--muted);
+}
+.workspace .task-view-dialog h2,
+.workspace .knowledge-manager h2 {
+  font-size: var(--ui-dialog-title-size);
+  font-weight: 600;
+}
+.workspace .task-view-dialog h2 svg,
+.workspace .knowledge-manager h2 svg {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.75;
+}
+.workspace .task-view-dialog .task-view-subtitle {
+  font-size: 14px;
+}
+.workspace .task-view-dialog .task-view-manager-name {
+  font-size: 14px;
+}
+.workspace .task-view-field {
+  font-size: var(--ui-menu-size);
+}

@@ -59,7 +59,7 @@ func (h *Host) Call(ctx context.Context, call application.Call, method string, i
 	case "knowledge.catalog", "knowledge.query", "knowledge.document.get", "knowledge.document.create", "knowledge.document.update", "knowledge.collection.create",
 		"memory.recall", "memory.get", "memory.create", "memory.supersede":
 		return h.callKnowledge(ctx, call, method, input)
-	case "collect.overview", "collect.items", "collect.item.show", "collect.history", "collect.item.read", "collect.item.archive", "collect.source.enabled", "collect.source.muted", "collect.source.save", "collect.source.delete":
+	case "collect.overview", "collect.items", "collect.item.show", "collect.history", "collect.item.read", "collect.item.archive", "collect.source.enabled", "collect.source.muted", "collect.source.save", "collect.source.delete", "collect.source.search":
 		return h.callCollection(ctx, call, method, input)
 	case "day.snapshot", "day.show", "day.ledger", "settings.get", "settings.preferences.save", "settings.business.save", "settings.credential.save", "settings.credential.delete":
 		return h.callWorkspaceSettings(ctx, call, method, input)

@@ -1,4 +1,6 @@
 export type SessionSummary = {
+  child_count?: number
+  resume_id?: string
   id: string
   short_id: string
   agent: string

@@ -37,7 +37,7 @@ func TestServiceQueryIsOneStableReadModelForBrowseAndSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(browse.Documents) != 1 || browse.Documents[0].DocumentID != active.Metadata.ID ||
-		browse.Documents[0].CreatedAt == nil || browse.Documents[0].Snippet != "" {
+		browse.Documents[0].CreatedAt == nil || browse.Documents[0].Snippet != "typed knowledge marker" {
 		t.Fatalf("browse = %#v", browse)
 	}
 

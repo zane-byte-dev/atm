@@ -33,11 +33,12 @@ type CollectionSummary = collector.WorkspaceCollectionSummary
 type CollectionMessageStats = collector.WorkspaceCollectionMessageStats
 
 type CollectionListInput struct {
-	SourceID string `json:"source_id,omitempty"`
-	State    string `json:"state,omitempty"`
-	Query    string `json:"query,omitempty"`
-	Limit    int    `json:"limit,omitempty"`
-	Offset   int    `json:"offset,omitempty"`
+	UnreadOnly bool   `json:"unread_only,omitempty"`
+	SourceID   string `json:"source_id,omitempty"`
+	State      string `json:"state,omitempty"`
+	Query      string `json:"query,omitempty"`
+	Limit      int    `json:"limit,omitempty"`
+	Offset     int    `json:"offset,omitempty"`
 }
 
 type CollectionItemSummary = collector.WorkspaceCollectionItemSummary
@@ -151,6 +152,13 @@ func (h *Host) callCollection(ctx context.Context, call application.Call, method
 			}
 			return changeCollectionSource(ctx, call, value.SourceID, *value.Muted, true)
 		})
+	case "collect.source.search":
+		return invoke(input, func(value collector.SearchSourcesInput) (any, error) {
+			if len(value.Keyword) > 500 || value.Limit < 0 || value.Limit > 100 {
+				return nil, invalid("search keyword or limit exceeds supported size")
+			}
+			return (collector.Service{}).SearchSources(ctx, call, value)
+		})
 	case "collect.source.save":
 		return invoke(input, func(value collector.SaveSourceInput) (any, error) {
 			if len(value.ExternalID) > 2000 || len(value.Name) > 500 || len(value.Project) > 500 || len(value.ExcludePattern) > 2000 || len(value.Instruction) > 16000 {
@@ -218,7 +226,7 @@ func collectionItems(ctx context.Context, input CollectionListInput) (Collection
 		return CollectionListResult{}, invalid("invalid source_id")
 	}
 	return (collector.QueryService{}).Items(ctx, collector.WorkspaceCollectionListInput{
-		SourceID: input.SourceID, State: input.State, Query: input.Query, Limit: input.Limit, Offset: input.Offset,
+		UnreadOnly: input.UnreadOnly, SourceID: input.SourceID, State: input.State, Query: input.Query, Limit: input.Limit, Offset: input.Offset,
 	})
 }
 

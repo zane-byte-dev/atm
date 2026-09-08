@@ -1161,7 +1161,6 @@
   font-weight: 540;
 }
 .aid-workspace > :not(.as-page-heading):not(.as-tabs) {
-  max-width: 1120px;
   margin-left: auto;
   margin-right: auto;
 }

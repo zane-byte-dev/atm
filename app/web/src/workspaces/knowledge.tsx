@@ -1,18 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { Select } from '../components/select'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  Files,
   ArrowLeft,
   BookOpen,
   Check,
   Copy,
+  ChevronRight,
   FileText,
-  Folder,
-  Layers,
   LoaderCircle,
   Pencil,
   Plus,
-  Search,
   Sparkles,
   X,
 } from 'lucide-react'
@@ -27,6 +27,11 @@ import type {
   MemoryEventResult,
   MemoryHit,
 } from './knowledge-types'
+import { KnowledgeDetailPage } from './knowledge-detail-page'
+import { WorkspaceTitle } from '../workspace-title'
+import { KnowledgeManager } from './knowledge-manager'
+import { KnowledgeActions } from './knowledge-actions'
+import { InlineKnowledgeField, useInlineKnowledge } from './knowledge-inline'
 import './knowledge.css'
 import './workspace-forms.css'
 import { useNativePreferences } from './native-preferences-react'
@@ -36,6 +41,14 @@ type RoutePatch = Record<string, string | undefined>
 const statusLabels: Record<string, string> = { active: '有效', draft: '草稿', archived: '已归档' }
 const formatDate = (value?: string) =>
   value ? new Date(value).toLocaleString('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }) : '—'
+const scopeLabel = (scope: string) =>
+  scope === 'global'
+    ? '全局'
+    : scope.startsWith('project:')
+      ? `项目 · ${scope.slice(8)}`
+      : scope.startsWith('session:')
+        ? `会话 · ${scope.slice(8)}`
+        : scope
 const splitValues = (value: string) => [
   ...new Set(
     value
@@ -58,16 +71,14 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
   const status = params.get('status') || ''
   const compose = params.get('compose') || ''
   const writable = boot.capabilities?.workspace_write === true
-  const [search, setSearch] = useState(text)
-  const [scopeText, setScopeText] = useState(scope)
+  const listPositions = useRef(new Map<string, number>())
+  const selectedItem = useRef('')
+  const wasDetailOpen = useRef(false)
+  const listKey = JSON.stringify([memoryTab, collection, text, scope, status])
   const [busy, setBusy] = useState(false)
+  const [managerCollection, setManagerCollection] = useState<string | null>(null)
   const resultsRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLElement>(null)
-  useEffect(() => setSearch(text), [text])
-  useEffect(() => setScopeText(scope), [scope])
-  useEffect(() => {
-    resultsRef.current?.scrollTo({ top: 0 })
-  }, [memoryTab, collection, text, scope, status])
   useEffect(() => {
     detailRef.current?.scrollTo({ top: 0 })
   }, [documentID, memoryID, compose])
@@ -116,7 +127,6 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
     nativePreferences.knowledge_collection_order,
   )
   const activeCollection = catalog.data?.find((item) => item.id === collection)
-  const total = catalog.data?.reduce((sum, item) => sum + item.document_count, 0)
   const closeEditor = () => route({ compose: undefined })
   const onCreatedDocument = async (result: KnowledgeDocument) => {
     await queryClient.invalidateQueries({ queryKey: ['knowledge'] })
@@ -138,227 +148,254 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
       return next
     })
   }
+  const collectionLanding =
+    !documentID &&
+    !memoryID &&
+    !compose &&
+    !text &&
+    !status &&
+    !scope &&
+    params.get('view') !== 'search'
   const detailOpen = !!compose || (memoryTab ? !!memoryID : !!documentID)
+  const readingDetail =
+    !compose && (memoryTab ? !!memoryID && !!memory.data : !!documentID && !!document.data)
+  const collectionName = (id: string) => catalog.data?.find((item) => item.id === id)?.name || id
+  const listTitle = memoryTab
+    ? '共享记忆'
+    : activeCollection?.name || statusLabels[status] || '知识文档'
+  const openItem = (kind: 'document' | 'memory', id: string) => {
+    selectedItem.current = id
+    listPositions.current.set(listKey, resultsRef.current?.scrollTop || 0)
+    route({ [kind]: id, compose: undefined })
+  }
+  useLayoutEffect(() => {
+    if (!detailOpen && resultsRef.current) {
+      resultsRef.current.scrollTop = listPositions.current.get(listKey) || 0
+      if (wasDetailOpen.current) {
+        const row = Array.from(
+          resultsRef.current.querySelectorAll<HTMLButtonElement>('[data-knowledge-id]'),
+        ).find((item) => item.dataset.knowledgeId === selectedItem.current)
+        row?.focus({ preventScroll: true })
+      }
+    } else if (detailOpen && !wasDetailOpen.current && !compose) {
+      detailRef.current?.focus({ preventScroll: true })
+    }
+    wasDetailOpen.current = detailOpen
+  }, [detailOpen, listKey, compose])
 
   return (
-    <section
-      className={`knowledge-workspace ${detailOpen ? 'knowledge-detail-open' : ''}`}
-      aria-label="知识与共享记忆"
-    >
-      <header className="knowledge-header">
-        <div>
-          <h1>知识与记忆</h1>
-          <p>整理可复用的文档、经验与项目约定。</p>
+    <section className="knowledge-workspace knowledge-browser" aria-label="知识与共享记忆">
+      <aside className="knowledge-collections" aria-label="知识导航">
+        <div className="knowledge-navigation-heading">
+          <WorkspaceTitle icon={BookOpen}>知识</WorkspaceTitle>
         </div>
-        <div className="knowledge-header-actions">
-          {writable && (
-            <button
-              type="button"
-              className="button primary"
-              disabled={busy || (!memoryTab && !catalog.data?.length)}
-              onClick={() =>
-                route({
-                  compose: memoryTab ? 'memory' : 'document',
-                  document: undefined,
-                  memory: undefined,
-                })
-              }
-            >
-              <Plus size={16} />
-              {memoryTab ? '新增记忆' : '新建文档'}
-            </button>
-          )}
-        </div>
-      </header>
-      <div className="knowledge-tabs" role="tablist" aria-label="知识工作区">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={!memoryTab}
-          disabled={busy}
-          onClick={() => route({ tab: undefined, q: undefined, compose: undefined })}
-        >
-          <BookOpen size={16} />
-          中心知识<span>{total ?? '—'}</span>
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={memoryTab}
-          disabled={busy}
-          onClick={() => route({ tab: 'memory', q: undefined, compose: undefined })}
-        >
-          <Sparkles size={16} />
-          共享记忆
-        </button>
-      </div>
-      <div className={`knowledge-columns ${memoryTab ? 'knowledge-memory-columns' : ''}`}>
-        <aside className="knowledge-collections" aria-label={memoryTab ? '记忆范围' : '知识集合'}>
+        <nav aria-label="知识内容">
           <div className="knowledge-section-label">
-            <span>{memoryTab ? '记忆范围' : '知识集合'}</span>
-            {writable && !memoryTab && (
+            <span>知识集合</span>
+            {writable && (
               <button
                 type="button"
-                disabled={busy}
-                onClick={() => route({ compose: 'collection' })}
-                title="新建集合"
                 aria-label="新建集合"
-              >
-                <Plus size={16} />
-              </button>
-            )}
-          </div>
-          {memoryTab ? (
-            <>
-              <button
-                type="button"
-                className={`knowledge-collection-row ${!scope ? 'selected' : ''}`}
-                disabled={busy}
-                onClick={() => route({ scope: undefined, memory: undefined, compose: undefined })}
-              >
-                <Layers size={16} />
-                <span>全部范围</span>
-              </button>
-              <button
-                type="button"
-                className={`knowledge-collection-row ${scope === 'global' ? 'selected' : ''}`}
-                disabled={busy}
-                onClick={() => route({ scope: 'global', memory: undefined, compose: undefined })}
-              >
-                <Sparkles size={16} />
-                <span>全局记忆</span>
-              </button>
-              <form
-                className="knowledge-scope-form"
-                onSubmit={(event) => {
-                  event.preventDefault()
-                  route({ scope: scopeText.trim(), memory: undefined, compose: undefined })
-                }}
-              >
-                <label htmlFor="knowledge-scope-filter">项目或会话范围</label>
-                <input
-                  id="knowledge-scope-filter"
-                  value={scopeText}
-                  onChange={(event) => setScopeText(event.target.value)}
-                  placeholder="project:atm"
-                  maxLength={500}
-                  disabled={busy}
-                />
-                <button type="submit" className="button subtle" disabled={busy}>
-                  应用范围
-                </button>
-              </form>
-              <p className="knowledge-side-note">项目与会话检索会同时包含全局记忆。</p>
-            </>
-          ) : (
-            <>
-              <button
-                type="button"
-                className={`knowledge-collection-row ${!collection ? 'selected' : ''}`}
                 disabled={busy}
                 onClick={() =>
-                  route({ collection: undefined, document: undefined, compose: undefined })
+                  route({
+                    tab: undefined,
+                    compose: 'collection',
+                    document: undefined,
+                    memory: undefined,
+                  })
                 }
               >
-                <Layers size={16} />
-                <span>全部文档</span>
-                <small>{total ?? '—'}</small>
+                <Plus size={15} />
               </button>
-              {catalog.isPending && (
-                <Loading label="读取集合…" retry={() => void catalog.refetch()} />
-              )}
-              {catalog.error && (
-                <Notice error={catalog.error} retry={() => void catalog.refetch()} />
-              )}
-              {orderedCollections.map((item) => (
-                <button
-                  type="button"
-                  key={item.id}
-                  className={`knowledge-collection-row ${collection === item.id ? 'selected' : ''}`}
-                  title={item.name || item.id}
-                  disabled={busy}
-                  onClick={() =>
-                    route({ collection: item.id, document: undefined, compose: undefined })
-                  }
-                >
-                  <Folder size={16} />
-                  <span>{item.name || item.id}</span>
-                  <small>{item.document_count}</small>
-                </button>
-              ))}
-              {catalog.data?.length === 0 && (
-                <p className="knowledge-side-note">
-                  尚无知识集合。{writable ? '点击上方 + 创建第一个集合。' : ''}
-                </p>
-              )}
-              {activeCollection && (
-                <div className="knowledge-collection-about">
-                  <h3>{activeCollection.name}</h3>
-                  {activeCollection.role && (
-                    <span className="knowledge-pill">{activeCollection.role}</span>
-                  )}
-                  <p>{activeCollection.description || '此集合暂无说明。'}</p>
-                  <Tags values={activeCollection.topics} />
-                  <Guidance label="适合何时使用" items={activeCollection.use_when} />
-                  <Guidance label="不适用情况" items={activeCollection.avoid_when} />
-                  <Guidance label="使用说明" items={activeCollection.instructions} />
-                </div>
-              )}
-            </>
-          )}
-        </aside>
-        <section className="knowledge-results" aria-label={memoryTab ? '共享记忆列表' : '文档列表'}>
-          <form
-            className="knowledge-search"
-            onSubmit={(event) => {
-              event.preventDefault()
-              route({
-                q: search.trim(),
-                document: undefined,
-                memory: undefined,
-                compose: undefined,
-              })
-            }}
-          >
-            <Search size={16} />
-            <input
-              aria-label={memoryTab ? '搜索共享记忆' : '搜索知识文档'}
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder={memoryTab ? '搜索记忆内容…' : '搜索文档与正文…'}
-              maxLength={2000}
-              disabled={busy}
-            />
-            <button type="submit" disabled={busy}>
-              搜索
-            </button>
-          </form>
-          <div className="knowledge-list-heading">
-            <span>
-              {memoryTab ? '有效记忆' : activeCollection?.name || '全部文档'}{' '}
-              <strong>
-                {memoryTab
-                  ? (memories.data?.hits.length ?? '—')
-                  : (documents.data?.documents.length ?? '—')}
-              </strong>
-            </span>
-            {!memoryTab && (
-              <select
-                aria-label="文档状态"
-                value={status}
-                disabled={busy}
-                onChange={(event) =>
-                  route({ status: event.target.value, document: undefined, compose: undefined })
-                }
-              >
-                <option value="">所有状态</option>
-                <option value="active">有效</option>
-                <option value="draft">草稿</option>
-                <option value="archived">已归档</option>
-              </select>
             )}
           </div>
-          <div className="knowledge-results-scroll" ref={resultsRef}>
+          <CollectionBranch
+            key="special:memory"
+            item={{ id: 'shared-memory', name: '共享记忆', description: '', document_count: 0 }}
+            memoryCollection
+            active={memoryTab}
+            documentID={memoryTab ? memoryID : ''}
+            busy={busy}
+            writable={writable}
+            onOpen={(id) => {
+              selectedItem.current = id
+              route({
+                tab: 'memory',
+                memory: id,
+                collection: undefined,
+                document: undefined,
+                compose: undefined,
+                q: undefined,
+                scope: undefined,
+                status: undefined,
+                view: undefined,
+              })
+            }}
+            onCreate={() =>
+              route({
+                tab: 'memory',
+                compose: 'memory',
+                memory: undefined,
+                collection: undefined,
+                document: undefined,
+                q: undefined,
+                scope: undefined,
+                status: undefined,
+                view: undefined,
+              })
+            }
+          />
+          {catalog.isPending && <Loading label="读取集合…" retry={() => void catalog.refetch()} />}
+          {catalog.error && <Notice error={catalog.error} retry={() => void catalog.refetch()} />}
+          {orderedCollections.map((item) => (
+            <CollectionBranch
+              key={item.id}
+              item={item}
+              onManage={() => setManagerCollection(item.id)}
+              active={!memoryTab && collection === item.id}
+              documentID={!memoryTab ? documentID : ''}
+              busy={busy}
+              writable={writable}
+              onOpen={(id) => {
+                selectedItem.current = id
+                route({
+                  tab: undefined,
+                  collection: item.id,
+                  document: id,
+                  memory: undefined,
+                  compose: undefined,
+                  q: undefined,
+                  status: undefined,
+                })
+              }}
+              onCreate={() =>
+                route({
+                  tab: undefined,
+                  collection: item.id,
+                  compose: 'document',
+                  document: undefined,
+                  memory: undefined,
+                  q: undefined,
+                  status: undefined,
+                })
+              }
+            />
+          ))}
+          {catalog.data?.length === 0 && (
+            <p className="knowledge-side-note">
+              尚无知识集合。{writable ? '点击上方 + 创建第一个集合。' : ''}
+            </p>
+          )}
+          <div className="knowledge-section-label">
+            <span>管理</span>
+          </div>
+          <button
+            type="button"
+            className="knowledge-collection-row"
+            disabled={busy}
+            onClick={() => setManagerCollection('')}
+          >
+            <Files size={16} />
+            <span>文档管理</span>
+          </button>
+        </nav>
+      </aside>
+      <div className="knowledge-main">
+        <div className="knowledge-breadcrumb" hidden={collectionLanding || readingDetail}>
+          <span>知识</span>
+          <span aria-hidden="true">/</span>
+          <span>{listTitle}</span>
+        </div>
+        <section
+          className="knowledge-results"
+          aria-label={memoryTab ? '共享记忆列表' : '文档列表'}
+          hidden={detailOpen || collectionLanding}
+        >
+          <header className="knowledge-browse-header">
+            <div className="knowledge-browse-title">
+              <h2>{listTitle}</h2>
+              {writable && (
+                <button
+                  type="button"
+                  className="button primary"
+                  disabled={busy || (!memoryTab && !catalog.data?.length)}
+                  onClick={() =>
+                    route({
+                      compose: memoryTab ? 'memory' : 'document',
+                      document: undefined,
+                      memory: undefined,
+                    })
+                  }
+                >
+                  <Plus size={16} />
+                  {memoryTab ? '新增记忆' : '新建文档'}
+                </button>
+              )}
+            </div>
+            <p>
+              {memoryTab
+                ? '跨任务复用的简短约定，清楚标记适用范围与来源。'
+                : '按集合整理，让经验成为下次工作的起点。'}
+            </p>
+            {!memoryTab && activeCollection && (
+              <details className="knowledge-collection-about" key={activeCollection.id}>
+                <summary>集合说明</summary>
+                <p>{activeCollection.description || '此集合暂无说明。'}</p>
+                {activeCollection.role && (
+                  <span className="knowledge-pill">{activeCollection.role}</span>
+                )}
+                <Tags values={activeCollection.topics} />
+                <Guidance label="适合何时使用" items={activeCollection.use_when} />
+                <Guidance label="不适用情况" items={activeCollection.avoid_when} />
+                <Guidance label="使用说明" items={activeCollection.instructions} />
+              </details>
+            )}
+            <div className="knowledge-list-filters">
+              {text && (
+                <button
+                  type="button"
+                  className="text-button"
+                  disabled={busy}
+                  onClick={() => route({ q: undefined })}
+                >
+                  清除关键词：{text}
+                  <X size={14} />
+                </button>
+              )}
+              {!memoryTab && (
+                <Select
+                  aria-label="文档状态"
+                  value={status}
+                  disabled={busy}
+                  onChange={(event) =>
+                    route({ status: event.target.value, document: undefined, compose: undefined })
+                  }
+                >
+                  <option value="">全部状态</option>
+                  <option value="active">有效</option>
+                  <option value="draft">草稿</option>
+                  <option value="archived">已归档</option>
+                </Select>
+              )}
+            </div>
+          </header>
+          <div className="knowledge-list-heading">
+            <span aria-live="polite">
+              {memoryTab
+                ? (memories.data?.hits.length ?? '—')
+                : (documents.data?.documents.length ?? '—')}
+              {memoryTab ? ' 条记忆' : ' 篇文档'}
+            </span>
+            <span>{text ? '按相关性排序' : memoryTab ? '记忆内容与来源' : '最近更新 ↓'}</span>
+          </div>
+          <div
+            className="knowledge-results-scroll"
+            ref={resultsRef}
+            onScroll={(event) => {
+              if (!detailOpen) listPositions.current.set(listKey, event.currentTarget.scrollTop)
+            }}
+          >
             {memoryTab ? (
               <>
                 {memories.isPending && (
@@ -381,16 +418,26 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
                     key={item.id}
                     type="button"
                     disabled={busy}
-                    className={`knowledge-result-row knowledge-memory-row ${memoryID === item.id ? 'selected' : ''}`}
-                    aria-pressed={memoryID === item.id}
-                    onClick={() => route({ memory: item.id, compose: undefined })}
+                    className="knowledge-result-row knowledge-memory-row"
+                    data-knowledge-id={item.id}
+                    onClick={() => openItem('memory', item.id)}
                   >
-                    <div className="knowledge-result-kicker">
-                      <span>{item.scope}</span>
-                      <time>{formatDate(item.created_at)}</time>
+                    <Sparkles size={18} className="knowledge-row-icon" />
+                    <div className="knowledge-row-content">
+                      <h3>{item.content.trim().split(/\r?\n/)[0] || '未命名记忆'}</h3>
+                      {item.content.trim().includes('\n') && (
+                        <p className="knowledge-snippet">
+                          {item.content.trim().split(/\r?\n/).slice(1).join(' ')}
+                        </p>
+                      )}
+                      <div className="knowledge-result-meta">
+                        <span className="knowledge-memory-scope">{scopeLabel(item.scope)}</span>
+                        <span className="knowledge-memory-source">
+                          来源：{item.metadata?.source || item.source || '未记录'}
+                        </span>
+                      </div>
                     </div>
-                    <p className="knowledge-memory-excerpt">{item.content}</p>
-                    <Tags values={item.tags} />
+                    <time className="knowledge-row-date">{formatDate(item.created_at)}</time>
                   </button>
                 ))}
                 {(memories.data?.hits.length || 0) >= 200 && (
@@ -418,71 +465,74 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
                     }
                   />
                 )}
-                {(documents.data?.documents || []).map((item) => (
-                  <button
-                    key={item.document_id}
-                    type="button"
-                    disabled={busy}
-                    className={`knowledge-result-row ${documentID === item.document_id ? 'selected' : ''}`}
-                    aria-pressed={documentID === item.document_id}
-                    onClick={() => route({ document: item.document_id, compose: undefined })}
-                  >
-                    <div className="knowledge-result-kicker">
-                      <span>
-                        <FileText size={13} />
-                        {item.collection}
-                      </span>
-                      <span className={`knowledge-status ${item.status}`}>
-                        {statusLabels[item.status] || item.status}
-                      </span>
-                    </div>
-                    <h3>{item.title}</h3>
-                    {item.snippet ? (
-                      <p className="knowledge-snippet">{item.snippet}</p>
-                    ) : (
-                      <Tags values={item.tags?.length ? item.tags : item.domains} />
-                    )}
-                    <div className="knowledge-result-meta">
-                      <span>{item.projects?.join(' · ') || item.producer || '中心知识'}</span>
-                      <time>{item.updated_at ? formatDate(item.updated_at) : '正文匹配'}</time>
-                    </div>
-                  </button>
-                ))}
+                {(documents.data?.documents || [])
+                  .filter((item) => status || item.status !== 'archived')
+                  .map((item) => (
+                    <button
+                      key={item.document_id}
+                      type="button"
+                      disabled={busy}
+                      className="knowledge-result-row"
+                      data-knowledge-id={item.document_id}
+                      onClick={() => openItem('document', item.document_id)}
+                    >
+                      <FileText size={18} className="knowledge-row-icon" />
+                      <div className="knowledge-row-content">
+                        <div className="knowledge-row-title">
+                          <h3>{item.title}</h3>
+                          {item.status !== 'active' && (
+                            <span className={`knowledge-status ${item.status}`}>
+                              {statusLabels[item.status] || item.status}
+                            </span>
+                          )}
+                        </div>
+                        {item.snippet && <p className="knowledge-snippet">{item.snippet}</p>}
+                        <div className="knowledge-result-meta">
+                          <span>{collectionName(item.collection)}</span>
+                          {item.projects?.length ? <span>{item.projects.join(' · ')}</span> : null}
+                        </div>
+                      </div>
+                      {item.updated_at && (
+                        <time className="knowledge-row-date">{formatDate(item.updated_at)}</time>
+                      )}
+                    </button>
+                  ))}
                 {(documents.data?.documents.length || 0) >= 200 && (
                   <p className="knowledge-list-footnote">
-                    已显示前 200 条，请选择集合或搜索关键词。
+                    已显示前 200 条，更多内容请使用全局搜索。
                   </p>
                 )}
               </>
             )}
           </div>
         </section>
+        {collectionLanding && (
+          <Empty icon="document" title="选择文档或记忆" detail="展开左侧集合，选择内容开始阅读。" />
+        )}
         <section
           className="knowledge-detail"
           ref={detailRef}
+          tabIndex={-1}
+          hidden={!detailOpen}
           aria-label={compose ? '编辑内容' : '所选内容'}
         >
-          {detailOpen && (
-            <div className="knowledge-detail-toolbar">
-              <button
-                type="button"
-                className="text-button knowledge-back"
-                disabled={busy}
-                onClick={() =>
-                  route({ document: undefined, memory: undefined, compose: undefined })
-                }
-              >
-                <ArrowLeft size={15} />
-                返回列表
+          <div className="knowledge-detail-toolbar" hidden={readingDetail}>
+            <button
+              type="button"
+              className="text-button knowledge-back"
+              disabled={busy}
+              onClick={() => route({ document: undefined, memory: undefined, compose: undefined })}
+            >
+              <ArrowLeft size={15} />
+              {params.get('view') === 'search' || text || status ? '返回列表' : '返回导航'}
+            </button>
+            {compose && (
+              <button type="button" className="text-button" disabled={busy} onClick={closeEditor}>
+                <X size={15} />
+                关闭编辑
               </button>
-              {compose && (
-                <button type="button" className="text-button" disabled={busy} onClick={closeEditor}>
-                  <X size={15} />
-                  关闭编辑
-                </button>
-              )}
-            </div>
-          )}
+            )}
+          </div>
           {compose && !writable ? (
             <Empty
               icon="document"
@@ -550,6 +600,7 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
                 />
                 {memory.data && (
                   <MemoryDetail
+                    key={memory.data.id}
                     memory={memory.data}
                     writable={writable}
                     onEdit={() => route({ compose: 'supersede' })}
@@ -568,6 +619,12 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
               />
               {document.data && (
                 <DocumentDetail
+                  key={document.data.metadata.id}
+                  collectionLabel={collectionName(document.data.collection)}
+                  collections={orderedCollections}
+                  onSaved={onCreatedDocument}
+                  onBusy={setBusy}
+                  busy={busy}
                   document={document.data}
                   writable={writable}
                   onCopy={() => route({ compose: 'copy' })}
@@ -584,7 +641,176 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
           )}
         </section>
       </div>
+      {managerCollection !== null && (
+        <KnowledgeManager
+          initialCollection={managerCollection}
+          collections={orderedCollections}
+          writable={writable}
+          onClose={() => setManagerCollection(null)}
+          onOpen={(doc) => {
+            setManagerCollection(null)
+            route({
+              tab: undefined,
+              collection: doc.collection,
+              document: doc.document_id,
+              memory: undefined,
+              compose: undefined,
+              q: undefined,
+              status: undefined,
+              scope: undefined,
+              view: undefined,
+            })
+          }}
+        />
+      )}
     </section>
+  )
+}
+
+function CollectionBranch({
+  item,
+  memoryCollection = false,
+  onManage,
+  active,
+  documentID,
+  busy,
+  writable,
+  onOpen,
+  onCreate,
+}: {
+  item: KnowledgeCollection
+  memoryCollection?: boolean
+  onManage?: () => void
+  active: boolean
+  documentID: string
+  busy: boolean
+  writable: boolean
+  onOpen: (id: string) => void
+  onCreate: () => void
+}) {
+  const [expanded, setExpanded] = useState(active)
+  const childrenID = useId()
+  useEffect(() => {
+    if (active) setExpanded(true)
+  }, [active, documentID])
+  const documents = useQuery({
+    queryKey: ['knowledge', 'query', item.id, '', ''],
+    queryFn: ({ signal }) =>
+      call<{ documents: KnowledgeDocumentRow[] }>(
+        'knowledge.query',
+        { collection: item.id, text: '', status: '', limit: 200 },
+        signal,
+      ),
+    enabled: expanded && !memoryCollection,
+  })
+  const memories = useQuery({
+    queryKey: ['knowledge', 'memory', '', ''],
+    queryFn: ({ signal }) =>
+      call<{ hits: MemoryHit[] }>('memory.recall', { query: '', scope: '', limit: 200 }, signal),
+    enabled: expanded && memoryCollection,
+  })
+  const rows = memoryCollection
+    ? memories.data?.hits.map((memory) => ({
+        document_id: memory.id,
+        title: memory.content.trim().split(/\r?\n/)[0] || '未命名记忆',
+      }))
+    : documents.data?.documents.filter((doc) => doc.status !== 'archived')
+  const pending = memoryCollection ? memories.isPending : documents.isPending
+  const error = memoryCollection ? memories.error : documents.error
+  const retry = () => {
+    if (memoryCollection) void memories.refetch()
+    else void documents.refetch()
+  }
+  const contentLabel = memoryCollection ? '记忆' : '文档'
+  return (
+    <div className="knowledge-branch">
+      <div className="knowledge-branch-heading">
+        <button
+          type="button"
+          className="knowledge-branch-toggle"
+          aria-label={`${expanded ? '收起' : '展开'}${item.name || item.id}`}
+          aria-expanded={expanded}
+          aria-controls={childrenID}
+          disabled={busy}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <ChevronRight size={15} />
+        </button>
+        <button
+          type="button"
+          className="knowledge-branch-title"
+          title={item.name || item.id}
+          aria-expanded={expanded}
+          aria-controls={childrenID}
+          disabled={busy}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {memoryCollection && <Sparkles size={14} />}
+          {!memoryCollection && <BookOpen size={14} />}
+          <span>{item.name || item.id}</span>
+          <small>
+            {memoryCollection
+              ? rows
+                ? `${rows.length}${rows.length >= 200 ? '+' : ''}`
+                : ''
+              : item.document_count}
+          </small>
+        </button>
+        {onManage && (
+          <button
+            type="button"
+            className="knowledge-branch-manage"
+            aria-label={`管理${item.name || item.id}的文档`}
+            title="文档管理"
+            disabled={busy}
+            onClick={onManage}
+          >
+            <Files size={14} />
+          </button>
+        )}
+        {writable && (
+          <button
+            type="button"
+            className="knowledge-branch-add"
+            aria-label={`在${item.name || item.id}中新建${contentLabel}`}
+            title={`新建${contentLabel}`}
+            disabled={busy}
+            onClick={() => {
+              setExpanded(true)
+              onCreate()
+            }}
+          >
+            <Plus size={15} />
+          </button>
+        )}
+      </div>
+      <div id={childrenID} className="knowledge-branch-documents" hidden={!expanded}>
+        {expanded && (
+          <>
+            {pending && <Loading label={`读取${contentLabel}…`} retry={retry} />}
+            {error && <Notice error={error} retry={retry} />}
+            {rows?.map((doc) => (
+              <button
+                type="button"
+                key={doc.document_id}
+                className={`knowledge-collection-row ${active && documentID === doc.document_id ? 'selected' : ''}`}
+                aria-current={active && documentID === doc.document_id ? 'page' : undefined}
+                title={doc.title}
+                disabled={busy}
+                onClick={() => onOpen(doc.document_id)}
+              >
+                {memoryCollection ? <Sparkles size={16} /> : <FileText size={16} />}
+                <span>{doc.title || `未命名${contentLabel}`}</span>
+              </button>
+            ))}
+            {rows?.length === 0 && <p className="knowledge-side-note">暂无{contentLabel}</p>}
+            {(rows?.length || 0) >= 200 && (
+              <p className="knowledge-side-note">已显示前 200 条，更多内容请使用全局搜索。</p>
+            )}
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -651,90 +877,149 @@ function Guidance({ label, items }: { label: string; items?: string[] }) {
 
 function DocumentDetail({
   document,
+  collections,
+  onSaved,
+  onBusy,
+  busy,
+  collectionLabel,
   writable,
   onCopy,
   onEdit,
 }: {
   document: KnowledgeDocument
+  collections: KnowledgeCollection[]
+  onSaved: (doc: KnowledgeDocument) => Promise<void>
+  onBusy: (value: boolean) => void
+  busy: boolean
+  collectionLabel: string
   writable: boolean
   onCopy: () => void
   onEdit: () => void
 }) {
   const meta = document.metadata
+  const editable = writable && document.editable && !busy && meta.status !== 'archived'
+  const inline = useInlineKnowledge(document, editable)
   return (
-    <article className="knowledge-document">
-      <header className="knowledge-document-header">
-        <div className="knowledge-document-kicker">
-          <span>{document.collection}</span>
-          <span className={`knowledge-status ${meta.status}`}>
-            {statusLabels[meta.status] || meta.status}
-          </span>
-        </div>
-        <h2>{meta.title}</h2>
-        <div className="knowledge-document-actions">
-          <span>更新于 {formatDate(meta.updatedAt)}</span>
-          {writable && (
-            <div className="knowledge-edit-actions">
-              {document.editable && (
-                <button type="button" className="button subtle" onClick={onEdit}>
-                  <Pencil size={14} />
-                  编辑文档
-                </button>
-              )}
-              <button type="button" className="button subtle" onClick={onCopy}>
-                <Copy size={14} />
-                创建副本
+    <KnowledgeDetailPage
+      kind="文档"
+      collectionLabel={collectionLabel}
+      pathTitle={meta.title}
+      date={meta.updatedAt}
+      dateLabel="上次编辑"
+      saveStatus={editable ? inline.status : undefined}
+      properties={(closeMenu) => (
+        <>
+          <KnowledgeActions
+            document={document}
+            collections={collections}
+            writable={writable}
+            unsaved={inline.dirty || inline.pending}
+            onCopy={() => {
+              closeMenu()
+              onCopy()
+            }}
+            onSaved={onSaved}
+            onBusy={onBusy}
+            onRename={() => {
+              const field = window.document.querySelector<HTMLTextAreaElement>(
+                'textarea[aria-label="文档标题"]',
+              )
+              field?.focus()
+              field?.select()
+              closeMenu()
+            }}
+          />
+          <details className="knowledge-action-properties">
+            <summary>文档属性与来源</summary>
+            {editable && (
+              <button
+                type="button"
+                className="text-button"
+                disabled={inline.dirty || inline.pending}
+                onClick={onEdit}
+              >
+                编辑属性
               </button>
-            </div>
-          )}
-        </div>
-      </header>
-      <div className="knowledge-document-surface">
-        <Tags values={meta.tags} />
-        <div className="knowledge-metadata">
-          <span>
-            项目<strong>{meta.projects?.join('、') || '未指定'}</strong>
-          </span>
-          <span>
-            领域<strong>{meta.domains?.join('、') || '未指定'}</strong>
-          </span>
-          <span>
-            创建者<strong>{meta.producer || '—'}</strong>
-          </span>
-        </div>
-        <div className="knowledge-document-body">
-          <Markdown text={document.content || '此文档没有正文。'} />
-        </div>
-        <details className="knowledge-provenance">
-          <summary>文档信息</summary>
-          <dl>
-            <dt>文档 ID</dt>
-            <dd>{meta.id}</dd>
-            <dt>创建时间</dt>
-            <dd>{formatDate(meta.createdAt)}</dd>
-            {meta.source && (
-              <>
-                <dt>来源类型</dt>
-                <dd>{meta.source.type}</dd>
-                <dt>来源</dt>
-                <dd>{meta.source.uri}</dd>
-                {meta.source.importedAt && (
-                  <>
-                    <dt>导入时间</dt>
-                    <dd>{formatDate(meta.source.importedAt)}</dd>
-                  </>
-                )}
-              </>
             )}
-          </dl>
-        </details>
-        {writable && !document.editable && (
-          <p className="knowledge-detail-note">
-            此文档来自外部来源。可以创建副本进行编辑，保留来源原文。
-          </p>
+            <p>
+              {collectionLabel} · {statusLabels[meta.status] || meta.status}
+            </p>
+            <div className="knowledge-metadata">
+              <span>
+                项目<strong>{meta.projects?.join('、') || '未指定'}</strong>
+              </span>
+              <span>
+                领域<strong>{meta.domains?.join('、') || '未指定'}</strong>
+              </span>
+              <span>
+                创建者<strong>{meta.producer || '—'}</strong>
+              </span>
+            </div>
+            <Tags values={meta.tags} />
+            <dl>
+              <dt>文档 ID</dt>
+              <dd>{meta.id}</dd>
+              <dt>创建时间</dt>
+              <dd>{formatDate(meta.createdAt)}</dd>
+              {meta.source && (
+                <>
+                  <dt>来源类型</dt>
+                  <dd>{meta.source.type}</dd>
+                  <dt>来源</dt>
+                  <dd>{meta.source.uri}</dd>
+                  {meta.source.importedAt && (
+                    <>
+                      <dt>导入时间</dt>
+                      <dd>{formatDate(meta.source.importedAt)}</dd>
+                    </>
+                  )}
+                </>
+              )}
+            </dl>
+          </details>
+        </>
+      )}
+      title={
+        <>
+          {editable ? (
+            <InlineKnowledgeField
+              title
+              value={inline.draft.title}
+              onChange={(title) => inline.patch({ title })}
+              onComposing={inline.setComposing}
+            />
+          ) : (
+            <h2>{meta.title}</h2>
+          )}
+          {meta.status !== 'active' && (
+            <span className={`knowledge-status ${meta.status}`}>
+              {statusLabels[meta.status] || meta.status}
+            </span>
+          )}
+        </>
+      }
+    >
+      {meta.status === 'archived' && (
+        <p className="knowledge-detail-note">文档已归档，可通过右上角菜单恢复。</p>
+      )}
+      {editable && inline.feedback}
+      <div className="knowledge-document-body">
+        {editable ? (
+          <InlineKnowledgeField
+            value={inline.draft.content}
+            onChange={(content) => inline.patch({ content })}
+            onComposing={inline.setComposing}
+          />
+        ) : (
+          <Markdown text={document.content || '此文档没有正文。'} />
         )}
       </div>
-    </article>
+      {writable && !document.editable && (
+        <p className="knowledge-detail-note">
+          此文档来自外部来源。可以创建副本进行编辑，保留来源原文。
+        </p>
+      )}
+    </KnowledgeDetailPage>
   )
 }
 
@@ -747,53 +1032,68 @@ function MemoryDetail({
   writable: boolean
   onEdit: () => void
 }) {
+  const title = memory.content.trim().split(/\r?\n/)[0] || '未命名记忆'
   return (
-    <article className="knowledge-document">
-      <header className="knowledge-document-header">
-        <div className="knowledge-document-kicker">
-          <span>共享记忆</span>
-          <span className="knowledge-pill">{memory.scope}</span>
-        </div>
-        <h2>一条可以复用的经验</h2>
-        <div className="knowledge-document-actions">
-          <span>{formatDate(memory.created_at)}</span>
+    <KnowledgeDetailPage
+      kind="记忆"
+      collectionLabel="共享记忆"
+      pathTitle={title}
+      date={memory.created_at}
+      dateLabel="创建于"
+      title={<h2>{title}</h2>}
+      properties={(closeMenu) => (
+        <>
           {writable && (
-            <button type="button" className="button subtle" onClick={onEdit}>
-              <Pencil size={14} />
-              修订记忆
-            </button>
+            <div className="knowledge-page-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  closeMenu()
+                  onEdit()
+                }}
+              >
+                <Pencil size={14} />
+                修订记忆
+              </button>
+            </div>
           )}
-        </div>
-      </header>
-      <div className="knowledge-document-surface">
-        <Tags values={memory.tags} />
-        <div className="knowledge-document-body">
-          <Markdown text={memory.content} />
-        </div>
-        <details className="knowledge-provenance">
-          <summary>记忆信息</summary>
-          <dl>
-            <dt>记忆 ID</dt>
-            <dd>{memory.id}</dd>
-            <dt>作用范围</dt>
-            <dd>{memory.scope}</dd>
-            <dt>来源</dt>
-            <dd>{memory.metadata?.source || memory.source}</dd>
-            {Object.entries(memory.metadata || {})
-              .filter(([key]) => key !== 'source')
-              .map(([key, value]) => (
-                <div key={key}>
-                  <dt>{key}</dt>
-                  <dd>{value}</dd>
-                </div>
-              ))}
-          </dl>
-        </details>
-        <p className="knowledge-detail-note">
-          修订会追加一条新记录并替代当前记忆，历史记录仍保留。
-        </p>
+          <details className="knowledge-action-properties">
+            <summary>记忆属性与来源</summary>
+            <div className="knowledge-metadata">
+              <span>
+                作用范围<strong>{scopeLabel(memory.scope)}</strong>
+              </span>
+            </div>
+            <Tags values={memory.tags} />
+            <dl>
+              <dt>记忆 ID</dt>
+              <dd>{memory.id}</dd>
+              <dt>创建时间</dt>
+              <dd>{formatDate(memory.created_at)}</dd>
+              <dt>作用范围</dt>
+              <dd>{memory.scope}</dd>
+              <dt>来源</dt>
+              <dd>{memory.metadata?.source || memory.source || '未记录'}</dd>
+              {Object.entries(memory.metadata || {})
+                .filter(([key]) => key !== 'source')
+                .map(([key, value]) => (
+                  <div key={key}>
+                    <dt>{key}</dt>
+                    <dd>{value}</dd>
+                  </div>
+                ))}
+            </dl>
+            <p className="knowledge-detail-note">
+              修订会追加一条新记录并替代当前记忆，历史记录仍保留。
+            </p>
+          </details>
+        </>
+      )}
+    >
+      <div className="knowledge-document-body">
+        <Markdown text={memory.content} />
       </div>
-    </article>
+    </KnowledgeDetailPage>
   )
 }
 
@@ -1158,7 +1458,7 @@ function DocumentComposer({
       </label>
       <label>
         知识集合
-        <select
+        <Select
           value={draft.collection}
           required
           disabled={mutation.isPending || editing}
@@ -1170,12 +1470,12 @@ function DocumentComposer({
               {item.name || item.id}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       {editing && (
         <label>
           状态
-          <select
+          <Select
             value={draft.status}
             disabled={mutation.isPending}
             onChange={(event) => patch({ status: event.target.value })}
@@ -1183,7 +1483,7 @@ function DocumentComposer({
             <option value="active">有效</option>
             <option value="draft">草稿</option>
             <option value="archived">已归档</option>
-          </select>
+          </Select>
         </label>
       )}
       <ContentField

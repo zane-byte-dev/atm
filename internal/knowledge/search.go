@@ -195,6 +195,7 @@ func List(dataDir string, collections []string) ([]DocumentSummary, error) {
 			Tags:       metadata.Tags,
 			Projects:   metadata.Projects,
 			Producer:   metadata.Producer,
+			Snippet:    compactSnippet(document.Content, 240),
 			CreatedAt:  metadata.CreatedAt,
 			UpdatedAt:  metadata.UpdatedAt,
 		})

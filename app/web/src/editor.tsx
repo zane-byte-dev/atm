@@ -1,3 +1,4 @@
+import { Select } from './components/select'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, LoaderCircle } from 'lucide-react'
@@ -254,7 +255,7 @@ export function Editor({
 
   return (
     <form
-      className="editor"
+      className={`editor ${original.current ? '' : 'editor-create'}`}
       onPaste={(event) => {
         const files = Array.from(event.clipboardData.files)
         if (files.length && imageUpload.current && !disabled) {
@@ -322,29 +323,6 @@ export function Editor({
         disabled={disabled}
         onChange={(event) => patch({ title: event.target.value })}
       />
-      <div className="editor-metadata">
-        <label>
-          <span className="field-label">项目</span>
-          <input
-            value={draft.project}
-            disabled={disabled}
-            onChange={(event) => patch({ project: event.target.value })}
-            placeholder="例如 atm"
-          />
-        </label>
-        <label>
-          <span className="field-label">优先级</span>
-          <select
-            value={draft.priority}
-            disabled={disabled}
-            onChange={(event) => patch({ priority: event.target.value })}
-          >
-            <option value="P2">P2 · 正常</option>
-            <option value="P1">P1 · 优先</option>
-            <option value="P0">P0 · 紧急</option>
-          </select>
-        </label>
-      </div>
       <div className="description-label">
         <label className="field-label" htmlFor={descriptionId}>
           任务说明
@@ -367,6 +345,29 @@ export function Editor({
           rows={12}
         />
       )}
+      <div className="editor-metadata">
+        <label>
+          <span className="field-label">项目</span>
+          <input
+            value={draft.project}
+            disabled={disabled}
+            onChange={(event) => patch({ project: event.target.value })}
+            placeholder="例如 atm"
+          />
+        </label>
+        <label>
+          <span className="field-label">优先级</span>
+          <Select
+            value={draft.priority}
+            disabled={disabled}
+            onChange={(event) => patch({ priority: event.target.value })}
+          >
+            <option value="P2">P2 · 正常</option>
+            <option value="P1">P1 · 优先</option>
+            <option value="P0">P0 · 紧急</option>
+          </Select>
+        </label>
+      </div>
       {imageTodo && !conflictLocked ? (
         <TaskImageUpload
           ref={imageUpload}

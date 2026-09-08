@@ -357,3 +357,68 @@ func TestThinkingSelectionGroupsEveryReasoningBlockForOneTurn(t *testing.T) {
 		t.Fatalf("fallback thinking = %q, next = %d", thinking, next)
 	}
 }
+
+func TestGroupedSessionsPageParentsAndKeepOrphans(t *testing.T) {
+	fixture := newServiceFixture(t)
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`UPDATE sessions SET resume_id=? WHERE id=?`, "parent-resume", "session-recent-full"); err != nil {
+		t.Fatal(err)
+	}
+	for index, row := range []struct{ id, parent string }{
+		{"child-1", "parent-resume"}, {"child-2", "session-recent-full"}, {"orphan", "missing-parent"}, {"grandchild", "child-1"},
+	} {
+		if _, err := db.Exec(`INSERT INTO sessions (id,short_id,agent,project,file_path,created_at,created_ts,last_ts,parent_session_id,is_subagent) VALUES(?,?,?,?,?,?,?,?,?,1)`, row.id, row.id, "codex", "atm", "", "09-06", fixture.createdTS+int64(index), fixture.createdTS+int64(index), row.parent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := fixture.service.List(context.Background(), ListInput{All: true, GroupChildren: true, Order: "activity-desc", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Total != 3 || len(result.Sessions) != 1 || result.Sessions[0].ID != "session-recent-full" || result.Sessions[0].ChildCount != 2 {
+		t.Fatalf("grouped page = %#v", result)
+	}
+	children, err := fixture.service.List(context.Background(), ListInput{All: true, ParentSessionID: "session-recent-full", Limit: 1})
+	if err != nil || children.Total != 2 || len(children.Sessions) != 1 {
+		t.Fatalf("children = %#v, %v", children, err)
+	}
+	child, err := fixture.service.List(context.Background(), ListInput{All: true, ParentSessionID: "parent-resume", Limit: 1, Offset: 1})
+	if err != nil || child.Total != 2 || len(child.Sessions) != 1 {
+		t.Fatalf("alias children = %#v, %v", child, err)
+	}
+	all, err := fixture.service.List(context.Background(), ListInput{All: true})
+	if err != nil || all.Total != 6 {
+		t.Fatalf("ungrouped = %#v, %v", all, err)
+	}
+	filtered, err := fixture.service.List(context.Background(), ListInput{All: true, GroupChildren: true, Project: "atm"})
+	if err != nil || filtered.Total != 2 {
+		t.Fatalf("filtered = %#v, %v", filtered, err)
+	}
+}
+
+func TestGroupedSessionsBreakParentCycles(t *testing.T) {
+	fixture := newServiceFixture(t)
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	for _, row := range []struct{ id, parent string }{{"cycle-a", "cycle-b"}, {"cycle-b", "cycle-a"}} {
+		_, err = db.Exec(`INSERT INTO sessions (id,short_id,agent,project,file_path,created_at,created_ts,last_ts,parent_session_id,is_subagent) VALUES(?,?,?,?,?,?,?,?,?,1)`, row.id, row.id, "codex", "cycle-test", "", "09-06", fixture.createdTS, fixture.createdTS, row.parent)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	roots, err := fixture.service.List(context.Background(), ListInput{All: true, GroupChildren: true, Project: "cycle-test"})
+	if err != nil || roots.Total != 1 {
+		t.Fatalf("cycle roots = %#v, %v", roots, err)
+	}
+	children, err := fixture.service.List(context.Background(), ListInput{All: true, Project: "cycle-test", ParentSessionID: roots.Sessions[0].ID})
+	if err != nil || children.Total != 1 || children.Sessions[0].ChildCount != 0 {
+		t.Fatalf("cycle children = %#v, %v", children, err)
+	}
+}

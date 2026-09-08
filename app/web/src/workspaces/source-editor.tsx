@@ -1,3 +1,4 @@
+import { Select } from '../components/select'
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Check, LoaderCircle } from 'lucide-react'
@@ -5,6 +6,7 @@ import { call, errorText } from '../api'
 import type { CollectionSource } from './collection-types'
 import type { WorkspaceSettings } from './aiday-settings-types'
 import type { KnowledgeCollection } from './knowledge-types'
+import { SourceSearch } from './source-search'
 import './workspace-forms.css'
 
 type SourceDraft = Omit<CollectionSource, 'id' | 'muted'>
@@ -80,11 +82,19 @@ export function SourceEditor({
       <p className="workspace-form-hint">设置消息来源及处理方式，保存后不会立即执行采集。</p>
       <label>
         连接
-        <select
+        <Select
           value={draft.connector}
           required
           disabled={busy || !!source}
-          onChange={(event) => patch('connector', event.target.value)}
+          onChange={(event) =>
+            setDraft((previous) => ({
+              ...previous,
+              connector: event.target.value,
+              external_id: '',
+              name: '',
+              kind: 'group',
+            }))
+          }
         >
           <option value="">选择已有连接</option>
           {connectors.map((connector) => (
@@ -92,7 +102,7 @@ export function SourceEditor({
               {connector}
             </option>
           ))}
-        </select>
+        </Select>
       </label>
       {settings.error && (
         <p className="as-inline-error" role="alert">
@@ -101,6 +111,22 @@ export function SourceEditor({
       )}
       {!source && settings.data && !connectors.length && (
         <p className="workspace-form-hint">本机尚未登记采集连接，请先配置连接后刷新此页面。</p>
+      )}
+      {!source && draft.connector && (
+        <SourceSearch
+          key={draft.connector}
+          connector={draft.connector}
+          disabled={busy}
+          onSelect={(candidate) => {
+            setDraft((previous) => ({
+              ...previous,
+              kind: candidate.kind,
+              external_id: candidate.external_id,
+              name: candidate.name,
+            }))
+            save.reset()
+          }}
+        />
       )}
       <div className="workspace-form-grid">
         <label>
@@ -157,25 +183,25 @@ export function SourceEditor({
       </label>
       <label>
         处理方式
-        <select
+        <Select
           value={draft.strategy}
           disabled={busy}
           onChange={(event) => patch('strategy', event.target.value)}
         >
           <option value="tasks">任务跟进</option>
           <option value="observe">观察与总结</option>
-        </select>
+        </Select>
       </label>
       <label>
         决策单位
-        <select
+        <Select
           value={draft.decision_unit}
           disabled={busy}
           onChange={(event) => patch('decision_unit', event.target.value)}
         >
           <option value="window">对话窗口</option>
           <option value="message">逐条消息</option>
-        </select>
+        </Select>
       </label>
       <div className="workspace-form-grid">
         <label>
@@ -193,7 +219,7 @@ export function SourceEditor({
         </label>
         <label>
           默认任务优先级
-          <select
+          <Select
             value={draft.priority}
             disabled={busy}
             onChange={(event) => patch('priority', event.target.value)}
@@ -201,7 +227,7 @@ export function SourceEditor({
             {['P0', 'P1', 'P2', 'P3'].map((value) => (
               <option key={value}>{value}</option>
             ))}
-          </select>
+          </Select>
         </label>
       </div>
       <label>
@@ -227,7 +253,7 @@ export function SourceEditor({
       </label>
       <label>
         结论保存到知识集合
-        <select
+        <Select
           value={draft.knowledge_collection}
           disabled={busy}
           onChange={(event) => patch('knowledge_collection', event.target.value)}
@@ -242,7 +268,7 @@ export function SourceEditor({
             !catalog.data?.some((item) => item.id === draft.knowledge_collection) && (
               <option value={draft.knowledge_collection}>{draft.knowledge_collection}</option>
             )}
-        </select>
+        </Select>
       </label>
       {save.error && (
         <p className="as-inline-error" role="alert">

@@ -50,6 +50,7 @@ type DocumentSummary struct {
 	Tags       []string  `json:"tags,omitempty"`
 	Projects   []string  `json:"projects,omitempty"`
 	Producer   string    `json:"producer"`
+	Snippet    string    `json:"snippet,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }

@@ -106,14 +106,14 @@ func ReadTodoPage(ctx context.Context, input TodoPageQuery) (TodoPage, error) {
 		result.Total = result.Counts[input.Status]
 	}
 	args = append(args, input.Limit, input.Offset)
-	rows, err = tx.QueryContext(ctx, `SELECT id,title,priority,status,project,wake_condition,review_at,created,creator
+	rows, err = tx.QueryContext(ctx, `SELECT id,title,priority,status,project,wake_condition,review_at,created,done_ts,creator
 		FROM todos`+where+` ORDER BY created DESC,CAST(SUBSTR(id,2) AS INTEGER) DESC,id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return result, err
 	}
 	for rows.Next() {
 		var todo Todo
-		if err := rows.Scan(&todo.ID, &todo.Title, &todo.Priority, &todo.Status, &todo.Project, &todo.WakeCondition, &todo.ReviewAt, &todo.Created, &todo.Creator); err != nil {
+		if err := rows.Scan(&todo.ID, &todo.Title, &todo.Priority, &todo.Status, &todo.Project, &todo.WakeCondition, &todo.ReviewAt, &todo.Created, &todo.DoneTS, &todo.Creator); err != nil {
 			rows.Close()
 			return result, err
 		}

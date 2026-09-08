@@ -102,6 +102,9 @@ type TodoInput struct {
 }
 
 type TodoSummary struct {
+	UpdatedAt     int64    `json:"updated_at,omitempty"`
+	Creator       string   `json:"creator,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
 	ID            string   `json:"id"`
 	Title         string   `json:"title"`
 	Status        string   `json:"status"`
@@ -297,9 +300,22 @@ func (h *Host) Doc(ctx context.Context, call application.Call, input TodoInput) 
 	return DocResult{Exists: result.Exists, Content: result.Content}, err
 }
 
+// Task documents track description/progress edits; done_ts preserves completion
+// ordering when an older task has no document. Reads never touch either source.
+func todoUpdatedAt(todo work.Todo) int64 {
+	var updated int64
+	if todo.DoneTS != nil {
+		updated = *todo.DoneTS
+	}
+	if info, err := os.Stat(store.TodoDocPath(todo.ID)); err == nil && info.ModTime().Unix() > updated {
+		updated = info.ModTime().Unix()
+	}
+	return updated
+}
+
 func summary(todo work.Todo) TodoSummary {
 	depends := append([]string{}, todo.DependsOn...)
-	return TodoSummary{ID: todo.ID, Title: todo.Title, Status: todo.Status, Priority: todo.Priority, Project: todo.Project, Created: todo.Created, WakeCondition: todo.WakeCondition, ReviewAt: todo.ReviewAt, DependsOn: depends}
+	return TodoSummary{UpdatedAt: todoUpdatedAt(todo), Creator: todo.Creator, Tags: append([]string{}, todo.Tags...), ID: todo.ID, Title: todo.Title, Status: todo.Status, Priority: todo.Priority, Project: todo.Project, Created: todo.Created, WakeCondition: todo.WakeCondition, ReviewAt: todo.ReviewAt, DependsOn: depends}
 }
 
 func view(todo work.Todo) TodoView {

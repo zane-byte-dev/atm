@@ -1,3 +1,4 @@
+import { Select } from './components/select'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, CircleCheck, Clock3, Link2, LoaderCircle, Plus, Trash2 } from 'lucide-react'
@@ -148,7 +149,7 @@ export function TaskPlanEditor({ data, onClose }: { data: TodoDetail; onClose: (
               }
               placeholder="具体可验证的步骤"
             />
-            <select
+            <Select
               aria-label={`步骤 ${index + 1} 状态`}
               value={item.status}
               disabled={action.isPending}
@@ -163,7 +164,7 @@ export function TaskPlanEditor({ data, onClose }: { data: TodoDetail; onClose: (
               <option value="pending">待开始</option>
               <option value="in_progress">进行中</option>
               <option value="completed">已完成</option>
-            </select>
+            </Select>
             <button
               type="button"
               className="icon-button"

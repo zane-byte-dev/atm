@@ -199,6 +199,7 @@ func (service Service) Query(ctx context.Context, input QueryInput) (QueryResult
 			DocumentID: document.DocumentID, Title: document.Title, Collection: document.Collection,
 			Status: document.Status, Domains: document.Domains, Tags: document.Tags,
 			Projects: document.Projects, Producer: document.Producer,
+			Snippet:   document.Snippet,
 			CreatedAt: &createdAt, UpdatedAt: &updatedAt,
 		})
 		if input.Limit > 0 && len(views) == input.Limit {

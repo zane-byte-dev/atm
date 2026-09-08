@@ -15,7 +15,7 @@ var workspaceMethods = func() map[string]WorkspaceMethod {
 		"jobs.list", "jobs.show", "presence.snapshot",
 		"session.list", "session.search", "session.show", "session.status", "usage.snapshot", "quota.cached",
 		"knowledge.catalog", "knowledge.query", "knowledge.document.get", "memory.recall", "memory.get",
-		"collect.overview", "collect.items", "collect.item.show", "collect.history",
+		"collect.overview", "collect.items", "collect.item.show", "collect.history", "collect.source.search",
 		"day.snapshot", "day.show", "day.ledger", "settings.get",
 	}
 	for _, name := range read {

@@ -1,6 +1,7 @@
 export type OperationWarning = { code: string; message: string }
 export type TodoStatus = 'open' | 'in_progress' | 'review' | 'done'
 export type Todo = {
+  updated_at?: number
   id: string
   title: string
   status: TodoStatus
@@ -35,8 +36,40 @@ export type TodoDetail = {
     explanation?: string
     items: { step: string; status: string }[]
   }
-  sessions?: { session_id: string; agent?: string; summary?: string }[]
-  summary?: { sessions: number; queries: number; tool_calls: number }
+  bindings?: {
+    session_id: string
+    todo_id: string
+    agent?: string
+    project?: string
+    cwd?: string
+    bound_at: number
+    unbound_at?: number
+    reason?: string
+  }[]
+  sessions?: {
+    session_id: string
+    indexed_id?: string
+    short_id: string
+    agent: string
+    project: string
+    summary?: string
+    latest_result?: string
+    indexed: boolean
+    cwd?: string
+    started_at?: number
+    last_at?: number
+    binding_count: number
+    first_bound_at: number
+    bound_at: number
+    unbound_at?: number
+    reason?: string
+    queries: number
+    tool_calls: number
+    input_tokens: number
+    output_tokens: number
+    cost_usd: number
+  }[]
+  summary?: { sessions: number; queries: number; tool_calls: number; cost_usd: number }
 }
 export type Bootstrap = {
   csrf_token: string

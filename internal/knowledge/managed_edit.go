@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,6 +31,7 @@ func VersionDocument(document Document) VersionedDocument {
 }
 
 type UpdateManagedInput struct {
+	Collection *string   `json:"collection,omitempty"`
 	DocumentID string    `json:"document_id"`
 	ETag       string    `json:"etag"`
 	Content    string    `json:"content"`
@@ -40,8 +42,9 @@ type UpdateManagedInput struct {
 	Projects   *[]string `json:"projects,omitempty"`
 }
 
-// UpdateManaged only edits a registered, ATM-owned document at its existing
-// path. Import provenance cannot grant the browser authority over source files.
+// UpdateManaged edits ATM-owned content and moves or archives managed records.
+// Imported records permit only unchanged-body status/collection updates; import
+// provenance never grants the browser authority over source files.
 // CLI body/metadata writes and collection moves share this corpus lock.
 func UpdateManaged(ctx context.Context, dataDir string, input UpdateManagedInput) (VersionedDocument, error) {
 	if strings.TrimSpace(input.DocumentID) == "" || len(input.ETag) != 64 || strings.TrimSpace(input.Content) == "" {
@@ -56,7 +59,8 @@ func UpdateManaged(ctx context.Context, dataDir string, input UpdateManagedInput
 	if err != nil {
 		return VersionedDocument{}, application.WrapError(application.CodeNotFound, "knowledge document could not be found", err)
 	}
-	if document.Metadata.Source != nil {
+	metadataOnly := (input.Status != nil || input.Collection != nil) && input.Title == nil && input.Domains == nil && input.Tags == nil && input.Projects == nil && input.Content == document.Content
+	if document.Metadata.Source != nil && !metadataOnly {
 		return VersionedDocument{}, application.NewError(application.CodeForbidden, "imported documents must be edited at their original source")
 	}
 	if VersionDocument(*document).ETag != input.ETag {
@@ -85,15 +89,28 @@ func UpdateManaged(ctx context.Context, dataDir string, input UpdateManagedInput
 			*value.target = normalizeValues(*value.input)
 		}
 	}
+	targetPath := document.Path
+	if input.Collection != nil && *input.Collection != document.Collection {
+		target, err := normalizeCollection(*input.Collection)
+		if err != nil || target == "" {
+			return VersionedDocument{}, application.NewError(application.CodeInvalidArgument, "invalid target collection")
+		}
+		if _, err := collectionByID(dataDir, target); err != nil {
+			return VersionedDocument{}, application.WrapError(application.CodeNotFound, "target collection not found", err)
+		}
+		targetPath = filepath.Join(knowledgeRoot(dataDir), target, filepath.Base(document.Path))
+		document.Collection = target
+	}
 	document.Content = strings.TrimSpace(input.Content)
 	document.Metadata.UpdatedAt = time.Now().UTC()
 	content, err := marshalDocument(document)
 	if err != nil {
 		return VersionedDocument{}, err
 	}
-	if err := writeManagedDocument(dataDir, document.Path, content); err != nil {
+	if err := saveOrMoveManagedDocument(dataDir, document.Path, targetPath, content); err != nil {
 		return VersionedDocument{}, application.WrapError(application.CodeUnavailable, "knowledge document could not be saved", err)
 	}
+	document.Path = targetPath
 	return VersionDocument(*document), nil
 }
 
@@ -131,4 +148,34 @@ func writeManagedDocument(dataDir, path string, content []byte) error {
 		return closeErr
 	}
 	return root.Rename(temporary, relative)
+}
+
+// A collection move stays within the corpus and never overwrites a target file.
+func saveOrMoveManagedDocument(dataDir, source, target string, content []byte) error {
+	if source == target {
+		return writeManagedDocument(dataDir, source, content)
+	}
+	root, err := os.OpenRoot(knowledgeRoot(dataDir))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	from, err := filepath.Rel(knowledgeRoot(dataDir), source)
+	if err != nil || !filepath.IsLocal(from) {
+		return application.NewError(application.CodeForbidden, "invalid document path")
+	}
+	to, err := filepath.Rel(knowledgeRoot(dataDir), target)
+	if err != nil || !filepath.IsLocal(to) {
+		return application.NewError(application.CodeForbidden, "invalid target path")
+	}
+	if _, err = root.Lstat(to); !errors.Is(err, os.ErrNotExist) {
+		return application.NewError(application.CodeConflict, "target file already exists or is inaccessible")
+	}
+	if err = root.Rename(from, to); err != nil {
+		return err
+	}
+	if err = writeManagedDocument(dataDir, target, content); err != nil {
+		return errors.Join(err, root.Rename(to, from))
+	}
+	return nil
 }

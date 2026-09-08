@@ -1,8 +1,11 @@
+import { Select } from '../components/select'
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Archive,
+  Filter,
+  Ellipsis,
   ArrowLeft,
   ArrowRight,
   BellOff,
@@ -14,11 +17,12 @@ import {
   LoaderCircle,
   Pencil,
   Plus,
-  Search,
   Settings2,
   X,
 } from 'lucide-react'
-import { call } from '../api'
+import { WorkspaceTitle } from '../workspace-title'
+import { WorkspaceSearchButton } from '../global-search'
+import { call, errorText } from '../api'
 import { Markdown, Notice } from '../editor'
 import type { Bootstrap } from '../types'
 import type {
@@ -30,6 +34,7 @@ import type {
   CollectionSource,
 } from './collection-types'
 import './collection.css'
+import { CollectionContext } from './collection-context.tsx'
 import { RuntimeJobs } from './runtime-jobs'
 import { SourceEditor } from './source-editor'
 import { useNativePreferences } from './native-preferences-react'
@@ -37,10 +42,7 @@ import { nativeOrdered } from './native-preferences'
 
 const states = [
   ['active', '收件箱'],
-  ['unread', '未读'],
-  ['read', '已读'],
-  ['archived', '已归档'],
-  ['all', '全部记录'],
+  ['archived', '归档'],
 ] as const
 const actions: Record<string, string> = {
   create: '新建任务',
@@ -77,6 +79,24 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
   const sourceID = params.get('source') || ''
   const itemID = params.get('item') || ''
   const query = params.get('q') || ''
+  const unreadOnly = params.get('unread') === '1'
+  const [menu, setMenu] = useState<'filter' | 'more' | null>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!menu) return
+    const close = (event: PointerEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenu(null)
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenu(null)
+    }
+    document.addEventListener('pointerdown', close)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', close)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [menu])
   const panel = params.get('panel') || ''
   const state = states.some(([id]) => id === params.get('state')) ? params.get('state')! : 'active'
   const offset = Math.max(0, Number.parseInt(params.get('offset') || '0', 10) || 0)
@@ -91,23 +111,68 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
   const sourcePanelOpen =
     sourceEditor || (view === 'sources' && (!!sourceID || panel === 'overview'))
   const showingItem = !!itemID && view === 'items'
-  const [search, setSearch] = useState(query)
   const [announcement, setAnnouncement] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
   const detailRef = useRef<HTMLDivElement>(null)
   const client = useQueryClient()
   const writable = boot.capabilities?.workspace_write === true
+  const bulk = useMutation({
+    mutationFn: async (action: 'read' | 'archive' | 'archive-read') => {
+      // Collect IDs before writes change ordering or remove rows from the filter.
+      const snapshot = new Map<string, CollectionItem>()
+      let offset = 0
+      while (true) {
+        const page = await call<CollectionList>('collect.items', {
+          source_id: sourceID,
+          state: 'active',
+          query,
+          unread_only: unreadOnly,
+          limit: 100,
+          offset,
+        })
+        for (const item of page.items) snapshot.set(item.id, item)
+        offset += page.items.length
+        if (!page.items.length || offset >= page.total) break
+      }
+      const targets = [...snapshot.values()].filter((item) =>
+        action === 'read' ? !item.read_at : action === 'archive-read' ? !!item.read_at : true,
+      )
+      let completed = 0
+      for (const item of targets) {
+        try {
+          await call(action === 'read' ? 'collect.item.read' : 'collect.item.archive', {
+            item_id: item.id,
+            ...(action === 'read' ? { read: true } : { archived: true }),
+          })
+          completed++
+          setAnnouncement(`正在处理 ${completed} / ${targets.length} 条`)
+        } catch (error) {
+          throw new Error(
+            `已处理 ${completed} / ${targets.length} 条，其余未处理。${errorText(error)}`,
+          )
+        }
+      }
+      return { completed, action }
+    },
+    onSuccess: ({ completed, action }) =>
+      setAnnouncement(
+        completed
+          ? `已${action === 'read' ? '标为已读' : '归档'} ${completed} 条`
+          : '没有需要处理的条目',
+      ),
+    onSettled: () => client.invalidateQueries({ queryKey: ['collection'] }),
+  })
   const overview = useQuery({
     queryKey: ['collection', 'overview'],
     queryFn: ({ signal }) => call<CollectionOverview>('collect.overview', {}, signal),
     refetchInterval: 30_000,
   })
   const items = useQuery({
-    queryKey: ['collection', 'items', sourceID, state, query, offset],
+    queryKey: ['collection', 'items', sourceID, state, query, unreadOnly, offset],
     queryFn: ({ signal }) =>
       call<CollectionList>(
         'collect.items',
-        { source_id: sourceID, state, query, limit: 50, offset },
+        { source_id: sourceID, state, query, unread_only: unreadOnly, limit: 50, offset },
         signal,
       ),
     enabled: view === 'items',
@@ -118,6 +183,32 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
       call<{ item: CollectionItem }>('collect.item.show', { item_id: itemID }, signal),
     enabled: !!itemID && view === 'items',
   })
+  const readAttempts = useRef(new Set<string>())
+  const markRead = useMutation({
+    retry: false,
+    mutationFn: (id: string) =>
+      call<{ item: CollectionItem }>('collect.item.read', { item_id: id, read: true }),
+    onSuccess: async (result, id) => {
+      client.setQueryData(['collection', 'detail', id], result)
+      await client.invalidateQueries({ queryKey: ['collection'] })
+    },
+  })
+  const readItem = detail.data?.item
+  useEffect(() => {
+    if (
+      !writable ||
+      !showingItem ||
+      !readItem ||
+      readItem.id !== itemID ||
+      readItem.read_at !== 0 ||
+      readAttempts.current.has(itemID)
+    )
+      return
+    // Only opening a successfully loaded detail marks it read. Guard repeated
+    // renders and StrictMode effects; failures remain visible for explicit retry.
+    readAttempts.current.add(itemID)
+    markRead.mutate(itemID)
+  }, [writable, showingItem, itemID, readItem, markRead.mutate])
   const history = useQuery({
     queryKey: ['collection', 'history', sourceID, query],
     queryFn: ({ signal }) =>
@@ -136,9 +227,6 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
       await client.invalidateQueries({ queryKey: ['collection'] })
     },
   })
-  useEffect(() => {
-    setSearch(query)
-  }, [query])
   useEffect(() => {
     mutation.reset()
     if (detailRef.current) detailRef.current.scrollTop = 0
@@ -174,12 +262,12 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
 
   return (
     <section
-      className={`collection-workspace collection-view-${view} ${showingItem ? 'has-selection' : ''} ${sourcePanelOpen ? 'show-source-detail' : ''}`}
+      className={`collection-workspace ${view === 'items' && items.isSuccess && !items.data.items.length ? 'collection-is-empty' : ''} collection-view-${view} ${showingItem ? 'has-selection' : ''} ${sourcePanelOpen ? 'show-source-detail' : ''}`}
       aria-label="收件箱工作区"
     >
       <div className="collection-heading">
         <div className="collection-heading-main">
-          <h1>收件箱</h1>
+          <WorkspaceTitle icon={Inbox}>收件箱</WorkspaceTitle>
           <div className="collection-mode-switch" role="group" aria-label="收件箱视图">
             <button
               type="button"
@@ -351,96 +439,165 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
         {view !== 'sources' && (
           <div className="collection-results">
             <div className="collection-results-heading">
-              <h2>
-                {view === 'history'
-                  ? source
-                    ? `${sourceName(source)} · 本地消息`
-                    : '本地消息'
-                  : sourceID
-                    ? sourceName(source)
-                    : '全部来源'}
-              </h2>
-              <div className="collection-results-controls">
-                {view === 'items' && (
-                  <select
-                    className="collection-source-filter"
-                    aria-label="筛选来源"
-                    value={sourceID}
-                    onChange={(event) =>
-                      filter({
-                        source: event.target.value || undefined,
-                        item: undefined,
-                        offset: undefined,
-                        panel: undefined,
-                      })
-                    }
-                  >
-                    <option value="">全部来源</option>
-                    {orderedSources.map((value) => (
-                      <option value={value.id} key={value.id}>
-                        {sourceName(value)}
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {sourceID && (
+              <h2>{view === 'history' ? '本地消息' : state === 'archived' ? '归档' : '收件箱'}</h2>
+              <WorkspaceSearchButton />
+              {view === 'items' && (
+                <div className="inbox-header-actions" ref={menuRef}>
                   <button
-                    className="collection-source-details-button"
-                    onClick={() =>
-                      filter({
-                        view: 'sources',
-                        panel: undefined,
-                        item: undefined,
-                        offset: undefined,
-                      })
-                    }
+                    className="inbox-icon-button"
+                    aria-label="筛选收件箱"
+                    aria-expanded={menu === 'filter'}
+                    aria-pressed={unreadOnly || !!sourceID || state === 'archived'}
+                    onClick={() => setMenu(menu === 'filter' ? null : 'filter')}
                   >
-                    <Settings2 size={14} /> 来源设置
+                    <Filter size={18} />
                   </button>
-                )}
-              </div>
-            </div>
-            <form
-              className="collection-search"
-              onSubmit={(event) => {
-                event.preventDefault()
-                filter({ q: search.trim(), offset: undefined, item: undefined })
-              }}
-            >
-              <Search size={15} />
-              <input
-                aria-label={view === 'history' ? '搜索本地消息' : '搜索收集结果'}
-                value={search}
-                onChange={(event) => setSearch(event.target.value)}
-                placeholder={view === 'history' ? '搜索本地消息内容…' : '搜索标题、内容、发送者…'}
-              />
-              {search && (
-                <button
-                  type="button"
-                  aria-label="清除搜索"
-                  onClick={() => {
-                    setSearch('')
-                    filter({ q: undefined, offset: undefined })
-                  }}
-                >
-                  <X size={13} />
-                </button>
+                  <button
+                    className="inbox-icon-button"
+                    aria-label="更多收件箱操作"
+                    aria-expanded={menu === 'more'}
+                    onClick={() => setMenu(menu === 'more' ? null : 'more')}
+                  >
+                    <Ellipsis size={19} />
+                  </button>
+                  {menu === 'filter' && (
+                    <div className="inbox-popover" aria-label="收件箱筛选">
+                      <label className="inbox-unread">
+                        <input
+                          type="checkbox"
+                          checked={state === 'archived'}
+                          onChange={(event) =>
+                            filter({
+                              state: event.target.checked ? 'archived' : undefined,
+                              offset: undefined,
+                              item: undefined,
+                            })
+                          }
+                        />
+                        查看归档
+                      </label>
+                      <label className="inbox-unread">
+                        <input
+                          type="checkbox"
+                          checked={unreadOnly}
+                          onChange={(event) =>
+                            filter({
+                              unread: event.target.checked ? '1' : undefined,
+                              offset: undefined,
+                            })
+                          }
+                        />
+                        只看未读
+                      </label>
+                      <label className="inbox-source-label">
+                        来源
+                        <Select
+                          aria-label="筛选来源"
+                          value={sourceID}
+                          onChange={(event) =>
+                            filter({
+                              source: event.target.value || undefined,
+                              offset: undefined,
+                              item: undefined,
+                            })
+                          }
+                        >
+                          <option value="">全部来源</option>
+                          {orderedSources.map((value) => (
+                            <option value={value.id} key={value.id}>
+                              {sourceName(value)}
+                            </option>
+                          ))}
+                        </Select>
+                      </label>
+                      {(unreadOnly || sourceID || query || state === 'archived') && (
+                        <button
+                          onClick={() =>
+                            filter({
+                              unread: undefined,
+                              state: undefined,
+                              source: undefined,
+                              q: undefined,
+                              offset: undefined,
+                            })
+                          }
+                        >
+                          清除筛选
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {menu === 'more' && (
+                    <div className="inbox-popover inbox-bulk-actions" aria-label="收件箱批量操作">
+                      <small>当前筛选范围 · 所有分页</small>
+                      {writable && state === 'active' ? (
+                        <>
+                          <button
+                            disabled={bulk.isPending}
+                            onClick={() => {
+                              setMenu(null)
+                              bulk.mutate('read')
+                            }}
+                          >
+                            <CheckCheck size={17} />
+                            全部标为已读
+                          </button>
+                          <hr />
+                          <button
+                            disabled={bulk.isPending}
+                            onClick={() => {
+                              setMenu(null)
+                              bulk.mutate('archive')
+                            }}
+                          >
+                            <Archive size={17} />
+                            归档全部
+                          </button>
+                          <button
+                            disabled={bulk.isPending}
+                            onClick={() => {
+                              setMenu(null)
+                              bulk.mutate('archive-read')
+                            }}
+                          >
+                            <CheckCheck size={17} />
+                            归档全部已读
+                          </button>
+                        </>
+                      ) : (
+                        <small>{writable ? '归档中的条目可在详情中恢复' : '当前为只读模式'}</small>
+                      )}
+                      <hr />
+                      <button
+                        onClick={() => {
+                          setMenu(null)
+                          filter({ view: 'sources', item: undefined, offset: undefined })
+                        }}
+                      >
+                        <Settings2 size={17} />
+                        管理来源
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
-              <button type="submit">搜索</button>
-            </form>
+            </div>
+
             {view === 'items' ? (
               <>
-                <div className="collection-tabs" aria-label="结果状态">
-                  {states.map(([id, label]) => (
-                    <button
-                      key={id}
-                      aria-pressed={state === id}
-                      onClick={() => filter({ state: id, offset: undefined, item: undefined })}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
+                {announcement && (
+                  <div className="collection-feedback" role="status">
+                    {announcement}
+                  </div>
+                )}
+                {bulk.isError && <Notice error={bulk.error} />}
+                {(unreadOnly || sourceID) && (
+                  <div className="inbox-filter-summary">
+                    {unreadOnly && '只看未读'}
+                    {unreadOnly && sourceID && ' · '}
+                    {sourceID && (source ? sourceName(source) : sourceID)}
+                  </div>
+                )}
                 {items.isPending && (
                   <div className="collection-loading" role="status">
                     <LoaderCircle className="spin" size={16} /> 正在读取结果…
@@ -455,12 +612,75 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
                     {items.data.items.length === 0 ? (
                       <div className="collection-empty">
                         <Inbox size={28} />
-                        <h3>{query ? '没有匹配结果' : '这里还没有结果'}</h3>
-                        <p>
-                          {query
-                            ? '试试其他关键词，或清除搜索。'
-                            : '可切换来源或状态查看已有记录。'}
-                        </p>
+                        {overview.isPending ? (
+                          <p role="status">正在读取来源状态…</p>
+                        ) : overview.isError ? (
+                          <Notice error={overview.error} retry={() => void overview.refetch()} />
+                        ) : (
+                          <>
+                            <h3>
+                              {query || sourceID || unreadOnly || offset
+                                ? '没有匹配的消息'
+                                : !data?.sources.length
+                                  ? '先添加一个消息来源'
+                                  : !data?.enabled || !data?.summary.enabled_sources
+                                    ? '消息采集尚未启用'
+                                    : state === 'archived'
+                                      ? '还没有归档消息'
+                                      : '收件箱暂时为空'}
+                            </h3>
+                            <p>
+                              {query || sourceID || unreadOnly || offset
+                                ? '清除筛选后查看其他消息。'
+                                : !data?.sources.length
+                                  ? '连接来源后，采集结果会显示在这里。'
+                                  : !data?.enabled || !data?.summary.enabled_sources
+                                    ? '前往来源管理查看配置，并启用需要的来源。'
+                                    : data?.summary.failed_today
+                                      ? '今天有采集处理失败的记录，可查看来源状态。'
+                                      : '新采集的结果会显示在这里；已处理的内容可在归档中查看。'}
+                            </p>
+                            <div className="empty-actions">
+                              {query || sourceID || unreadOnly || offset ? (
+                                <button
+                                  className="button"
+                                  onClick={() =>
+                                    filter({
+                                      q: undefined,
+                                      source: undefined,
+                                      unread: undefined,
+                                      offset: undefined,
+                                    })
+                                  }
+                                >
+                                  清除筛选
+                                </button>
+                              ) : (
+                                <button
+                                  className="button"
+                                  onClick={() => filter({ view: 'sources', panel: 'overview' })}
+                                >
+                                  管理来源
+                                </button>
+                              )}
+                              {state === 'active' ? (
+                                <button
+                                  className="button"
+                                  onClick={() => filter({ state: 'archived', offset: undefined })}
+                                >
+                                  查看归档
+                                </button>
+                              ) : (
+                                <button
+                                  className="button"
+                                  onClick={() => filter({ state: 'active', offset: undefined })}
+                                >
+                                  返回收件箱
+                                </button>
+                              )}
+                            </div>
+                          </>
+                        )}
                       </div>
                     ) : (
                       <div className="collection-item-list" ref={listRef}>
@@ -487,7 +707,6 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
                               )}
                               {item.title || item.summary.slice(0, 60) || '未命名记录'}
                             </h3>
-                            {item.summary && <p>{item.summary}</p>}
                             <div className="collection-item-meta">
                               <span>
                                 {sourceName(
@@ -608,7 +827,7 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
                 </button>
               )}
             </div>
-            {announcement && (
+            {announcement && view !== 'items' && (
               <div className="collection-feedback" role="status">
                 <CheckCheck size={14} /> {announcement}
               </div>
@@ -650,37 +869,12 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
                 )}
                 {selected && (
                   <>
+                    {markRead.isError && markRead.variables === selected.id && (
+                      <Notice error={markRead.error} retry={() => markRead.mutate(selected.id)} />
+                    )}
                     <div className="collection-detail-header">
-                      <div className="collection-detail-meta">
-                        <span className="collection-kind">
-                          {selected.proposed_action
-                            ? '待确认'
-                            : actions[selected.action] || selected.action}
-                        </span>
-                        <span>
-                          {selected.archived_at ? '已归档' : selected.read_at ? '已读' : '未读'}
-                        </span>
-                      </div>
                       <h2>{selected.title || '收集记录'}</h2>
-                      <p className="collection-muted">
-                        {sourceName(selectedSource)} ·{' '}
-                        {stamp(selected.occurred_at || selected.updated_at)}
-                      </p>
                       <div className="collection-actions">
-                        <button
-                          className="button"
-                          disabled={!writable || mutation.isPending}
-                          onClick={() =>
-                            change(
-                              'collect.item.read',
-                              { item_id: selected.id, read: selected.read_at === 0 },
-                              selected.read_at ? '已标为未读' : '已标为已读',
-                            )
-                          }
-                        >
-                          <CheckCheck size={14} />
-                          {selected.read_at ? '标为未读' : '标为已读'}
-                        </button>
                         <RuntimeJobs
                           key={selected.id}
                           boot={boot}
@@ -710,6 +904,20 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
                       {!writable && <p className="collection-readonly">只读预览</p>}
                     </div>
                     <div className="collection-detail-scroll" ref={detailRef}>
+                      <div className="collection-detail-meta">
+                        <span className="collection-kind">
+                          {selected.proposed_action
+                            ? '待确认'
+                            : actions[selected.action] || selected.action}
+                        </span>
+                        <span>
+                          {selected.archived_at ? '已归档' : selected.read_at ? '已读' : '未读'}
+                        </span>
+                      </div>
+                      <p className="collection-muted">
+                        {sourceName(selectedSource)} ·{' '}
+                        {stamp(selected.occurred_at || selected.updated_at)}
+                      </p>
                       {selected.summary && (
                         <section className="collection-detail-section">
                           <h3>结论</h3>
@@ -751,14 +959,7 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
                           {selected.knowledge_collection && ` · ${selected.knowledge_collection}`}
                         </p>
                       )}
-                      <section className="collection-detail-section">
-                        <h3>原始上下文</h3>
-                        {selected.raw_context ? (
-                          <Markdown text={selected.raw_context} />
-                        ) : (
-                          <p className="collection-muted">这条记录没有保存原始上下文。</p>
-                        )}
-                      </section>
+                      <CollectionContext key={selected.id} text={selected.raw_context} />
                     </div>
                   </>
                 )}
@@ -804,8 +1005,16 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
               <div className="collection-detail-scroll" ref={detailRef}>
                 <div className="collection-empty">
                   <Inbox size={28} />
-                  <h3>选择一条消息</h3>
-                  <p>从左侧收件箱打开详情，处理后可以标记已读或归档。</p>
+                  {items.isPending ? (
+                    <p role="status">正在读取消息…</p>
+                  ) : items.isError ? (
+                    <p>读取失败，请在列表重试。</p>
+                  ) : (
+                    <>
+                      <h3>选择一条消息</h3>
+                      <p>打开详情即标为已读，处理完的内容可以归档。</p>
+                    </>
+                  )}
                 </div>
               </div>
             )}

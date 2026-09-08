@@ -23,11 +23,13 @@ import (
 // These transport DTOs intentionally omit sync, source paths, thinking extraction,
 // provider execution, and live billing. Browser reads consume the existing index.
 type SessionListInput struct {
-	Agent   string `json:"agent,omitempty"`
-	Project string `json:"project,omitempty"`
-	Days    int    `json:"days,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
-	Offset  int    `json:"offset,omitempty"`
+	GroupChildren   bool   `json:"group_children,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	Agent           string `json:"agent,omitempty"`
+	Project         string `json:"project,omitempty"`
+	Days            int    `json:"days,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	Offset          int    `json:"offset,omitempty"`
 }
 
 type SessionSearchInput struct {
@@ -162,6 +164,9 @@ func activityListBounds(input *SessionListInput) error {
 	if input.Days < 0 || input.Days > 365 || input.Offset < 0 || input.Offset > 10000 || input.Limit < 0 || input.Limit > 100 {
 		return invalid("days must be 1–365, limit 1–100, and offset 0–10000")
 	}
+	if utf8.RuneCountInString(input.ParentSessionID) > 500 {
+		return invalid("parent session ID is too long")
+	}
 	if utf8.RuneCountInString(input.Project) > 200 || utf8.RuneCountInString(input.Agent) > 100 {
 		return invalid("session filter is too long")
 	}
@@ -181,6 +186,7 @@ func activitySessions(ctx context.Context, input SessionListInput) (session.List
 	}
 	result, err := session.NewService(session.ServiceOptions{}).List(ctx, session.ListInput{
 		Agent: input.Agent, Project: input.Project, Days: input.Days, Limit: input.Limit, Offset: input.Offset, Order: "activity-desc",
+		GroupChildren: input.GroupChildren, ParentSessionID: input.ParentSessionID,
 	})
 	if errors.Is(err, store.ErrDatabaseMissing) {
 		return session.ListResult{Sessions: []session.Summary{}, Days: input.Days, Limit: input.Limit, Offset: input.Offset}, nil

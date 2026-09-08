@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import { NavLink } from 'react-router'
 import {
   BookOpen,
@@ -8,9 +8,10 @@ import {
   Inbox,
   LockKeyhole,
   Settings,
+  SquarePen,
   ShieldCheck,
-  Sparkles,
 } from 'lucide-react'
+import { GlobalSearch } from './global-search'
 import type { Bootstrap } from './types'
 
 export const workspaces = [
@@ -19,7 +20,6 @@ export const workspaces = [
   { path: '/agents', label: 'Agent', icon: Cpu },
   { path: '/knowledge', label: '知识', icon: BookOpen },
   { path: '/usage', label: '统计', icon: ChartNoAxesCombined },
-  { path: '/ai-day', label: 'AI Day', icon: Sparkles },
   { path: '/settings', label: '设置', icon: Settings },
 ] as const
 
@@ -41,18 +41,30 @@ export function AppShell({
             ATM<small>我的工作台</small>
           </span>
         </NavLink>
+        <GlobalSearch writable={boot.capabilities?.todo_write === true} />
+        {boot.capabilities?.todo_write && (
+          <NavLink className="nav-item sidebar-create" to="/tasks?new=1" title="新建任务">
+            <SquarePen size={16} strokeWidth={1.75} />
+            <span>新建任务</span>
+          </NavLink>
+        )}
         <nav aria-label="工作空间" className="workspace-navigation">
           {workspaces.map(({ path, label, icon: Icon }) => (
-            <NavLink
-              key={path}
-              to={path}
-              title={label}
-              aria-label={label}
-              className={({ isActive }) => `nav-item ${isActive ? 'selected' : ''}`}
-            >
-              <Icon size={18} />
-              <span>{label}</span>
-            </NavLink>
+            <Fragment key={path}>
+              {path === '/tasks' && <span className="nav-group-label">工作区</span>}
+              {path === '/settings' && (
+                <span className="nav-group-label nav-group-config">配置</span>
+              )}
+              <NavLink
+                to={path}
+                title={label}
+                aria-label={label}
+                className={({ isActive }) => `nav-item ${isActive ? 'selected' : ''}`}
+              >
+                <Icon size={16} strokeWidth={1.75} />
+                <span>{label}</span>
+              </NavLink>
+            </Fragment>
           ))}
         </nav>
         <div className="sidebar-footer">

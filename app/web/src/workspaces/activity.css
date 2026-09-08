@@ -194,8 +194,8 @@
   color: var(--activity-muted);
 }
 .activity-filters input,
-.activity-filters select,
-.activity-usage-filters select {
+.activity-filters :is(select, .ui-select),
+.activity-usage-filters :is(select, .ui-select) {
   min-width: 0;
   width: auto;
   max-width: 185px;
@@ -959,7 +959,7 @@
     min-width: 0;
   }
   .activity-filters input,
-  .activity-filters select {
+  .activity-filters :is(select, .ui-select) {
     width: 100%;
   }
   .activity-chart {
@@ -1162,7 +1162,7 @@
   border-radius: 8px;
 }
 .activity-filters input,
-.activity-filters select {
+.activity-filters :is(select, .ui-select) {
   height: 34px;
   padding: 0 8px;
   border-radius: 7px;
@@ -1254,7 +1254,6 @@
   font-size: 20px;
 }
 .activity-usage-filters {
-  max-width: 1120px;
   margin: 0 auto 10px;
   padding: 8px 10px;
   border: 1px solid var(--line);
@@ -1271,7 +1270,6 @@
 .activity-usage > .activity-breakdown-card,
 .activity-usage > .activity-quality,
 .activity-usage > .activity-quota-section {
-  max-width: 1120px;
   margin-left: auto;
   margin-right: auto;
 }
@@ -1494,12 +1492,249 @@
     gap: 5px;
     align-items: stretch;
   }
-  .activity-usage .activity-usage-filters > label select {
+  .activity-usage .activity-usage-filters > label :is(select, .ui-select) {
     width: 100%;
     max-width: none;
   }
   .activity-usage .activity-usage-filters > .text-button {
     grid-column: 1 / -1;
     justify-self: end;
+  }
+}
+
+/* Session execution overview: compact evidence before the full transcript. */
+.activity-run-overview {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.activity-run-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 18px;
+  color: var(--activity-muted);
+  font-size: 11px;
+}
+.activity-run-facts span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.activity-run-facts b {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 620;
+}
+.activity-run-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 12px;
+}
+.activity-run-controls > .button {
+  min-height: 27px;
+  padding: 4px 7px;
+}
+.activity-run-filter {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  margin-right: auto;
+  border-radius: 7px;
+  background: var(--soft);
+}
+.activity-run-filter button {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+}
+.activity-run-filter button.selected {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+.activity-run-timeline {
+  display: flex;
+  gap: 2px;
+  height: 7px;
+  margin-top: 13px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--soft);
+}
+.activity-run-event {
+  min-width: 3px;
+  flex: 1 1 8px;
+  border-radius: 999px;
+  background: var(--chart-secondary);
+}
+.activity-run-event.question {
+  background: var(--accent-line);
+}
+.activity-run-event.progress {
+  background: var(--warning);
+}
+.activity-run-event.answer {
+  background: var(--success);
+}
+.activity-run-overview + .activity-conversation-meta {
+  padding-top: 14px !important;
+}
+
+@media (max-width: 600px) {
+  .activity-run-controls > .button {
+    font-size: 0;
+  }
+  .activity-run-controls > .button svg {
+    width: 15px;
+    height: 15px;
+  }
+}
+
+/* Statistics: a page header, a single filter bar, then the reading area. */
+.workspace .activity-usage {
+  max-width: none;
+  padding: 0 28px 28px;
+  background: var(--surface);
+}
+.workspace .activity-usage .activity-heading {
+  min-height: 54px;
+  margin: 0 -28px;
+  padding: 12px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+.workspace .activity-usage .activity-heading h1 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 16px;
+}
+.usage-refresh {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.workspace .activity-usage .activity-usage-filters {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  flex-wrap: wrap;
+  max-width: none;
+  gap: 8px;
+  margin: 0 -28px 24px;
+  padding: 0 24px;
+  min-height: 52px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+.usage-view-tabs {
+  display: flex;
+  align-self: stretch;
+  gap: 22px;
+  margin-right: auto;
+}
+.usage-view-tabs button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 14px 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+.usage-view-tabs button.selected {
+  color: var(--text);
+  border-bottom-color: var(--text);
+  font-weight: 600;
+}
+.workspace .activity-usage .activity-usage-filters > label {
+  display: flex;
+  gap: 6px;
+  width: auto;
+  font-size: 0;
+}
+.workspace .activity-usage .activity-usage-filters :is(select, .ui-select) {
+  width: auto;
+  max-width: 180px;
+  min-width: 90px;
+  height: 30px;
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+.workspace .activity-usage .activity-source-note {
+  margin-bottom: 18px;
+  font-size: 11px;
+}
+.usage-empty-state {
+  margin: 24px auto;
+  padding: 48px 24px;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+}
+.usage-empty-state strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 550;
+}
+.usage-empty-state p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.workspace .activity-usage .activity-metrics {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow: none;
+}
+.workspace
+  .activity-usage
+  :is(.activity-chart-card, .activity-breakdown-card, .activity-quota-section) {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding-inline: 0;
+}
+@media (max-width: 600px) {
+  .workspace .activity-usage {
+    padding: 0 16px 20px;
+  }
+  .workspace .activity-usage .activity-heading {
+    margin-inline: -16px;
+    padding-inline: 16px;
+  }
+  .usage-refresh > span {
+    font-size: 10px;
+  }
+  .workspace .activity-usage .activity-usage-filters {
+    margin-inline: -16px;
+    padding: 0 16px 12px;
+  }
+  .usage-view-tabs {
+    width: 100%;
+  }
+  .workspace .activity-usage .activity-usage-filters > label {
+    flex: 1 1 40%;
+  }
+  .workspace .activity-usage .activity-usage-filters :is(select, .ui-select) {
+    width: 100%;
+    max-width: none;
   }
 }

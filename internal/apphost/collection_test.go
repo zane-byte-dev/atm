@@ -217,3 +217,19 @@ func TestCollectionTypedWhitelistRejectsExecutionAndAmbiguousWrites(t *testing.T
 		t.Fatalf("invalid requests touched storage: %v", err)
 	}
 }
+
+func TestInboxUnreadFilterComposesWithArchiveAndPagination(t *testing.T) {
+	h := testHost(t)
+	_, items := seedCollection(t)
+	collectionTestCall(t, h, "collect.item.read", fmt.Sprintf(`{"item_id":%q,"read":true}`, items[0].ID))
+	collectionTestCall(t, h, "collect.item.archive", fmt.Sprintf(`{"item_id":%q,"archived":true}`, items[1].ID))
+	active := collectionTestCall(t, h, "collect.items", `{"state":"active","unread_only":true,"limit":100,"offset":100}`).(CollectionListResult)
+	if active.Total != 103 || len(active.Items) != 3 {
+		t.Fatalf("unread pagination: %+v", active)
+	}
+	collectionTestCall(t, h, "collect.item.read", fmt.Sprintf(`{"item_id":%q,"read":false}`, items[1].ID))
+	archived := collectionTestCall(t, h, "collect.items", `{"state":"archived","unread_only":true}`).(CollectionListResult)
+	if archived.Total != 1 || archived.Items[0].ID != items[1].ID {
+		t.Fatalf("archived unread: %+v", archived)
+	}
+}

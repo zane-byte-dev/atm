@@ -8,7 +8,7 @@ const routes: Record<string, string[]> = {
   collection: ['collection', 'jobs'],
   agents: ['sessions', 'presence', 'jobs'],
   knowledge: ['knowledge', 'memory'],
-  usage: ['usage', 'jobs'],
+  usage: ['usage', 'day', 'jobs'],
   'ai-day': ['day', 'jobs'],
   settings: ['settings', 'jobs', 'presence'],
 }

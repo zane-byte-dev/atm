@@ -328,6 +328,7 @@ Web 不提供 Hook 安装或权限审批，安装状态通过上述 CLI 检查�
 ## 构建
 
 ```bash
+make dev        # 一键启动 Vite 热更新与 Go 自动重载，使用本地数据
 make build      # 安装前端依赖、编译页面，构建完整 bin/atm
 make build-cli  # 只构建 CLI 到 bin/atm，无需 Node.js
 make web-build  # 仅构建 app/web/dist
@@ -348,15 +349,29 @@ NPM_CONFIG_CACHE=/private/tmp/atm-web-npm-cache make build BIN_DIR=bin/atm-web
 bin/atm-web/atm serve --data-dir /private/tmp/atm-web-data --port 0 --open
 ```
 
-调整页面时可启用 Go 同源的 Vite 热更新。在一个终端运行 `npm run dev --prefix app/web`，另一个
-终端运行：
+调整页面时直接运行：
 
 ```sh
-mkdir -p bin/atm-web-dev
-go build -o bin/atm-web-dev/atm ./cmd/atm
-./scripts/codesign-local.sh bin/atm-web-dev/atm
-bin/atm-web-dev/atm serve --data-dir /private/tmp/atm-web-dev-data --port 47322 --dev-ui http://127.0.0.1:5173 --open
+make dev
 ```
+
+它会独立启动 Vite 和 Go，默认使用日用 CLI 的本地数据目录。首次编译成功后接替现有服务；
+React/CSS 热更新，Go 保存后自动编译、签名并重启，编译失败保留旧后端。默认端口为 `5173` 和 `47321`。
+页面操作会直接修改真实数据；需要隔离测试时可覆盖：
+
+```sh
+make dev DEV_UI_PORT=5174 DEV_PORT=47323 DEV_DATA_DIR=/private/tmp/atm-my-dev-data
+```
+
+分别调试两个进程时，先后在两个终端运行：
+
+```sh
+make dev-ui
+make dev-api
+```
+
+日志按 `[ui]`、`[api]`、`[build]` 区分。Ctrl+C 清理开发进程，不自动恢复之前的服务；
+恢复日用服务可运行日用 `atm serve --open`。`DEV_OPEN=` 可禁止自动打开浏览器。
 
 浏览器使用 Go 打开的地址；页面和 HMR 经过同源代理，API 鉴权保持生效。开发模式无需预先构建 `dist`。
 发布前仍需运行完整构建，且不传 `--dev-ui`。详见 [Web 开发说明](app/web/README.md#go-同源热更新)。

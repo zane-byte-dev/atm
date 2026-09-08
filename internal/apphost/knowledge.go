@@ -126,6 +126,9 @@ func (h *Host) callKnowledge(ctx context.Context, call application.Call, method 
 			if err := knowledgeIdentity(value.DocumentID); err != nil {
 				return nil, err
 			}
+			if value.Collection != nil && !managedCollectionID(*value.Collection) {
+				return nil, invalid("invalid collection ID")
+			}
 			if value.Title != nil && !managedDocumentTitle(*value.Title) {
 				return nil, invalid("a visible document title of at most 1000 bytes is required")
 			}

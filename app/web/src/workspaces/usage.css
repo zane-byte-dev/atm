@@ -1,0 +1,199 @@
+/* Usage-specific reading hierarchy; other activity workspaces retain their layout. */
+.workspace .activity-usage {
+  --usage-chart: light-dark(#6f8fa9, #91b5d1);
+}
+.workspace .activity-usage .activity-usage-filters {
+  justify-content: flex-start;
+  gap: 10px 16px;
+  padding-bottom: 12px;
+  margin-bottom: 14px;
+}
+.activity-usage .usage-view-tabs {
+  flex-basis: 100%;
+  min-height: 44px;
+}
+.workspace .activity-usage .activity-usage-filters > label {
+  font-size: 12px;
+  color: var(--muted);
+}
+.workspace .activity-usage .activity-usage-filters :is(select, .ui-select) {
+  height: 32px;
+}
+.workspace .activity-usage .activity-source-note {
+  margin-bottom: 10px;
+}
+.workspace .activity-usage .activity-metrics {
+  margin-top: 0;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+}
+.activity-usage .activity-metric {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding: 8px 18px;
+}
+.activity-usage .activity-metric:first-child {
+  padding-left: 0;
+}
+.activity-usage .activity-metric > strong {
+  justify-self: start;
+  font-size: 30px;
+  line-height: 1.2;
+  letter-spacing: -0.8px;
+}
+.activity-usage .activity-metric > small {
+  font-size: 11px;
+}
+.workspace .activity-usage :is(.activity-chart-card, .activity-breakdown-card) {
+  margin-block: 10px;
+}
+.activity-usage .activity-panel-heading {
+  padding: 8px 0 12px;
+}
+.usage-chart-layout {
+  display: flex;
+  gap: 12px;
+  padding-top: 10px;
+}
+.usage-chart-axis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  flex: 0 0 52px;
+  height: 140px;
+  font-size: 10px;
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  line-height: 0;
+}
+.activity-usage .activity-chart {
+  flex: 1;
+  height: 168px;
+  margin: 0;
+  padding: 0;
+  gap: 6px;
+  border: 0;
+  background: repeating-linear-gradient(to top, var(--line) 0 1px, transparent 1px 25%);
+  background-size: 100% 140px;
+  background-repeat: no-repeat;
+}
+.activity-usage .activity-bar-column {
+  gap: 7px;
+}
+.activity-usage .activity-bar-track {
+  max-width: 32px;
+}
+.activity-usage .activity-bar {
+  background: var(--usage-chart);
+  border-radius: 3px 3px 0 0;
+}
+.activity-usage .activity-bar-column:is(:hover, :focus-visible, .selected) .activity-bar {
+  background: color-mix(in srgb, var(--usage-chart) 75%, var(--text));
+}
+.activity-usage .usage-future .activity-bar-track {
+  background: color-mix(in srgb, var(--soft) 45%, transparent);
+  border-radius: 3px;
+}
+.activity-usage .usage-future .activity-bar-label {
+  color: var(--muted);
+  opacity: 0.6;
+}
+.activity-usage .activity-bar-value {
+  top: -25px;
+}
+.activity-usage .activity-bar-column:first-child .activity-bar-value {
+  left: 0;
+  transform: none;
+}
+.activity-usage .activity-bar-column:last-child .activity-bar-value {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+.activity-usage .activity-chart-detail {
+  min-height: 24px;
+  padding: 4px 0;
+  text-align: left;
+  font-size: 11px;
+}
+.activity-usage .usage-numeric-table :is(th, td):not(:first-child) {
+  text-align: right;
+}
+.activity-usage .usage-has-agent :is(th, td):nth-child(2) {
+  text-align: left;
+}
+.activity-usage .activity-table :is(th, td) {
+  padding: 11px 14px;
+}
+.usage-share {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.usage-share > span {
+  min-width: 48px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.usage-share .activity-table-meter {
+  width: 64px;
+}
+.usage-share .activity-table-meter span {
+  background: var(--usage-chart);
+}
+.workspace .activity-usage .activity-quality {
+  padding: 12px 0 0;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  gap: 8px 16px;
+  font-size: 11px;
+}
+.activity-quality details {
+  margin-left: auto;
+}
+.activity-quality details[open] {
+  flex-basis: 100%;
+}
+.activity-quality summary {
+  cursor: pointer;
+}
+.activity-quality details p {
+  margin-top: 8px;
+}
+@media (max-width: 600px) {
+  .workspace .activity-usage .activity-usage-filters > label {
+    min-width: 0;
+  }
+  .workspace .activity-usage .activity-usage-filters :is(select, .ui-select) {
+    min-width: 0;
+    flex: 1;
+    width: 0;
+  }
+  .activity-usage .activity-metric {
+    padding: 10px 12px;
+  }
+  .activity-usage .activity-metric > strong {
+    font-size: 26px;
+  }
+  .activity-usage .activity-chart {
+    gap: 3px;
+  }
+  .usage-chart-axis {
+    flex-basis: 40px;
+  }
+  .activity-usage .activity-bar-label {
+    font-size: 9px;
+  }
+}
+
+.activity-usage .activity-chart-detail:empty {
+  min-height: 0;
+  padding: 0;
+}
+.activity-usage .activity-panel-heading p {
+  margin: 3px 0 0;
+}

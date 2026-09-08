@@ -16,14 +16,14 @@ import {
   QueryClientProvider,
   useMutation,
   useQuery,
-  useQueries,
   useQueryClient,
 } from '@tanstack/react-query'
 import {
+  Maximize2,
+  Minimize2,
   Archive,
   ArrowLeft,
   ArrowUpRight,
-  CalendarDays,
   Check,
   CheckCheck,
   ChevronRight,
@@ -31,7 +31,6 @@ import {
   CircleCheck,
   CircleDot,
   Clock3,
-  Ellipsis,
   FileText,
   Folder,
   ImagePlus,
@@ -43,9 +42,7 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  Search,
   Sparkles,
-  UserRound,
   X,
 } from 'lucide-react'
 import { ApiError, bootstrap, call, errorText, reconnect } from './api'
@@ -55,16 +52,19 @@ import { useLiveUpdates } from './live-updates'
 import { TaskPlanEditor, TaskProgressForm, TaskRelationships } from './task-operations'
 import { TaskImageUpload } from './task-images'
 import { TaskRefine } from './task-refine'
-import {
-  consumeNewTaskRequest,
-  readTaskLayout,
-  updateTaskLayout,
-  type TaskLayout,
-} from './task-navigation'
+import { TaskWorkbench } from './task-workbench'
+import { taskProgress, latestTaskProgress } from './task-progress'
+import { consumeNewTaskRequest, readTaskLayout } from './task-navigation'
 import type { Bootstrap, Todo, TodoDetail, TodoList, OperationWarning } from './types'
 import './style.css'
 import './themes.css'
+import './workspace-style.css'
 import './theme'
+import './web-improvements.css'
+import './workspace-chrome.css'
+import { TaskInlineProperty } from './task-inline-properties'
+import { taskActivity, taskActivityLabel } from './task-attention'
+import type { SessionStatus } from './workspaces/activity-types'
 
 const AgentsWorkspace = React.lazy(() =>
   import('./workspaces/activity').then((module) => ({ default: module.AgentsWorkspace })),
@@ -77,9 +77,6 @@ const KnowledgeWorkspace = React.lazy(() =>
 )
 const CollectionWorkspace = React.lazy(() =>
   import('./workspaces/collection').then((module) => ({ default: module.CollectionWorkspace })),
-)
-const AIDayWorkspace = React.lazy(() =>
-  import('./workspaces/aiday-settings').then((module) => ({ default: module.AIDayWorkspace })),
 )
 const SettingsWorkspace = React.lazy(() =>
   import('./workspaces/aiday-settings').then((module) => ({ default: module.SettingsWorkspace })),
@@ -96,34 +93,24 @@ const queryClient = new QueryClient({
   },
 })
 
-const statuses = { open: '待开始', in_progress: '工作中', review: '待验收', done: '已完成' }
-const navItems = [
-  { key: '', label: '待处理', icon: LayoutGrid },
-  { key: 'in_progress', label: '工作中', icon: CircleDot },
-  { key: 'review', label: '待验收', icon: CheckCheck },
-  { key: 'open', label: '待开始', icon: Inbox },
-  { key: 'done', label: '已完成', icon: CircleCheck },
-  { key: 'all', label: '全部任务', icon: LayoutGrid },
-  { key: 'archived', label: '归档', icon: Archive },
-]
-const boardColumns = [
-  { key: 'open', label: '待开始' },
-  { key: 'in_progress', label: '工作中' },
-  { key: 'review', label: '待验收' },
-] as const
-const boardPreviewLimits: Record<(typeof boardColumns)[number]['key'], number> = {
-  open: 40,
-  in_progress: 40,
-  review: 40,
+const statuses = { open: '待开始', in_progress: '进行中', review: '待验收', done: '已完成' }
+const agentLabels: Record<string, string> = {
+  codex: 'Codex',
+  claude: 'Claude',
+  cursor: 'Cursor',
+  grokbuild: 'Grok Build',
+  antigravity: 'Antigravity',
 }
-
-function taskFilterCount(key: string, counts: Record<string, number>) {
-  if (key) return counts[key]
-  const active = ['open', 'in_progress', 'review'].map((status) => counts[status])
-  if (active.every((count) => count === undefined)) return undefined
-  return active.reduce<number>((total, count) => total + (count ?? 0), 0)
-}
-
+const agentLabel = (value?: string) => (value ? agentLabels[value] || value : 'Agent')
+const epochDateTime = (value?: number) =>
+  value
+    ? new Date(value * 1000).toLocaleString('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '—'
 function App() {
   const [boot, setBoot] = useState<Bootstrap>()
   useLiveUpdates(boot)
@@ -205,14 +192,7 @@ function App() {
           </ModulePage>
         }
       />
-      <Route
-        path="/ai-day"
-        element={
-          <ModulePage boot={boot} path="/ai-day">
-            <AIDayWorkspace boot={boot} />
-          </ModulePage>
-        }
-      />
+      <Route path="/ai-day" element={<Navigate to="/usage?view=badges" replace />} />
       <Route
         path="/settings"
         element={
@@ -275,33 +255,12 @@ function Workspace({ boot }: { boot: Bootstrap }) {
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const layout = readTaskLayout(params)
-  const status = params.get('status') ?? ''
   const project = params.get('project') ?? ''
-  const search = params.get('q') ?? ''
-  const setSearch = (value: string) =>
-    setParams(
-      (current) => {
-        const next = new URLSearchParams(current)
-        if (value) next.set('q', value)
-        else next.delete('q')
-        return next
-      },
-      { replace: true },
-    )
-  const [debounced, setDebounced] = useState(search)
-  const [page, setPage] = useState(0)
   const [newTask, setNewTask] = useState(false)
   const [editing, setEditing] = useState(false)
-  const searchInput = useRef<HTMLInputElement>(null)
+  const [expandedDetail, setExpandedDetail] = useState(false)
   const canWrite = boot.capabilities?.todo_write === true
-
-  useEffect(() => {
-    const timeout = setTimeout(() => {
-      setDebounced(search)
-      setPage(0)
-    }, 220)
-    return () => clearTimeout(timeout)
-  }, [search])
+  const archived = params.get('status') === 'archived'
   useEffect(() => {
     setEditing(false)
   }, [id])
@@ -311,48 +270,25 @@ function Workspace({ boot }: { boot: Bootstrap }) {
     if (request.open) setNewTask(true)
     setParams(request.params, { replace: true })
   }, [canWrite, params, setParams])
-  useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault()
-        searchInput.current?.focus()
-      }
-    }
-    document.addEventListener('keydown', handler)
-    return () => document.removeEventListener('keydown', handler)
-  }, [])
   const list = useQuery({
-    queryKey: ['todos', layout, layout === 'kanban' ? '' : status, project, debounced, page],
-    queryFn: ({ signal }) =>
-      call<TodoList>(
-        'todo.list',
-        {
-          status: layout === 'kanban' ? '' : status,
-          project,
-          query: debounced,
-          limit: 60,
-          offset: layout === 'kanban' ? 0 : page * 60,
-        },
-        signal,
-      ),
-    refetchInterval: 5000,
-    refetchIntervalInBackground: false,
-  })
-  const needsLaneQueries =
-    layout === 'kanban' && !!list.data && list.data.total > list.data.items.length
-  const laneQueries = useQueries({
-    queries: boardColumns.map(({ key }) => ({
-      queryKey: ['todos', 'kanban-lane', key, project, debounced],
-      queryFn: ({ signal }: { signal: AbortSignal }) =>
-        call<TodoList>(
+    queryKey: ['todos', 'workbench', archived],
+    queryFn: async ({ signal }) => {
+      const items = new Map<string, Todo>()
+      let offset = 0
+      while (true) {
+        const page = await call<TodoList>(
           'todo.list',
-          { status: key, project, query: debounced, limit: boardPreviewLimits[key], offset: 0 },
+          { status: archived ? 'archived' : 'all', limit: 200, offset },
           signal,
-        ),
-      enabled: needsLaneQueries,
-      refetchInterval: 5000,
-      refetchIntervalInBackground: false,
-    })),
+        )
+        page.items.forEach((item) => items.set(item.id, item))
+        offset += page.items.length
+        if (!page.items.length || offset >= page.total) break
+      }
+      return [...items.values()]
+    },
+    refetchInterval: 15000,
+    refetchIntervalInBackground: false,
   })
   const detail = useQuery({
     queryKey: ['todo', id],
@@ -361,70 +297,64 @@ function Workspace({ boot }: { boot: Bootstrap }) {
     refetchInterval: 5000,
     refetchIntervalInBackground: false,
   })
-  const chooseFilter = (nextStatus: string, nextProject = '') => {
-    setPage(0)
-    setEditing(false)
-    const next = new URLSearchParams()
-    if (layout === 'kanban') next.set('layout', 'kanban')
-    if (layout === 'list' && nextStatus) next.set('status', nextStatus)
-    if (nextProject) next.set('project', nextProject)
-    if (search) next.set('q', search)
-    setParams(next)
-  }
   const openTask = (todoID: string) =>
     navigate(`/tasks/${todoID}${params.size ? `?${params}` : ''}`)
-  const chooseLayout = (nextLayout: TaskLayout) => {
-    setPage(0)
-    setEditing(false)
-    setParams((current) => updateTaskLayout(current, nextLayout), { replace: true })
-  }
-  const showStatusInList = (nextStatus: Todo['status']) => {
-    setPage(0)
-    setEditing(false)
-    const next = updateTaskLayout(params, 'list')
-    next.set('status', nextStatus)
-    navigate(`/tasks?${next}`)
-  }
-  const activeNav = navItems.find((item) => item.key === status) ?? navItems[0]
-  const counts = list.data?.counts ?? {}
-  const projects = list.data?.projects ?? []
-  const boardItems = needsLaneQueries
-    ? boardColumns.flatMap(
-        ({ key }, index) =>
-          laneQueries[index].data?.items ??
-          list.data?.items.filter((todo) => todo.status === key) ??
-          [],
-      )
-    : (list.data?.items ?? [])
-  const boardError = list.error ?? laneQueries.find((query) => query.error)?.error
-  const boardSupplementing = needsLaneQueries && laneQueries.some((query) => query.isPending)
-  const refreshTasks = () => {
-    void list.refetch()
-    if (needsLaneQueries) laneQueries.forEach((query) => void query.refetch())
-  }
+  const modalRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!id) return
+    modalRef.current?.focus()
+    const trap = (event: KeyboardEvent) => {
+      if (event.key !== 'Tab' || document.querySelector('dialog[open]')) return
+      const modal = modalRef.current
+      const controls = Array.from(
+        modal?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), summary, [tabindex="0"]',
+        ) || [],
+      ).filter((el) => el.getClientRects().length)
+      if (!controls.length) {
+        event.preventDefault()
+        return
+      }
+      const first = controls[0],
+        last = controls[controls.length - 1]
+      if (
+        event.shiftKey &&
+        (document.activeElement === first || document.activeElement === modal)
+      ) {
+        event.preventDefault()
+        last.focus()
+      } else if (
+        !event.shiftKey &&
+        (document.activeElement === last || !modal?.contains(document.activeElement))
+      ) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', trap)
+    return () => document.removeEventListener('keydown', trap)
+  }, [id])
   const hasSelection = !!id
   const taskListHref = `/tasks${params.size ? `?${params}` : ''}`
   const closeTask = () => {
     const focusedTaskID = id
     navigate(taskListHref)
-    if (layout === 'kanban' && focusedTaskID) {
+    if (focusedTaskID) {
       requestAnimationFrame(() => {
         document
-          .querySelector<HTMLButtonElement>(
-            `.task-card[data-task-id="${CSS.escape(focusedTaskID)}"]`,
-          )
+          .querySelector<HTMLButtonElement>(`[data-task-id="${CSS.escape(focusedTaskID)}"]`)
           ?.focus()
       })
     }
   }
 
   useEffect(() => {
-    if (layout !== 'kanban' || !id || editing) return
+    if (!id || editing) return
     const closeOnEscape = (event: KeyboardEvent) => {
       if (
         event.key !== 'Escape' ||
         event.defaultPrevented ||
-        document.querySelector('dialog[open], .task-more-menu')
+        document.querySelector('dialog[open]')
       )
         return
       event.preventDefault()
@@ -435,155 +365,23 @@ function Workspace({ boot }: { boot: Bootstrap }) {
   }, [editing, id, layout, taskListHref])
 
   return (
-    <AppShell boot={boot} className={`${hasSelection ? 'has-selection' : ''} task-view-${layout}`}>
+    <AppShell
+      boot={boot}
+      className={`${hasSelection ? 'has-selection' : ''} task-view-kanban task-mode-${layout}`}
+    >
       <div className="content-columns">
-        <section
-          className={`task-column ${layout === 'kanban' ? 'board-mode' : ''}`}
-          aria-label={layout === 'kanban' ? '任务工作板' : '任务列表'}
-        >
-          <div className="list-heading">
-            <h1>
-              任务
-              <span>{list.data?.total ?? '—'}</span>
-            </h1>
-            <div className="list-heading-actions">
-              <TaskLayoutSwitch layout={layout} onChange={chooseLayout} />
-              {canWrite && (
-                <button className="button primary new-task" onClick={() => setNewTask(true)}>
-                  <Plus size={15} />
-                  新建
-                </button>
-              )}
-            </div>
-          </div>
-          <div className="task-query-controls">
-            <div className="search-box">
-              <Search size={16} />
-              <input
-                ref={searchInput}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="搜索任务…"
-                aria-label="搜索任务"
-              />
-              {search ? (
-                <button
-                  className="clear-search"
-                  aria-label="清除搜索"
-                  onClick={() => setSearch('')}
-                >
-                  <X size={13} />
-                </button>
-              ) : (
-                <kbd>⌘ K</kbd>
-              )}
-            </div>
-            <div className="task-filter-row">
-              {layout === 'list' && (
-                <select
-                  className="task-status-select"
-                  aria-label="筛选任务状态"
-                  value={status}
-                  onChange={(event) => chooseFilter(event.target.value, project)}
-                >
-                  {navItems.map(({ key, label }) => (
-                    <option value={key} key={key}>
-                      {label} · {taskFilterCount(key, counts) ?? '—'}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {projects.length > 0 && (
-                <select
-                  className="project-filter"
-                  aria-label="筛选项目"
-                  value={project}
-                  onChange={(event) => chooseFilter(status, event.target.value)}
-                >
-                  <option value="">全部项目</option>
-                  {projects.map((name) => (
-                    <option value={name} key={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {layout === 'kanban' && (counts.done ?? 0) > 0 && (
-                <button
-                  type="button"
-                  className="button subtle task-completed-link"
-                  onClick={() => showStatusInList('done')}
-                >
-                  已完成 {counts.done}
-                </button>
-              )}
-            </div>
-          </div>
-          {layout === 'list' ? (
-            <>
-              <div className="list-subheading">
-                <span>{search ? '搜索结果' : project || activeNav.label}</span>
-                <span className="list-total">
-                  {list.data ? `${list.data.items.length} 项` : ''}
-                </span>
-              </div>
-              <div className="task-list">
-                {list.isPending && <Loading text="正在读取任务…" />}
-                {list.isError && <Notice error={list.error} retry={() => void list.refetch()} />}
-                {list.data?.items.map((todo) => (
-                  <TaskListRow
-                    key={todo.id}
-                    todo={todo}
-                    active={todo.id === id}
-                    onOpen={openTask}
-                  />
-                ))}
-                {list.data?.items.length === 0 && (
-                  <TaskEmpty
-                    search={search}
-                    defaultView={!status}
-                    completedCount={counts.done ?? 0}
-                    onShowCompleted={() => showStatusInList('done')}
-                    canWrite={canWrite}
-                    onCreate={() => setNewTask(true)}
-                  />
-                )}
-              </div>
-            </>
-          ) : (
-            <TaskBoard
-              items={boardItems}
-              counts={counts}
-              activeID={id}
-              search={search}
-              loading={list.isPending}
-              supplementing={boardSupplementing}
-              error={boardError}
-              total={list.data?.total ?? 0}
-              onRetry={refreshTasks}
-              onOpen={openTask}
-              onViewLane={showStatusInList}
-              completedCount={counts.done ?? 0}
-              canWrite={canWrite}
-              onCreate={() => setNewTask(true)}
-            />
-          )}
-          {layout === 'list' && (page > 0 || (list.data?.total ?? 0) > (page + 1) * 60) && (
-            <div className="pagination">
-              <button disabled={!page} onClick={() => setPage((p) => p - 1)}>
-                上一页
-              </button>
-              <span>第 {page + 1} 页</span>
-              <button
-                disabled={(list.data?.total ?? 0) <= (page + 1) * 60}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                下一页
-              </button>
-            </div>
-          )}
-        </section>
-        {layout === 'kanban' && id && (
+        <TaskWorkbench
+          items={list.data || []}
+          params={params}
+          onChange={(next) => setParams(next)}
+          onOpen={openTask}
+          onCreate={() => setNewTask(true)}
+          writable={canWrite}
+          loading={list.isPending}
+          error={list.error ? errorText(list.error) : undefined}
+          onRetry={() => void list.refetch()}
+        />
+        {id && (
           <button
             type="button"
             className="kanban-detail-scrim"
@@ -592,31 +390,17 @@ function Workspace({ boot }: { boot: Bootstrap }) {
             onClick={closeTask}
           />
         )}
-        {(layout === 'list' || id) && (
+        {id && (
           <section
-            className="detail-column"
+            ref={modalRef}
+            tabIndex={-1}
+            className={`detail-column ${expandedDetail ? 'detail-expanded' : ''}`}
             aria-label="任务详情"
-            role={layout === 'kanban' && id ? 'dialog' : undefined}
-            aria-labelledby={
-              layout === 'kanban' && id && detail.data ? `task-title-${id}` : undefined
-            }
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={id && detail.data ? `task-title-${id}` : undefined}
           >
-            {!id ? (
-              <div className="welcome">
-                <div className="welcome-mark">
-                  <FileText size={32} strokeWidth={1.2} />
-                </div>
-                <h2>选一件事，专注推进</h2>
-                <p>
-                  从左侧选择任务，查看详情与进展。
-                  <br />
-                  你的工作，随时都能接着往下做。
-                </p>
-                <div className="welcome-hint">
-                  <kbd>⌘ K</kbd>快速查找任务
-                </div>
-              </div>
-            ) : detail.isPending ? (
+            {detail.isPending ? (
               <Loading text="正在打开任务…" />
             ) : detail.error ? (
               <Notice error={detail.error} retry={() => void detail.refetch()} />
@@ -637,8 +421,16 @@ function Workspace({ boot }: { boot: Bootstrap }) {
                       <FileText size={14} />
                       {id}
                     </span>
-                    {layout === 'kanban' && (
+                    {id && (
                       <div className="detail-actions">
+                        <button
+                          className="icon-button"
+                          aria-label={expandedDetail ? '收起阅读' : '展开阅读'}
+                          title={expandedDetail ? '收起阅读' : '展开阅读'}
+                          onClick={() => setExpandedDetail(!expandedDetail)}
+                        >
+                          {expandedDetail ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+                        </button>
                         <button
                           className="icon-button kanban-detail-close"
                           title="关闭任务详情"
@@ -680,7 +472,6 @@ function Workspace({ boot }: { boot: Bootstrap }) {
           onClose={() => setNewTask(false)}
           onSaved={(todoID, warnings) => {
             setNewTask(false)
-            setPage(0)
             navigate(`/tasks/${todoID}${params.size ? `?${params}` : ''}`, {
               state: { taskWarnings: warnings },
             })
@@ -689,234 +480,6 @@ function Workspace({ boot }: { boot: Bootstrap }) {
         />
       )}
     </AppShell>
-  )
-}
-
-function TaskLayoutSwitch({
-  layout,
-  onChange,
-}: {
-  layout: TaskLayout
-  onChange: (layout: TaskLayout) => void
-}) {
-  return (
-    <div className="task-layout-switch" role="group" aria-label="任务视图">
-      <button
-        type="button"
-        title="列表视图"
-        aria-label="列表视图"
-        aria-pressed={layout === 'list'}
-        onClick={() => onChange('list')}
-      >
-        <ListIcon size={15} />
-      </button>
-      <button
-        type="button"
-        title="看板视图"
-        aria-label="看板视图"
-        aria-pressed={layout === 'kanban'}
-        onClick={() => onChange('kanban')}
-      >
-        <LayoutGrid size={14} />
-      </button>
-    </div>
-  )
-}
-
-function TaskListRow({
-  todo,
-  active,
-  onOpen,
-}: {
-  todo: Todo
-  active: boolean
-  onOpen: (todoID: string) => void
-}) {
-  return (
-    <button
-      className={`task-row ${active ? 'active' : ''}`}
-      onClick={() => onOpen(todo.id)}
-      aria-current={active ? 'true' : undefined}
-    >
-      <StatusIcon todo={todo} />
-      <div className="task-row-body">
-        <div className="task-row-title">{todo.title}</div>
-        <div className="task-row-meta">
-          <span className="task-id">{todo.id}</span>
-          {todo.project && (
-            <>
-              <span className="meta-dot">·</span>
-              <span className="truncate">{todo.project}</span>
-            </>
-          )}
-          <span className={`priority priority-${todo.priority.toLowerCase()}`}>
-            {todo.priority}
-          </span>
-        </div>
-        {todo.wake_condition && (
-          <div className="row-waiting">
-            <Clock3 size={11} />
-            {todo.wake_condition}
-          </div>
-        )}
-      </div>
-    </button>
-  )
-}
-
-function TaskEmpty({
-  search,
-  defaultView = false,
-  completedCount = 0,
-  onShowCompleted,
-  canWrite,
-  onCreate,
-}: {
-  search: string
-  defaultView?: boolean
-  completedCount?: number
-  onShowCompleted?: () => void
-  canWrite: boolean
-  onCreate: () => void
-}) {
-  const emptyActiveView = defaultView && !search
-  return (
-    <div className="empty-list">
-      <Inbox size={27} strokeWidth={1.3} />
-      <h3>{search ? '没有找到相关任务' : emptyActiveView ? '没有待处理任务' : '这里还没有任务'}</h3>
-      <p>
-        {search
-          ? '试试其他关键词，或者切换项目。'
-          : emptyActiveView && completedCount > 0
-            ? `已有 ${completedCount} 项任务完成，需要时可以查看。`
-            : '新建一个任务，开始整理下一步。'}
-      </p>
-      {!search && (
-        <div className="empty-list-actions">
-          {emptyActiveView && completedCount > 0 && onShowCompleted && (
-            <button className="button subtle" onClick={onShowCompleted}>
-              查看已完成
-            </button>
-          )}
-          {canWrite && (
-            <button className="button" onClick={onCreate}>
-              <Plus size={14} />
-              新建任务
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TaskBoard({
-  items,
-  counts,
-  activeID,
-  search,
-  loading,
-  supplementing,
-  error,
-  total,
-  onRetry,
-  onOpen,
-  onViewLane,
-  completedCount,
-  canWrite,
-  onCreate,
-}: {
-  items: Todo[]
-  counts: Record<string, number>
-  activeID?: string
-  search: string
-  loading: boolean
-  supplementing: boolean
-  error: unknown
-  total: number
-  onRetry: () => void
-  onOpen: (todoID: string) => void
-  onViewLane: (status: Todo['status']) => void
-  completedCount: number
-  canWrite: boolean
-  onCreate: () => void
-}) {
-  if (loading) return <Loading text="正在读取工作板…" />
-  if (error && items.length === 0 && total === 0) return <Notice error={error} retry={onRetry} />
-  if (total === 0)
-    return (
-      <TaskEmpty
-        search={search}
-        defaultView
-        completedCount={completedCount}
-        onShowCompleted={() => onViewLane('done')}
-        canWrite={canWrite}
-        onCreate={onCreate}
-      />
-    )
-  return (
-    <>
-      {error && <Notice error={error} retry={onRetry} />}
-      {supplementing && (
-        <div className="task-board-limit" role="status">
-          正在更新各列…
-        </div>
-      )}
-      <div className="task-board">
-        {boardColumns.map(({ key, label }) => {
-          const laneItems = items.filter((todo) => todo.status === key)
-          const previewLimit = boardPreviewLimits[key]
-          const visibleItems = laneItems.slice(0, previewLimit)
-          const hiddenCount = Math.max(0, (counts[key] ?? laneItems.length) - visibleItems.length)
-          return (
-            <section className={`task-lane lane-${key}`} key={key} aria-label={label}>
-              <header className="task-lane-heading">
-                <span className={`task-lane-dot status-${key}`} />
-                <h2>{label}</h2>
-                <span>{counts[key] ?? laneItems.length}</span>
-              </header>
-              <div className="task-lane-list">
-                {visibleItems.map((todo) => (
-                  <button
-                    key={todo.id}
-                    className={`task-card ${todo.id === activeID ? 'active' : ''}`}
-                    data-task-id={todo.id}
-                    onClick={() => onOpen(todo.id)}
-                    aria-current={todo.id === activeID ? 'true' : undefined}
-                  >
-                    <div className="task-card-heading">
-                      <StatusIcon todo={todo} />
-                      <span className="task-card-title">{todo.title}</span>
-                    </div>
-                    <div className="task-row-meta">
-                      <span className="task-id">{todo.id}</span>
-                      {todo.project && <span className="truncate">{todo.project}</span>}
-                      <span className={`priority priority-${todo.priority.toLowerCase()}`}>
-                        {todo.priority}
-                      </span>
-                    </div>
-                    {todo.wake_condition && (
-                      <div className="row-waiting">
-                        <Clock3 size={11} />
-                        {todo.wake_condition}
-                      </div>
-                    )}
-                  </button>
-                ))}
-                {visibleItems.length === 0 && <p className="task-lane-empty">暂无任务</p>}
-              </div>
-              {hiddenCount > 0 && (
-                <button className="task-lane-more" onClick={() => onViewLane(key)}>
-                  <span>另有 {hiddenCount} 项</span>
-                  在列表中查看
-                  <ArrowUpRight size={12} />
-                </button>
-              )}
-            </section>
-          )
-        })}
-      </div>
-    </>
   )
 }
 
@@ -940,7 +503,7 @@ function StatusIcon({ todo }: { todo: Todo }) {
   )
 }
 
-type TaskSecondaryAction = 'refine' | 'images' | 'relationships'
+type TaskLifecycleAction = 'start' | 'done' | 'reopen' | 'archive' | 'restore'
 
 function TaskDetail({
   data,
@@ -962,48 +525,14 @@ function TaskDetail({
   const query = useQueryClient()
   const [tab, setTab] = useState('description')
   const [editingPlan, setEditingPlan] = useState(false)
-  const [showMoreActions, setShowMoreActions] = useState(false)
-  const [secondaryAction, setSecondaryAction] = useState<TaskSecondaryAction>()
-  const moreButton = useRef<HTMLButtonElement>(null)
-  const moreMenu = useRef<HTMLDivElement>(null)
+  const [lifecycleAction, setLifecycleAction] = useState<TaskLifecycleAction>()
   useEffect(() => {
     setTab('description')
-    setShowMoreActions(false)
-    setSecondaryAction(undefined)
+    setLifecycleAction(undefined)
   }, [todo.id])
-  useEffect(() => {
-    if (!showMoreActions) return
-    const closeMenu = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !moreMenu.current?.contains(event.target) &&
-        !moreButton.current?.contains(event.target)
-      )
-        setShowMoreActions(false)
-    }
-    const closeMenuFromKeyboard = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
-      event.preventDefault()
-      setShowMoreActions(false)
-      moreButton.current?.focus()
-    }
-    globalThis.document.addEventListener('pointerdown', closeMenu)
-    globalThis.document.addEventListener('keydown', closeMenuFromKeyboard)
-    requestAnimationFrame(() =>
-      moreMenu.current?.querySelector<HTMLButtonElement>('button')?.focus(),
-    )
-    return () => {
-      globalThis.document.removeEventListener('pointerdown', closeMenu)
-      globalThis.document.removeEventListener('keydown', closeMenuFromKeyboard)
-    }
-  }, [showMoreActions])
-  const openSecondaryAction = (nextAction: TaskSecondaryAction) => {
-    setShowMoreActions(false)
-    setSecondaryAction(nextAction)
-  }
   const document = useQuery({
     queryKey: ['doc', todo.id],
-    enabled: tab === 'progress',
+    enabled: true,
     queryFn: ({ signal }) =>
       call<{ exists: boolean; content?: string }>('todo.doc', { todo_id: todo.id }, signal),
     refetchInterval: 5000,
@@ -1012,6 +541,7 @@ function TaskDetail({
   const action = useMutation({
     mutationFn: ({ method, input }: { method: string; input: object }) => call(method, input),
     onSuccess: async () => {
+      setLifecycleAction(undefined)
       await Promise.all([
         query.invalidateQueries({ queryKey: ['todos'] }),
         query.invalidateQueries({ queryKey: ['todo', todo.id] }),
@@ -1019,6 +549,10 @@ function TaskDetail({
       ])
     },
   })
+  const latestProgress = latestTaskProgress(document.data?.content || '')
+  const nextStep =
+    data.latest_plan?.items.find((item) => item.status === 'in_progress') ||
+    data.latest_plan?.items.find((item) => item.status === 'pending')
   const perform = (method: string, extra: object = {}) =>
     action.mutate({ method, input: { todo_id: todo.id, ...extra } })
   return (
@@ -1026,339 +560,323 @@ function TaskDetail({
       <div className="detail-scroll">
         <article className="task-detail">
           <header className="task-detail-header">
-            <div className="detail-status-line">
-              <span className="task-context">
-                {todo.project && (
-                  <>
-                    <Folder size={13} />
-                    <span>{todo.project}</span>
-                    <span aria-hidden="true">›</span>
-                  </>
-                )}
-                <span className="task-context-id">{todo.id}</span>
-              </span>
-              <span className={`status-badge status-${todo.status}`}>
-                <StatusIcon todo={todo} />
-                {statuses[todo.status] ?? todo.status}
-              </span>
-              {archived && (
-                <span className="project-badge">
-                  <Archive size={13} />
-                  已归档
-                </span>
-              )}
-            </div>
             <h2 className="task-title" id={`task-title-${todo.id}`}>
               {todo.title}
             </h2>
-            {canWrite && (
-              <div className="task-primary-actions" aria-label="任务主要操作">
-                {!archived && (
-                  <button className="button" onClick={onEdit}>
-                    <Pencil size={14} />
-                    编辑
-                  </button>
+          </header>
+          <div className="task-detail-content">
+            <div className="task-body-toolbar">
+              <div className="detail-status-line">
+                <span className="task-context">
+                  {todo.project && (
+                    <>
+                      <Folder size={13} />
+                      <span>{todo.project}</span>
+                      <span aria-hidden="true">›</span>
+                    </>
+                  )}
+                  <span className="task-context-id">{todo.id}</span>
+                </span>
+                <span className={`status-badge status-${todo.status}`}>
+                  <StatusIcon todo={todo} />
+                  {statuses[todo.status] ?? todo.status}
+                </span>
+                {archived && (
+                  <span className="project-badge">
+                    <Archive size={13} />
+                    已归档
+                  </span>
                 )}
-                {archived ? (
-                  <button
-                    className="button primary"
-                    disabled={action.isPending}
-                    onClick={() => perform('todo.restore')}
-                  >
-                    <Archive size={14} />
-                    恢复任务
-                  </button>
-                ) : (
-                  <>
-                    {todo.status === 'open' && (
-                      <button
-                        className="button primary"
-                        disabled={action.isPending}
-                        onClick={() => perform('todo.start')}
-                      >
-                        <CircleDot size={14} />
-                        开始任务
-                      </button>
-                    )}
-                    {todo.status !== 'done' && (
-                      <button
-                        className="button primary"
-                        disabled={action.isPending}
-                        onClick={() => perform('todo.done')}
-                      >
-                        <Check size={15} />
-                        {todo.status === 'review' ? '验收完成' : '标记完成'}
-                      </button>
-                    )}
-                    {todo.status === 'done' && (
-                      <button
-                        className="button primary"
-                        disabled={action.isPending}
-                        onClick={() =>
-                          perform('todo.start', { reopen_reason: '在 Web 工作区恢复工作' })
-                        }
-                      >
-                        <RefreshCw size={14} />
-                        重新开始
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="button subtle"
-                      ref={moreButton}
-                      aria-haspopup="menu"
-                      aria-expanded={showMoreActions}
-                      aria-controls={`task-more-menu-${todo.id}`}
-                      onClick={() => setShowMoreActions((visible) => !visible)}
-                    >
-                      <Ellipsis size={16} />
-                      更多操作
+              </div>
+              {canWrite && (
+                <div className="task-primary-actions" aria-label="任务主要操作">
+                  {!archived && (
+                    <button className="button" onClick={onEdit}>
+                      <Pencil size={14} />
+                      编辑
                     </button>
-                    {showMoreActions && (
-                      <div
-                        className="task-more-menu"
-                        id={`task-more-menu-${todo.id}`}
-                        role="menu"
-                        aria-label="更多任务操作"
-                        ref={moreMenu}
-                      >
-                        {canRefine && (
-                          <button role="menuitem" onClick={() => openSecondaryAction('refine')}>
-                            <span className="task-more-menu-icon">
-                              <Sparkles size={16} />
-                            </span>
-                            <span>
-                              <strong>AI 整理</strong>
-                              <small>优化标题与说明</small>
-                            </span>
-                            <ChevronRight size={14} />
-                          </button>
-                        )}
-                        <button role="menuitem" onClick={() => openSecondaryAction('images')}>
-                          <span className="task-more-menu-icon">
-                            <ImagePlus size={16} />
-                          </span>
-                          <span>
-                            <strong>添加图片</strong>
-                            <small>选择、拖入或粘贴</small>
-                          </span>
-                          <ChevronRight size={14} />
-                        </button>
+                  )}
+                  {archived ? (
+                    <button
+                      className="button primary"
+                      disabled={action.isPending}
+                      onClick={() => setLifecycleAction('restore')}
+                    >
+                      <Archive size={14} />
+                      恢复任务
+                    </button>
+                  ) : (
+                    <>
+                      {todo.status === 'open' && (
                         <button
-                          role="menuitem"
-                          onClick={() => openSecondaryAction('relationships')}
-                        >
-                          <span className="task-more-menu-icon">
-                            <Link2 size={16} />
-                          </span>
-                          <span>
-                            <strong>依赖与等待</strong>
-                            <small>管理任务依赖和等待条件</small>
-                          </span>
-                          <ChevronRight size={14} />
-                        </button>
-                        <div className="task-more-menu-separator" role="separator" />
-                        <button
-                          className="task-more-menu-archive"
-                          role="menuitem"
+                          className="button primary"
                           disabled={action.isPending}
-                          onClick={() => {
-                            setShowMoreActions(false)
-                            perform('todo.archive')
-                          }}
+                          onClick={() => setLifecycleAction('start')}
                         >
-                          <span className="task-more-menu-icon">
-                            <Archive size={16} />
-                          </span>
-                          <span>
-                            <strong>归档任务</strong>
-                            <small>可从归档分组恢复</small>
-                          </span>
+                          <CircleDot size={14} />
+                          开始任务
                         </button>
+                      )}
+                      {todo.status !== 'done' && (
+                        <button
+                          className={todo.status === 'open' ? 'button' : 'button primary'}
+                          disabled={action.isPending}
+                          onClick={() => setLifecycleAction('done')}
+                        >
+                          <Check size={15} />
+                          {todo.status === 'review' ? '验收完成' : '标记完成'}
+                        </button>
+                      )}
+                      {todo.status === 'done' && (
+                        <button
+                          className="button primary"
+                          disabled={action.isPending}
+                          onClick={() => setLifecycleAction('reopen')}
+                        >
+                          <RefreshCw size={14} />
+                          重新开始
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="button subtle"
+                        disabled={action.isPending}
+                        onClick={() => setLifecycleAction('archive')}
+                      >
+                        <Archive size={15} />
+                        归档
+                      </button>
+                    </>
+                  )}
+                  {action.isPending && <LoaderCircle className="spin" size={15} />}
+                </div>
+              )}
+            </div>
+            {action.error && <Notice error={action.error} />}
+            {warnings.length > 0 && (
+              <div className="notice" role="status">
+                <div>
+                  <strong>任务已创建</strong>
+                  {warnings.map((warning, index) => (
+                    <p key={index}>{warning.message}</p>
+                  ))}
+                </div>
+                <button type="button" onClick={() => setWarnings([])}>
+                  知道了
+                </button>
+              </div>
+            )}
+            {todo.wake_condition && (
+              <div className="waiting-banner">
+                <Clock3 size={16} />
+                <div>
+                  <strong>等待条件</strong>
+                  <p>{todo.wake_condition}</p>
+                </div>
+              </div>
+            )}
+            {todo.depends_on && todo.depends_on.length > 0 && (
+              <div className="dependencies">
+                <span>依赖任务</span>
+                {todo.depends_on.map((dep) => (
+                  <Link key={dep} to={`/tasks/${dep}${location.search}`}>
+                    {dep}
+                  </Link>
+                ))}
+              </div>
+            )}
+            <section className="task-current-summary" aria-label="任务当前进展">
+              <div>
+                <strong>最新进展</strong>
+                <button onClick={() => setTab('progress')}>查看记录</button>
+              </div>
+              {document.isPending ? (
+                <p role="status">正在读取进展…</p>
+              ) : document.error ? (
+                <Notice error={document.error} retry={() => void document.refetch()} />
+              ) : (
+                <p className="latest-progress-text">{latestProgress || '尚未记录进展。'}</p>
+              )}
+              <div className="task-next-step">
+                <strong>{todo.status === 'done' ? '完成状态' : '下一步'}</strong>
+                <span>
+                  {todo.status === 'done'
+                    ? todo.closed_reason || '已完成'
+                    : todo.wake_condition
+                      ? `等待：${todo.wake_condition}`
+                      : nextStep?.step ||
+                        (todo.status === 'review' ? '等待人工验收' : '尚未记录下一步')}
+                </span>
+              </div>
+            </section>
+            <div className="detail-tabs">
+              <button
+                className={tab === 'description' ? 'selected' : ''}
+                onClick={() => setTab('description')}
+              >
+                任务说明
+              </button>
+              <button
+                className={tab === 'progress' ? 'selected' : ''}
+                onClick={() => setTab('progress')}
+              >
+                进展记录
+              </button>
+              {(data.latest_plan || (canWrite && !archived)) && (
+                <button className={tab === 'plan' ? 'selected' : ''} onClick={() => setTab('plan')}>
+                  执行计划<span>{data.latest_plan?.items.length ?? 0}</span>
+                </button>
+              )}
+            </div>
+            {canWrite && !archived && tab === 'progress' && (
+              <TaskProgressForm key={todo.id} data={data} />
+            )}
+            {canWrite &&
+              !archived &&
+              tab === 'plan' &&
+              (editingPlan ? (
+                <TaskPlanEditor key={todo.id} data={data} onClose={() => setEditingPlan(false)} />
+              ) : (
+                <button className="button task-inline-action" onClick={() => setEditingPlan(true)}>
+                  <Pencil size={14} />
+                  {data.latest_plan ? '编辑计划' : '创建计划'}
+                </button>
+              ))}
+            <div className="task-reading-surface">
+              <div className="detail-body">
+                {tab === 'description' ? (
+                  <>
+                    <Markdown text={todo.description || '还没有任务说明。'} />
+                    {todo.links && todo.links.length > 0 && (
+                      <div className="related-links">
+                        <span className="eyebrow">相关链接</span>
+                        {todo.links
+                          .filter((link) => /^https?:\/\//i.test(link.url))
+                          .map((link) => (
+                            <a
+                              key={link.url}
+                              href={link.url}
+                              target="_blank"
+                              rel="noreferrer noopener"
+                            >
+                              <ArrowUpRight size={15} />
+                              <span>{link.title || link.url}</span>
+                            </a>
+                          ))}
+                      </div>
+                    )}
+                    {todo.closed_reason && (
+                      <div className="completion-note">
+                        <Check size={16} />
+                        <div>
+                          <strong>完成记录</strong>
+                          <p>{todo.closed_reason}</p>
+                        </div>
                       </div>
                     )}
                   </>
-                )}
-                {action.isPending && <LoaderCircle className="spin" size={15} />}
-              </div>
-            )}
-          </header>
-          {action.error && <Notice error={action.error} />}
-          {warnings.length > 0 && (
-            <div className="notice" role="status">
-              <div>
-                <strong>任务已创建</strong>
-                {warnings.map((warning, index) => (
-                  <p key={index}>{warning.message}</p>
-                ))}
-              </div>
-              <button type="button" onClick={() => setWarnings([])}>
-                知道了
-              </button>
-            </div>
-          )}
-          {todo.wake_condition && (
-            <div className="waiting-banner">
-              <Clock3 size={16} />
-              <div>
-                <strong>等待条件</strong>
-                <p>{todo.wake_condition}</p>
-              </div>
-            </div>
-          )}
-          {todo.depends_on && todo.depends_on.length > 0 && (
-            <div className="dependencies">
-              <span>依赖任务</span>
-              {todo.depends_on.map((dep) => (
-                <Link key={dep} to={`/tasks/${dep}${location.search}`}>
-                  {dep}
-                </Link>
-              ))}
-            </div>
-          )}
-          <div className="detail-tabs">
-            <button
-              className={tab === 'description' ? 'selected' : ''}
-              onClick={() => setTab('description')}
-            >
-              任务说明
-            </button>
-            <button
-              className={tab === 'progress' ? 'selected' : ''}
-              onClick={() => setTab('progress')}
-            >
-              进展记录
-            </button>
-            {(data.latest_plan || (canWrite && !archived)) && (
-              <button className={tab === 'plan' ? 'selected' : ''} onClick={() => setTab('plan')}>
-                执行计划<span>{data.latest_plan?.items.length ?? 0}</span>
-              </button>
-            )}
-          </div>
-          {canWrite && !archived && tab === 'progress' && (
-            <TaskProgressForm key={todo.id} data={data} />
-          )}
-          {canWrite &&
-            !archived &&
-            tab === 'plan' &&
-            (editingPlan ? (
-              <TaskPlanEditor key={todo.id} data={data} onClose={() => setEditingPlan(false)} />
-            ) : (
-              <button className="button task-inline-action" onClick={() => setEditingPlan(true)}>
-                <Pencil size={14} />
-                {data.latest_plan ? '编辑计划' : '创建计划'}
-              </button>
-            ))}
-          <div className="task-reading-surface">
-            <div className="task-meta-line" aria-label="任务元信息">
-              {todo.project && (
-                <span>
-                  <Folder size={13} />
-                  {todo.project}
-                </span>
-              )}
-              <span className={`priority priority-${todo.priority.toLowerCase()}`}>
-                {todo.priority}
-              </span>
-              <span>
-                <CalendarDays size={13} />
-                {todo.created}
-              </span>
-              {todo.creator && (
-                <span>
-                  <UserRound size={13} />
-                  {todo.creator}
-                </span>
-              )}
-            </div>
-            <div className="detail-body">
-              {tab === 'description' ? (
-                <>
-                  <Markdown text={todo.description || '还没有任务说明。'} />
-                  {todo.links && todo.links.length > 0 && (
-                    <div className="related-links">
-                      <span className="eyebrow">相关链接</span>
-                      {todo.links
-                        .filter((link) => /^https?:\/\//i.test(link.url))
-                        .map((link) => (
-                          <a
-                            key={link.url}
-                            href={link.url}
-                            target="_blank"
-                            rel="noreferrer noopener"
-                          >
-                            <ArrowUpRight size={15} />
-                            <span>{link.title || link.url}</span>
-                          </a>
-                        ))}
-                    </div>
-                  )}
-                  {todo.closed_reason && (
-                    <div className="completion-note">
-                      <Check size={16} />
-                      <div>
-                        <strong>完成记录</strong>
-                        <p>{todo.closed_reason}</p>
-                      </div>
-                    </div>
-                  )}
-                </>
-              ) : tab === 'progress' ? (
-                document.isPending ? (
-                  <Loading text="读取进展记录…" />
-                ) : document.error ? (
-                  <Notice error={document.error} retry={() => void document.refetch()} />
-                ) : (
-                  <Markdown text={document.data?.content || '还没有进展记录。'} />
-                )
-              ) : (
-                <div className="plan">
-                  {data.latest_plan?.explanation && (
-                    <p className="plan-explanation">{data.latest_plan.explanation}</p>
-                  )}
-                  {data.latest_plan?.items.map((item, index) => (
-                    <div className={`plan-item ${item.status}`} key={index}>
-                      {item.status === 'completed' ? (
-                        <CircleCheck size={18} />
-                      ) : item.status === 'in_progress' ? (
-                        <CircleDot size={18} />
-                      ) : (
-                        <Circle size={18} />
+                ) : tab === 'progress' ? (
+                  document.isPending ? (
+                    <Loading text="读取进展记录…" />
+                  ) : document.error ? (
+                    <Notice error={document.error} retry={() => void document.refetch()} />
+                  ) : (
+                    <>
+                      <Markdown
+                        text={taskProgress(document.data?.content ?? '') || '还没有进展记录。'}
+                      />
+                      {document.data?.content && (
+                        <details className="task-full-document">
+                          <summary>查看完整任务文档</summary>
+                          <Markdown text={document.data.content} />
+                        </details>
                       )}
-                      <span>{item.step}</span>
-                    </div>
-                  ))}
+                    </>
+                  )
+                ) : (
+                  <div className="plan">
+                    {data.latest_plan?.explanation && (
+                      <p className="plan-explanation">{data.latest_plan.explanation}</p>
+                    )}
+                    {data.latest_plan?.items.map((item, index) => (
+                      <div className={`plan-item ${item.status}`} key={index}>
+                        {item.status === 'completed' ? (
+                          <CircleCheck size={18} />
+                        ) : item.status === 'in_progress' ? (
+                          <CircleDot size={18} />
+                        ) : (
+                          <Circle size={18} />
+                        )}
+                        <span>{item.step}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {tab === 'description' && todo.images && todo.images.length > 0 && (
+                <div className="attachments">
+                  <span className="eyebrow">附件</span>
+                  <div className="attachment-grid">
+                    {todo.images
+                      .filter((item) => item.url?.startsWith('/api/v1/attachments/'))
+                      .map((item) => (
+                        <a key={item.url} href={item.url} target="_blank" rel="noreferrer noopener">
+                          <img src={item.url} alt={item.name} loading="lazy" />
+                          <span>{item.name}</span>
+                        </a>
+                      ))}
+                  </div>
                 </div>
               )}
-            </div>
-            {tab === 'description' && todo.images && todo.images.length > 0 && (
-              <div className="attachments">
-                <span className="eyebrow">附件</span>
-                <div className="attachment-grid">
-                  {todo.images
-                    .filter((item) => item.url?.startsWith('/api/v1/attachments/'))
-                    .map((item) => (
-                      <a key={item.url} href={item.url} target="_blank" rel="noreferrer noopener">
-                        <img src={item.url} alt={item.name} loading="lazy" />
-                        <span>{item.name}</span>
-                      </a>
-                    ))}
+              {tab === 'description' && canWrite && !archived && (
+                <div className="task-description-tools" aria-label="任务说明工具" key={todo.id}>
+                  {canRefine && (
+                    <details className="task-description-tool">
+                      <summary>
+                        <Sparkles size={15} />
+                        AI 整理<span>优化标题与说明</span>
+                      </summary>
+                      <TaskRefine data={data} />
+                    </details>
+                  )}
+                  <details className="task-description-tool">
+                    <summary>
+                      <ImagePlus size={15} />
+                      添加图片<span>选择、拖入或粘贴</span>
+                    </summary>
+                    <TaskImageUpload todo={todo} etag={data.etag} />
+                  </details>
+                  <details className="task-description-tool">
+                    <summary>
+                      <Link2 size={15} />
+                      依赖与等待
+                    </summary>
+                    <TaskRelationships data={data} canWrite />
+                  </details>
                 </div>
-              </div>
-            )}
-            {tab === 'description' && !canWrite && (
-              <TaskRelationships data={data} canWrite={false} />
-            )}
+              )}
+              {tab === 'description' && !canWrite && (
+                <TaskRelationships data={data} canWrite={false} />
+              )}
+            </div>
           </div>
         </article>
       </div>
-      {secondaryAction && (
-        <TaskActionDialog
-          action={secondaryAction}
+      <TaskInspector data={data} canWrite={canWrite && !archived} />
+      {lifecycleAction && (
+        <TaskLifecycleDialog
+          action={lifecycleAction}
           data={data}
-          onClose={() => {
-            setSecondaryAction(undefined)
-            requestAnimationFrame(() => moreButton.current?.focus())
+          pending={action.isPending}
+          error={action.error}
+          onClose={() => setLifecycleAction(undefined)}
+          onConfirm={(reason) => {
+            if (lifecycleAction === 'start') perform('todo.start')
+            if (lifecycleAction === 'done') perform('todo.done', reason ? { reason } : {})
+            if (lifecycleAction === 'reopen')
+              perform('todo.start', { reopen_reason: '在 Web 工作区恢复工作' })
+            if (lifecycleAction === 'archive') perform('todo.archive')
+            if (lifecycleAction === 'restore') perform('todo.restore')
           }}
         />
       )}
@@ -1366,34 +884,222 @@ function TaskDetail({
   )
 }
 
-function TaskActionDialog({
+function TaskInspector({ data, canWrite }: { data: TodoDetail; canWrite: boolean }) {
+  const status = useQuery({
+    queryKey: ['activity-status'],
+    queryFn: ({ signal }) => call<SessionStatus>('session.status', {}, signal),
+    refetchInterval: 15000,
+    refetchIntervalInBackground: false,
+  })
+  const activity = taskActivity(data.todo, status.isError ? undefined : status.data)
+  const todo = data.todo
+  const sessions = data.sessions ?? []
+  const activeBindings = (data.bindings ?? []).filter((binding) => binding.unbound_at == null)
+  const summary = data.summary
+  return (
+    <aside className="task-inspector" aria-label="任务检查器">
+      <section>
+        <h3>属性</h3>
+        <dl className="task-inspector-fields">
+          <div>
+            <dt>状态</dt>
+            <dd>
+              <span className={`status-badge status-${todo.status}`}>
+                <StatusIcon todo={todo} />
+                {statuses[todo.status]}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>优先级</dt>
+            <dd>
+              <TaskInlineProperty data={data} field="priority" label="优先级" writable={canWrite} />
+            </dd>
+          </div>
+          <div>
+            <dt>项目</dt>
+            <dd>
+              <TaskInlineProperty data={data} field="project" label="项目" writable={canWrite} />
+            </dd>
+          </div>
+          <div>
+            <dt>创建时间</dt>
+            <dd>{todo.created}</dd>
+          </div>
+          {todo.creator && (
+            <div>
+              <dt>创建者</dt>
+              <dd>{todo.creator}</dd>
+            </div>
+          )}
+          {todo.review_at && (
+            <div>
+              <dt>复查时间</dt>
+              <dd>{todo.review_at}</dd>
+            </div>
+          )}
+        </dl>
+      </section>
+      {(!!todo.wake_condition || !!todo.depends_on?.length) && (
+        <section>
+          <h3>等待关系</h3>
+          {todo.wake_condition && (
+            <p className="task-inspector-wait">
+              <Clock3 size={13} />
+              <span>{todo.wake_condition}</span>
+            </p>
+          )}
+          {!!todo.depends_on?.length && (
+            <div className="task-inspector-dependencies">
+              {todo.depends_on.map((dependency) => (
+                <Link key={dependency} to={`/tasks/${dependency}`}>
+                  {dependency}
+                </Link>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+      <section>
+        <div className="task-inspector-section-heading">
+          <h3>Agent 会话</h3>
+          <span>{sessions.length}</span>
+        </div>
+        <p className="task-activity-note">
+          {status.isError
+            ? '暂时无法读取活动状态'
+            : taskActivityLabel(activity) || '暂未观察到关联会话活动'}
+          {activity.lastAt && (
+            <span> · 最近观察 {new Date(activity.lastAt).toLocaleString('zh-CN')}</span>
+          )}
+        </p>
+        {summary && (
+          <div className="task-inspector-metrics" aria-label="任务执行汇总">
+            <span>
+              <b>{summary.queries}</b>轮对话
+            </span>
+            <span>
+              <b>{summary.tool_calls}</b>次工具
+            </span>
+            <span>
+              <b>
+                ${summary.cost_usd.toFixed(summary.cost_usd > 0 && summary.cost_usd < 0.01 ? 4 : 2)}
+              </b>
+              费用
+            </span>
+          </div>
+        )}
+        {sessions.length ? (
+          <div className="task-inspector-sessions">
+            {sessions.map((session) => {
+              const target = session.indexed_id || session.session_id
+              const active = session.unbound_at == null
+              return (
+                <article key={session.session_id}>
+                  <div className="task-inspector-session-line">
+                    <span className={`activity-avatar ${session.agent}`}>
+                      {agentLabel(session.agent).slice(0, 1)}
+                    </span>
+                    <div>
+                      <strong>{agentLabel(session.agent)}</strong>
+                      <span>
+                        {active ? '当前关联' : '历史关联'} · {epochDateTime(session.last_at)}
+                      </span>
+                    </div>
+                    {session.indexed ? (
+                      <Link
+                        className="icon-button"
+                        to={`/agents?session=${encodeURIComponent(target)}`}
+                        title="查看会话"
+                        aria-label={`查看 ${agentLabel(session.agent)} 会话`}
+                      >
+                        <ArrowUpRight size={14} />
+                      </Link>
+                    ) : null}
+                  </div>
+                  <div className="task-inspector-session-stats">
+                    <span>{session.queries} 轮</span>
+                    <span>{session.tool_calls} 工具调用</span>
+                    {session.cost_usd > 0 && <span>${session.cost_usd.toFixed(3)}</span>}
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        ) : (
+          <p className="task-inspector-empty">暂无关联会话。</p>
+        )}
+        {activeBindings.length > 0 && (
+          <p className="task-inspector-note">当前有 {activeBindings.length} 个有效绑定。</p>
+        )}
+      </section>
+    </aside>
+  )
+}
+
+function TaskLifecycleDialog({
   action,
   data,
+  pending,
+  error,
   onClose,
+  onConfirm,
 }: {
-  action: TaskSecondaryAction
+  action: TaskLifecycleAction
   data: TodoDetail
+  pending: boolean
+  error: unknown
   onClose: () => void
+  onConfirm: (reason: string) => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const [reason, setReason] = useState('')
+  const todo = data.todo
+  const activeBindings = (data.bindings ?? []).filter(
+    (binding) => binding.unbound_at == null,
+  ).length
   const details = {
-    refine: {
-      title: 'AI 整理',
-      description: '优化任务标题与说明，必要时拆分为子任务。',
-      icon: Sparkles,
+    start: {
+      title: '开始这项任务？',
+      confirm: '确认开始',
+      nextStatus: '待开始 → 工作中',
+      consequences: ['任务进入当前工作集', '不会自动启动或派发任何 Agent'],
     },
-    images: {
-      title: '添加图片',
-      description: '选择文件、拖入，或直接粘贴图片。',
-      icon: ImagePlus,
+    done: {
+      title: todo.status === 'review' ? '验收这项任务？' : '标记为已完成？',
+      confirm: todo.status === 'review' ? '确认验收' : '确认完成',
+      nextStatus: `${statuses[todo.status]} → 已完成`,
+      consequences: [
+        activeBindings
+          ? `将解除 ${activeBindings} 个当前 Session 绑定`
+          : '没有需要解除的 Session 绑定',
+        '会话和历史记录会继续保留',
+      ],
     },
-    relationships: {
-      title: '依赖与等待',
-      description: '管理当前任务的依赖关系和等待条件。',
-      icon: Link2,
+    reopen: {
+      title: '重新开始这项任务？',
+      confirm: '确认重新开始',
+      nextStatus: '已完成 → 工作中',
+      consequences: ['保留原有完成记录与会话证据', '不会自动恢复或启动旧 Agent'],
+    },
+    archive: {
+      title: '归档这项任务？',
+      confirm: '确认归档',
+      nextStatus: '移出当前工作集',
+      consequences: [
+        activeBindings
+          ? `将解除 ${activeBindings} 个当前 Session 绑定`
+          : '没有需要解除的 Session 绑定',
+        '归档可恢复，不会删除任务、附件或会话',
+      ],
+    },
+    restore: {
+      title: '恢复这项任务？',
+      confirm: '确认恢复',
+      nextStatus: '返回归档前的生命周期状态',
+      consequences: ['任务重新出现在工作区', '不会自动启动或派发任何 Agent'],
     },
   }[action]
-  const Icon = details.icon
 
   useEffect(() => {
     const element = dialog.current!
@@ -1406,46 +1112,68 @@ function TaskActionDialog({
   return (
     <dialog
       ref={dialog}
-      className="task-action-dialog"
-      aria-labelledby={`task-action-title-${action}`}
-      aria-describedby={`task-action-description-${action}`}
+      className="task-lifecycle-dialog"
+      aria-labelledby="task-lifecycle-title"
       onCancel={(event) => {
         event.preventDefault()
-        onClose()
-      }}
-      onClick={(event) => {
-        if (event.target !== event.currentTarget) return
-        const bounds = event.currentTarget.getBoundingClientRect()
-        if (
-          event.clientX < bounds.left ||
-          event.clientX > bounds.right ||
-          event.clientY < bounds.top ||
-          event.clientY > bounds.bottom
-        )
-          onClose()
+        if (!pending) onClose()
       }}
     >
-      <header className="task-action-dialog-header">
-        <span className="task-action-dialog-icon">
-          <Icon size={18} />
-        </span>
+      <header>
         <div>
-          <h2 id={`task-action-title-${action}`}>{details.title}</h2>
-          <p id={`task-action-description-${action}`}>{details.description}</p>
+          <span className="eyebrow">操作预览 · {todo.id}</span>
+          <h2 id="task-lifecycle-title">{details.title}</h2>
         </div>
-        <button className="icon-button" aria-label={`关闭${details.title}`} onClick={onClose}>
+        <button
+          className="icon-button"
+          aria-label="关闭操作预览"
+          disabled={pending}
+          onClick={onClose}
+        >
           <X size={17} />
         </button>
       </header>
-      <div className="task-action-dialog-body">
-        {action === 'refine' ? (
-          <TaskRefine data={data} />
-        ) : action === 'images' ? (
-          <TaskImageUpload todo={data.todo} etag={data.etag} />
-        ) : (
-          <TaskRelationships data={data} canWrite />
+      <div className="task-lifecycle-body">
+        <div className="task-lifecycle-status">
+          <span>状态变化</span>
+          <strong>{details.nextStatus}</strong>
+        </div>
+        <ul>
+          {details.consequences.map((item) => (
+            <li key={item}>
+              <Check size={14} />
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+        {action === 'done' && (
+          <label className="task-lifecycle-reason">
+            <span className="task-lifecycle-reason-label">
+              验收说明 <small>可选</small>
+            </span>
+            <textarea
+              value={reason}
+              maxLength={360}
+              placeholder="记录判断依据，便于以后恢复上下文…"
+              onChange={(event) => setReason(event.target.value)}
+            />
+          </label>
         )}
+        {error ? <Notice error={error} /> : null}
       </div>
+      <footer>
+        <button className="button subtle" disabled={pending} onClick={onClose}>
+          取消
+        </button>
+        <button
+          className={`button primary ${action === 'archive' ? 'danger' : ''}`}
+          disabled={pending}
+          onClick={() => onConfirm(reason.trim())}
+        >
+          {pending ? <LoaderCircle className="spin" size={14} /> : null}
+          {details.confirm}
+        </button>
+      </footer>
     </dialog>
   )
 }
@@ -1469,7 +1197,7 @@ function NewTaskDialog({
   return (
     <dialog
       ref={dialog}
-      className="modal"
+      className="modal task-create-modal"
       aria-labelledby="new-title"
       onCancel={(event) => {
         event.preventDefault()
@@ -1489,7 +1217,6 @@ function NewTaskDialog({
     >
       <div className="modal-heading">
         <div>
-          <span className="eyebrow">开始一件新工作</span>
           <h2 id="new-title">新建任务</h2>
         </div>
         <button className="icon-button" aria-label="关闭新建任务" disabled={busy} onClick={onClose}>

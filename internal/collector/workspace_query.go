@@ -83,11 +83,12 @@ type WorkspaceCollectionOverview struct {
 }
 
 type WorkspaceCollectionListInput struct {
-	SourceID string
-	State    string
-	Query    string
-	Limit    int
-	Offset   int
+	UnreadOnly bool
+	SourceID   string
+	State      string
+	Query      string
+	Limit      int
+	Offset     int
 }
 
 type WorkspaceCollectionItemSummary struct {
@@ -221,6 +222,9 @@ func (QueryService) Items(ctx context.Context, input WorkspaceCollectionListInpu
 	case "all":
 	default:
 		return WorkspaceCollectionList{}, application.NewError(application.CodeInvalidArgument, "invalid collection state")
+	}
+	if input.UnreadOnly {
+		where += " AND read_at=0"
 	}
 	if query := strings.TrimSpace(input.Query); query != "" {
 		where += " AND instr(lower(title || char(10) || summary || char(10) || raw_context || char(10) || sender || char(10) || project),lower(?))>0"

@@ -36,14 +36,14 @@ body {
 button,
 input,
 textarea,
-select {
+:is(select, .ui-select) {
   font: inherit;
 }
 button,
 a,
 input,
 textarea,
-select {
+:is(select, .ui-select) {
   -webkit-tap-highlight-color: transparent;
 }
 button {
@@ -61,7 +61,7 @@ a {
 }
 input,
 textarea,
-select {
+:is(select, .ui-select) {
   outline: none;
 }
 button:focus-visible,
@@ -71,7 +71,7 @@ a:focus-visible {
 }
 input:focus,
 textarea:focus,
-select:focus {
+:is(select, .ui-select):focus {
   border-color: var(--accent-line) !important;
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
@@ -1323,7 +1323,7 @@ kbd {
   margin-bottom: 9px;
 }
 .editor input,
-.editor select,
+.editor :is(select, .ui-select),
 .editor textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -1575,6 +1575,354 @@ kbd {
     font-size: 13px;
   }
 }
+
+/* Persistent task evidence inspector and consequence-preview sheets. */
+.detail-column:has(> .task-inspector) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 232px;
+  grid-template-rows: auto minmax(0, 1fr);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.detail-column:has(> .task-inspector) > .detail-toolbar {
+  grid-column: 1 / -1;
+}
+.detail-column:has(> .task-inspector) > .detail-scroll {
+  grid-row: 2;
+  grid-column: 1;
+  min-width: 0;
+}
+.task-inspector {
+  grid-row: 2;
+  grid-column: 2;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-line) transparent;
+}
+.task-inspector > header {
+  display: grid;
+  gap: 4px;
+  padding: 19px 18px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.task-inspector > header strong {
+  font-size: 14px;
+  font-weight: 580;
+}
+.task-inspector > section {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.task-inspector h3 {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 590;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.task-inspector-fields {
+  display: grid;
+  gap: 11px;
+  margin: 0;
+}
+.task-inspector-fields > div {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.task-inspector-fields dt,
+.task-inspector-fields dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+}
+.task-inspector-fields dt {
+  color: var(--muted);
+}
+.task-inspector-fields dd {
+  overflow-wrap: anywhere;
+}
+.task-inspector-wait {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 0;
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.task-inspector-wait svg {
+  flex: none;
+  margin-top: 3px;
+}
+.task-inspector-dependencies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+.task-inspector-dependencies a {
+  padding: 3px 7px;
+  border-radius: 6px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font:
+    11px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  text-decoration: none;
+}
+.task-inspector-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.task-inspector-section-heading > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-inspector-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  margin: 0 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--line);
+}
+.task-inspector-metrics span {
+  display: grid;
+  gap: 2px;
+  padding: 8px 6px;
+  color: var(--muted);
+  background: var(--canvas);
+  font-size: 10px;
+  text-align: center;
+}
+.task-inspector-metrics b {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+.task-inspector-sessions {
+  display: grid;
+  gap: 7px;
+}
+.task-inspector-sessions article {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+.task-inspector-session-line {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+}
+.task-inspector .activity-avatar {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 8px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+.task-inspector-session-line strong,
+.task-inspector-session-line span {
+  display: block;
+}
+.task-inspector-session-line strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 570;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.task-inspector-session-line span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.task-inspector-sessions article > p {
+  display: -webkit-box;
+  margin: 8px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.task-inspector-session-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 10px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.task-inspector-empty,
+.task-inspector-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.65;
+}
+.task-inspector-note {
+  margin-top: 12px;
+  padding-top: 11px;
+  border-top: 1px solid var(--line);
+}
+.task-lifecycle-dialog {
+  width: min(440px, calc(100vw - 40px));
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 24px 80px var(--overlay);
+}
+.task-lifecycle-dialog::backdrop {
+  background: var(--overlay);
+  backdrop-filter: blur(2px);
+}
+.task-lifecycle-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 19px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.task-lifecycle-dialog h2 {
+  margin: 5px 0 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.task-lifecycle-body {
+  padding: 18px 19px;
+}
+.task-lifecycle-status {
+  display: grid;
+  gap: 5px;
+  padding: 12px 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--canvas);
+}
+.task-lifecycle-status span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-lifecycle-status strong {
+  font-size: 13px;
+  font-weight: 580;
+}
+.task-lifecycle-body ul {
+  display: grid;
+  gap: 9px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.task-lifecycle-body li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.task-lifecycle-body li svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--success);
+}
+.task-lifecycle-reason {
+  display: grid;
+  gap: 7px;
+  margin-top: 17px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 560;
+}
+.task-lifecycle-reason-label small {
+  margin-left: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 450;
+}
+.task-lifecycle-reason textarea {
+  min-height: 84px;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--canvas);
+  font: inherit;
+  line-height: 1.55;
+}
+.task-lifecycle-dialog > footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 7px;
+  padding: 12px 19px;
+  border-top: 1px solid var(--line);
+  background: var(--canvas);
+}
+.task-lifecycle-dialog .button.danger {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+@media (max-width: 1250px) {
+  .detail-column:has(> .task-inspector) {
+    grid-template-columns: minmax(0, 1fr) 216px;
+  }
+}
+@media (max-width: 900px) {
+  .detail-column:has(> .task-inspector) {
+    display: flex;
+    overflow: auto;
+  }
+  .detail-column:has(> .task-inspector) > .detail-scroll,
+  .task-inspector {
+    flex: none;
+    overflow: visible;
+  }
+  .task-inspector {
+    margin: 0 12px 18px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+  }
+}
+@media (max-width: 600px) {
+  .task-lifecycle-dialog {
+    position: fixed;
+    inset: auto 8px 8px;
+    width: calc(100vw - 16px);
+    max-width: none;
+    margin: 0;
+    border-radius: 18px;
+  }
+}
 .modal {
   padding: 0;
   color: inherit;
@@ -1715,7 +2063,7 @@ kbd {
   color: var(--muted);
 }
 .editor input,
-.editor select,
+.editor :is(select, .ui-select),
 .editor textarea {
   color: var(--text);
   font-size: 13px;
@@ -1809,7 +2157,7 @@ kbd {
 .task-operation-form textarea,
 .task-operation-form input,
 .task-dependency-add input,
-.task-plan-edit-row select {
+.task-plan-edit-row :is(select, .ui-select) {
   width: 100%;
   padding: 9px 10px;
   border: 1px solid var(--line);
@@ -1856,7 +2204,7 @@ kbd {
   color: var(--muted);
   font-size: 12px;
 }
-.task-plan-edit-row select {
+.task-plan-edit-row :is(select, .ui-select) {
   padding-inline: 7px;
 }
 .task-inline-action {
@@ -1957,7 +2305,7 @@ kbd {
   .task-plan-edit-row {
     grid-template-columns: 18px minmax(0, 1fr) 28px;
   }
-  .task-plan-edit-row select {
+  .task-plan-edit-row :is(select, .ui-select) {
     grid-column: 2;
     grid-row: auto;
   }
@@ -2236,9 +2584,9 @@ kbd {
 .task-detail-header {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0 18px;
-  padding: 17px 24px 18px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 22px 24px 18px;
   border-bottom: 1px solid var(--line);
   background: var(--surface);
 }
@@ -2289,12 +2637,12 @@ kbd {
 }
 .task-primary-actions {
   position: relative;
-  grid-column: 2;
-  grid-row: 1;
+  grid-column: 1;
+  grid-row: 3;
   align-self: start;
-  justify-content: flex-end;
-  gap: 4px;
-  margin: 0;
+  justify-content: flex-start;
+  gap: 8px;
+  margin: 18px 0 0;
 }
 .task-secondary-panel {
   position: absolute;
@@ -2814,13 +3162,13 @@ kbd {
     border: 0;
     border-radius: 0;
     background: rgb(15 23 42 / 4%);
-    backdrop-filter: blur(1px);
+    backdrop-filter: none;
   }
   .task-view-kanban.has-selection .detail-column {
     position: absolute;
     z-index: 8;
     inset: 20px 24px 20px auto;
-    width: clamp(680px, 56vw, 840px);
+    width: min(920px, calc(100% - 48px));
     min-width: 0;
     flex: none;
     overflow: hidden;
@@ -2854,8 +3202,8 @@ kbd {
     font-size: 20px;
   }
   .task-view-kanban.has-selection .task-primary-actions {
-    justify-content: flex-end;
-    margin: 0;
+    justify-content: flex-start;
+    margin: 18px 0 0;
   }
   .task-view-kanban.has-selection .task-meta-line {
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -2944,5 +3292,80 @@ kbd {
   .task-action-dialog-body {
     max-height: calc(min(82dvh, 720px) - 86px);
     padding: 17px 16px 19px;
+  }
+}
+
+/* Task details use one reading surface and quiet, secondary metadata. */
+.detail-column > .detail-scroll {
+  background: var(--surface);
+}
+.task-detail .detail-status-line {
+  flex-wrap: wrap;
+}
+.task-detail .status-badge {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.task-detail .task-primary-actions > .button {
+  flex: none;
+  white-space: nowrap;
+}
+.task-detail .detail-tabs {
+  width: auto;
+  gap: 24px;
+  padding: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+.task-detail .detail-tabs button {
+  min-height: 42px;
+  padding: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.task-detail .detail-tabs button.selected {
+  color: var(--text);
+  border-bottom-color: var(--text);
+  font-weight: 600;
+}
+.task-detail .task-reading-surface {
+  min-height: 0;
+  padding: 8px 0 20px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.task-detail > .task-operation-form {
+  padding: 16px 0 20px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  margin-bottom: 0;
+}
+.task-full-document {
+  margin-top: 28px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.task-full-document > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+.task-inspector > section {
+  padding: 24px 18px;
+}
+@media (max-width: 900px) {
+  .task-inspector {
+    margin: 0 24px 24px;
+    border: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+  }
+  .task-inspector > section {
+    padding-inline: 0;
   }
 }

@@ -1,0 +1,137 @@
+.context-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.collection-context .context-heading h3 {
+  margin: 0;
+}
+.context-heading h3 span {
+  margin-left: 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 400;
+}
+.context-heading .button {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.context-messages {
+  display: grid;
+  gap: 12px;
+}
+.context-message {
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--canvas);
+}
+.context-message.is-new {
+  border-left: 3px solid var(--accent);
+}
+.context-message header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 12px;
+}
+.context-message header strong {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.context-message time {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+}
+.context-kind {
+  color: var(--muted);
+  font-size: 10px;
+}
+.is-new .context-kind {
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.context-message .markdown {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.context-message .markdown > :last-child {
+  margin-bottom: 0;
+}
+.context-raw {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.context-image {
+  display: inline-flex;
+  vertical-align: top;
+  flex-direction: column;
+  max-width: 100%;
+  padding: 0;
+  margin: 6px 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  cursor: zoom-in;
+}
+.context-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 240px;
+  object-fit: contain;
+}
+.context-image span,
+.context-image-failed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  font-size: 12px;
+}
+.context-image-failed {
+  color: var(--muted);
+  flex-wrap: wrap;
+}
+.context-image-dialog {
+  width: fit-content;
+  max-width: 92vw;
+  max-height: 90vh;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+}
+.context-image-dialog::backdrop {
+  background: #000a;
+}
+.context-image-dialog > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 12px;
+}
+.context-image-dialog > img {
+  display: block;
+  max-width: 85vw;
+  max-height: 75vh;
+  object-fit: contain;
+}
