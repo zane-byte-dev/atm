@@ -28,12 +28,8 @@ func mutateRawConfig(apply func(raw map[string]any) error) error {
 	})
 }
 
-// loadRawConfig reads the file as an untyped map so a write preserves every
+// loadRawConfigAt reads the file as an untyped map so a write preserves every
 // other field, including ones this build does not know about.
-func loadRawConfig() (map[string]any, error) {
-	return loadRawConfigAt(ConfigPath)
-}
-
 func loadRawConfigAt(path string) (map[string]any, error) {
 	raw := map[string]any{}
 	data, err := os.ReadFile(path)
@@ -65,15 +61,6 @@ func loadRawConfigAt(path string) (map[string]any, error) {
 		)
 	}
 	return raw, nil
-}
-
-// saveRawConfig replaces a complete raw snapshot under the same lock used by
-// mutations. New read-modify-write callers should use mutateRawConfig so their
-// snapshot is read only after acquiring the lock.
-func saveRawConfig(raw map[string]any) error {
-	return withConfigWriteLock(func(path string) error {
-		return writeRawConfigAtomically(path, raw, os.Rename)
-	})
 }
 
 func withConfigWriteLock(run func(path string) error) error {

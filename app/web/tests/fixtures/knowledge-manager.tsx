@@ -1,5 +1,5 @@
 // Isolated fixture: all API calls use in-memory documents, never real ATM data.
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { KnowledgeManager } from '../../src/workspaces/knowledge-manager'

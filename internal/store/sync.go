@@ -45,10 +45,6 @@ func SyncAllContext(ctx context.Context, db *sql.DB) (int, error) {
 	})
 }
 
-func SyncAgent(db *sql.DB, agent string) (int, error) {
-	return SyncAgentContext(context.Background(), db, agent)
-}
-
 func SyncAgentContext(ctx context.Context, db *sql.DB, agent string) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -82,10 +78,6 @@ func SyncAgentContext(ctx context.Context, db *sql.DB, agent string) (int, error
 // Stat(path).
 type sourceVersioner interface {
 	SourceVersion(path string) (mtime, size int64, ok bool)
-}
-
-func syncAgent(db *sql.DB, a parser.Agent) (int, error) {
-	return syncAgentContext(context.Background(), db, a)
 }
 
 func syncAgentContext(ctx context.Context, db *sql.DB, a parser.Agent) (int, error) {
@@ -185,7 +177,7 @@ func upsertSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, si
 	// their session ids from the transcript filename, so moving a checkout or
 	// repointing a source path in ~/.atm/config.json re-presents the same ids
 	// elsewhere. Without this the plain INSERT below fails on sessions.id, and
-	// since that error aborts syncAgent before it reaches forgetRemovedSources,
+	// since that error aborts syncAgentContext before it reaches forgetRemovedSources,
 	// the agent's sync stays wedged on every retry.
 	if err := execTx(tx, "DELETE FROM sessions WHERE file_path = ? OR id = ?", fp, p.SessionID); err != nil {
 		return err

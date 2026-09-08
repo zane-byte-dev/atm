@@ -352,27 +352,6 @@
   letter-spacing: -0.5px;
   overflow-wrap: anywhere;
 }
-.knowledge-document-kicker {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  color: var(--muted);
-  font-size: 12px;
-}
-.knowledge-document-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  margin: 18px 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-.knowledge-document-actions .button {
-  padding: 6px 9px;
-  font-size: 12px;
-}
 .knowledge-metadata {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -386,27 +365,6 @@
   margin-top: 5px;
   font-size: 13px;
   font-weight: 500;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-.knowledge-provenance {
-  margin: 22px 0;
-  border-block: 1px solid var(--line);
-  padding: 12px 0;
-  font-size: 12px;
-  color: var(--muted);
-}
-.knowledge-provenance summary {
-  cursor: pointer;
-}
-.knowledge-provenance dl {
-  margin: 12px 0;
-}
-.knowledge-provenance dt {
-  margin-top: 12px;
-}
-.knowledge-provenance dd {
-  margin: 4px 0;
   color: var(--text);
   overflow-wrap: anywhere;
 }
@@ -424,11 +382,6 @@
 }
 .knowledge-document-body .markdown pre {
   overflow-x: auto;
-}
-.knowledge-memory-origin {
-  color: var(--muted);
-  font-size: 12px;
-  overflow-wrap: anywhere;
 }
 .knowledge-detail-note {
   color: var(--muted);
@@ -949,15 +902,6 @@
   font-size: 16px;
   line-height: 1.85;
   min-height: 180px;
-}
-.knowledge-inline-body {
-  min-height: 180px;
-  cursor: text;
-  outline: none;
-}
-.knowledge-inline-body:focus-visible {
-  outline: 1px solid var(--line);
-  outline-offset: 8px;
 }
 @media (max-width: 700px) {
   .knowledge-page textarea.knowledge-inline-title {

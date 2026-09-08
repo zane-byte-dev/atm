@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -96,55 +95,6 @@ func LoadBadge(ctx context.Context, db *sql.DB, id string) (Badge, error) {
 	return Badge{}, fmt.Errorf("unknown AI Day badge %q", id)
 }
 
-func SaveFeedback(ctx context.Context, db *sql.DB, feedback Feedback) error {
-	if _, err := time.Parse(time.DateOnly, feedback.Day); err != nil {
-		return fmt.Errorf("invalid feedback day: %w", err)
-	}
-	if feedback.Verdict != "accurate" && feedback.Verdict != "inaccurate" && feedback.Verdict != "corrected" {
-		return fmt.Errorf("invalid verdict %q", feedback.Verdict)
-	}
-	if feedback.CorrectedBadge != "" {
-		if _, ok := definition(feedback.CorrectedBadge); !ok {
-			return fmt.Errorf("unknown AI Day badge %q", feedback.CorrectedBadge)
-		}
-	}
-	for _, label := range feedback.SemanticLabels {
-		valid := false
-		for _, allowed := range SemanticIntents {
-			if label == allowed {
-				valid = true
-				break
-			}
-		}
-		if !valid {
-			return fmt.Errorf("unknown semantic label %q", label)
-		}
-	}
-	raw, _ := json.Marshal(feedback.SemanticLabels)
-	feedback.UpdatedAt = time.Now().Unix()
-	_, err := db.ExecContext(ctx, `INSERT INTO ai_day_feedback(day,verdict,corrected_badge_id,semantic_labels_json,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(day) DO UPDATE SET verdict=excluded.verdict,corrected_badge_id=excluded.corrected_badge_id,semantic_labels_json=excluded.semantic_labels_json,updated_at=excluded.updated_at`, feedback.Day, feedback.Verdict, feedback.CorrectedBadge, string(raw), feedback.UpdatedAt)
-	return err
-}
-
-// ClearFeedback removes a day's verdict so the engine's own conclusion applies
-// again. A correction has to be undoable: it overrides the computed badge for
-// that day indefinitely, and the browser submits one on a single click.
-func ClearFeedback(ctx context.Context, db *sql.DB, day string) error {
-	if _, err := time.Parse(time.DateOnly, day); err != nil {
-		return fmt.Errorf("invalid feedback day: %w", err)
-	}
-	_, err := db.ExecContext(ctx, `DELETE FROM ai_day_feedback WHERE day=?`, day)
-	return err
-}
-
-// CountEventsOlderThan reports how many derived events a retention change would
-// delete, so the caller can say so before doing it.
-func CountEventsOlderThan(ctx context.Context, db *sql.DB, days int, now time.Time) (int64, error) {
-	var n int64
-	err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM ai_day_events WHERE occurred_at < ?`, now.AddDate(0, 0, -days).Unix()).Scan(&n)
-	return n, err
-}
-
 func LoadPrivacy(ctx context.Context, db *sql.DB) (Privacy, error) {
 	p := Privacy{SchemaVersion: ContractVersion, SemanticEnabled: settingBool(ctx, db, "semantic_enabled", true), RetentionDays: settingInt(ctx, db, "retention_days", 90), RawRetained: false, Sources: []SourceSetting{}}
 	rows, err := db.QueryContext(ctx, `WITH names AS (SELECT DISTINCT COALESCE(NULLIF(agent,''),'unknown') source FROM sessions UNION SELECT source FROM ai_day_sources) SELECT n.source,COALESCE(s.enabled,1),COALESCE(s.semantic_enabled,1),COUNT(e.event_id),COALESCE(MAX(e.occurred_at),0) FROM names n LEFT JOIN ai_day_sources s ON s.source=n.source LEFT JOIN ai_day_events e ON e.source=n.source GROUP BY n.source,s.enabled,s.semantic_enabled ORDER BY n.source`)
@@ -167,62 +117,6 @@ func LoadPrivacy(ctx context.Context, db *sql.DB) (Privacy, error) {
 	return p, rows.Err()
 }
 
-func SetSource(ctx context.Context, db *sql.DB, source string, enabled, semantic bool) error {
-	if source == "" {
-		return errors.New("source is required")
-	}
-	_, err := db.ExecContext(ctx, `INSERT INTO ai_day_sources(source,enabled,semantic_enabled,updated_at) VALUES (?,?,?,?) ON CONFLICT(source) DO UPDATE SET enabled=excluded.enabled,semantic_enabled=excluded.semantic_enabled,updated_at=excluded.updated_at`, source, enabled, semantic, time.Now().Unix())
-	return err
-}
-func SetPrivacy(ctx context.Context, db *sql.DB, semantic *bool, retention *int) error {
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	now := time.Now().Unix()
-	if semantic != nil {
-		value := "0"
-		if *semantic {
-			value = "1"
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO ai_day_settings(key,value,updated_at) VALUES ('semantic_enabled',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, value, now); err != nil {
-			return err
-		}
-		if !*semantic {
-			if _, err = tx.ExecContext(ctx, `UPDATE ai_day_events SET semantic_labels_json='[]', semantic_confidence=0`); err != nil {
-				return err
-			}
-			if _, err = tx.ExecContext(ctx, `DELETE FROM ai_day_session_features`); err != nil {
-				return err
-			}
-			if _, err = tx.ExecContext(ctx, `DELETE FROM ai_day_features`); err != nil {
-				return err
-			}
-		}
-	}
-	if retention != nil {
-		if *retention < 1 || *retention > 3650 {
-			return errors.New("retention days must be between 1 and 3650")
-		}
-		if _, err = tx.ExecContext(ctx, `INSERT INTO ai_day_settings(key,value,updated_at) VALUES ('retention_days',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, strconv.Itoa(*retention), now); err != nil {
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return err
-	}
-	if semantic != nil && !*semantic {
-		if err := rebuildBadgeProgress(ctx, db); err != nil {
-			return err
-		}
-	}
-	if retention != nil {
-		_, err = PruneEvents(ctx, db, time.Now())
-	}
-	return err
-}
-
 func PruneEvents(ctx context.Context, db *sql.DB, now time.Time) (int64, error) {
 	days := settingInt(ctx, db, "retention_days", 90)
 	result, err := db.ExecContext(ctx, `DELETE FROM ai_day_events WHERE occurred_at < ?`, now.AddDate(0, 0, -days).Unix())
@@ -242,71 +136,6 @@ func settingInt(ctx context.Context, db queryRower, key string, fallback int) in
 		return fallback
 	}
 	return n
-}
-
-func DeleteRange(ctx context.Context, db *sql.DB, from, to string) (DeleteSummary, error) {
-	s := DeleteSummary{From: from, To: to}
-	start, err := time.Parse(time.DateOnly, from)
-	if err != nil {
-		return s, err
-	}
-	end, err := time.Parse(time.DateOnly, to)
-	if err != nil || end.Before(start) {
-		return s, errors.New("invalid delete range")
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return s, err
-	}
-	defer tx.Rollback()
-	eventResult, err := tx.ExecContext(ctx, `DELETE FROM ai_day_events WHERE occurred_at>=? AND occurred_at<?`, start.Unix(), end.AddDate(0, 0, 1).Unix())
-	if err != nil {
-		return s, err
-	}
-	s.Events, _ = eventResult.RowsAffected()
-	feedbackResult, err := tx.ExecContext(ctx, `DELETE FROM ai_day_feedback WHERE day>=? AND day<=?`, from, to)
-	if err != nil {
-		return s, err
-	}
-	s.Feedback, _ = feedbackResult.RowsAffected()
-	projectionResult, err := tx.ExecContext(ctx, `DELETE FROM ai_day_features WHERE day>=? AND day<=?`, from, to)
-	if err != nil {
-		return s, err
-	}
-	s.Projections, _ = projectionResult.RowsAffected()
-	if err := tx.Commit(); err != nil {
-		return s, err
-	}
-	return s, rebuildBadgeProgress(ctx, db)
-}
-
-func DeleteSource(ctx context.Context, db *sql.DB, source string) (int64, error) {
-	if err := SetSource(ctx, db, source, false, false); err != nil {
-		return 0, err
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `DELETE FROM ai_day_events WHERE source=?`, source)
-	if err != nil {
-		return 0, err
-	}
-	n, _ := result.RowsAffected()
-	// A daily projection does not record which source contributed each metric.
-	// Drop projections rather than leave deleted-source evidence visible; the
-	// next rebuild recreates them from the remaining enabled sources.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM ai_day_session_features`); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM ai_day_features`); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return n, rebuildBadgeProgress(ctx, db)
 }
 
 type Export struct {

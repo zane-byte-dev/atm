@@ -45,31 +45,6 @@ func TestNormalizeTodoCreatorAcceptsTheVocabularyAndRejectsTheRest(t *testing.T)
 	}
 }
 
-func TestTodoCreatorDisplayNamesTheHumanAndLeavesAgentsAlone(t *testing.T) {
-	oldOwner := config.OwnerName
-	t.Cleanup(func() { config.OwnerName = oldOwner })
-
-	config.OwnerName = ""
-	if got := TodoCreatorDisplay(TodoCreatorMe); got != "我" {
-		t.Errorf("unconfigured owner = %q, want 我", got)
-	}
-	config.OwnerName = "墨水"
-	if got := TodoCreatorDisplay(TodoCreatorMe); got != "墨水（我）" {
-		t.Errorf("configured owner = %q, want 墨水（我）", got)
-	}
-	if got := TodoCreatorDisplay(TodoCreatorCollect); got != "收集" {
-		t.Errorf("collect = %q, want 收集", got)
-	}
-	if got := TodoCreatorDisplay("codex"); got != "codex" {
-		t.Errorf("agent = %q, want codex", got)
-	}
-	// A todo filed before the field existed shows nothing rather than a name
-	// nobody recorded.
-	if got := TodoCreatorDisplay(""); got != "" {
-		t.Errorf("missing creator = %q, want empty", got)
-	}
-}
-
 func TestTodoCreatorSurvivesWriteAndRead(t *testing.T) {
 	withTempStore(t)
 

@@ -182,7 +182,7 @@ func TestClassifierCoversEightDocumentedIntents(t *testing.T) {
 	}
 }
 
-func TestAtlasFeedbackAndPrivacyControls(t *testing.T) {
+func TestAtlasUsesStoredFeedbackAndPrivacy(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	loc := time.FixedZone("CST", 8*60*60)
@@ -192,9 +192,8 @@ func TestAtlasFeedbackAndPrivacyControls(t *testing.T) {
 	if _, err := aiday.RebuildDay(ctx, db, day, loc); err != nil {
 		t.Fatal(err)
 	}
-	if err := aiday.SaveFeedback(ctx, db, aiday.Feedback{Day: "2026-08-15", Verdict: "corrected", CorrectedBadge: "code_architect"}); err != nil {
-		t.Fatal(err)
-	}
+	mustExec(t, db, `INSERT INTO ai_day_feedback(day,verdict,corrected_badge_id,semantic_labels_json,updated_at)
+		VALUES (?,'corrected','code_architect','[]',?)`, day.Format(time.DateOnly), day.Unix())
 	result, err := aiday.RebuildDay(ctx, db, day, loc)
 	if err != nil {
 		t.Fatal(err)
@@ -209,11 +208,8 @@ func TestAtlasFeedbackAndPrivacyControls(t *testing.T) {
 	if atlas.Total != 12 || len(atlas.Badges) != 12 {
 		t.Fatalf("atlas=%+v", atlas)
 	}
-	semantic := false
-	retention := 30
-	if err := aiday.SetPrivacy(ctx, db, &semantic, &retention); err != nil {
-		t.Fatal(err)
-	}
+	mustExec(t, db, `INSERT INTO ai_day_settings(key,value,updated_at)
+		VALUES ('semantic_enabled','0',?),('retention_days','30',?)`, day.Unix(), day.Unix())
 	privacy, err := aiday.LoadPrivacy(ctx, db)
 	if err != nil {
 		t.Fatal(err)

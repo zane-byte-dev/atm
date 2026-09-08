@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -94,19 +93,4 @@ func sessionIDsShareStableFragment(left, right string) bool {
 		return false
 	}
 	return strings.Contains(left, right) || strings.Contains(right, left)
-}
-
-func currentSessionBindingContext(sessionID string) (*sessionBindingContext, error) {
-	result, err := workapp.Default.Current(
-		context.Background(), sessionBindingCLICall("current-context", sessionID), workapp.CurrentInput{},
-	)
-	if err != nil {
-		return nil, err
-	}
-	if result.Context == nil {
-		return nil, nil
-	}
-	return &sessionBindingContext{
-		State: result.Context.State, Binding: result.Context.Binding, Todo: result.Context.Todo,
-	}, nil
 }

@@ -191,14 +191,6 @@ type Feedback struct {
 	UpdatedAt      int64    `json:"updated_at"`
 }
 
-type DeleteSummary struct {
-	From        string `json:"from"`
-	To          string `json:"to"`
-	Events      int64  `json:"events_deleted"`
-	Projections int64  `json:"projections_deleted"`
-	Feedback    int64  `json:"feedback_deleted"`
-}
-
 type RebuildSummary struct {
 	SchemaVersion int      `json:"schema_version"`
 	From          string   `json:"from"`

@@ -127,11 +127,3 @@ func runTodoLinkRemove(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Unlinked %s: %s\n", result.TodoID, result.Removed.URL)
 	return nil
 }
-
-func normalizeTodoLinkURL(raw string) (string, error) {
-	return workapp.NormalizeTodoLinkURL(raw)
-}
-
-func inferTodoLinkKind(raw string) string {
-	return workapp.InferTodoLinkKind(raw)
-}

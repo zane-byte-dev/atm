@@ -206,9 +206,13 @@ var collectSourceEnableCmd = collectionSourceToggleCommand("enable", true)
 var collectSourceDisableCmd = collectionSourceToggleCommand("disable", false)
 
 func collectionSourceToggleCommand(name string, enabled bool) *cobra.Command {
+	short := "Disable a collection source"
+	if enabled {
+		short = "Enable a collection source"
+	}
 	return &cobra.Command{
 		Use:   name + " <source-id>",
-		Short: strings.Title(name) + " a collection source",
+		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			result, err := defaultCollectorService().SetSourceEnabled(

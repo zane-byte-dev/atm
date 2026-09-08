@@ -17,7 +17,7 @@ import (
 
 func TestDevUIOnlyAcceptsExplicitLoopbackHTTPOrigin(t *testing.T) {
 	for _, valid := range []string{"http://127.0.0.1:5173", "http://[::1]:5173"} {
-		if err := validateDevUI(valid); err != nil {
+		if _, err := parseDevUI(valid); err != nil {
 			t.Fatalf("valid origin %s: %v", valid, err)
 		}
 	}
@@ -27,7 +27,7 @@ func TestDevUIOnlyAcceptsExplicitLoopbackHTTPOrigin(t *testing.T) {
 		"http://127.0.0.1:5173/path", "http://127.0.0.1:5173?x=1", "http://127.0.0.1:5173?", "http://127.0.0.1:5173#x", "http://127.0.0.1:5173#",
 		"http://127.0.0.1", "http://127.0.0.1:0", "http://127.0.0.1:99999", "http://[::ffff:127.0.0.1]:5173",
 	} {
-		if err := validateDevUI(invalid); err == nil {
+		if _, err := parseDevUI(invalid); err == nil {
 			t.Fatalf("accepted unsafe origin %q", invalid)
 		}
 	}

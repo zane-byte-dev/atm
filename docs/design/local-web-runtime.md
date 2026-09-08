@@ -590,7 +590,7 @@ schema 的历史版本升级，或按错误提示备份不可重建数据并重�
 
 2026-09-03 初始核对发现的前置问题已有对应实现：
 
-- SyncAll/SyncAgent 使用数据目录级跨进程锁，保护增量 offset 到提交的整个执行范围；收集执行/重处理共用锁，迁移也持有这些锁。
+- SyncAllContext/SyncAgentContext 使用数据目录级跨进程锁，保护增量 offset 到提交的整个执行范围；收集执行/重处理共用锁，迁移也持有这些锁。
 - `internal/background` 使用当前 schema 的持久执行账本；模型调用结束落用量，任务 AI 整理在模型调用前后都核对 ETag，不覆盖并行编辑。
 - `internal/presence` 保留现有 Hook 协议，拒绝接管活跃外部 socket，只删除自己的 socket；8 秒回补与生命周期不依赖窗口。
 - Menu 只消费轻量状态/通知，Voice 不连接 ATM 数据。通知采用唯一显示渠道与稳定 ID，备用横幅不保证撤回。

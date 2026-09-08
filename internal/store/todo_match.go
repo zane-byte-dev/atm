@@ -56,10 +56,6 @@ type TodoMatchOptions struct {
 	AllProjects bool
 }
 
-func MatchTodos(tf *TodoFile, project, query string, limit int) []TodoMatch {
-	return MatchTodosWithOptions(tf, TodoMatchOptions{Project: project, Query: query, Limit: limit})
-}
-
 func MatchTodosWithOptions(tf *TodoFile, opts TodoMatchOptions) []TodoMatch {
 	limit := opts.Limit
 	if limit < 1 {

@@ -14,6 +14,10 @@ import (
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
+func hashWorkspaceFiles(ctx context.Context, root string) (string, error) {
+	return hashWorkspaceFilesIncremental(ctx, root, &workspaceHashState{files: map[string]workspaceHashFile{}}, true)
+}
+
 func changeTrackerFixture(t *testing.T) (string, *sql.DB, *ChangeTracker) {
 	t.Helper()
 	dir := t.TempDir()

@@ -240,9 +240,8 @@ func TestCorrectionKeepsEngineAnswerAndDoesNotInflateConfidence(t *testing.T) {
 	if before.Concept.ID == target {
 		target = "quality_inspector"
 	}
-	if err := aiday.SaveFeedback(ctx, db, aiday.Feedback{Day: day.Format(time.DateOnly), Verdict: "corrected", CorrectedBadge: target}); err != nil {
-		t.Fatal(err)
-	}
+	mustExec(t, db, `INSERT INTO ai_day_feedback(day,verdict,corrected_badge_id,semantic_labels_json,updated_at)
+		VALUES (?,'corrected',?,'[]',?)`, day.Format(time.DateOnly), target, day.Unix())
 	after, err := aiday.RebuildDay(ctx, db, day, loc)
 	if err != nil {
 		t.Fatal(err)
@@ -268,10 +267,8 @@ func TestCorrectionKeepsEngineAnswerAndDoesNotInflateConfidence(t *testing.T) {
 		t.Fatalf("corrected day kept only %d evidence items", len(after.Concept.Evidence))
 	}
 
-	// And it has to be reversible.
-	if err := aiday.ClearFeedback(ctx, db, day.Format(time.DateOnly)); err != nil {
-		t.Fatal(err)
-	}
+	// With no stored correction, rebuilding restores the engine's result.
+	mustExec(t, db, `DELETE FROM ai_day_feedback WHERE day=?`, day.Format(time.DateOnly))
 	restored, err := aiday.RebuildDay(ctx, db, day, loc)
 	if err != nil {
 		t.Fatal(err)
@@ -394,10 +391,8 @@ func TestPausedSourceIsNotReportedMissing(t *testing.T) {
 		t.Fatalf("expected claude to be reported missing before pausing: %+v", before.Coverage)
 	}
 
-	// The user pauses claude on purpose. Its past events are still in the window.
-	if err := aiday.SetSource(ctx, db, "claude", false, false); err != nil {
-		t.Fatal(err)
-	}
+	// The stored source preference pauses claude. Its past events remain in the window.
+	mustExec(t, db, `UPDATE ai_day_sources SET enabled=0,semantic_enabled=0 WHERE source='claude'`)
 	after, err := aiday.Load(ctx, db, day.Format(time.DateOnly))
 	if err != nil {
 		t.Fatal(err)

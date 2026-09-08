@@ -69,70 +69,11 @@
 }
 .workspace .module-host,
 .workspace .content-columns,
-.workspace .task-column,
 .workspace .detail-column {
   background: var(--surface);
 }
-.workspace .list-heading {
-  min-height: 54px;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--line);
-}
-.workspace .list-heading h1 {
-  font-size: 16px;
-  font-weight: 600;
-}
-.workspace .task-query-controls {
-  padding-top: 12px;
-  padding-bottom: 12px;
-}
-.workspace .search-box {
-  box-shadow: none;
-  background: var(--surface);
-  border-color: var(--line);
-  border-radius: 7px;
-}
-.workspace .task-layout-switch {
-  background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  padding: 2px;
-}
-.workspace .task-layout-switch button.selected {
-  background: var(--soft);
-  box-shadow: none;
-  color: var(--text);
-}
-.workspace .task-row.active {
-  background: var(--soft);
-  border-color: transparent;
-}
-.workspace .task-row.active .task-row-title {
-  color: var(--text);
-}
-.workspace .task-lane {
-  background: var(--canvas);
-  border-color: var(--line);
-  border-radius: 10px;
-}
-.workspace .task-lane-heading {
-  background: transparent;
-}
-.workspace .task-card {
-  box-shadow: none;
-}
-.workspace .task-card.active {
-  background: var(--soft);
-  border-color: var(--accent-line);
-  box-shadow: none;
-}
-.workspace .detail-column > .welcome {
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
 /* Apply the same page hierarchy in lazily loaded workspaces. */
-.workspace :is(.activity-heading, .collection-heading, .knowledge-heading, .settings-heading) {
+.workspace :is(.activity-heading, .collection-heading) {
   padding-bottom: 16px;
   border-bottom: 1px solid var(--line);
 }
@@ -271,9 +212,6 @@
 .editor-create .task-upload-status {
   font-size: 11px;
   margin-block: 8px;
-}
-.editor-create .editor-helper {
-  margin-block: 10px;
 }
 .editor-create > details {
   color: var(--muted);
@@ -483,47 +421,6 @@
   border-radius: 0;
   box-shadow: none;
 }
-.workspace .knowledge-detail:has(> .knowledge-document) {
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.workspace .knowledge-detail > .knowledge-document {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-height: 0;
-  padding: 0;
-  overflow: hidden;
-}
-.workspace .knowledge-document-header {
-  position: static;
-  flex: none;
-  min-height: 52px;
-  margin: 0;
-  padding: 12px 24px;
-}
-.workspace .knowledge-document-header h2 {
-  margin: 0;
-  font-size: 17px;
-  line-height: 1.5;
-}
-.workspace .knowledge-document-surface {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  max-width: none;
-  width: 100%;
-  margin: 0;
-  padding: 20px 24px;
-  border: 0;
-  border-radius: 0;
-  box-shadow: none;
-}
-.workspace .knowledge-document-surface .knowledge-document-actions {
-  position: static;
-  margin: 12px 0 20px;
-}
 @media (max-width: 900px) {
   .workspace .detail-column:has(> .task-inspector) > .detail-scroll {
     flex: none;
@@ -534,15 +431,13 @@
 @media (max-width: 600px) {
   .workspace .task-detail .task-detail-header,
   .workspace .collection-detail-header,
-  .workspace .activity-agents .activity-conversation-heading,
-  .workspace .knowledge-document-header {
+  .workspace .activity-agents .activity-conversation-heading {
     padding: 10px 16px;
     min-height: 46px;
   }
   .workspace .task-body-toolbar,
   .workspace .collection-detail-scroll,
-  .workspace .activity-agents .activity-conversation-surface,
-  .workspace .knowledge-document-surface {
+  .workspace .activity-agents .activity-conversation-surface {
     padding-inline: 16px;
   }
 }

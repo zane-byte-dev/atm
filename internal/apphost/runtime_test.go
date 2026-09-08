@@ -306,18 +306,23 @@ func TestPresenceRefreshAndNativeContract(t *testing.T) {
 }
 
 func TestCompanionTodoProjectionPreservesMenuBucketsWithoutDuplicates(t *testing.T) {
-	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.FixedZone("CST", 8*60*60))
 	longTitle := strings.Repeat("任务 ", 100)
-	result := projectCompanionTodos([]store.Todo{
-		{ID: "t1", Title: "lower review", Status: store.TodoStatusReview, Priority: "P2", Created: "2026-09-01"},
-		{ID: "t2", Title: "due", Status: store.TodoStatusInProgress, Priority: "P1", Created: "2026-09-04", ReviewAt: "2026-09-04"},
-		{ID: "t3", Title: longTitle, Status: store.TodoStatusReview, Priority: "P0", Created: "2026-08-01"},
-		{ID: "t4", Title: "waiting", Status: store.TodoStatusInProgress, Priority: "P0", Created: "2026-09-03", ReviewAt: "2026-09-10", WakeCondition: "build completes"},
-		{ID: "t5", Title: "working p0", Status: store.TodoStatusInProgress, Priority: "P0", Created: "2026-09-04"},
-		{ID: "t6", Title: "working", Status: store.TodoStatusInProgress, Priority: "P1", Created: "2026-09-04"},
-		{ID: "t7", Title: "not a current menu task", Status: store.TodoStatusOpen, Priority: "P0", Created: "2026-09-04"},
-		{ID: "t8", Title: "closed", Status: store.TodoStatusDone, Priority: "P0", Created: "2026-09-04"},
-	}, now)
+	due := store.QuickTodoRow{Todo: store.Todo{ID: "t2", Title: "due", Status: store.TodoStatusInProgress, Priority: "P1", Created: "2026-09-04", ReviewAt: "2026-09-04"}, MenuState: "due"}
+	waiting := store.QuickTodoRow{Todo: store.Todo{ID: "t4", Title: "waiting", Status: store.TodoStatusInProgress, Priority: "P0", Created: "2026-09-03", ReviewAt: "2026-09-10", WakeCondition: "build completes"}, MenuState: "waiting"}
+	result := projectStoredCompanionTodos(store.QuickTodoSnapshot{
+		NeedsAction: []store.QuickTodoRow{
+			{Todo: store.Todo{ID: "t1", Title: "lower review", Status: store.TodoStatusReview, Priority: "P2", Created: "2026-09-01"}, MenuState: "review"},
+			due,
+			{Todo: store.Todo{ID: "t3", Title: longTitle, Status: store.TodoStatusReview, Priority: "P0", Created: "2026-08-01"}, MenuState: "review"},
+		},
+		Working: []store.QuickTodoRow{
+			due, waiting,
+			{Todo: store.Todo{ID: "t5", Title: "working p0", Status: store.TodoStatusInProgress, Priority: "P0", Created: "2026-09-04"}, MenuState: "working"},
+			{Todo: store.Todo{ID: "t6", Title: "working", Status: store.TodoStatusInProgress, Priority: "P1", Created: "2026-09-04"}, MenuState: "working"},
+		},
+		Waiting: []store.QuickTodoRow{waiting},
+		Summary: store.QuickTodoCounts{Review: 2, Due: 1, Working: 4, PureWorking: 2, Waiting: 1},
+	})
 	if result.Total != 6 || !result.Truncated || len(result.Items) != companionTodoLimit {
 		t.Fatalf("bounds = %+v", result)
 	}

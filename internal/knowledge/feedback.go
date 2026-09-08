@@ -90,14 +90,6 @@ func knowledgeQualitiesFromTallies(documents []Document, totals map[string]Feedb
 	return result
 }
 
-func knowledgeQualityIndex(dataDir string, documents []Document) map[string]float64 {
-	qualities, err := knowledgeQualities(dataDir, documents)
-	if err != nil {
-		return nil
-	}
-	return qualityIndexFromQualities(qualities)
-}
-
 func qualityIndexFromTallies(documents []Document, totals map[string]FeedbackTally) map[string]float64 {
 	return qualityIndexFromQualities(knowledgeQualitiesFromTallies(documents, totals))
 }

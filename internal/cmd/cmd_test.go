@@ -18,6 +18,26 @@ import (
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
+// cliAttributionEnvironment lists every variable cliApplicationCall consults,
+// deduplicated in the order the lookups reach them.
+func cliAttributionEnvironment() []string {
+	keys := make([]string, 0, len(cliSessionEnvironment)+len(cliAgentEnvironment))
+	seen := make(map[string]bool, cap(keys))
+	add := func(key string) {
+		if !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	for _, key := range cliSessionEnvironment {
+		add(key)
+	}
+	for _, candidate := range cliAgentEnvironment {
+		add(candidate.environment)
+	}
+	return keys
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout
@@ -1535,8 +1555,8 @@ func TestTodoLinkRejectsCredentials(t *testing.T) {
 		"https://example.com/cr/1?access_token=secret",
 		"https://example.com/cr/1#access_token=secret",
 	} {
-		if _, err := normalizeTodoLinkURL(raw); err == nil {
-			t.Fatalf("normalizeTodoLinkURL(%q) expected error", raw)
+		if _, err := workapp.NormalizeTodoLinkURL(raw); err == nil {
+			t.Fatalf("workapp.NormalizeTodoLinkURL(%q) expected error", raw)
 		}
 	}
 }
@@ -1744,10 +1764,10 @@ func TestTodoQueryIncludesDocumentAndRequiresAllTerms(t *testing.T) {
 	if _, err := store.AppendTodoLog(&todo, "结果：修复 Skill 统计为空；下一步：验收排行", "进展"); err != nil {
 		t.Fatal(err)
 	}
-	if !todoMatchesQuery(todo, "Skill 统计") {
+	if workapp.QueryRelevance(todo, "Skill 统计") < 0 {
 		t.Fatal("todo document was not searched")
 	}
-	if todoMatchesQuery(todo, "Skill 不存在") {
+	if workapp.QueryRelevance(todo, "Skill 不存在") >= 0 {
 		t.Fatal("todo query matched only one term")
 	}
 }
@@ -1755,10 +1775,10 @@ func TestTodoQueryIncludesDocumentAndRequiresAllTerms(t *testing.T) {
 func TestTodoQueryRelevancePrefersTitleOverIncidentalDescription(t *testing.T) {
 	titleMatch := store.Todo{ID: "t900", Title: "搜索相关性优化", Description: "调整排序"}
 	incidental := store.Todo{ID: "t901", Title: "整理界面", Description: "最后检查搜索相关性优化是否受影响"}
-	if todoQueryRelevance(titleMatch, "搜索相关性") <= todoQueryRelevance(incidental, "搜索相关性") {
+	if workapp.QueryRelevance(titleMatch, "搜索相关性") <= workapp.QueryRelevance(incidental, "搜索相关性") {
 		t.Fatalf("title score %d should beat description score %d",
-			todoQueryRelevance(titleMatch, "搜索相关性"),
-			todoQueryRelevance(incidental, "搜索相关性"))
+			workapp.QueryRelevance(titleMatch, "搜索相关性"),
+			workapp.QueryRelevance(incidental, "搜索相关性"))
 	}
 }
 

@@ -29,10 +29,6 @@ func TestProjectionExecutorsShareDatabaseLockAndCancelWaits(t *testing.T) {
 		name string
 		run  func(context.Context) error
 	}{
-		{"today", func(ctx context.Context) error {
-			_, _, err := service.Today(ctx, aiday.TodayInput{})
-			return err
-		}},
 		{"rebuild", func(ctx context.Context) error {
 			_, _, err := service.Rebuild(ctx, aiday.RebuildInput{})
 			return err

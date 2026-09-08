@@ -18,17 +18,13 @@ import (
 	"github.com/zane-byte-dev/atm/internal/textmodel"
 )
 
-// WithUsage gives one operation its own content-free model-usage journal. Each
+// runWithUsage gives one operation its own content-free model-usage journal. Each
 // completed call is synced before it leaves the recorder; completion flushes it
 // into usage tables. A crash leaves the journal for recovery, never a replay of
 // the model call. The directory is durable user data, outside runtime/ caches.
 // Call this while the host's configuration read gate is held.
-func WithUsage(ctx context.Context, dataDir, id string, fn func(context.Context) error) error {
-	operationErr, flushErr := runWithUsage(ctx, dataDir, id, fn)
-	return errors.Join(operationErr, flushErr)
-}
-
-// runWithUsage keeps the operation result separate from the accounting result.
+//
+// It keeps the operation result separate from the accounting result.
 // The background manager can therefore retry only the durable accounting write
 // after a transient SQLite failure, without inviting a replay of the external
 // or model operation that already completed.

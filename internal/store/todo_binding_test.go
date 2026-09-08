@@ -51,7 +51,12 @@ func TestUnbindTodoSessionsClosesAllActiveBindings(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	count, err := UnbindTodoSessions("t1", "waiting")
+	var count int
+	err := UpdateWorkState(func(state *WorkStateTx) error {
+		var err error
+		count, err = state.UnbindTodoSessions("t1", "waiting")
+		return err
+	})
 	if err != nil || count != 2 {
 		t.Fatalf("unbind count=%d err=%v", count, err)
 	}
@@ -199,15 +204,15 @@ func TestMatchTodosPrioritizesProjectThenQuery(t *testing.T) {
 		{ID: "t2", Title: "Agent 会话绑定 ATM TODO", Description: "session todo binding", Project: "atm", Priority: "P1", Status: TodoStatusOpen},
 		{ID: "t3", Title: "ATM knowledge cleanup", Project: "atm", Priority: "P2", Status: TodoStatusOpen},
 	}}
-	results := MatchTodos(tf, "atm", "实现会话绑定", 3)
+	results := MatchTodosWithOptions(tf, TodoMatchOptions{Project: "atm", Query: "实现会话绑定", Limit: 3})
 	if len(results) != 2 || results[0].ID != "t2" || results[1].ID != "t3" {
 		t.Fatalf("project matches = %#v", results)
 	}
-	results = MatchTodos(tf, "unknown", "Wanda video", 3)
+	results = MatchTodosWithOptions(tf, TodoMatchOptions{Project: "unknown", Query: "Wanda video", Limit: 3})
 	if len(results) != 1 || results[0].ID != "t1" {
 		t.Fatalf("semantic fallback = %#v", results)
 	}
-	if results := MatchTodos(tf, "unknown", "", 3); len(results) != 0 {
+	if results := MatchTodosWithOptions(tf, TodoMatchOptions{Project: "unknown", Limit: 3}); len(results) != 0 {
 		t.Fatalf("empty fallback should not return global noise: %#v", results)
 	}
 }
@@ -225,7 +230,7 @@ func TestMatchTodosWithOptionsSeparatesDedupFromStartupInjection(t *testing.T) {
 	}}
 
 	// Startup injection: unchanged, still offers the project's todos.
-	if got := MatchTodos(tf, "atm", "完全无关的目标", 3); len(got) == 0 {
+	if got := MatchTodosWithOptions(tf, TodoMatchOptions{Project: "atm", Query: "完全无关的目标", Limit: 3}); len(got) == 0 {
 		t.Fatal("startup injection stopped offering candidates; missing one costs more than an extra")
 	}
 

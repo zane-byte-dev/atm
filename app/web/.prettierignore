@@ -1,0 +1,3 @@
+# playwright-cli run-code wraps these snippets as function expressions.
+# Prettier's leading semicolon makes that wrapper invalid JavaScript.
+tests/*.browser.js

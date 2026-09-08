@@ -379,10 +379,10 @@ func TestCollectionItemsFollowTheirTodoThroughItsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put unlinked item: %v", err)
 	}
-	if filed.TodoStatus != TodoStatusOpen || filed.TodoArchived || CollectionItemTodoClosed(filed) {
+	if filed.TodoStatus != TodoStatusOpen || filed.TodoArchived {
 		t.Fatalf("open todo did not reach its record: %+v", filed)
 	}
-	if unlinked.TodoStatus != "" || CollectionItemTodoClosed(unlinked) {
+	if unlinked.TodoStatus != "" || unlinked.TodoArchived {
 		t.Fatalf("record without a todo invented one: %+v", unlinked)
 	}
 
@@ -401,7 +401,7 @@ func TestCollectionItemsFollowTheirTodoThroughItsLifecycle(t *testing.T) {
 	// single records — one of them silently missing the join would be worse than
 	// none of them having it.
 	reread, err := GetCollectionItem(db, filed.ID)
-	if err != nil || reread.TodoStatus != TodoStatusDone || !CollectionItemTodoClosed(reread) {
+	if err != nil || reread.TodoStatus != TodoStatusDone || reread.TodoArchived {
 		t.Fatalf("get after done = %+v, %v", reread, err)
 	}
 	listed, err := ListCollectionItems(db, source.ID, 20)
@@ -436,7 +436,7 @@ func TestCollectionItemsFollowTheirTodoThroughItsLifecycle(t *testing.T) {
 // Deleting a record is tidying the ledger, not undoing the work: the Todo it
 // filed belongs to whoever has been acting on it. Its messages do come back out
 // of the handled set, which is what lets a re-read rebuild the record.
-func TestDeleteCollectionItemKeepsItsTodoAndReleasesItsMessages(t *testing.T) {
+func TestDeleteCollectionItemsKeepsTheirTodosAndReleasesTheirMessages(t *testing.T) {
 	withTempStore(t)
 	seedTodos(t, openTodo("t1", "处理收集到的部署报错"))
 	db, err := Open()
@@ -459,8 +459,8 @@ func TestDeleteCollectionItemKeepsItsTodoAndReleasesItsMessages(t *testing.T) {
 		t.Fatalf("put item: %v", err)
 	}
 
-	deleted, err := DeleteCollectionItem(db, filed.ID)
-	if err != nil || deleted.ID != filed.ID || deleted.TodoID != "t1" {
+	deleted, err := DeleteCollectionItems(db, []string{filed.ID})
+	if err != nil || len(deleted) != 1 || deleted[0].ID != filed.ID || deleted[0].TodoID != "t1" {
 		t.Fatalf("delete item = %+v, %v", deleted, err)
 	}
 	if _, err := GetCollectionItem(db, filed.ID); err == nil {
@@ -474,7 +474,7 @@ func TestDeleteCollectionItemKeepsItsTodoAndReleasesItsMessages(t *testing.T) {
 	if err != nil || len(handled) != 0 {
 		t.Fatalf("handled message ids = %v, %v", handled, err)
 	}
-	if _, err := DeleteCollectionItem(db, filed.ID); err == nil {
+	if _, err := DeleteCollectionItems(db, []string{filed.ID}); err == nil {
 		t.Fatalf("deleting a missing record reported success")
 	}
 }

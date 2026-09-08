@@ -35,12 +35,12 @@ func TestConcurrentTaskAccountingBypassesGlobalSinkAndFlushes(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			err := WithUsage(context.Background(), dir, id, func(ctx context.Context) error {
+			operationErr, flushErr := runWithUsage(context.Background(), dir, id, func(ctx context.Context) error {
 				_, err := textmodel.Run(ctx, textmodel.TaskTodoRefine, time.Second, `{"type":"object"}`, "fixture")
 				return err
 			})
-			if err != nil {
-				t.Error(err)
+			if operationErr != nil || flushErr != nil {
+				t.Errorf("operation: %v; accounting: %v", operationErr, flushErr)
 			}
 		}()
 	}
@@ -105,8 +105,8 @@ func TestAccountingRecoversCrashJournalWithoutDuplicateUsage(t *testing.T) {
 
 func TestOperationWithoutModelCallCreatesNoJournal(t *testing.T) {
 	dir := testData(t)
-	if err := WithUsage(context.Background(), dir, "no-model", func(context.Context) error { return nil }); err != nil {
-		t.Fatal(err)
+	if operationErr, flushErr := runWithUsage(context.Background(), dir, "no-model", func(context.Context) error { return nil }); operationErr != nil || flushErr != nil {
+		t.Fatalf("operation: %v; accounting: %v", operationErr, flushErr)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "model-usage-pending")); !os.IsNotExist(err) {
 		t.Fatalf("unused recorder touched disk: %v", err)

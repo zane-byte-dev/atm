@@ -153,14 +153,14 @@ final class VoxCaretInputPreferencesTests: XCTestCase {
 
     func testCorruptedHotKeyFallsBackToTheDefault() {
         UserDefaults.standard.set("not-a-hotkey", forKey: VoxCaretInputPreferences.hotKeyKey)
-        XCTAssertEqual(VoxCaretInputPreferences.hotKey, VoxCaretInputPreferences.defaultHotKey)
+        XCTAssertEqual(VoxCaretInputPreferences.hotKeyBinding.hotKey, VoxCaretInputPreferences.defaultHotKey)
 
         // Parses, but Carbon cannot register it.
         UserDefaults.standard.set(
             VoxCaretHotKey(keyCode: UInt16(kVK_Space), modifiers: .shift).storageValue,
             forKey: VoxCaretInputPreferences.hotKeyKey
         )
-        XCTAssertEqual(VoxCaretInputPreferences.hotKey, VoxCaretInputPreferences.defaultHotKey)
+        XCTAssertEqual(VoxCaretInputPreferences.hotKeyBinding.hotKey, VoxCaretInputPreferences.defaultHotKey)
     }
 
     /// The two shortcuts must not share storage. Rebinding dictation while the launcher
@@ -172,7 +172,7 @@ final class VoxCaretInputPreferencesTests: XCTestCase {
         let custom = VoxCaretHotKey(keyCode: UInt16(kVK_ANSI_J), modifiers: [.control, .option])
         UserDefaults.standard.set(custom.storageValue, forKey: VoxCaretInputPreferences.hotKeyKey)
 
-        XCTAssertEqual(VoxCaretInputPreferences.hotKey, custom)
+        XCTAssertEqual(VoxCaretInputPreferences.hotKeyBinding.hotKey, custom)
     }
 
     /// ⎋ deliberately fails `isValid` — a bare key would fight ordinary typing if it

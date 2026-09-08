@@ -1,8 +1,9 @@
 // Run in an isolated browser against the local Vite fixture using playwright-cli run-code.
-;async (page) => {
+async (page) => {
   const check = (ok, message) => {
     if (!ok) throw new Error(message)
   }
+  await page.setViewportSize({ width: 1280, height: 900 })
   await page.goto('http://127.0.0.1:5173/tests/fixtures/task-controls.html')
   await page.getByRole('button', { name: '筛选', exact: true }).click()
   await page.getByRole('menuitem', { name: '状态', exact: true }).click()

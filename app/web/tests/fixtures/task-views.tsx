@@ -1,5 +1,5 @@
 // Isolated view-management fixture: never reads or writes ATM task data.
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TaskViews } from '../../src/task-views'
 import { filterTasks } from '../../src/task-view-model'

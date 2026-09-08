@@ -160,10 +160,10 @@ func TestServiceApplyIsAtomicAndReturnsEffectiveSnapshot(t *testing.T) {
 	}
 }
 
-func TestSetConfigValueRejectsWrongTypedValuesBeforeWrite(t *testing.T) {
+func TestServiceSetRejectsInvalidValueBeforeWrite(t *testing.T) {
 	withTempConfigHome(t)
-	if err := SetConfigValue("collection_interval_minutes", "five"); err == nil {
-		t.Fatal("wrong typed value was accepted")
+	if _, err := Default.Set("collection_interval_minutes", "five"); err == nil {
+		t.Fatal("invalid value was accepted")
 	}
 	if _, err := os.Stat(ConfigPath); !os.IsNotExist(err) {
 		t.Fatalf("invalid batch created config: %v", err)

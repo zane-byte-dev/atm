@@ -43,18 +43,6 @@ type QueryResult struct {
 	Documents []DocumentView `json:"documents"`
 }
 
-// GovernanceInput and GovernanceResult are one coherent read snapshot. Audit
-// issues and quality evidence are displayed together and must describe the same
-// corpus read, rather than two independently timed CLI calls.
-type GovernanceInput struct {
-	StaleDays int `json:"stale_days,omitempty"`
-}
-
-type GovernanceResult struct {
-	Audit   AuditReport   `json:"audit"`
-	Quality QualityResult `json:"quality"`
-}
-
 type CreateDocumentInput struct {
 	Title      string   `json:"title"`
 	Content    string   `json:"content"`
@@ -207,24 +195,6 @@ func (service Service) Query(ctx context.Context, input QueryInput) (QueryResult
 		}
 	}
 	return QueryResult{Documents: views}, nil
-}
-
-func (service Service) Governance(ctx context.Context, input GovernanceInput) (GovernanceResult, error) {
-	if err := knowledgeContextError(ctx); err != nil {
-		return GovernanceResult{}, err
-	}
-	audit, err := Audit(service.dataDir, AuditOptions{
-		StaleDays: input.StaleDays,
-		Now:       service.now().UTC(),
-	})
-	if err != nil {
-		return GovernanceResult{}, unavailableKnowledge("audit knowledge", err)
-	}
-	quality, err := service.Quality(ctx, QualityInput{})
-	if err != nil {
-		return GovernanceResult{}, err
-	}
-	return GovernanceResult{Audit: *audit, Quality: quality}, nil
 }
 
 func (service Service) SaveDocument(ctx context.Context, input SaveDocumentInput) (Document, error) {

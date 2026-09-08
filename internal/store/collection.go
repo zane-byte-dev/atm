@@ -375,25 +375,6 @@ func DeleteCollectionSource(db *sql.DB, id string) error {
 	return err
 }
 
-// DeleteCollectionItem drops one processing record and returns what went, so a
-// caller can report it without reading the row again.
-//
-// The Todo the record wrote to is left alone. The record is collection's own
-// note about a decision, not the work itself: someone may have been acting on
-// that Todo for days, and tidying away the note that explains where it came from
-// must not take the work with it. Revert is what says the write was wrong.
-//
-// Deleting also releases the record's messages from the handled set, so a record
-// whose messages still fall inside the next run's re-read window can be rebuilt
-// by that run. Anything older than the window is gone for good.
-func DeleteCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
-	items, err := DeleteCollectionItems(db, []string{id})
-	if err != nil {
-		return CollectionItem{}, err
-	}
-	return items[0], nil
-}
-
 // DeleteCollectionItems drops several records in one transaction and returns
 // them in the order they were named, which is what clearing a whole group needs:
 // either the group empties or nothing moves. A half-cleared group would leave
@@ -401,9 +382,9 @@ func DeleteCollectionItem(db *sql.DB, id string) (CollectionItem, error) {
 // and an unknown id is a stale snapshot rather than a reason to delete part of
 // the batch.
 //
-// Same contract as one record at a time (see DeleteCollectionItem): the Todos
-// stay, and the released messages let the next run rebuild anything still inside
-// its re-read window.
+// The Todos the records wrote to are left alone. Deleting releases the records'
+// messages from the handled set, so the next run can rebuild records whose
+// messages still fall inside its re-read window.
 //
 // A repeated id is deleted once, and appears once in the result. Naming a record
 // twice asks for the same end state as naming it once; without this the second
@@ -1081,15 +1062,6 @@ func CollectionInsightWatermark(item CollectionItem) int64 {
 		return item.OccurredAt
 	}
 	return item.CreatedAt
-}
-
-// CollectionItemTodoClosed reports whether the Todo this record filed has since
-// been finished or dropped. That settles the record too: the source's request
-// was answered, wherever the answering happened. Archiving is only ever allowed
-// after a close, so the status column is the whole answer — TodoArchived only
-// explains why the Todo is no longer in the working set.
-func CollectionItemTodoClosed(item CollectionItem) bool {
-	return item.TodoStatus == TodoStatusDone || item.TodoArchived
 }
 
 func GetCollectionDigest(db *sql.DB, sourceID, digestDate string) (CollectionDigest, error) {

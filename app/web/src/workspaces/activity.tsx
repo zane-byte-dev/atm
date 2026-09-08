@@ -14,7 +14,6 @@ import {
   Clock3,
   Copy,
   MessageSquare,
-  X,
 } from 'lucide-react'
 import { call } from '../api'
 import { SessionChildren } from '../session-tree'

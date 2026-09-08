@@ -302,13 +302,13 @@ func TestCollectStatusReportsTheSyncedArchive(t *testing.T) {
 }
 
 func TestCollectionFailureStatusDistinguishesLoginAndPermission(t *testing.T) {
-	if got := collectionFailureStatus("not_authenticated; run connector auth login"); got != "auth_required" {
+	if got := collector.CollectionFailureStatus("not_authenticated; run connector auth login"); got != "auth_required" {
 		t.Fatalf("auth status = %q", got)
 	}
-	if got := collectionFailureStatus("当前账号没有消息搜索权益"); got != "permission_required" {
+	if got := collector.CollectionFailureStatus("当前账号没有消息搜索权益"); got != "permission_required" {
 		t.Fatalf("permission status = %q", got)
 	}
-	if got := collectionFailureStatus("connector timed out"); got != "error" {
+	if got := collector.CollectionFailureStatus("connector timed out"); got != "error" {
 		t.Fatalf("generic status = %q", got)
 	}
 }
@@ -450,7 +450,7 @@ func TestOneFailureBetweenSuccessesIsFlakyNotBroken(t *testing.T) {
 		healthRun("dingtalk", "succeeded", "", 200),
 		healthRun("dingtalk", "succeeded", "", 100),
 	}}
-	health := collectionHealth(overview)
+	health := defaultCollectorService().ConnectorHealthFor(overview)
 	if len(health) != 1 {
 		t.Fatalf("health = %+v", health)
 	}
@@ -473,7 +473,7 @@ func TestASucceedingConnectorIsReadyAndCarriesNoStaleError(t *testing.T) {
 		healthRun("dingtalk", "succeeded", "", 300),
 		healthRun("dingtalk", "failed", "business error", 200),
 	}}
-	got := collectionHealth(overview)[0]
+	got := defaultCollectorService().ConnectorHealthFor(overview)[0]
 	if got.Status != "ready" {
 		t.Fatalf("status = %q", got.Status)
 	}
@@ -492,7 +492,7 @@ func TestRepeatedFailuresAreReportedAsBroken(t *testing.T) {
 		healthRun("dingtalk", "failed", "business error", 300),
 		healthRun("dingtalk", "succeeded", "", 200),
 	}}
-	got := collectionHealth(overview)[0]
+	got := defaultCollectorService().ConnectorHealthFor(overview)[0]
 	if got.Status != "error" {
 		t.Fatalf("status = %q, want error once it stops recovering", got.Status)
 	}
@@ -518,7 +518,7 @@ func TestAClassifiedFailureIsReportedOnTheFirstOccurrence(t *testing.T) {
 			healthRun("dingtalk", "failed", test.message, 300),
 			healthRun("dingtalk", "succeeded", "", 200),
 		}}
-		got := collectionHealth(overview)[0]
+		got := defaultCollectorService().ConnectorHealthFor(overview)[0]
 		if got.Status != test.want {
 			t.Errorf("%q → %q, want %q", test.message, got.Status, test.want)
 		}
@@ -531,7 +531,7 @@ func TestTheVeryFirstRunFailingIsNotCalledFlaky(t *testing.T) {
 	overview := store.CollectionOverview{Runs: []store.CollectionRun{
 		healthRun("dingtalk", "failed", "business error", 100),
 	}}
-	got := collectionHealth(overview)[0]
+	got := defaultCollectorService().ConnectorHealthFor(overview)[0]
 	if got.Status != "error" {
 		t.Fatalf("status = %q, want error", got.Status)
 	}
@@ -547,7 +547,7 @@ func TestRunningAttemptsAreIgnoredAndConnectorsStaySeparate(t *testing.T) {
 		healthRun("slack", "failed", "business error", 280),
 	}}
 	byConnector := map[string]collectionConnectorHealth{}
-	for _, health := range collectionHealth(overview) {
+	for _, health := range defaultCollectorService().ConnectorHealthFor(overview) {
 		byConnector[health.Connector] = health
 	}
 	if byConnector["dingtalk"].Status != "ready" {

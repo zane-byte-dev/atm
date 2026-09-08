@@ -52,25 +52,6 @@ func NormalizeTodoCreator(value string) (string, error) {
 	return "", fmt.Errorf("unknown creator: %s (use %s)", value, strings.Join(TodoCreatorVocabulary, ", "))
 }
 
-// TodoCreatorDisplay renders a creator for a human reading a command's output.
-// Agents keep their own name because that is what the user calls them; only "me"
-// is decorated, since "me" in a list of creators reads as a stray English word
-// next to codex and 收集.
-func TodoCreatorDisplay(creator string) string {
-	switch creator {
-	case "":
-		return ""
-	case TodoCreatorMe:
-		if name := strings.TrimSpace(config.OwnerName); name != "" {
-			return name + "（我）"
-		}
-		return "我"
-	case TodoCreatorCollect:
-		return "收集"
-	}
-	return creator
-}
-
 // TodoCreatorDocLabel renders a creator for the markdown task card, which is a
 // stored artifact rather than a command's output. It deliberately ignores
 // config.OwnerName: a card holding the nickname would be reported as drifting

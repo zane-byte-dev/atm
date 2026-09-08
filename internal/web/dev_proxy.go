@@ -110,11 +110,6 @@ func newDevProxy(raw string) (http.Handler, error) {
 	}), nil
 }
 
-func validateDevUI(raw string) error {
-	_, err := parseDevUI(raw)
-	return err
-}
-
 func parseDevUI(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "http" || u.User != nil || u.Path != "" || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(raw, "#") || u.Opaque != "" || !validDevHost(u.Host) {

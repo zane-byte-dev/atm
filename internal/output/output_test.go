@@ -28,19 +28,12 @@ func captureOutput(t *testing.T, stream **os.File, fn func()) string {
 	return string(data)
 }
 
-func TestJSONAndErrorOutput(t *testing.T) {
+func TestJSONOutput(t *testing.T) {
 	out := captureOutput(t, &os.Stdout, func() {
 		JSON(map[string]string{"status": "ok"})
 	})
 	if !strings.Contains(out, `"status": "ok"`) {
 		t.Fatalf("JSON output = %q", out)
-	}
-
-	out = captureOutput(t, &os.Stdout, func() {
-		Error("boom")
-	})
-	if !strings.Contains(out, `"success": false`) || !strings.Contains(out, `"error": "boom"`) {
-		t.Fatalf("Error output = %q", out)
 	}
 }
 

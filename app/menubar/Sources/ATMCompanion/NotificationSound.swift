@@ -74,41 +74,21 @@ enum ATMAgentSound: String, CaseIterable, Identifiable {
     }
 }
 
-enum ATMAgentSoundEvent: String, CaseIterable, Identifiable, Equatable {
-    case processingStarted
+enum ATMAgentSoundEvent: String, CaseIterable {
     case attentionRequired
     case taskCompleted
 
-    var id: String { rawValue }
-
     var title: String {
         switch self {
-        case .processingStarted: return "开始处理"
         case .attentionRequired: return "需要介入"
         case .taskCompleted: return "处理完成"
         }
     }
 
-    var subtitle: String {
-        switch self {
-        case .processingStarted: return "新会话或新的用户输入开始执行。"
-        case .attentionRequired: return "Agent 等待你确认、回答或补充信息。"
-        case .taskCompleted: return "Agent 产生新的完整结果，可以回来查看。"
-        }
-    }
-
     var defaultSound: ATMAgentSound {
         switch self {
-        case .processingStarted: return .pingIslandMenuSelect
         case .attentionRequired: return .pingIslandApprovalAlert
         case .taskCompleted: return .pingIslandSubmitBlip
-        }
-    }
-
-    var defaultEnabled: Bool {
-        switch self {
-        case .processingStarted: return false
-        case .attentionRequired, .taskCompleted: return true
         }
     }
 }
@@ -133,7 +113,7 @@ enum ATMAgentSoundPreferences {
     ) -> Bool {
         guard masterEnabled(defaults: defaults) else { return false }
         let key = enabledKey(for: event)
-        guard defaults.object(forKey: key) != nil else { return event.defaultEnabled }
+        guard defaults.object(forKey: key) != nil else { return true }
         return defaults.bool(forKey: key)
     }
 

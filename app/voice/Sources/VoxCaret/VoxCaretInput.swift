@@ -165,15 +165,6 @@ enum VoxCaretRecognitionEngine: String, CaseIterable, Identifiable {
         case .appleSpeech: return "Apple Speech"
         }
     }
-
-    var detail: String {
-        switch self {
-        case .senseVoice:
-            return "离线本地模型，中文与中英混说更准，说完才出结果。需要先下载约 160MB 模型。"
-        case .appleSpeech:
-            return "系统自带，边说边出字，无需下载。默认可能把音频送到 Apple 服务器，可开启「仅使用本地识别」。"
-        }
-    }
 }
 
 /// What dictation writes into, per language. One choice drives both engines: Apple
@@ -228,8 +219,7 @@ struct VoxCaretReplacement: Equatable {
     let target: String
 }
 
-/// Where dictation's settings live. Same shape as `VoxCaretGlobalHotKeyPreferences` and
-/// `VoxCaretAgentNotchPreferences`: raw UserDefaults keys the settings screen binds to
+/// Where dictation's settings live: raw UserDefaults keys the settings screen binds to
 /// with `@AppStorage`, plus resolved accessors for everyone else.
 enum VoxCaretInputPreferences {
     static let hotKeyEnabledKey = "VoxCaretInputHotKeyEnabled"
@@ -266,9 +256,6 @@ enum VoxCaretInputPreferences {
     /// Longest single recording. Carbon's release event normally ends it immediately;
     /// this is only a safety cap for a lost event, roomy enough for real dictation.
     static let maximumRecordingDuration: Duration = .seconds(300)
-
-    static var isHotKeyEnabled: Bool { hotKeyBinding.isEnabled }
-    static var hotKey: VoxCaretHotKey { hotKeyBinding.hotKey }
 
     /// SenseVoice by default even though its model is not downloaded yet: the
     /// router falls back to Apple Speech until it is, so the out-of-the-box

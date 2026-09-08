@@ -112,7 +112,7 @@ func TestServicePermanentDeletesRequireExplicitConfirmation(t *testing.T) {
 	}
 }
 
-func TestServiceCollectionSaveImportAndGovernance(t *testing.T) {
+func TestServiceCollectionSaveImportAndQuality(t *testing.T) {
 	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
 	service := NewService(ServiceOptions{
 		DataDir: t.TempDir(), Now: func() time.Time { return now }, FeedbackStore: &stubFeedbackStore{},
@@ -142,13 +142,12 @@ func TestServiceCollectionSaveImportAndGovernance(t *testing.T) {
 		t.Fatalf("import = %#v, err = %v", documents, err)
 	}
 
-	governance, err := service.Governance(context.Background(), GovernanceInput{StaleDays: 30})
+	quality, err := service.Quality(context.Background(), QualityInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if governance.Audit.GeneratedAt != now || governance.Audit.StaleDays != 30 ||
-		governance.Quality.Totals.Documents != 1 {
-		t.Fatalf("governance = %#v", governance)
+	if quality.Totals.Documents != 1 {
+		t.Fatalf("quality = %#v", quality)
 	}
 }
 

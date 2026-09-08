@@ -81,10 +81,7 @@ final class VoxCaretInputCoordinator: ObservableObject {
         // There is a deadline behind this too, but saying so up front is the difference
         // between an answer and a 45-second wait.
         guard VoxCaretAppBundle.isBundled else {
-            VoxCaretLog.failure(
-                "voice_input_requires_app_bundle",
-                fields: ["bundle": Bundle.main.bundleURL.lastPathComponent]
-            )
+            VoxCaretLog.failure("voice_input_requires_app_bundle")
             generation += 1
             transition(to: .failed(VoxCaretSpeechTranscriberError.requiresAppBundle.localizedDescription))
             scheduleReset(after: .seconds(8), generation: generation)
@@ -275,10 +272,7 @@ final class VoxCaretInputCoordinator: ObservableObject {
                 guard currentGeneration == self.generation, self.state.isRecording else { return }
 
                 if ContinuousClock.now - started > deadline {
-                    VoxCaretLog.failure(
-                        "voice_input_recording_timeout",
-                        fields: ["limit": "\(deadline)"]
-                    )
+                    VoxCaretLog.failure("voice_input_recording_timeout")
                     self.hotKeyReleased()
                     return
                 }

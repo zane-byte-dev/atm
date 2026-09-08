@@ -421,17 +421,6 @@ func applyEnvOverrides() {
 	}
 }
 
-// SetConfigValue is the typed compatibility entry point for callers that have
-// not moved to Service.Set or Service.Apply yet. Validation and persistence use
-// the same registry as both transports, and unknown config fields are preserved.
-func SetConfigValue(key string, value any) error {
-	normalized, err := normalizeSettings(map[string]any{key: value})
-	if err != nil {
-		return err
-	}
-	return writeSettings(normalized)
-}
-
 // SaveGuardToolBin records where a tool's gate was installed.
 //
 // Without this the gate loses track of its own installation: a tool that is not

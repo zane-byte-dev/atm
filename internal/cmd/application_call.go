@@ -77,26 +77,6 @@ func cliApplicationCall(scope, sessionID string) application.Call {
 	}
 }
 
-// cliAttributionEnvironment lists every variable cliApplicationCall consults,
-// deduplicated in the order the lookups reach them.
-func cliAttributionEnvironment() []string {
-	keys := make([]string, 0, len(cliSessionEnvironment)+len(cliAgentEnvironment))
-	seen := make(map[string]bool, cap(keys))
-	add := func(key string) {
-		if !seen[key] {
-			seen[key] = true
-			keys = append(keys, key)
-		}
-	}
-	for _, key := range cliSessionEnvironment {
-		add(key)
-	}
-	for _, candidate := range cliAgentEnvironment {
-		add(candidate.environment)
-	}
-	return keys
-}
-
 func cliSessionFromEnvironment() string {
 	for _, key := range cliSessionEnvironment {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {

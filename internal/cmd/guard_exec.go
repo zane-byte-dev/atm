@@ -223,9 +223,8 @@ func guardRunApproved(db *sql.DB, approval store.Approval, realBin string, argv 
 // runGatedChild runs the real binary with this process's stdio, and keeps a copy
 // of its output for the record.
 //
-// The child is deliberately left in this process group — no
-// configureBackgroundProcess — so a Ctrl-C in the agent's terminal still reaches
-// it. And argv passes through verbatim, including the tool's own `-y`: stripping
+// The child stays in this process group so a Ctrl-C in the agent's terminal
+// still reaches it. And argv passes through verbatim, including the tool's own `-y`: stripping
 // it would make the tool prompt on a stdin that may be closed, and a gate that
 // edits the command it is gating is a far larger thing to trust.
 func runGatedChild(realBin string, argv []string) (int, string) {

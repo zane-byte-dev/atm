@@ -7,7 +7,6 @@ import {
   ArrowLeft,
   BookOpen,
   Check,
-  Copy,
   ChevronRight,
   FileText,
   LoaderCircle,

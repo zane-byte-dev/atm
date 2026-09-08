@@ -19,7 +19,7 @@ const queryDomains: Record<string, string[]> = {
   usage: ['activity-usage', 'activity-quota'],
   knowledge: ['knowledge'],
   memory: ['knowledge'],
-  day: ['day.snapshot', 'day.show', 'day.ledger'],
+  day: ['day.snapshot'],
   settings: ['settings.get'],
   jobs: ['runtime-jobs', 'runtime-job'],
   presence: ['activity-status', 'presence'],

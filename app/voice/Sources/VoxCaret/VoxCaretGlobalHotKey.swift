@@ -4,7 +4,7 @@ import Carbon.HIToolbox
 /// Four-char code identifying VoxCaret's hot keys inside the process-wide Carbon hot
 /// key table, so the shared event handler ignores registrations made by anyone
 /// else linked into this process.
-private let atmHotKeySignature = OSType(0x41_54_4D_4B) // 'VoxCaretK'
+private let atmHotKeySignature = OSType(0x41_54_4D_4B) // 'ATMK'
 
 /// Which of VoxCaret's global shortcuts a Carbon registration belongs to.
 ///
@@ -294,8 +294,7 @@ final class VoxCaretGlobalHotKeyManager: ObservableObject {
             registrations[action] = .unavailable(hotKey)
             VoxCaretLog.failure(
                 "global_hotkey_register_failed",
-                error: "OSStatus \(status)",
-                fields: ["hotkey": hotKey.displayString, "action": String(describing: action)]
+                error: "OSStatus \(status)"
             )
             return
         }

@@ -1,8 +1,6 @@
 /* Web task flow: shared page headings and progressive disclosure. */
 .workspace .workbench-heading,
-.workspace .improved-agents > .activity-heading,
-.workspace .improved-knowledge > .knowledge-header,
-.workspace .improved-aiday > .as-page-heading {
+.workspace .improved-agents > .activity-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -18,25 +16,15 @@
   background: var(--surface);
   z-index: 5;
 }
-.workspace .improved-knowledge > .knowledge-header > div:first-child,
-.workspace .improved-aiday > .as-page-heading > div:first-child {
-  display: block;
-  visibility: visible;
-}
-.workspace .improved-agents > .activity-heading h1,
-.workspace .improved-knowledge > .knowledge-header h1,
-.workspace .improved-aiday > .as-page-heading h1 {
+.workspace .improved-agents > .activity-heading h1 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
 }
-.workspace .improved-agents > .activity-heading p,
-.workspace .improved-knowledge > .knowledge-header p,
-.workspace .improved-aiday > .as-page-heading p {
+.workspace .improved-agents > .activity-heading p {
   display: none;
 }
-.workspace .activity-workspace.improved-agents > .activity-heading .workspace-actions .button,
-.workspace .improved-knowledge .knowledge-header-actions .button {
+.workspace .activity-workspace.improved-agents > .activity-heading .workspace-actions .button {
   display: inline-flex;
   align-items: center;
   width: auto;
@@ -49,11 +37,6 @@
   border-radius: 7px;
   background: var(--surface);
   color: var(--text);
-}
-.workspace .improved-knowledge .knowledge-header-actions {
-  position: static;
-  display: flex;
-  gap: 8px;
 }
 .workspace .improved-agents {
   display: flex;
@@ -214,40 +197,6 @@
 }
 .session-child-pages button {
   font-size: 11px;
-}
-.workspace .improved-knowledge {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-.workspace .improved-knowledge > .knowledge-tabs,
-.workspace .improved-aiday > .as-tabs {
-  position: relative;
-  inset: auto;
-  flex: none;
-  max-width: none;
-  width: 100%;
-  margin: 0;
-  padding: 10px 20px;
-  border-radius: 0;
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
-  overflow-x: auto;
-}
-.workspace .improved-knowledge > .knowledge-columns {
-  flex: 1;
-  height: auto;
-  min-height: 0;
-}
-.workspace .improved-knowledge .knowledge-collections {
-  padding-top: 10px;
-  max-height: 180px;
-}
-.workspace .improved-aiday > .as-page-heading .workspace-actions {
-  position: static;
-  overflow: visible;
-  width: auto;
-  flex-wrap: wrap;
 }
 .workspace-more-actions {
   position: relative;
@@ -610,9 +559,7 @@
   }
 }
 @media (max-width: 760px) {
-  .workspace .improved-agents > .activity-heading,
-  .workspace .improved-knowledge > .knowledge-header,
-  .workspace .improved-aiday > .as-page-heading {
+  .workspace .improved-agents > .activity-heading {
     padding: 10px 12px;
     gap: 8px;
     flex-wrap: wrap;
@@ -620,27 +567,8 @@
   .workspace .improved-agents > .activity-heading .workspace-actions {
     flex-wrap: wrap;
   }
-  .workspace .improved-knowledge > .knowledge-tabs,
-  .workspace .improved-aiday > .as-tabs {
-    padding: 8px 12px;
-  }
   .workspace .workbench-card-meta {
     display: none;
-  }
-  .workspace .improved-knowledge .knowledge-collections {
-    max-height: 160px;
-  }
-  .workspace .improved-aiday > .as-page-heading > .workspace-actions {
-    position: static;
-    overflow: visible;
-    flex: none;
-    max-width: 100%;
-  }
-  .workspace .improved-aiday > .as-page-heading .workspace-jobs {
-    flex: initial;
-  }
-  .workspace .improved-aiday > .as-page-heading .button {
-    font-size: 12px;
   }
   .workspace .detail-column.detail-expanded {
     inset: 8px;

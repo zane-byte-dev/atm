@@ -1,6 +1,5 @@
 // Opt-in browser integration checks: open this HTML through the local Vite server.
 // All API calls are intercepted here; no real knowledge data is read or written.
-import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useInlineKnowledge } from '../../src/workspaces/knowledge-inline'
@@ -44,7 +43,8 @@ window.fetch = async (url, init) => {
   }
   return new Response(JSON.stringify({ data: server }))
 }
-let editor: ReturnType<typeof useInlineKnowledge>
+// Harness assigns this before the checks proceed past until(() => !!editor).
+let editor!: ReturnType<typeof useInlineKnowledge>
 function Harness({ enabled = true }: { enabled?: boolean }) {
   editor = useInlineKnowledge(server, enabled)
   return (

@@ -194,13 +194,13 @@ func TestSyncReparsesUnchangedSourceWhenParserVersionIsStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	agent := &versionedTestAgent{path: path}
-	if _, err := syncAgent(db, agent); err != nil {
+	if _, err := syncAgentContext(t.Context(), db, agent); err != nil {
 		t.Fatal(err)
 	}
 	if agent.parseCalls != 1 {
 		t.Fatalf("first sync parse calls = %d", agent.parseCalls)
 	}
-	if _, err := syncAgent(db, agent); err != nil {
+	if _, err := syncAgentContext(t.Context(), db, agent); err != nil {
 		t.Fatal(err)
 	}
 	if agent.parseCalls != 1 {
@@ -209,7 +209,7 @@ func TestSyncReparsesUnchangedSourceWhenParserVersionIsStale(t *testing.T) {
 	if _, err := db.Exec(`UPDATE sessions SET parser_version=0 WHERE id='versioned-session'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := syncAgent(db, agent); err != nil {
+	if _, err := syncAgentContext(t.Context(), db, agent); err != nil {
 		t.Fatal(err)
 	}
 	if agent.parseCalls != 2 {

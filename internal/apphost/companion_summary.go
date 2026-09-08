@@ -216,47 +216,6 @@ func projectStoredCompanionTodos(value store.QuickTodoSnapshot) CompanionTodos {
 	return result
 }
 
-func projectCompanionTodos(values []store.Todo, now time.Time) CompanionTodos {
-	return projectCompanionTodosRanked(rankCompanionTodos(values, now))
-}
-
-func rankCompanionTodos(values []store.Todo, now time.Time) []rankedCompanionTodo {
-	today := now.Format("2006-01-02")
-	ranked := make([]rankedCompanionTodo, 0, len(values))
-	for _, todo := range values {
-		item := rankedCompanionTodo{todo: todo}
-		switch todo.Status {
-		case store.TodoStatusReview:
-			item.rank, item.menuState = 0, "review"
-		case store.TodoStatusInProgress:
-			if todo.ReviewAt != "" && todo.ReviewAt <= today {
-				item.rank, item.menuState = 1, "due"
-			} else if strings.TrimSpace(todo.WakeCondition) != "" || todo.ReviewAt != "" {
-				item.rank, item.menuState = 2, "waiting"
-			} else {
-				item.rank, item.menuState = 2, "working"
-			}
-		default:
-			continue
-		}
-		ranked = append(ranked, item)
-	}
-	sort.SliceStable(ranked, func(i, j int) bool {
-		if ranked[i].rank != ranked[j].rank {
-			return ranked[i].rank < ranked[j].rank
-		}
-		left, right := companionPriorityRank(ranked[i].todo.Priority), companionPriorityRank(ranked[j].todo.Priority)
-		if left != right {
-			return left < right
-		}
-		if ranked[i].todo.Created != ranked[j].todo.Created {
-			return ranked[i].todo.Created < ranked[j].todo.Created
-		}
-		return ranked[i].todo.ID < ranked[j].todo.ID
-	})
-	return ranked
-}
-
 func projectCompanionTodosRanked(ranked []rankedCompanionTodo) CompanionTodos {
 	result := CompanionTodos{Items: []CompanionTodo{}, Total: len(ranked), Truncated: len(ranked) > companionTodoLimit}
 	for _, rankedTodo := range ranked[:min(len(ranked), companionTodoLimit)] {

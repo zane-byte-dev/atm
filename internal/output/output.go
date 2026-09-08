@@ -59,12 +59,6 @@ func normalizeValue(v reflect.Value) any {
 	}
 }
 
-func Error(msg string) {
-	result := map[string]any{"success": false, "error": msg}
-	data, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(data))
-}
-
 func Progress(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 }

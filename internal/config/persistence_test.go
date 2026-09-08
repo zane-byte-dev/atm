@@ -203,7 +203,7 @@ func TestMalformedRawConfigReturnsTypedConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := loadRawConfig()
+	_, err := loadRawConfigAt(ConfigPath)
 	if !errors.Is(err, application.ErrConflict) {
 		t.Fatalf("load error = %v, want typed conflict", err)
 	}

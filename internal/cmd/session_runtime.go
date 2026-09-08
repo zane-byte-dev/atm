@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/zane-byte-dev/atm/internal/application"
-	"github.com/zane-byte-dev/atm/internal/config"
 	workapp "github.com/zane-byte-dev/atm/internal/work"
 )
 
@@ -52,28 +50,6 @@ func optionalTodoID(args []string) (string, error) {
 		return args[0], nil
 	}
 	return resolveCurrentTodoID()
-}
-
-func normalizeBindingAgent(value string) string {
-	if agent := config.NormalizeAgent(strings.TrimSpace(value)); agent != "" {
-		return agent
-	}
-	if os.Getenv("CODEX_THREAD_ID") != "" {
-		return "codex"
-	}
-	if os.Getenv("CLAUDE_CODE_SESSION_ID") != "" {
-		return "claude"
-	}
-	if os.Getenv("PI_SESSION_ID") != "" {
-		return "pi"
-	}
-	return ""
-}
-
-// sessionBindingCLICall remains for the live-status compatibility adapter. New
-// Work command adapters call cliApplicationCall directly.
-func sessionBindingCLICall(operation, sessionID string) application.Call {
-	return cliApplicationCall("session-"+operation, sessionID)
 }
 
 func shortSessionID(value string) string {

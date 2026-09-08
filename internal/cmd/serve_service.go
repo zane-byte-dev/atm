@@ -23,8 +23,6 @@ import (
 type workspaceServiceOptions = launchservice.Options
 type workspaceServicePlan = launchservice.Plan
 
-const workspaceServiceOwner = launchservice.Owner
-
 var (
 	canonicalServicePath      = launchservice.Canonical
 	makeWorkspaceServicePlan  = launchservice.MakePlan

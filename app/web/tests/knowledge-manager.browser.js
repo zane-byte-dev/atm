@@ -1,5 +1,5 @@
 // Run in an isolated Playwright browser with the local Vite server on port 5173.
-;async (page) => {
+async (page) => {
   const selectValue = async (control, value) => {
     const label = await control.evaluate(
       (element, value) =>
@@ -18,7 +18,7 @@
   await page.goto('http://127.0.0.1:5173/tests/fixtures/knowledge-manager.html')
   await page.getByRole('button', { name: '管理收件箱的文档', exact: true }).click()
   check(
-    (await page.getByRole('combobox', { name: '管理文档集合' }).inputValue()) === 'inbox',
+    (await page.getByRole('combobox', { name: '管理文档集合' }).textContent()) === '收件箱',
     'collection scope lost',
   )
   await page.getByRole('checkbox', { name: '选择文档 接口设计草稿' }).waitFor()

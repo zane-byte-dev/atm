@@ -12,9 +12,7 @@ import SwiftUI
 struct VoxCaretHotKeyRecorder: View {
     @Binding var hotKey: VoxCaretHotKey
     var isEnabled: Bool = true
-    /// What "恢复默认" restores. Passed in rather than read from
-    /// `VoxCaretGlobalHotKeyPreferences`: more than one shortcut is recorded by this
-    /// field now, and each has its own default.
+    /// What "恢复默认" restores.
     var defaultHotKey: VoxCaretHotKey = VoxCaretInputPreferences.defaultHotKey
 
     @State private var isRecording = false
@@ -27,7 +25,7 @@ struct VoxCaretHotKeyRecorder: View {
                 if isRecording { cancelRecording() } else { startRecording() }
             } label: {
                 Text(isRecording ? "按下快捷键…" : hotKey.displayString)
-                    .font(VoxCaretFont.mono(.body, .semibold))
+                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     .foregroundStyle(fieldForeground)
                     .frame(minWidth: 120)
                     .padding(.vertical, 6)
@@ -47,12 +45,12 @@ struct VoxCaretHotKeyRecorder: View {
 
             if isRecording {
                 Text(rejectedIncomplete ? "至少需要 ⌘、⌃ 或 ⌥ 之一" : "按 ⎋ 取消")
-                    .font(VoxCaretFont.footnote)
+                    .font(.footnote)
                     .foregroundStyle(rejectedIncomplete ? VoxCaretTheme.warning : VoxCaretTheme.secondary)
             } else if hotKey != defaultHotKey {
                 Button("恢复默认") { hotKey = defaultHotKey }
                     .buttonStyle(.link)
-                    .font(VoxCaretFont.footnote)
+                    .font(.footnote)
                     .disabled(!isEnabled)
             }
         }

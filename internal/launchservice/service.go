@@ -274,8 +274,7 @@ func installWorkspaceService(ctx context.Context, opts workspaceServiceOptions, 
 	if err := checkServiceDirectories(filepath.Dir(plan.Stdout), false); err != nil {
 		return err
 	}
-	previous, err := readManagedWorkspaceService(plan)
-	if err != nil {
+	if _, err := readManagedWorkspaceService(plan); err != nil {
 		return err
 	}
 	lock, err := lockWorkspaceService(ctx, plan)
@@ -283,7 +282,7 @@ func installWorkspaceService(ctx context.Context, opts workspaceServiceOptions, 
 		return err
 	}
 	defer lock.Close()
-	previous, err = readManagedWorkspaceService(plan)
+	previous, err := readManagedWorkspaceService(plan)
 	if err != nil {
 		return err
 	}

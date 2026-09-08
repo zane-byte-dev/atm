@@ -251,10 +251,10 @@ func TestSaveGuardToolBinRemembersWhereAGateWentAndKeepsEverythingElse(t *testin
 	}
 }
 
-func TestSetConfigValueWritesAndPreservesUnknownFields(t *testing.T) {
+func TestServiceSetWritesAndPreservesUnknownFields(t *testing.T) {
 	withTempConfigHome(t)
 	// Pre-existing config with a field this build knows nothing about: a
-	// round-trip through SetConfigValue must keep it byte-for-byte usable.
+	// round-trip through Service.Set must keep it byte-for-byte usable.
 	existing := `{"timezone":"UTC","future_setting":{"nested":true},"grok_sessions":"~/grok-sessions"}`
 	if err := os.MkdirAll(AtmDir, 0755); err != nil {
 		t.Fatal(err)
@@ -263,8 +263,8 @@ func TestSetConfigValueWritesAndPreservesUnknownFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := SetConfigValue("grok_live_quota", true); err != nil {
-		t.Fatalf("SetConfigValue: %v", err)
+	if _, err := Default.Set("grok_live_quota", "true"); err != nil {
+		t.Fatalf("Service.Set: %v", err)
 	}
 	data, err := os.ReadFile(ConfigPath)
 	if err != nil {
@@ -280,8 +280,8 @@ func TestSetConfigValueWritesAndPreservesUnknownFields(t *testing.T) {
 	}
 
 	// Flipping back to false must overwrite, not append.
-	if err := SetConfigValue("grok_live_quota", false); err != nil {
-		t.Fatalf("SetConfigValue(false): %v", err)
+	if _, err := Default.Set("grok_live_quota", "false"); err != nil {
+		t.Fatalf("Service.Set(false): %v", err)
 	}
 	LoadConfig()
 	if GrokLiveQuota {
@@ -292,8 +292,8 @@ func TestSetConfigValueWritesAndPreservesUnknownFields(t *testing.T) {
 	if err := os.Remove(ConfigPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := SetConfigValue("grok_live_quota", true); err != nil {
-		t.Fatalf("SetConfigValue on missing file: %v", err)
+	if _, err := Default.Set("grok_live_quota", "true"); err != nil {
+		t.Fatalf("Service.Set on missing file: %v", err)
 	}
 	LoadConfig()
 	if !GrokLiveQuota {

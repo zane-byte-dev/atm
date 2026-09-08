@@ -81,8 +81,7 @@ enum CompanionMenuPresentation {
 
         var suffixParts: [String] = []
         if let window = tightestQuotaWindow(quota), displayPercent(window) >= 75 {
-            let staleMark = window.stale ? "~" : ""
-            suffixParts.append("\(clip(agentDisplayName(window.agent), 10)) \(staleMark)\(Int(displayPercent(window).rounded()))%")
+            suffixParts.append("\(clip(agentDisplayName(window.agent), 10)) \(Int(displayPercent(window).rounded()))%")
         }
         if let value = TodayTokenMenuPresentation.statusBarValue(todayTokens) {
             suffixParts.append(value)

@@ -219,14 +219,6 @@ func formatShortDuration(seconds int64) string {
 	return fmt.Sprintf("%dh%dm", hours, minutes)
 }
 
-// dayRangeLabel names the window startOfDayWindow computes.
-func dayRangeLabel(days int) string {
-	if days > 1 {
-		return fmt.Sprintf("last %d days", days)
-	}
-	return "today"
-}
-
 // confirmDestructive asks before something irreversible. skip is the command's
 // own --yes flag, so a non-interactive caller opts out at the call site rather
 // than every prompt growing its own bypass.

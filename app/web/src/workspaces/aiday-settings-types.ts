@@ -14,12 +14,6 @@ export type DaySummary = {
   source_count: number
   generated_at: number
 }
-export type DayEvidence = {
-  metric: string
-  value: number
-  unit?: string
-  comparison?: string
-}
 export type DayBadge = {
   id: string
   name: string
@@ -56,71 +50,6 @@ export type DaySnapshot = {
   history: DaySummary[]
   atlas: { unlocked: number; total: number; badges: DayBadge[] } | null
   privacy: DayPrivacy | null
-}
-export type DayResult = {
-  day: string
-  state: string
-  timezone: string
-  features: {
-    session_count: number
-    event_count: number
-    turn_count: number
-    tool_calls: number
-    source_count: number
-    input_tokens: number
-    output_tokens: number
-    cache_create_tokens: number
-    cache_read_tokens: number
-    active_seconds: number
-    foreground_seconds: number
-    background_seconds: number
-    generation_seconds: number
-    semantic_counts?: Record<string, number>
-    modality_counts?: Record<string, number>
-  }
-  concept?: {
-    id: string
-    title: string
-    explanation: string
-    tags: string[]
-    evidence: DayEvidence[]
-    confidence: number
-    evidence_strength: number
-    origin: string
-    computed_title?: string
-  }
-  badge?: DayBadge
-  baseline_days: number
-  provisional: boolean
-  percentiles?: Record<string, number>
-  coverage?: {
-    complete: boolean
-    expected_sources: number
-    present_sources: number
-    missing_sources?: string[]
-    data_through: number
-  }
-  feedback?: { verdict: string; corrected_badge_id?: string; updated_at: number }
-  generated_at: number
-}
-export type DayLedger = {
-  day: string
-  total: number
-  limit: number
-  offset: number
-  items: {
-    occurred_at: number
-    source: string
-    event_type: string
-    quantity: number
-    modality: string
-    execution_mode: string
-    input_tokens: number
-    output_tokens: number
-    cache_create_tokens: number
-    cache_read_tokens: number
-    duration_ms: number
-  }[]
 }
 export type WorkspaceSettings = {
   revision: string

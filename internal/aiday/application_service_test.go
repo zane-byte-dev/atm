@@ -98,50 +98,6 @@ func TestApplicationServiceDashboardRejectsInvalidDays(t *testing.T) {
 	}
 }
 
-func TestApplicationServiceFeedbackRejectsClearWithValues(t *testing.T) {
-	service := aiday.NewService(aiday.ServiceOptions{
-		OpenWrite: unexpectedApplicationServiceOpen(t),
-		Location:  func() *time.Location { return time.UTC },
-	})
-	_, err := service.Feedback(context.Background(), aiday.FeedbackInput{
-		Day:            "2026-08-20",
-		Clear:          true,
-		Verdict:        "corrected",
-		CorrectedBadge: "code_architect",
-		SemanticLabels: []string{"directive"},
-	})
-	assertApplicationInvalidArgument(t, err, "clear")
-}
-
-func TestApplicationServiceFeedbackValidatesWireValuesBeforePersistence(t *testing.T) {
-	tests := []struct {
-		name  string
-		input aiday.FeedbackInput
-		field string
-	}{
-		{name: "verdict", input: aiday.FeedbackInput{Day: "2026-08-20", Verdict: "maybe"}, field: "verdict"},
-		{name: "badge", input: aiday.FeedbackInput{Day: "2026-08-20", Verdict: "corrected", CorrectedBadge: "missing"}, field: "corrected_badge_id"},
-		{name: "semantic label", input: aiday.FeedbackInput{Day: "2026-08-20", Verdict: "accurate", SemanticLabels: []string{"invented"}}, field: "semantic_labels"},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			service := aiday.NewService(aiday.ServiceOptions{
-				OpenWrite: unexpectedApplicationServiceOpen(t),
-				Location:  func() *time.Location { return time.UTC },
-			})
-			_, err := service.Feedback(context.Background(), testCase.input)
-			assertApplicationInvalidArgument(t, err, testCase.field)
-		})
-	}
-}
-
-func TestApplicationServicePrivacyValidatesRetentionBeforePersistence(t *testing.T) {
-	service := aiday.NewService(aiday.ServiceOptions{OpenWrite: unexpectedApplicationServiceOpen(t)})
-	invalid := 0
-	_, err := service.SetPrivacy(context.Background(), aiday.PrivacyPatch{RetentionDays: &invalid})
-	assertApplicationInvalidArgument(t, err, "retention_days")
-}
-
 func TestApplicationServiceBadgeReturnsTypedNotFoundBeforePersistence(t *testing.T) {
 	service := aiday.NewService(aiday.ServiceOptions{OpenRead: unexpectedApplicationServiceOpen(t)})
 	_, err := service.Badge(context.Background(), "missing")
@@ -164,17 +120,6 @@ func TestApplicationServiceInfrastructureErrorHasSafeTypedMessage(t *testing.T) 
 	if !errors.As(err, &appErr) || appErr.Message != "open ATM database failed" || !appErr.Retryable {
 		t.Fatalf("application error = %+v", appErr)
 	}
-}
-
-func TestApplicationServiceDeleteRequiresConfirmation(t *testing.T) {
-	service := aiday.NewService(aiday.ServiceOptions{
-		OpenWrite: unexpectedApplicationServiceOpen(t),
-	})
-	_, err := service.Delete(context.Background(), aiday.DeleteInput{
-		From: "2026-08-20",
-		To:   "2026-08-20",
-	})
-	assertApplicationInvalidArgument(t, err, "confirmed")
 }
 
 func unexpectedApplicationServiceOpen(t *testing.T) func() (*sql.DB, error) {

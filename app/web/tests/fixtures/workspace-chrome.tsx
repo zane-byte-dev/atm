@@ -1,5 +1,5 @@
 // Visual fixture for the real shell, title, and menus. No backend requests.
-import React, { useState } from 'react'
+import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'

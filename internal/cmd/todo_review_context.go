@@ -37,10 +37,6 @@ func runTodoContext(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildTodoContext(id, cwdOverride string) (*todoContext, error) {
-	return buildTodoContextWithContext(context.Background(), id, cwdOverride)
-}
-
 func buildTodoContextWithContext(ctx context.Context, id, cwdOverride string) (*todoContext, error) {
 	result, err := workapp.Default.Context(
 		ctx, todoReadCall("todo-context"),

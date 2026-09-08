@@ -3,7 +3,6 @@ package aiday
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -70,10 +69,6 @@ type OperationMeta struct {
 	SyncedFiles int
 }
 
-type TodayInput struct {
-	Sync bool `json:"sync,omitempty"`
-}
-
 type RebuildInput struct {
 	From string `json:"from,omitempty"`
 	To   string `json:"to,omitempty"`
@@ -87,84 +82,6 @@ type DashboardInput struct {
 
 type DayInput struct {
 	Day string `json:"day"`
-}
-
-type FeedbackInput struct {
-	Day            string   `json:"day"`
-	Verdict        string   `json:"verdict,omitempty"`
-	CorrectedBadge string   `json:"corrected_badge_id,omitempty"`
-	SemanticLabels []string `json:"semantic_labels,omitempty"`
-	Clear          bool     `json:"clear,omitempty"`
-}
-
-type SourceInput struct {
-	Source          string `json:"source"`
-	Enabled         bool   `json:"enabled"`
-	SemanticEnabled bool   `json:"semantic_enabled"`
-}
-
-type SourceDeleteInput struct {
-	Source    string `json:"source"`
-	Confirmed bool   `json:"confirmed"`
-}
-
-type SourceDeleteResult struct {
-	Source        string `json:"source"`
-	EventsDeleted int64  `json:"events_deleted"`
-	Paused        bool   `json:"paused"`
-}
-
-type PrivacyPatch struct {
-	SemanticEnabled *bool `json:"semantic_enabled,omitempty"`
-	RetentionDays   *int  `json:"retention_days,omitempty"`
-}
-
-type DeleteInput struct {
-	From      string `json:"from,omitempty"`
-	To        string `json:"to,omitempty"`
-	All       bool   `json:"all,omitempty"`
-	Confirmed bool   `json:"confirmed"`
-}
-
-func (service Service) Today(ctx context.Context, input TodayInput) (Result, OperationMeta, error) {
-	db, meta, lock, err := service.openProjectionDatabase(ctx, input.Sync)
-	if err != nil {
-		return Result{}, meta, err
-	}
-	defer db.Close()
-	defer lock.Close()
-
-	now, loc := service.now(), service.location()
-	summary, err := Refresh(ctx, db, now, loc, 30)
-	if err != nil {
-		return Result{}, meta, unavailable("refresh AI Day", err)
-	}
-	if len(summary.Days) == 0 {
-		return Result{}, meta, application.NewError(application.CodeInternal, "AI Day refresh returned no current day")
-	}
-	return summary.Days[len(summary.Days)-1], meta, nil
-}
-
-func (service Service) Show(ctx context.Context, day string) (Result, error) {
-	if _, err := service.parseDay(day); err != nil {
-		return Result{}, err
-	}
-	db, _, err := service.openDatabase(true, false)
-	if err != nil {
-		return Result{}, err
-	}
-	defer db.Close()
-
-	result, err := Load(ctx, db, day)
-	if errors.Is(err, ErrDayNotBuilt) {
-		appErr := application.WrapError(application.CodeNotFound, fmt.Sprintf("AI Day %s has not been built", day), err)
-		appErr.Details = map[string]any{"day": day}
-		return Result{}, appErr
-	}
-	if err != nil {
-		return Result{}, unavailable("load AI Day", err)
-	}
-	return result, nil
 }
 
 func (service Service) Rebuild(ctx context.Context, input RebuildInput) (RebuildSummary, OperationMeta, error) {
@@ -227,38 +144,6 @@ func (service Service) Dashboard(ctx context.Context, input DashboardInput) (Das
 	}, meta, nil
 }
 
-func (service Service) History(ctx context.Context, days int) (History, error) {
-	if days < 1 || days > 3650 {
-		return History{}, invalidArgument("days must be between 1 and 3650", "days", days)
-	}
-	db, _, err := service.openDatabase(true, false)
-	if err != nil {
-		return History{}, err
-	}
-	defer db.Close()
-
-	to := service.now().In(service.location())
-	from := to.AddDate(0, 0, -days+1)
-	history, err := LoadHistory(ctx, db, from.Format(time.DateOnly), to.Format(time.DateOnly))
-	if err != nil {
-		return History{}, unavailable("load AI Day history", err)
-	}
-	return history, nil
-}
-
-func (service Service) Atlas(ctx context.Context) (Atlas, error) {
-	db, _, err := service.openDatabase(true, false)
-	if err != nil {
-		return Atlas{}, err
-	}
-	defer db.Close()
-	atlas, err := LoadAtlas(ctx, db)
-	if err != nil {
-		return Atlas{}, unavailable("load AI Day atlas", err)
-	}
-	return atlas, nil
-}
-
 func (service Service) Badge(ctx context.Context, id string) (Badge, error) {
 	if strings.TrimSpace(id) == "" {
 		return Badge{}, invalidArgument("badge ID is required", "id", id)
@@ -280,64 +165,6 @@ func (service Service) Badge(ctx context.Context, id string) (Badge, error) {
 	return badge, nil
 }
 
-func (service Service) Feedback(ctx context.Context, input FeedbackInput) (Result, error) {
-	day, err := service.parseDay(input.Day)
-	if err != nil {
-		return Result{}, err
-	}
-	if input.Clear {
-		if input.Verdict != "" || input.CorrectedBadge != "" || len(input.SemanticLabels) > 0 {
-			return Result{}, invalidArgument("clear cannot be combined with feedback values", "clear", true)
-		}
-	} else if input.Verdict == "" {
-		return Result{}, invalidArgument("verdict is required unless clear is set", "verdict", input.Verdict)
-	}
-	if !input.Clear {
-		if input.Verdict != "accurate" && input.Verdict != "inaccurate" && input.Verdict != "corrected" {
-			return Result{}, invalidArgument(fmt.Sprintf("invalid verdict %q", input.Verdict), "verdict", input.Verdict)
-		}
-		if input.CorrectedBadge != "" {
-			if _, ok := definition(input.CorrectedBadge); !ok {
-				return Result{}, invalidArgument(
-					fmt.Sprintf("unknown AI Day badge %q", input.CorrectedBadge),
-					"corrected_badge_id", input.CorrectedBadge,
-				)
-			}
-		}
-		for _, label := range input.SemanticLabels {
-			if !semanticIntentAllowed(label) {
-				return Result{}, invalidArgument(
-					fmt.Sprintf("unknown semantic label %q", label), "semantic_labels", label,
-				)
-			}
-		}
-	}
-
-	db, _, err := service.openDatabase(false, false)
-	if err != nil {
-		return Result{}, err
-	}
-	defer db.Close()
-	if input.Clear {
-		err = ClearFeedback(ctx, db, input.Day)
-	} else {
-		err = SaveFeedback(ctx, db, Feedback{
-			Day:            input.Day,
-			Verdict:        input.Verdict,
-			CorrectedBadge: input.CorrectedBadge,
-			SemanticLabels: input.SemanticLabels,
-		})
-	}
-	if err != nil {
-		return Result{}, unavailable("save AI Day feedback", err)
-	}
-	result, err := RebuildDay(ctx, db, day, service.location())
-	if err != nil {
-		return Result{}, unavailable("rebuild AI Day after feedback", err)
-	}
-	return result, nil
-}
-
 func (service Service) Sources(ctx context.Context) ([]SourceSetting, error) {
 	privacy, err := service.Privacy(ctx)
 	if err != nil {
@@ -346,74 +173,12 @@ func (service Service) Sources(ctx context.Context) ([]SourceSetting, error) {
 	return privacy.Sources, nil
 }
 
-func (service Service) SetSource(ctx context.Context, input SourceInput) (Privacy, error) {
-	if strings.TrimSpace(input.Source) == "" {
-		return Privacy{}, invalidArgument("source is required", "source", input.Source)
-	}
-	db, _, err := service.openDatabase(false, false)
-	if err != nil {
-		return Privacy{}, err
-	}
-	defer db.Close()
-	if err := SetSource(ctx, db, input.Source, input.Enabled, input.SemanticEnabled); err != nil {
-		return Privacy{}, unavailable("save AI Day source preference", err)
-	}
-	privacy, err := LoadPrivacy(ctx, db)
-	if err != nil {
-		return Privacy{}, unavailable("load AI Day privacy", err)
-	}
-	return privacy, nil
-}
-
-func (service Service) DeleteSource(ctx context.Context, source string, confirmed bool) (SourceDeleteResult, error) {
-	if !confirmed {
-		return SourceDeleteResult{}, invalidArgument("source deletion requires confirmation", "confirmed", false)
-	}
-	if strings.TrimSpace(source) == "" {
-		return SourceDeleteResult{}, invalidArgument("source is required", "source", source)
-	}
-	db, _, err := service.openDatabase(false, false)
-	if err != nil {
-		return SourceDeleteResult{}, err
-	}
-	defer db.Close()
-	n, err := DeleteSource(ctx, db, source)
-	if err != nil {
-		return SourceDeleteResult{}, unavailable("delete AI Day source data", err)
-	}
-	return SourceDeleteResult{Source: source, EventsDeleted: n, Paused: true}, nil
-}
-
 func (service Service) Privacy(ctx context.Context) (Privacy, error) {
 	db, _, err := service.openDatabase(true, false)
 	if err != nil {
 		return Privacy{}, err
 	}
 	defer db.Close()
-	privacy, err := LoadPrivacy(ctx, db)
-	if err != nil {
-		return Privacy{}, unavailable("load AI Day privacy", err)
-	}
-	return privacy, nil
-}
-
-func (service Service) SetPrivacy(ctx context.Context, patch PrivacyPatch) (Privacy, error) {
-	if patch.SemanticEnabled == nil && patch.RetentionDays == nil {
-		return Privacy{}, invalidArgument("set semantic_enabled and/or retention_days", "patch", nil)
-	}
-	if patch.RetentionDays != nil && (*patch.RetentionDays < 1 || *patch.RetentionDays > 3650) {
-		return Privacy{}, invalidArgument(
-			"retention days must be between 1 and 3650", "retention_days", *patch.RetentionDays,
-		)
-	}
-	db, _, err := service.openDatabase(false, false)
-	if err != nil {
-		return Privacy{}, err
-	}
-	defer db.Close()
-	if err := SetPrivacy(ctx, db, patch.SemanticEnabled, patch.RetentionDays); err != nil {
-		return Privacy{}, unavailable("save AI Day privacy", err)
-	}
 	privacy, err := LoadPrivacy(ctx, db)
 	if err != nil {
 		return Privacy{}, unavailable("load AI Day privacy", err)
@@ -432,42 +197,6 @@ func (service Service) Export(ctx context.Context) (Export, error) {
 		return Export{}, unavailable("export AI Day data", err)
 	}
 	return export, nil
-}
-
-func (service Service) Delete(ctx context.Context, input DeleteInput) (DeleteSummary, error) {
-	if !input.Confirmed {
-		return DeleteSummary{}, invalidArgument("AI Day deletion requires confirmation", "confirmed", false)
-	}
-	from, to := input.From, input.To
-	if input.All {
-		from, to = "0001-01-01", "9999-12-31"
-	} else {
-		if from == "" {
-			return DeleteSummary{}, invalidArgument("from is required unless all is set", "from", from)
-		}
-		if to == "" {
-			to = from
-		}
-		if _, err := service.parseDay(from); err != nil {
-			return DeleteSummary{}, err
-		}
-		if _, err := service.parseDay(to); err != nil {
-			return DeleteSummary{}, err
-		}
-		if to < from {
-			return DeleteSummary{}, invalidArgument("delete end day is before start day", "to", to)
-		}
-	}
-	db, _, err := service.openDatabase(false, false)
-	if err != nil {
-		return DeleteSummary{}, err
-	}
-	defer db.Close()
-	summary, err := DeleteRange(ctx, db, from, to)
-	if err != nil {
-		return DeleteSummary{}, unavailable("delete AI Day data", err)
-	}
-	return summary, nil
 }
 
 // The projection lock covers all days in one refresh, including baseline and
@@ -557,13 +286,4 @@ func unavailable(action string, cause error) *application.Error {
 	err := application.WrapError(application.CodeUnavailable, action+" failed", cause)
 	err.Retryable = true
 	return err
-}
-
-func semanticIntentAllowed(value string) bool {
-	for _, allowed := range SemanticIntents {
-		if value == allowed {
-			return true
-		}
-	}
-	return false
 }

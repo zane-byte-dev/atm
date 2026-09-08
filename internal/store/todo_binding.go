@@ -78,16 +78,6 @@ func UnbindTodoSession(sessionID, reason string) (bool, error) {
 	return changed, err
 }
 
-func UnbindTodoSessions(todoID, reason string) (int, error) {
-	var changed int
-	err := UpdateWorkState(func(state *WorkStateTx) error {
-		var err error
-		changed, err = state.UnbindTodoSessions(todoID, reason)
-		return err
-	})
-	return changed, err
-}
-
 func insertTodoBinding(exec sqlExecer, binding TodoSessionBinding) (sql.Result, error) {
 	return exec.Exec(`INSERT INTO todo_session_bindings
 		(session_id,todo_id,agent,project,cwd,bound_at,unbound_at,reason)

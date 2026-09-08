@@ -1221,7 +1221,7 @@ func TestGrokSiblingVersionTriggersResync(t *testing.T) {
 	writeFile(chat, `{"type":"user","prompt_index":0,"content":[{"type":"text","text":"<user_query>\nhello\n</user_query>"}]}`+"\n")
 	writeFile(updates, "")
 	// First sync with no usage yet.
-	n, err := SyncAgent(db, "grokbuild")
+	n, err := SyncAgentContext(t.Context(), db, "grokbuild")
 	if err != nil || n != 1 {
 		t.Fatalf("first sync n=%d err=%v", n, err)
 	}
@@ -1235,7 +1235,7 @@ func TestGrokSiblingVersionTriggersResync(t *testing.T) {
 	// Chat unchanged; updates gains a turn_completed with modelCalls=5.
 	writeFile(updates, `{"timestamp":1785225600,"method":"_x.ai/session/update","params":{"sessionId":"sess-sibling","update":{"sessionUpdate":"turn_completed","prompt_id":"p1","usage":{"inputTokens":100,"outputTokens":10,"cachedReadTokens":0,"modelCalls":5,"modelUsage":{"grok-4.5-build":{"inputTokens":100,"outputTokens":10,"cachedReadTokens":0,"modelCalls":5}}}},"_meta":{"agentTimestampMs":1785225600000}}}`+"\n")
 	// Ensure updates mtime/size change while chat stays byte-identical.
-	n, err = SyncAgent(db, "grokbuild")
+	n, err = SyncAgentContext(t.Context(), db, "grokbuild")
 	if err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
@@ -1249,7 +1249,7 @@ func TestGrokSiblingVersionTriggersResync(t *testing.T) {
 		t.Fatalf("requests after usage = %d, want 5 (modelCalls)", requests)
 	}
 	// Unchanged siblings should not resync.
-	n, err = SyncAgent(db, "grokbuild")
+	n, err = SyncAgentContext(t.Context(), db, "grokbuild")
 	if err != nil || n != 0 {
 		t.Fatalf("third sync should be no-op, n=%d err=%v", n, err)
 	}

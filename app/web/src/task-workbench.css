@@ -118,13 +118,6 @@
   height: 14px;
   margin: 0;
 }
-.workbench-popover .setting-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 3px;
-}
 .workbench-popover :is(select, .ui-select),
 .workbench-popover input:not([type='checkbox']) {
   width: 160px;
@@ -146,14 +139,6 @@
 .workbench-popover form button {
   width: 100%;
   margin: 8px 0;
-}
-.manage-view {
-  display: flex;
-  gap: 6px;
-  margin: 6px 0;
-}
-.manage-view input {
-  flex: 1;
 }
 .workbench-popover > small {
   display: block;
@@ -342,10 +327,6 @@
 .workbench-empty h3 {
   font-size: 15px;
   font-weight: 500;
-}
-.workbench-notice {
-  padding: 10px 20px;
-  color: var(--muted);
 }
 .density-comfortable .workbench-card,
 .density-comfortable .workbench-table td {

@@ -15,24 +15,16 @@ enum VoxCaretTheme {
     )
     static let controlFill = Color(nsColor: .controlBackgroundColor)
     static let border = Color(nsColor: .separatorColor)
-    static let success = Color.green
     static let warning = Color.orange
-}
-
-enum VoxCaretFont {
-    enum Size { case body }
-    static let footnote = Font.footnote
-    static func font(_ size: Size, weight: Font.Weight) -> Font { .system(size: 13, weight: weight) }
-    static func mono(_ size: Size, _ weight: Font.Weight) -> Font { .system(size: 13, weight: weight, design: .monospaced) }
 }
 
 enum VoxCaretLog {
     private static let logger = Logger(subsystem: "dev.zanebyte.voxcaret", category: "voice")
-    static func failure(_ event: String, error: String? = nil, fields: [String: String] = [:]) {
+    static func failure(_ event: String, error: String? = nil) {
         // Error details may contain text or paths; never make them public in unified logging.
         logger.error("\(event, privacy: .public): \(error ?? "", privacy: .private)")
     }
-    static func lifecycle(_ event: String, fields: [String: String] = [:]) {
+    static func lifecycle(_ event: String) {
         logger.info("\(event, privacy: .public)")
     }
 }

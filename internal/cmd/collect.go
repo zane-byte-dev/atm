@@ -216,10 +216,6 @@ func collectionRetentionText(days int) string {
 
 type collectionConnectorHealth = collector.ConnectorHealth
 
-func collectionHealth(overview collector.Overview) []collectionConnectorHealth {
-	return defaultCollectorService().ConnectorHealthFor(overview)
-}
-
 // collectionHealthLine is the human line for one connector. A flaky connector
 // gets its rate rather than its latest error, because the rate is the thing that
 // tells you whether to care.
@@ -275,21 +271,6 @@ func collectionHealthWhen(ts int64) string {
 		return "刚刚"
 	}
 	return formatShortDuration(int64(elapsed.Seconds())) + "前"
-}
-
-// collectionResolveHealth turns the counts into the one word a human reads.
-//
-// A classified failure — login expired, permission missing — is reported the
-// moment it happens: it will not fix itself, and waiting for a second sample only
-// delays telling the user by one interval. An unclassified failure with a recent
-// success behind it is reported as `flaky`, which says "nothing to do" without
-// pretending nothing happened.
-func collectionResolveHealth(health collectionConnectorHealth) collectionConnectorHealth {
-	return collector.ResolveConnectorHealth(health)
-}
-
-func collectionFailureStatus(message string) string {
-	return collector.CollectionFailureStatus(message)
 }
 
 var collectRunCmd = &cobra.Command{
@@ -845,14 +826,6 @@ var collectItemRevertCmd = &cobra.Command{
 
 func collectionCLICall(operation string) application.Call {
 	return cliApplicationCall("collect-"+operation, "")
-}
-
-func collectionAgentFromEnvironment() string {
-	return cliAgentFromEnvironment()
-}
-
-func collectionSessionFromEnvironment() string {
-	return cliSessionFromEnvironment()
 }
 
 var collectItemDeleteCmd = &cobra.Command{

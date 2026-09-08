@@ -1,6 +1,6 @@
 // Run with playwright-cli run-code --filename=app/web/tests/task-views.browser.js
 // Use an isolated browser session and the local Vite server on port 5173.
-;async (page) => {
+async (page) => {
   const selectValue = async (control, value) => {
     const label = await control.evaluate(
       (element, value) =>
@@ -15,6 +15,7 @@
   const check = (value, message) => {
     if (!value) throw new Error(message)
   }
+  await page.setViewportSize({ width: 1280, height: 900 })
   await page.goto('http://127.0.0.1:5173/tests/fixtures/task-views.html')
   await page.evaluate(() => {
     localStorage.setItem(

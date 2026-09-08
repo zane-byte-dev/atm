@@ -40,7 +40,7 @@ func TestBuildTodoContextSeparatesFactSources(t *testing.T) {
 		t.Fatalf("append todo log: %v", err)
 	}
 
-	context, err := buildTodoContext(todo.ID, "")
+	context, err := buildTodoContextWithContext(t.Context(), todo.ID, "")
 	if err != nil {
 		t.Fatalf("buildTodoContext: %v", err)
 	}
@@ -168,11 +168,11 @@ func TestTodoContextRequiresCWDForMultipleActiveWorktrees(t *testing.T) {
 		}
 	}
 
-	if _, err := buildTodoContext(todo.ID, ""); err == nil ||
+	if _, err := buildTodoContextWithContext(t.Context(), todo.ID, ""); err == nil ||
 		!strings.Contains(err.Error(), "pass --cwd explicitly") {
 		t.Fatalf("multiple worktree error = %v", err)
 	}
-	context, err := buildTodoContext(todo.ID, first)
+	context, err := buildTodoContextWithContext(t.Context(), todo.ID, first)
 	if err != nil {
 		t.Fatalf("build with explicit cwd: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestTodoContextUsesAppendOrderForSameSecondHistoricalBindings(t *testing.T)
 		}
 	}
 
-	context, err := buildTodoContext(todo.ID, "")
+	context, err := buildTodoContextWithContext(t.Context(), todo.ID, "")
 	if err != nil {
 		t.Fatalf("buildTodoContext: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestTodoContextReportsUnavailableGitWithoutLosingTodo(t *testing.T) {
 		t.Fatalf("save todos: %v", err)
 	}
 
-	context, err := buildTodoContext(todo.ID, t.TempDir())
+	context, err := buildTodoContextWithContext(t.Context(), todo.ID, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildTodoContext: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestTodoContextReportsTaskDocumentReadFailure(t *testing.T) {
 		t.Fatalf("create invalid todo doc directory: %v", err)
 	}
 
-	context, err := buildTodoContext(todo.ID, t.TempDir())
+	context, err := buildTodoContextWithContext(t.Context(), todo.ID, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildTodoContext: %v", err)
 	}
@@ -294,7 +294,7 @@ func TestTodoContextDoesNotHideTaskDocumentStatFailure(t *testing.T) {
 		t.Fatal("self-referential symlink should reproduce the stat failure")
 	}
 
-	context, err := buildTodoContext(todo.ID, t.TempDir())
+	context, err := buildTodoContextWithContext(t.Context(), todo.ID, t.TempDir())
 	if err != nil {
 		t.Fatalf("buildTodoContext: %v", err)
 	}

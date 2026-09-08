@@ -44,47 +44,6 @@
   margin: 6px 0 0;
   line-height: 1.6;
 }
-.activity-agent-strip {
-  display: flex;
-  gap: 7px;
-  overflow-x: auto;
-  padding: 2px 2px 5px;
-  scrollbar-width: thin;
-}
-.activity-agent {
-  display: flex;
-  align-items: center;
-  text-align: left;
-  gap: 7px;
-  min-width: 0;
-  flex-shrink: 0;
-  background: var(--surface);
-  border: 1px solid var(--activity-line);
-  border-radius: 7px;
-  padding: 7px 10px;
-  color: var(--text);
-  font-size: 13px;
-}
-.activity-agent:hover {
-  background: var(--hover);
-  border-color: var(--accent-line);
-}
-.activity-agent.selected {
-  border-color: var(--accent-line);
-  background: var(--activity-soft);
-  color: var(--accent);
-}
-.activity-agent-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.activity-agent strong {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--activity-muted);
-  font-variant-numeric: tabular-nums;
-}
 .activity-avatar {
   width: 22px;
   height: 22px;
@@ -179,13 +138,6 @@
   padding: 3px 6px;
   color: var(--muted);
 }
-.activity-filters {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin: 0 0 12px;
-}
-.activity-filters > label,
 .activity-usage-filters > label {
   display: flex;
   align-items: center;
@@ -193,8 +145,6 @@
   font-size: 12px;
   color: var(--activity-muted);
 }
-.activity-filters input,
-.activity-filters :is(select, .ui-select),
 .activity-usage-filters :is(select, .ui-select) {
   min-width: 0;
   width: auto;
@@ -205,15 +155,6 @@
   padding: 9px 10px;
   color: var(--text);
   font-size: 13px;
-}
-.activity-filters .activity-search {
-  display: flex;
-  gap: 8px;
-  flex: 1;
-  background: var(--surface);
-  border: 1px solid var(--activity-line);
-  padding: 0 12px;
-  border-radius: 7px;
 }
 .activity-search input {
   border: 0 !important;
@@ -323,9 +264,6 @@
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
-}
-.activity-session-row .activity-search-snippet {
-  -webkit-line-clamp: 4;
 }
 .activity-session-line {
   display: flex;
@@ -573,7 +511,6 @@
   gap: 16px;
   margin: 10px 0;
 }
-.activity-range-picker,
 .activity-segment {
   display: flex;
   align-items: center;
@@ -583,7 +520,6 @@
   border: 1px solid var(--line);
   border-radius: var(--control-radius);
 }
-.activity-range-picker button,
 .activity-segment button {
   border: 0;
   background: transparent;
@@ -593,7 +529,6 @@
   white-space: nowrap;
   border-radius: 5px;
 }
-.activity-range-picker button.selected,
 .activity-segment button.selected {
   background: var(--surface);
   color: var(--accent);
@@ -879,19 +814,9 @@
   }
 }
 @media (max-width: 1080px) {
-  .activity-filters {
-    flex-wrap: wrap;
-  }
-  .activity-filters .activity-search {
-    flex-basis: 100%;
-  }
   .activity-usage-filters {
     align-items: flex-start;
     flex-direction: column;
-  }
-  .activity-range-picker {
-    max-width: 100%;
-    overflow: auto;
   }
   .activity-panel-heading {
     flex-wrap: wrap;
@@ -954,14 +879,6 @@
   .activity-metric:nth-child(n + 3) {
     border-top: 1px solid var(--activity-line);
   }
-  .activity-filters > label:not(.activity-search) {
-    flex: 1;
-    min-width: 0;
-  }
-  .activity-filters input,
-  .activity-filters :is(select, .ui-select) {
-    width: 100%;
-  }
   .activity-chart {
     margin-left: 15px;
     margin-right: 15px;
@@ -996,7 +913,6 @@
   background: var(--canvas);
 }
 .activity-agents > .activity-heading p,
-.activity-agent-strip,
 .activity-index-row {
   display: none;
 }
@@ -1016,19 +932,6 @@
 }
 .activity-agents > .activity-heading .workspace-actions .button:hover {
   background: var(--accent-soft);
-}
-.activity-agents > .activity-filters {
-  position: absolute;
-  z-index: 3;
-  top: 64px;
-  left: 0;
-  width: var(--navigator-width);
-  min-height: 48px;
-  padding: 7px 13px;
-  border-right: 1px solid var(--line);
-}
-.activity-agents > .activity-filters > label:not(.activity-search) {
-  display: none;
 }
 .activity-session-grid {
   height: 100%;
@@ -1066,8 +969,7 @@
 }
 
 @media (max-width: 760px) {
-  .activity-agents > .activity-heading,
-  .activity-agents > .activity-filters {
+  .activity-agents > .activity-heading {
     width: 100%;
     border-right: 0;
   }
@@ -1114,26 +1016,6 @@
   margin-top: 3px;
   font-size: 11px;
 }
-.activity-agent-strip {
-  min-height: 44px;
-  padding: 7px 13px 5px;
-  border-bottom: 1px solid var(--line);
-  background: var(--canvas);
-}
-.activity-agent {
-  min-height: 29px;
-  padding: 3px 8px;
-  border-color: transparent;
-  border-radius: 8px;
-  background: transparent;
-  font-size: 12px;
-}
-.activity-agent.selected {
-  border-color: transparent;
-  background: var(--surface);
-  box-shadow: 0 1px 5px var(--shadow-color);
-  color: var(--text);
-}
 .activity-avatar {
   width: 20px;
   height: 20px;
@@ -1147,26 +1029,6 @@
 }
 .activity-index-row .activity-source-note {
   font-size: 11px;
-}
-.activity-filters {
-  min-height: 48px;
-  gap: 8px;
-  margin: 0;
-  padding: 7px 13px;
-  border-bottom: 1px solid var(--line);
-  background: var(--canvas);
-}
-.activity-filters .activity-search {
-  height: 34px;
-  padding: 0 10px;
-  border-radius: 8px;
-}
-.activity-filters input,
-.activity-filters :is(select, .ui-select) {
-  height: 34px;
-  padding: 0 8px;
-  border-radius: 7px;
-  font-size: 12px;
 }
 .activity-session-grid {
   grid-template-columns: var(--navigator-width) minmax(0, 1fr);
@@ -1317,7 +1179,6 @@
 
 /* Native fidelity pass; navigator rows stay flat and empty detail uses one sheet. */
 .activity-agents > .activity-heading,
-.activity-agents > .activity-filters,
 .activity-agents .activity-list {
   background: var(--list-pane);
 }
@@ -1462,28 +1323,6 @@
     grid-template-columns: minmax(0, 1.25fr) repeat(2, minmax(0, 1fr));
     align-items: end;
     gap: 9px 8px;
-  }
-  .activity-usage .activity-range-picker {
-    grid-column: 1 / -1;
-    width: 100%;
-    max-width: none;
-    overflow-x: auto;
-    overflow-y: hidden;
-    overscroll-behavior-inline: contain;
-    padding-right: 22px;
-    scrollbar-width: thin;
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
-    mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
-    background:
-      linear-gradient(to right, var(--segment-track) 30%, transparent) left center / 28px 100%
-        no-repeat local,
-      linear-gradient(to left, var(--segment-track) 30%, transparent) right center / 28px 100%
-        no-repeat local,
-      linear-gradient(to right, color-mix(in srgb, var(--text) 15%, transparent), transparent) left
-        center / 10px 100% no-repeat scroll,
-      linear-gradient(to left, color-mix(in srgb, var(--text) 15%, transparent), transparent) right
-        center / 10px 100% no-repeat scroll,
-      var(--segment-track);
   }
   .activity-usage .activity-usage-filters > label {
     display: grid;

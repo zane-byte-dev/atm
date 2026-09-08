@@ -134,10 +134,6 @@ func (tracker *ChangeTracker) hashWorkspaceFiles(ctx context.Context, root strin
 
 // Only known workspace roots are examined. Symlinks are represented, never
 // followed. Hashing content also catches same-length writes and atomic replace.
-func hashWorkspaceFiles(ctx context.Context, root string) (string, error) {
-	return hashWorkspaceFilesIncremental(ctx, root, &workspaceHashState{files: map[string]workspaceHashFile{}}, true)
-}
-
 func hashWorkspaceFilesIncremental(ctx context.Context, root string, state *workspaceHashState, verifyContent bool) (string, error) {
 	hash := sha256.New()
 	type workspacePath struct {

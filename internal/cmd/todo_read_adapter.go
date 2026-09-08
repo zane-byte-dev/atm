@@ -233,14 +233,6 @@ func runTodoDoc(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func todoMatchesQuery(todo workapp.Todo, rawQuery string) bool {
-	return workapp.QueryRelevance(todo, rawQuery) >= 0
-}
-
-func todoQueryRelevance(todo workapp.Todo, rawQuery string) int {
-	return workapp.QueryRelevance(todo, rawQuery)
-}
-
 func todoReadID(args []string) string {
 	if len(args) == 0 || strings.EqualFold(strings.TrimSpace(args[0]), "current") {
 		return ""
