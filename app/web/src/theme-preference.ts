@@ -2,7 +2,7 @@ export const themes = [
   {
     id: 'minimal',
     name: 'ATM 原生',
-    description: '与 macOS 版本一致的蓝灰导航、冷灰列表和白色阅读面。',
+    description: '蓝灰导航、冷灰列表和白色阅读面。',
     scheme: 'light',
   },
   { id: 'slate', name: '石墨雾蓝', description: '清爽的灰白底色，搭配柔和雾蓝。', scheme: 'light' },

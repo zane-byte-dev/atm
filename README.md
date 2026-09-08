@@ -3,7 +3,7 @@
 给人用的 AI 管理面板。看 AI 都在干什么、干得怎么样、花了多少钱。
 
 本地优先、单机单用户：它读各家 AI CLI 已经写在你硬盘上的会话记录，索引成一个能查、能统计、
-能挂待办的库。日常主界面是本机浏览器：Web 提供任务、收集、Agent、知识、统计、AI Day 和设置七个工作区，
+能挂待办的库。日常主界面是本机浏览器：Web 提供工作板、收件箱、Agent、知识、统计和设置，AI Day 徽章日历放在统计页，
 Go 服务负责后台同步、采集、Hook 与通知路由；菜单栏和全局语音是可选的独立 App。它不代理你和 AI 的对话，
 停掉它也不影响任何会话。
 
@@ -63,11 +63,12 @@ atm serve stop           # 停止同一数据目录的实例
 才会退出。
 
 Web 提供任务生命周期、计划/依赖/等待、图片上传、AI 整理，知识文档原地编辑与共享记忆、采集来源管理、
-会话检索、用量与 AI Day，以及业务设置和五种主题。任务与知识草稿按编辑器隔离保存在浏览器，关闭后可显式恢复；
-并发编辑有版本检查，创建与后台执行保留幂等身份。页面通过按域 SSE 更新，CLI 变化在有订阅时每 2 秒检查。
+会话检索、用量与徽章日历，以及业务设置和五种主题。新建任务记住最近填写内容并在再次打开时自动填入；
+已有任务重新打开时读取服务端版本。知识与记忆编辑器提供独立的草稿恢复。并发编辑有版本检查，创建与后台执行保留幂等身份。
+页面通过合并的 SSE reset 刷新当前查询，CLI 变化在有订阅时每 2 秒检查。
 
 `serve` 负责自动同步、按配置采集、AI Day、Agent Hook 和通知路由；状态每 8 秒回补，
-关闭网页或退出菜单栏都不会停止后台。开发和验收实例同样会运行这些职责，因此必须使用独立数据目录。
+关闭网页或退出菜单栏都不会停止后台。临时写入验收必须显式使用独立数据目录；日常 `make dev` 默认接替日用服务并使用真实数据，详见 Web 开发说明。
 手动同步、采集、重建、额度刷新和 AI 整理通过有记录的后台执行完成，可查看结果或取消。
 
 macOS 可使用用户级登录服务：
@@ -79,13 +80,13 @@ atm serve --open                # 打开已运行实例
 atm serve uninstall            # 取消登录服务，保留数据
 ```
 
-[ATM Menu](app/menubar/README.md) 使用普通 macOS 菜单，展示服务状态、今日 Token、当前任务与缓存额度摘要，并提供 Web、新增任务、同步及自身设置入口。[ATM Voice](app/voice/README.md) 独立提供全局语音，
+[ATM Menu](app/menubar/README.md) 使用普通 macOS 菜单，展示服务状态、今日 Token、当前任务与缓存额度摘要，并提供 Web、新增任务、同步及自身设置入口。[VoxCaret](app/voice/README.md) 独立提供全局语音，
 不依赖 Go 服务。构建步骤、旧偏好导入和测试边界见 [Web 开发说明](app/web/README.md)；架构见
 [技术方案](docs/design/local-web-runtime.md)。代码已实现这些入口，真实日用切换和新 App 的系统权限验收需另外完成。
 
-**现有数据**：当前构建创建并只接受 schema v57。历史迁移梯子已删除；旧库需先使用仍支持其 schema
-的历史版本升级，或按错误提示先备份不可重建数据、重建当前数据库。当前 `atm serve migrate` 仅供以后
-明确注册的单阶迁移使用，在 v57 基线上是无操作，不会猜测或跨越任意旧版本。
+**现有数据**：当前 schema 为 v58，仅保留 v57 → v58 的一阶迁移，为任务增加持久化的最后变更时间。
+`serve` 遇到 v57 会拒绝启动并提示先运行 `atm serve migrate`；先停止该目录的服务，再执行迁移，命令会先创建备份。
+更早的库需通过支持它的历史版本处理；当前构建不猜测或跨越任意旧版本。新建空库直接使用 v58。
 
 自定义数据目录在每条 `serve` 命令中传相同的 `--data-dir`。新建空工作区直接创建当前基线。旧版二进制
 不能打开较新的库；回退前停止写入并另存新数据。`serve stop` 会卸载当前登录会话的托管 job、保留 plist；
@@ -145,8 +146,8 @@ atm day export > ai-day.json                      # 导出全部衍生数据（�
 ```
 
 AI Day 在本机把会话镜像归一化为不含原文的事件，按最近 30 个有效日生成每日唯一结果。完整的数据模型、
-12 枚徽章、评分规则与隐私行为见 [AI Day 说明](docs/ai-day.md)。Web 提供日常查看和显式重建；
-公开 CLI 保留人工修复、来源诊断和数据导出。更细的纠正与隐私管理仍可参考该说明，不把每个内部动作开放成 Web API。
+12 枚徽章、评分规则与隐私行为见 [AI Day 说明](docs/ai-day.md)。Web 在统计页提供徽章日历；
+公开 CLI 提供显式重建、来源诊断和数据导出。更细的纠正与隐私管理仍可参考该说明，不把每个内部动作开放成 Web API。
 
 **知识与记忆**
 
@@ -220,15 +221,17 @@ atm guard forget mytool                  # 忘掉一个注册过的 CLI（先 un
 app/menubar/Scripts/build-app.sh
 open "app/menubar/dist/ATM Menu.app"
 app/voice/Scripts/build-app.sh
-open "app/voice/dist/ATM Voice.app"
+open "app/voice/dist/VoxCaret.app"
 ```
 
 [ATM Menu](app/menubar/README.md) 只连接 Go 的有界本机控制接口。点击状态项打开普通系统菜单；
-菜单展示服务状态、今日 Token、当前任务和缓存额度摘要，把详情跳转到 Web，也可要求 Go 排队同步。它不直接扫描数据库、同步会话或运行采集，也不提供 Guard 决策入口。[ATM Voice](app/voice/README.md) 管理自己的快捷键、模型与权限，
+菜单展示服务状态、今日 Token、当前任务和缓存额度摘要，把详情跳转到 Web，也可要求 Go 排队同步。它不直接扫描数据库、同步会话或运行采集，也不提供 Guard 决策入口。[VoxCaret](app/voice/README.md) 管理自己的快捷键、模型与权限，
 退出 ATM 服务后仍可使用。各自提供旧偏好的白名单导入，新 bundle 的系统权限必须实际授权。
 
 旧 Swift 主工作区已移除，源码和性能修复保存在 [Git 历史](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos)。
 旧界面偏好仍可通过 [`scripts/export-web-preferences.swift`](scripts/export-web-preferences.swift) 导出并导入 Web；Menu 和 Voice 各自保留旧偏好导入功能。
+
+`./scripts/release-check.sh native` 在隔离目录运行 Swift 测试、组装两个 Release App，并检查资源、权限说明、entitlements 和签名；不会安装或启动 App。Go、Web、开发进程与发布跨平台检查的分阶段命令见 [Web 开发说明](app/web/README.md#ci-与交付检查)。麦克风、系统授权、快捷键与目标 App 内输入仍需实机验收。
 
 ## 通知
 
@@ -249,10 +252,7 @@ Qoder 装完要重启才生效；Pi 需要手动复制
 [`integrations/atm-notch.ts`](integrations/atm-notch.ts) 到 `~/.pi/agent/extensions/`。
 Web 不提供 Hook 安装或权限审批，安装状态通过上述 CLI 检查。
 
-[外发动作闸门](#命令)的通知是另一类：它**自带「批准并发送 / 拒绝」两个按钮**，可以直接在通知上做决定，
-不用打开窗口；快速面板顶部也会列出待授权的那几条，带正文和同样两个按钮。请求被决定或过期后通知自动撤回。
-这类通知不依赖 hook（闸门自己就是那条命令），但依赖系统通知权限——如果你之前拒过 ATM 的通知权限，
-就只剩快速面板这条路。
+[外发动作闸门](#命令)的待授权请求不依赖 Agent hook；人工使用 `atm guard list`、`atm guard show <id>` 查看，再通过 `atm guard approve <id>` 或 `atm guard deny <id>` 决定。当前 Web 和 ATM Menu 只提供状态与提醒，不提供 Guard 审批按钮。
 
 ## Agent 集成
 

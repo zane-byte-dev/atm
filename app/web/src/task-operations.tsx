@@ -2,8 +2,9 @@ import { Select } from './components/select'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, CircleCheck, Clock3, Link2, LoaderCircle, Plus, Trash2 } from 'lucide-react'
-import { ApiError, call } from './api'
-import { Notice } from './editor'
+import { ApiError, call, callScopedTodoMutation } from './api'
+import type { TodoScopedMutationRequest } from './api-contracts'
+import { Notice } from './markdown'
 import type { TodoDetail } from './types'
 
 type PlanItem = { step: string; status: string }
@@ -11,8 +12,7 @@ function useTaskAction(todoID: string) {
   const query = useQueryClient()
   return useMutation({
     retry: false,
-    mutationFn: ({ method, input }: { method: string; input: object }) =>
-      call(method, { todo_id: todoID, ...input }),
+    mutationFn: (request: TodoScopedMutationRequest) => callScopedTodoMutation(todoID, request),
     onSuccess: async () => {
       await Promise.all([
         query.invalidateQueries({ queryKey: ['todos'] }),
@@ -85,7 +85,7 @@ export function TaskPlanEditor({ data, onClose }: { data: TodoDetail; onClose: (
     setLoading(true)
     setLoadError(undefined)
     try {
-      setLatest(await call<TodoDetail>('todo.show', { todo_id: data.todo.id }))
+      setLatest(await call('todo.show', { todo_id: data.todo.id }))
     } catch (error) {
       setLoadError(error)
     } finally {
@@ -282,12 +282,7 @@ export function TaskRelationships({ data, canWrite }: { data: TodoDetail; canWri
   const action = useTaskAction(data.todo.id)
   const dependencies = useQuery({
     queryKey: ['dependencies', data.todo.id, data.todo.depends_on],
-    queryFn: ({ signal }) =>
-      call<{ dependencies: { id: string; title: string; status: string; met: boolean }[] }>(
-        'todo.dependency.list',
-        { todo_id: data.todo.id },
-        signal,
-      ),
+    queryFn: ({ signal }) => call('todo.dependency.list', { todo_id: data.todo.id }, signal),
     enabled: (data.todo.depends_on?.length ?? 0) > 0,
   })
   if (
@@ -427,7 +422,7 @@ function TaskWaitingEditor({ data, onClose }: { data: TodoDetail; onClose: () =>
     setLoading(true)
     setLoadError(undefined)
     try {
-      setLatest(await call<TodoDetail>('todo.show', { todo_id: data.todo.id }))
+      setLatest(await call('todo.show', { todo_id: data.todo.id }))
     } catch (error) {
       setLoadError(error)
     } finally {

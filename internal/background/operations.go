@@ -21,6 +21,7 @@ func DefaultExecutor(dataDir string, refineOptions ...TodoRefineOptions) Executo
 		refinement = refineOptions[0]
 	}
 	return func(ctx context.Context, call application.Call, input Request, progress func(string)) (any, error) {
+		policy := config.PolicyForExecution(ctx)
 		switch input.Kind {
 		case TodoRefine:
 			return executeTodoRefine(ctx, call, input, progress, refinement)
@@ -29,18 +30,18 @@ func DefaultExecutor(dataDir string, refineOptions ...TodoRefineOptions) Executo
 			result, err := syncapp.Default.Run(ctx, call, syncapp.RunInput{Agent: input.Agent})
 			return map[string]any{"synced_files": result.SyncedFiles, "warning_count": len(result.Warnings)}, err
 		case CollectionRun:
-			if input.DueOnly && !config.CollectionEnabled {
+			if input.DueOnly && !policy.CollectionEnabled {
 				progress("自动收集已关闭，本轮跳过")
 				return map[string]any{"skipped": true, "reason": "collection_disabled"}, nil
 			}
 			progress("读取已启用的来源并处理待收集消息")
-			report, err := collector.DefaultService().RunCollection(ctx, call, collector.RunInput{SourceID: input.SourceID, DueOnly: input.DueOnly})
+			report, err := collector.ServiceForExecution(ctx).RunCollection(ctx, call, collector.RunInput{SourceID: input.SourceID, DueOnly: input.DueOnly})
 			// Never copy connector error text, login commands or message bodies into
 			// the job feed. Source health remains on the collection workspace.
 			return makeCollectionJobResult(report), err
 		case CollectionReprocess:
 			progress("重新处理收集条目")
-			result, err := collector.DefaultService().Reprocess(ctx, call, collector.ReprocessInput{ItemID: input.ItemID})
+			result, err := collector.ServiceForExecution(ctx).Reprocess(ctx, call, collector.ReprocessInput{ItemID: input.ItemID})
 			return map[string]any{"item_id": result.Item.ID}, err
 		case DayRebuild:
 			progress("生成 AI Day 统计与徽章")
@@ -53,7 +54,7 @@ func DefaultExecutor(dataDir string, refineOptions ...TodoRefineOptions) Executo
 		case QuotaRefresh:
 			progress("刷新配置允许的额度来源")
 			// Live remains the user's configuration choice, never a request flag.
-			result, err := quota.Default.Snapshot(ctx, call, quota.Input{Agent: input.Agent, Live: config.GrokLiveQuota})
+			result, err := quota.Default.Snapshot(ctx, call, quota.Input{Agent: input.Agent, Live: policy.GrokLiveQuota})
 			if err != nil {
 				return nil, err
 			}

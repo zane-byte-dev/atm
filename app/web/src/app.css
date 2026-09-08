@@ -1,0 +1,6 @@
+/* One shared entry for the app and browser fixtures. Feature styles stay with their modules. */
+@import './style.css';
+@import './themes.css';
+@import './workspace-style.css';
+@import './web-improvements.css';
+@import './workspace-chrome.css';

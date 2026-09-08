@@ -1,0 +1,4 @@
+{
+  "extends": "../tsconfig.json",
+  "include": ["api-contracts.typecheck.ts", "../src/vite-env.d.ts"]
+}

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -130,23 +131,83 @@ func TestEventBrokerBoundsSubscribersAndClosesPromptly(t *testing.T) {
 }
 
 func TestLocalInvalidationRebaselinesBeforePolling(t *testing.T) {
-	value := "before"
+	var value atomic.Value
+	value.Store("before")
 	server := &Server{
 		events: newEventBroker("baseline"),
 		options: Options{Fingerprints: func(context.Context, []string) (map[string]string, error) {
-			return map[string]string{"todos": value}, nil
+			return map[string]string{"todos": value.Load().(string)}, nil
 		}},
 	}
-	defer server.events.close()
+	sub, _ := server.events.subscribe([]string{"todos"}, "baseline:0")
+	watcherDone := make(chan struct{})
+	go func() { server.watchChanges(context.Background()); close(watcherDone) }()
+	defer func() { server.events.close(); <-watcherDone }()
 	server.Invalidate("todos")
+	select {
+	case <-sub.queue:
+	case <-time.After(time.Second):
+		t.Fatal("local invalidation was not delivered by watcher")
+	}
 	changed, err := server.refreshFingerprintChanges(context.Background(), []string{"todos"})
 	if err != nil || len(changed) != 0 {
 		t.Fatalf("unchanged poll after local invalidation = %v, %v", changed, err)
 	}
-	value = "external"
+	value.Store("external")
 	changed, err = server.refreshFingerprintChanges(context.Background(), []string{"todos"})
 	if err != nil || !reflect.DeepEqual(changed, []string{"todos"}) {
 		t.Fatalf("external change after baseline = %v, %v", changed, err)
+	}
+}
+
+func TestInvalidationDoesNotWaitForSlowFingerprintAndCoalescesBursts(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	server := &Server{
+		events: newEventBroker("slow-scan"),
+		options: Options{Fingerprints: func(ctx context.Context, _ []string) (map[string]string, error) {
+			if calls.Add(1) == 1 {
+				close(entered)
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return map[string]string{"todos": "changed"}, nil
+		}},
+	}
+	sub, _ := server.events.subscribe([]string{"todos"}, "slow-scan:0")
+	watcherDone := make(chan struct{})
+	go func() { server.watchChanges(context.Background()); close(watcherDone) }()
+	defer func() { server.events.close(); <-watcherDone }()
+	server.Invalidate("todos")
+	<-entered
+	returned := make(chan struct{})
+	go func() {
+		for i := 0; i < 100; i++ {
+			server.Invalidate("todos")
+		}
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(200 * time.Millisecond):
+		close(release)
+		t.Fatal("write invalidation waited for a fingerprint scan")
+	}
+	if len(server.events.refresh) != 1 || calls.Load() != 1 {
+		close(release)
+		t.Fatal("mutation burst did not coalesce behind the running scan")
+	}
+	close(release)
+	select {
+	case event := <-sub.queue:
+		if event.Kind != "reset" {
+			t.Fatalf("event=%+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("known mutation was not published after scan")
 	}
 }
 

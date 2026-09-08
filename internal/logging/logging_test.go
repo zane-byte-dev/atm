@@ -60,6 +60,37 @@ func TestFailureRecordsAReadableEntry(t *testing.T) {
 	}
 }
 
+func TestCapturedDirectoryKeepsLogDestinationAndRedaction(t *testing.T) {
+	other := withTempDataDir(t)
+	dir := t.TempDir()
+	LifecycleAt(dir, "builtin_model_call", map[string]any{"input": 12})
+	FailureAt(dir, "builtin_model_call", "background", fmt.Errorf(`request "private body" failed`), nil)
+
+	path := filepath.Join(dir, "logs", "cli.log")
+	lines, err := Tail(path, 0)
+	if err != nil || len(lines) != 2 {
+		t.Fatalf("captured log: %v, %v", lines, err)
+	}
+	for index, level := range []string{"info", "error"} {
+		var record entry
+		if err := json.Unmarshal([]byte(lines[index]), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Level != level || record.Event != "builtin_model_call" || record.Time == "" {
+			t.Fatalf("entry %d: %+v", index, record)
+		}
+	}
+	if strings.Contains(lines[1], "private body") || !strings.Contains(lines[1], "failed") {
+		t.Fatalf("failure redaction changed: %s", lines[1])
+	}
+	if _, err := os.Stat(filepath.Join(other, "logs")); !os.IsNotExist(err) {
+		t.Fatalf("captured logger used current settings: %v", err)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("log permissions: %v, %v", info, err)
+	}
+}
+
 // A log that cannot be written must not become the caller's problem: every call
 // site is on a path that was already failing, or on a hot refresh loop.
 func TestWriteNeverPanicsOnAnUnwritableDirectory(t *testing.T) {

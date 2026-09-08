@@ -96,7 +96,7 @@ final class VoxCaretInputCoordinator: ObservableObject {
         finishRecordingSoon()
     }
 
-    /// ⎋ during a recording: stop, keep nothing, paste nothing.
+    /// ⎋ stops recording and only removes a preview whose original span is verified.
     func cancel() {
         generation += 1
         let currentGeneration = generation
@@ -106,15 +106,21 @@ final class VoxCaretInputCoordinator: ObservableObject {
         operationTask = nil
         teardown()
         transcriberSessions.cancelCurrent()
-        guard let liveSession, liveSession.hasRenderedText else {
+        guard let liveSession else {
             transition(to: .idle)
             return
         }
         transition(to: .cancelling)
         operationTask = Task { [weak self] in
-            await liveSession.rollback()
+            let restored = await liveSession.rollback()
             guard let self, currentGeneration == self.generation else { return }
-            self.transition(to: .idle)
+            if restored {
+                self.transition(to: .idle)
+            } else {
+                self.lastTranscript = liveSession.latestTranscript
+                self.transition(to: .failed("输入位置已变化，未改动当前文字；转写保留在设置中。"))
+                self.scheduleReset(after: .seconds(5), generation: currentGeneration)
+            }
         }
     }
 
@@ -129,6 +135,8 @@ final class VoxCaretInputCoordinator: ObservableObject {
         liveInsertionSession = nil
         // Before the microphone opens: this is the app the text belongs in.
         targetApplication = NSWorkspace.shared.frontmostApplication
+        let liveInsertionEnabled = VoxCaretInputPreferences.liveInsertionEnabled
+        let liveTarget = liveInsertionEnabled ? VoxCaretLiveTextTarget.capture(application: targetApplication) : nil
         VoxCaretGlobalHotKeyManager.shared.registerTransient(
             .cancelVoice,
             hotKey: VoxCaretInputPreferences.cancelHotKey
@@ -158,9 +166,9 @@ final class VoxCaretInputCoordinator: ObservableObject {
                         self?.fail(error.localizedDescription, generation: currentGeneration)
                     }
                 )
-                if transcriber.providesPartialResults, VoxCaretInputPreferences.liveInsertionEnabled {
+                if transcriber.providesPartialResults, liveInsertionEnabled {
                     liveInsertionSession = VoxCaretLiveInsertionSession(
-                        application: targetApplication,
+                        target: liveTarget,
                         isCurrent: { currentGeneration == self.generation && !Task.isCancelled }
                     )
                 }
@@ -324,11 +332,14 @@ final class VoxCaretInputCoordinator: ObservableObject {
     private func fail(_ message: String, generation currentGeneration: Int) {
         guard currentGeneration == generation else { return }
         let liveSession = liveInsertionSession
+        if state.isRecording, let transcript = liveSession?.latestTranscript, !transcript.isEmpty {
+            lastTranscript = transcript
+        }
         liveInsertionSession = nil
         transcriberSessions.cancelCurrent()
         teardown()
         VoxCaretLog.failure("voice_input_failed", error: message)
-        guard let liveSession, liveSession.hasRenderedText else {
+        guard let liveSession else {
             transition(to: .failed(message))
             scheduleReset(after: .seconds(5), generation: currentGeneration)
             return
@@ -336,9 +347,10 @@ final class VoxCaretInputCoordinator: ObservableObject {
         transition(to: .cancelling)
         operationTask?.cancel()
         operationTask = Task { [weak self] in
-            await liveSession.rollback()
+            let restored = await liveSession.rollback()
             guard let self, currentGeneration == self.generation else { return }
-            self.transition(to: .failed(message))
+            let suffix = restored ? "" : " 输入位置已变化，未改动当前文字；转写保留在设置中。"
+            self.transition(to: .failed(message + suffix))
             self.scheduleReset(after: .seconds(5), generation: currentGeneration)
         }
     }

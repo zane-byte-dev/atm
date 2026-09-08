@@ -101,27 +101,31 @@ func (buffer *providerBuffer) Write(data []byte) (int, error) {
 }
 
 func loadProviderCards(ctx context.Context) (map[string][]ProviderCard, []error) {
-	if len(config.QuotaProviders) == 0 {
+	providers := config.PolicyForExecution(ctx).Providers
+	if len(providers) == 0 {
 		return nil, nil
 	}
-	names := make([]string, 0, len(config.QuotaProviders))
-	for name := range config.QuotaProviders {
+	names := make([]string, 0, len(providers))
+	for name := range providers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	results := make(chan providerResult, len(names))
-	var group sync.WaitGroup
-	for _, name := range names {
-		providerConfig := config.QuotaProviders[name]
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			cards, err := callProvider(ctx, name, providerConfig)
-			results <- providerResult{provider: name, cards: cards, err: err}
-		}()
-	}
-	group.Wait()
+	_ = config.External(ctx, func(externalCtx context.Context) error {
+		var group sync.WaitGroup
+		for _, name := range names {
+			providerConfig := providers[name]
+			group.Add(1)
+			go func() {
+				defer group.Done()
+				cards, err := callProvider(externalCtx, name, providerConfig)
+				results <- providerResult{provider: name, cards: cards, err: err}
+			}()
+		}
+		group.Wait()
+		return nil
+	})
 	close(results)
 
 	ordered := make([]providerResult, 0, len(names))

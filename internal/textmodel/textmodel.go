@@ -202,21 +202,16 @@ func run(
 	if !ok {
 		return nil, fmt.Errorf("built-in text model does not support task %q", taskName)
 	}
-	apiKey, err := APIKey()
+	policy := config.PolicyForExecution(ctx)
+	apiKey, err := policy.ModelCredential()
 	if err != nil {
 		return nil, err
 	}
 	if apiKey == "" {
 		return nil, fmt.Errorf("built-in DeepSeek text model is unavailable: configure Settings > Model in the browser workspace or set %s", DeepSeekAPIKeyEnv)
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv(BaseURLEnv)), "/")
-	if baseURL == "" {
-		baseURL = config.TextModelBaseURL
-	}
-	model := strings.TrimSpace(os.Getenv(ModelEnv))
-	if model == "" {
-		model = config.TextModelName
-	}
+	baseURL := strings.TrimRight(strings.TrimSpace(policy.TextModelBaseURL), "/")
+	model := policy.TextModelName
 	record.call.Model = model
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -255,17 +250,23 @@ func run(
 	req.Header.Set("User-Agent", "atm/text-model")
 
 	record.attempted = true
-	resp, err := http.DefaultClient.Do(req)
+	var resp *http.Response
+	var body []byte
+	err = config.External(modelCtx, func(externalCtx context.Context) error {
+		var requestErr error
+		resp, requestErr = http.DefaultClient.Do(req.WithContext(externalCtx))
+		if requestErr != nil {
+			return requestErr
+		}
+		defer resp.Body.Close()
+		body, requestErr = io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		return requestErr
+	})
 	if err != nil {
 		if modelCtx.Err() == context.DeadlineExceeded {
 			return nil, fmt.Errorf("built-in DeepSeek text model timed out after %s", timeout)
 		}
 		return nil, fmt.Errorf("call built-in DeepSeek text model: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read DeepSeek text-model response: %w", err)
 	}
 	if len(body) > maxResponseBytes {
 		return nil, fmt.Errorf("DeepSeek text-model response exceeds %d bytes", maxResponseBytes)

@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/refine"
 	"github.com/zane-byte-dev/atm/internal/store"
 	"github.com/zane-byte-dev/atm/internal/work"
@@ -88,7 +89,12 @@ func executeTodoRefine(ctx context.Context, call application.Call, input Request
 			return work.RefinementModelOutput{}, err
 		}
 		progress("优化任务描述与可执行步骤")
-		output, err := model.Propose(ctx, snapshot)
+		var output work.RefinementModelOutput
+		err := config.External(ctx, func(externalCtx context.Context) error {
+			var err error
+			output, err = model.Propose(externalCtx, snapshot)
+			return err
+		})
 		if err != nil {
 			return output, err
 		}

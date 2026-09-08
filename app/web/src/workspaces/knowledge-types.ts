@@ -25,6 +25,22 @@ export type KnowledgeDocumentRow = {
   score?: number
 }
 
+export type KnowledgeQueryInput = {
+  text?: string
+  collection?: string
+  status?: '' | 'active' | 'draft' | 'archived'
+  exclude_archived?: boolean
+  limit?: number
+  cursor?: string
+}
+
+export type KnowledgeQueryResult = {
+  documents: KnowledgeDocumentRow[]
+  total: number
+  has_more: boolean
+  next_cursor?: string
+}
+
 export type KnowledgeDocument = {
   etag: string
   editable: boolean

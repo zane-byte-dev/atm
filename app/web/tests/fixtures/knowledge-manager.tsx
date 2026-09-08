@@ -4,8 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { KnowledgeManager } from '../../src/workspaces/knowledge-manager'
 import type { KnowledgeDocument } from '../../src/workspaces/knowledge-types'
-import '../../src/style.css'
-import '../../src/themes.css'
+import '../../src/app.css'
 import '../../src/workspaces/knowledge.css'
 const documents = new Map(
   ['one', 'two', 'three'].map((id, index) => [

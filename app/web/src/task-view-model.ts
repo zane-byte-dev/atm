@@ -63,7 +63,7 @@ export function parseViews(raw: string | null): SavedView[] {
 export function visibleFields(params: URLSearchParams) {
   return params.has('fields') ? params.get('fields')!.split(',') : ['id', 'priority', 'project']
 }
-export function filterTasks(items: Todo[], params: URLSearchParams) {
+export function matchingTasks(items: Todo[], params: URLSearchParams) {
   const status = params.get('status') || ''
   const priorities = (params.get('priority') || '').split(',').filter(Boolean)
   const states = status.split(',')
@@ -97,9 +97,20 @@ export function filterTasks(items: Todo[], params: URLSearchParams) {
       return false
     return true
   })
-  const sort = params.get('sort') || 'auto'
-  const direction = params.get('direction') === 'desc' ? -1 : 1
-  return filtered.sort((a, b) => {
+  return filtered
+}
+
+export function filterTasks(items: Todo[], params: URLSearchParams) {
+  return sortTasks(
+    matchingTasks(items, params),
+    params.get('sort') || 'auto',
+    params.get('direction') || 'asc',
+  )
+}
+
+export function sortTasks(items: Todo[], sort: string, order: string) {
+  const direction = order === 'desc' ? -1 : 1
+  return items.sort((a, b) => {
     if (sort === 'auto') {
       if (a.status === 'done' && b.status === 'done')
         return (
@@ -121,4 +132,23 @@ export function filterTasks(items: Todo[], params: URLSearchParams) {
       a.id.localeCompare(b.id, undefined, { numeric: true })
     )
   })
+}
+
+/** A single pass shared by list, board, swimlane and table renderers. */
+export function groupTasks(items: Todo[]) {
+  const byStatus = new Map<string, Todo[]>()
+  const byProject = new Map<string, Todo[]>()
+  const byProjectStatus = new Map<string, Todo[]>()
+  for (const item of items) {
+    for (const [map, key] of [
+      [byStatus, item.status],
+      [byProject, item.project || ''],
+      [byProjectStatus, JSON.stringify([item.project || '', item.status])],
+    ] as const) {
+      const rows = map.get(key)
+      if (rows) rows.push(item)
+      else map.set(key, [item])
+    }
+  }
+  return { byStatus, byProject, byProjectStatus }
 }

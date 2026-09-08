@@ -109,11 +109,19 @@ func writeAntigravityQuotaCache(entry antigravityQuotaCacheEntry) {
 // and `atm quota` has always treated a missing reading as a blank section rather
 // than a broken command.
 func AntigravityQuota() *QuotaInfo {
+	return AntigravityQuotaContext(context.Background())
+}
+
+func AntigravityQuotaContext(ctx context.Context) *QuotaInfo {
 	now := time.Now()
 	if cached := readAntigravityQuotaCache(now, antigravityQuotaCacheFresh); cached != nil {
 		return cached
 	}
-	info := fetchAntigravityQuota(context.Background())
+	var info *QuotaInfo
+	_ = config.External(ctx, func(externalCtx context.Context) error {
+		info = fetchAntigravityQuota(externalCtx)
+		return nil
+	})
 	if info != nil {
 		writeAntigravityQuotaCache(antigravityQuotaCacheEntry{FetchedAt: now, Quota: info})
 	}

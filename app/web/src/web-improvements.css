@@ -570,11 +570,6 @@
   .workspace .workbench-card-meta {
     display: none;
   }
-  .workspace .detail-column.detail-expanded {
-    inset: 8px;
-    width: calc(100vw - 16px);
-    height: calc(100dvh - 16px);
-  }
   .task-current-summary {
     margin-inline: 16px;
   }
@@ -602,13 +597,6 @@
   margin-left: auto;
   padding: 5px 8px;
   font-size: 12px;
-}
-@media (max-width: 900px) {
-  .workspace .detail-column:has(> .task-inspector) > .detail-scroll {
-    height: auto;
-    min-height: 0;
-    overflow: visible;
-  }
 }
 @media (max-width: 760px) {
   .workspace.task-view-kanban .detail-column.detail-expanded {

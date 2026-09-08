@@ -55,6 +55,14 @@ func TestReadOnlyMissingIndexAndDocument(t *testing.T) {
 	if _, err := os.Stat(config.AtmDB); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("list created database: %v", err)
 	}
+	empty, err := h.ListTodos(ctx, call, ListInput{Workbench: true, MetadataOnly: true})
+	if err != nil || empty.Groups == nil || empty.MatchedTotal == nil || *empty.MatchedTotal != 0 || empty.Facets == nil || empty.ViewCounts == nil {
+		t.Fatalf("missing database workbench metadata contract: %+v, %v", empty, err)
+	}
+	encoded, err := json.Marshal(empty)
+	if err != nil || !strings.Contains(string(encoded), `"groups":[]`) {
+		t.Fatalf("empty groups JSON contract: %s, %v", encoded, err)
+	}
 	seed(t, card("t1", "no document", "open", "atm"))
 	doc, err := h.Doc(ctx, call, TodoInput{TodoID: "t1"})
 	if err != nil || doc.Exists || doc.Content != "" {
@@ -109,6 +117,43 @@ func TestListTotalsFiltersStableOrderAndArchive(t *testing.T) {
 	result, err = h.ListTodos(ctx, call, ListInput{Status: "all", Query: "archived"})
 	if err != nil || result.Total != 1 || result.Items[0].ID != "t2" {
 		t.Fatalf("all search=%+v err=%v", result, err)
+	}
+}
+
+func TestWorkbenchListSeparatesMetadataAndScopedRows(t *testing.T) {
+	h := testHost(t)
+	first := card("t1", "metadata phrase", "open", "atm")
+	first.Creator, first.Tags, first.Priority = "codex", []string{"web"}, "P0"
+	second := first
+	second.ID, second.Status, second.Priority = "t2", "review", "P1"
+	third := first
+	third.ID, third.Status, third.Description = "t3", "done", "fulltext-only"
+	seed(t, first, second, third)
+	ctx, call := context.Background(), webCall()
+	input := ListInput{Workbench: true, MetadataOnly: true, Focus: "all", Status: "open,review", Priority: "P0,P1", Creator: "codex", Tag: "web", Project: "atm", From: "2026-09-03", To: "2026-09-03", Query: "metadata phrase", GroupBy: "project", Limit: 1}
+	meta, err := h.ListTodos(ctx, call, input)
+	if err != nil || meta.MatchedTotal == nil || *meta.MatchedTotal != 2 || len(meta.Items) != 0 || meta.HasMore || len(meta.Groups) != 1 {
+		t.Fatalf("metadata response = %+v, %v", meta, err)
+	}
+	input.MetadataOnly, input.GroupKey, input.Partition = false, meta.Groups[0].Key, "active"
+	input.Sort, input.Direction = "priority", "desc"
+	page, err := h.ListTodos(ctx, call, input)
+	if err != nil || page.Total != 2 || len(page.Items) != 1 || page.Items[0].ID != "t2" || !page.HasMore || page.MatchedTotal != nil || page.Facets != nil {
+		t.Fatalf("scoped row response = %+v, %v", page, err)
+	}
+	if page.Items[0].UpdatedAt == 0 {
+		t.Fatal("page omitted durable timestamp")
+	}
+	input.Offset = 1
+	page, err = h.ListTodos(ctx, call, input)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != "t1" || page.HasMore {
+		t.Fatalf("scoped second page = %+v, %v", page, err)
+	}
+	for _, workbench := range []bool{false, true} {
+		result, err := h.ListTodos(ctx, call, ListInput{Workbench: workbench, Status: "all", Query: "fulltext-only"})
+		if err != nil || workbench && result.Total != 0 || !workbench && result.Total != 1 {
+			t.Fatalf("workbench=%v altered fulltext contract: %+v, %v", workbench, result, err)
+		}
 	}
 }
 

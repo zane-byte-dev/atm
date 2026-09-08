@@ -10,6 +10,7 @@ enum VoxCaretSenseVoiceModelState: Equatable {
     case missing
     case downloading(Double)
     case installing
+    case deleting
     case ready
     case failed(String)
 }
@@ -35,6 +36,39 @@ enum VoxCaretSenseVoiceModelError: LocalizedError {
         case .incompleteModel: return "SenseVoice 模型文件不完整，请重新下载。"
         }
     }
+}
+
+protocol VoxCaretSenseVoiceDownloading: Sendable {
+    func download(
+        from source: URL,
+        to destination: URL,
+        progress: @escaping @Sendable (Double) -> Void
+    ) async throws
+    func cancel()
+}
+
+struct VoxCaretSenseVoiceModelDependencies {
+    var makeDownloader: () -> any VoxCaretSenseVoiceDownloading
+    /// Produces verified files inside the operation's private staging directory.
+    /// Only the manager may commit those files to the shared model directory.
+    var prepareArchive: @Sendable (URL, URL) async throws -> URL
+    var unload: @Sendable () async -> Void
+
+    static let live = Self(
+        makeDownloader: { VoxCaretSenseVoiceDownloadClient() },
+        prepareArchive: { archive, staging in
+            let worker = Task.detached(priority: .userInitiated) {
+                try VoxCaretSenseVoiceModelManager.verifyArchive(at: archive)
+                return try VoxCaretSenseVoiceModelManager.extractArchive(at: archive, staging: staging)
+            }
+            return try await withTaskCancellationHandler {
+                try await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+        },
+        unload: { await VoxCaretSenseVoiceEngine.shared.unload() }
+    )
 }
 
 /// Owns the on-disk SenseVoice model: whether it is there, downloading it, and
@@ -63,11 +97,26 @@ final class VoxCaretSenseVoiceModelManager: ObservableObject {
     @Published private(set) var state: VoxCaretSenseVoiceModelState = .missing
     @Published private(set) var source: VoxCaretSenseVoiceModelSource?
 
-    private var downloader: VoxCaretSenseVoiceDownloadClient?
-    private var downloadTask: Task<Void, Never>?
+    private enum Operation: Equatable {
+        case download(UUID)
+        case deletion(UUID)
+    }
+
+    private let applicationSupport: URL
+    private let dependencies: VoxCaretSenseVoiceModelDependencies
+    private var operation: Operation?
+    private var downloader: (any VoxCaretSenseVoiceDownloading)?
+    private var operationTask: Task<Void, Never>?
     private var resolvedModelFiles: VoxCaretSenseVoiceModelFiles?
 
-    private init() {
+    init(
+        applicationSupport: URL = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask
+        )[0],
+        dependencies: VoxCaretSenseVoiceModelDependencies = .live
+    ) {
+        self.applicationSupport = applicationSupport
+        self.dependencies = dependencies
         refreshState()
     }
 
@@ -75,8 +124,7 @@ final class VoxCaretSenseVoiceModelManager: ObservableObject {
     /// replaced wholesale on every build and re-signed ad hoc, and re-downloading
     /// 160MB per build is not a thing to ask of anyone.
     var modelDirectory: URL {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        return base
+        applicationSupport
             .appendingPathComponent("VoxCaret", isDirectory: true)
             .appendingPathComponent("VoiceModels", isDirectory: true)
             .appendingPathComponent("SenseVoiceSmall-int8-2024-07-17", isDirectory: true)
@@ -96,9 +144,8 @@ final class VoxCaretSenseVoiceModelManager: ObservableObject {
 
     var isModelReady: Bool { modelFiles != nil }
 
-    /// Re-reads the disk. Skipped while a download is running: the files are not
-    /// there yet by definition, and answering "missing" would throw away the
-    /// progress the download card is showing.
+    /// Re-reads the disk only while idle, preserving operation progress and
+    /// keeping a model scheduled for deletion unavailable to new recognizers.
     func refreshState() {
         guard !isBusy else { return }
         if Self.isComplete(managedModelFiles) {
@@ -108,10 +155,7 @@ final class VoxCaretSenseVoiceModelManager: ObservableObject {
             return
         }
         if let discovered = Self.discoverCompatibleLegacyModel(
-            applicationSupport: FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            )[0]
+            applicationSupport: applicationSupport
         ) {
             resolvedModelFiles = discovered
             source = .compatibleLegacy
@@ -125,95 +169,141 @@ final class VoxCaretSenseVoiceModelManager: ObservableObject {
     }
 
     func downloadModel() {
-        guard !isBusy else { return }
-        downloadTask = Task { [weak self] in
-            await self?.performDownload()
+        guard operation == nil else { return }
+        let id = UUID()
+        let client = dependencies.makeDownloader()
+        // Reserve synchronously so two calls in the same actor turn cannot start
+        // parallel downloads before their tasks begin running.
+        operation = .download(id)
+        downloader = client
+        state = .downloading(0)
+        operationTask = Task { [weak self] in
+            await self?.performDownload(id: id, client: client)
         }
     }
 
     func cancelDownload() {
-        downloader?.cancel()
+        guard case .download = operation else { return }
+        let client = downloader
+        let task = operationTask
+        // Invalidate first. Even a downloader that finishes or reports progress
+        // after cancellation no longer owns the state or installation destination.
+        operation = nil
         downloader = nil
-        downloadTask?.cancel()
-        downloadTask = nil
-        state = .missing
+        operationTask = nil
+        client?.cancel()
+        task?.cancel()
         refreshState()
     }
 
     func deleteModel() {
+        if case .deletion = operation { return }
         cancelDownload()
-        // Unload before removing the files: the recognizer holds the ONNX file open,
-        // and deleting underneath it would leave a live session reading a path that
-        // no longer exists.
-        Task { await VoxCaretSenseVoiceEngine.shared.unload() }
+        let id = UUID()
+        operation = .deletion(id)
+        resolvedModelFiles = nil
+        source = nil
+        state = .deleting
+        operationTask = Task { [weak self] in
+            await self?.performDeletion(id: id)
+        }
+    }
+
+    private func performDeletion(id: UUID) async {
+        // Keep this operation reserved across the await: no new download or
+        // model lookup may race the engine while it releases the ONNX file.
+        await dependencies.unload()
+        guard operation == .deletion(id) else { return }
         do {
             if FileManager.default.fileExists(atPath: modelDirectory.path) {
                 try FileManager.default.removeItem(at: modelDirectory)
             }
+            finishOperation(.deletion(id))
             refreshState()
         } catch {
+            finishOperation(.deletion(id))
             state = .failed(error.localizedDescription)
             VoxCaretLog.failure("sense_voice_model_delete_failed", error: error.localizedDescription)
         }
     }
 
-    private var isBusy: Bool {
-        switch state {
-        case .downloading, .installing: return true
-        case .missing, .ready, .failed: return false
-        }
+    private var isBusy: Bool { operation != nil }
+
+    private func finishOperation(_ completed: Operation) {
+        guard operation == completed else { return }
+        operation = nil
+        downloader = nil
+        operationTask = nil
     }
 
-    private func performDownload() async {
+    private func performDownload(id: UUID, client: any VoxCaretSenseVoiceDownloading) async {
         let archive = FileManager.default.temporaryDirectory
-            .appendingPathComponent("VoxCaret-SenseVoice-\(UUID().uuidString).tar.bz2")
-        let client = VoxCaretSenseVoiceDownloadClient()
-        downloader = client
-        state = .downloading(0)
+            .appendingPathComponent("VoxCaret-SenseVoice-\(id).tar.bz2")
+        // Stage on the destination volume so the final move is a rename rather
+        // than a potentially interruptible copy of a 230MB model across volumes.
+        let staging = modelDirectory.deletingLastPathComponent()
+            .appendingPathComponent(".SenseVoice-install-\(id)", isDirectory: true)
+        defer {
+            try? FileManager.default.removeItem(at: archive)
+            try? FileManager.default.removeItem(at: staging)
+        }
 
         do {
+            try Task.checkCancellation()
+            guard operation == .download(id) else { return }
             try await client.download(from: Self.archiveURL, to: archive) { [weak self] progress in
                 Task { @MainActor in
-                    // Only while still downloading: a late progress callback must not
-                    // drag the card back out of 安装中.
-                    guard let self, case .downloading = self.state else { return }
+                    guard let self, self.operation == .download(id),
+                          case .downloading = self.state else { return }
                     self.state = .downloading(progress)
                 }
             }
             try Task.checkCancellation()
+            guard operation == .download(id) else { return }
             state = .installing
-            let destination = modelDirectory
-            // Hashing 160MB and shelling out to tar both block; off the main actor so
-            // the progress card and the rest of the app keep drawing.
-            try await Task.detached(priority: .userInitiated) {
-                try Self.verifyArchive(at: archive)
-                try Self.extractArchive(at: archive, to: destination)
-            }.value
-            state = .missing
+            let extracted = try await dependencies.prepareArchive(archive, staging)
+            try Task.checkCancellation()
+            guard operation == .download(id) else { return }
+            // No suspension between the identity check and the commit. Detached
+            // work only touches its staging directory, including after cancellation.
+            try Self.commitPreparedModel(at: extracted, to: modelDirectory)
+            finishOperation(.download(id))
             refreshState()
             VoxCaretLog.lifecycle("sense_voice_model_installed")
-        } catch is CancellationError {
-            state = .missing
-            refreshState()
         } catch {
-            state = .failed(error.localizedDescription)
-            VoxCaretLog.failure("sense_voice_model_install_failed", error: error.localizedDescription)
+            guard operation == .download(id) else { return }
+            finishOperation(.download(id))
+            if error is CancellationError || Task.isCancelled {
+                refreshState()
+            } else {
+                state = .failed(error.localizedDescription)
+                VoxCaretLog.failure("sense_voice_model_install_failed", error: error.localizedDescription)
+            }
         }
+    }
 
-        try? FileManager.default.removeItem(at: archive)
-        downloader = nil
-        downloadTask = nil
+    private static func commitPreparedModel(at extracted: URL, to destination: URL) throws {
+        let fileManager = FileManager.default
+        let files = VoxCaretSenseVoiceModelFiles(
+            model: extracted.appendingPathComponent("model.int8.onnx"),
+            tokens: extracted.appendingPathComponent("tokens.txt")
+        )
+        guard isComplete(files) else { throw VoxCaretSenseVoiceModelError.incompleteModel }
+        if fileManager.fileExists(atPath: destination.path) {
+            try fileManager.removeItem(at: destination)
+        }
+        try fileManager.moveItem(at: extracted, to: destination)
     }
 
     /// Streamed in 4MB chunks rather than read whole: the archive is 160MB and this
     /// runs on a machine that is also holding the app's UI.
-    nonisolated private static func verifyArchive(at url: URL) throws {
+    nonisolated fileprivate static func verifyArchive(at url: URL) throws {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while autoreleasepool(invoking: {
-            let data = try? handle.read(upToCount: 4 * 1024 * 1024)
-            guard let data, !data.isEmpty else { return false }
+        while try autoreleasepool(invoking: {
+            try Task.checkCancellation()
+            guard let data = try handle.read(upToCount: 4 * 1024 * 1024), !data.isEmpty else { return false }
             hasher.update(data: data)
             return true
         }) {}
@@ -221,18 +311,17 @@ final class VoxCaretSenseVoiceModelManager: ObservableObject {
         guard digest == archiveSHA256 else { throw VoxCaretSenseVoiceModelError.checksumMismatch }
     }
 
-    nonisolated private static func extractArchive(at archive: URL, to destination: URL) throws {
+    nonisolated fileprivate static func extractArchive(at archive: URL, staging: URL) throws -> URL {
+        try Task.checkCancellation()
         let fileManager = FileManager.default
-        let staging = fileManager.temporaryDirectory
-            .appendingPathComponent("VoxCaret-SenseVoice-install-\(UUID().uuidString)", isDirectory: true)
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
-        defer { try? fileManager.removeItem(at: staging) }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         process.arguments = ["-xjf", archive.path, "-C", staging.path]
         try process.run()
         process.waitUntilExit()
+        try Task.checkCancellation()
         guard process.terminationStatus == 0 else { throw VoxCaretSenseVoiceModelError.extractionFailed }
 
         // The archive's top-level directory name is upstream's to change, so the
@@ -254,14 +343,7 @@ final class VoxCaretSenseVoiceModelManager: ObservableObject {
         )
         guard isComplete(files) else { throw VoxCaretSenseVoiceModelError.incompleteModel }
 
-        try fileManager.createDirectory(
-            at: destination.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        if fileManager.fileExists(atPath: destination.path) {
-            try fileManager.removeItem(at: destination)
-        }
-        try fileManager.moveItem(at: extracted, to: destination)
+        return extracted
     }
 
     /// Size thresholds rather than a checksum of the expanded files: the point is to
@@ -307,13 +389,14 @@ final class VoxCaretSenseVoiceModelManager: ObservableObject {
 /// `URLSession.download(from:)` gives no progress, and `bytes(for:)` would mean
 /// assembling 160MB by hand, so this is the delegate form wrapped into one async
 /// call.
-private final class VoxCaretSenseVoiceDownloadClient: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+private final class VoxCaretSenseVoiceDownloadClient: NSObject, URLSessionDownloadDelegate, VoxCaretSenseVoiceDownloading, @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Error>?
     private var destination: URL?
     private var progress: (@Sendable (Double) -> Void)?
     private var session: URLSession?
     private var task: URLSessionDownloadTask?
+    private var cancelled = false
 
     func download(
         from source: URL,
@@ -321,8 +404,13 @@ private final class VoxCaretSenseVoiceDownloadClient: NSObject, URLSessionDownlo
         progress: @escaping @Sendable (Double) -> Void
     ) async throws {
         try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { continuation in
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 lock.lock()
+                guard !cancelled else {
+                    lock.unlock()
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
                 self.continuation = continuation
                 self.destination = destination
                 self.progress = progress
@@ -340,12 +428,16 @@ private final class VoxCaretSenseVoiceDownloadClient: NSObject, URLSessionDownlo
 
     func cancel() {
         lock.lock()
-        task?.cancel()
+        cancelled = true
+        let task = self.task
+        let session = self.session
         let continuation = self.continuation
         self.continuation = nil
+        self.progress = nil
         lock.unlock()
-        continuation?.resume(throwing: CancellationError())
+        task?.cancel()
         session?.invalidateAndCancel()
+        continuation?.resume(throwing: CancellationError())
     }
 
     func urlSession(
@@ -360,6 +452,9 @@ private final class VoxCaretSenseVoiceDownloadClient: NSObject, URLSessionDownlo
         let expected = totalBytesExpectedToWrite > 0
             ? totalBytesExpectedToWrite
             : VoxCaretSenseVoiceModelManager.archiveByteCount
+        lock.lock()
+        let progress = self.progress
+        lock.unlock()
         progress?(min(1, Double(totalBytesWritten) / Double(expected)))
     }
 
@@ -368,13 +463,25 @@ private final class VoxCaretSenseVoiceDownloadClient: NSObject, URLSessionDownlo
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        // Serialize the move with cancel(): once cancellation returns, no late
+        // delegate callback can recreate an archive its owner has already removed.
+        lock.lock()
+        guard !cancelled, continuation != nil else {
+            lock.unlock()
+            return
+        }
         do {
-            guard let destination else { throw VoxCaretSenseVoiceModelError.downloadFailed }
-            try? FileManager.default.removeItem(at: destination)
+            guard let destination,
+                  let response = downloadTask.response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode) else {
+                throw VoxCaretSenseVoiceModelError.downloadFailed
+            }
             // Must happen inside this callback: URLSession deletes the temporary
             // file as soon as it returns.
             try FileManager.default.moveItem(at: location, to: destination)
+            lock.unlock()
         } catch {
+            lock.unlock()
             finish(throwing: error)
         }
     }
@@ -391,6 +498,8 @@ private final class VoxCaretSenseVoiceDownloadClient: NSObject, URLSessionDownlo
         lock.lock()
         let continuation = self.continuation
         self.continuation = nil
+        self.progress = nil
+        let session = self.session
         lock.unlock()
         if let error {
             continuation?.resume(throwing: error)

@@ -1,16 +1,22 @@
 import { Select } from './components/select'
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { call, errorText } from './api'
+import { call, errorText, callTodoMutation } from './api'
 import { applyTaskBatch, type BatchOperation, type BatchResult } from './task-batch'
-import type { Todo, TodoDetail } from './types'
+import type { TodoDetail } from './types'
 
 export function TaskBulkActions({
   selected,
+  selectionCount = selected.length,
+  selectionScopeLabel,
+  loadSelected,
   writable,
   onClear,
 }: {
-  selected: Todo[]
+  selected: { id: string }[]
+  selectionCount?: number
+  selectionScopeLabel?: string
+  loadSelected?: () => Promise<{ id: string }[]>
   writable: boolean
   onClear: () => void
 }) {
@@ -29,18 +35,19 @@ export function TaskBulkActions({
     else dialog.current?.close()
   }, [open])
   const preview = async () => {
-    if (lock.current || !selected.length || selected.length > 100) return
+    if (lock.current || !selectionCount || selectionCount > 100) return
     lock.current = true
     setBusy(true)
     setError('')
     setResults(undefined)
     setSnapshots(undefined)
     setOpen(true)
-    const targets = [...selected]
     try {
+      const targets = loadSelected ? await loadSelected() : [...selected]
+      if (!targets.length || targets.length > 100)
+        throw new Error('筛选结果已变化，请重新选择最多 100 项任务。')
       const loaded: TodoDetail[] = []
-      for (const todo of targets)
-        loaded.push(await call<TodoDetail>('todo.show', { todo_id: todo.id }))
+      for (const todo of targets) loaded.push(await call('todo.show', { todo_id: todo.id }))
       if (loaded.some((row) => row.todo.archived))
         throw new Error('选中任务中包含已归档任务，请先恢复后再编辑。')
       setSnapshots(loaded)
@@ -58,12 +65,8 @@ export function TaskBulkActions({
     setError('')
     setResults([])
     try {
-      await applyTaskBatch(
-        snapshots,
-        operation,
-        value,
-        (method, input) => call(method, input),
-        (result) => setResults((previous) => [...(previous || []), result]),
+      await applyTaskBatch(snapshots, operation, value, callTodoMutation, (result) =>
+        setResults((previous) => [...(previous || []), result]),
       )
     } finally {
       await Promise.all([
@@ -78,9 +81,11 @@ export function TaskBulkActions({
   }
   return (
     <>
-      {!!selected.length && (
+      {!!selectionCount && (
         <div className="task-bulk-bar" role="region" aria-label="任务批量操作">
-          <strong>已选择 {selected.length} 项</strong>
+          <strong>
+            已选择{selectionScopeLabel ? ` ${selectionScopeLabel}` : ''} {selectionCount} 项
+          </strong>
           <button onClick={onClear} disabled={busy}>
             取消选择
           </button>
@@ -124,12 +129,12 @@ export function TaskBulkActions({
               )}
               <button
                 className="button"
-                disabled={busy || selected.length > 100}
+                disabled={busy || selectionCount > 100}
                 onClick={() => void preview()}
               >
                 预览变更
               </button>
-              {selected.length > 100 && <span>每次最多处理 100 项，请缩小选择范围。</span>}
+              {selectionCount > 100 && <span>每次最多处理 100 项，请缩小选择范围。</span>}
             </>
           )}
         </div>
@@ -148,7 +153,7 @@ export function TaskBulkActions({
         <p>
           {operation === 'archive'
             ? '归档后将移出当前工作集并解除任务关联，可在已归档中恢复。'
-            : `将${snapshots?.length || selected.length} 项任务的${operation === 'priority' ? '优先级' : '项目'}改为“${value.trim() || '未分配'}”。`}
+            : `将${snapshots?.length || selectionCount} 项任务的${operation === 'priority' ? '优先级' : '项目'}改为“${value.trim() || '未分配'}”。`}
         </p>
         {error && <p role="alert">{error}</p>}
         <div className="task-batch-preview">

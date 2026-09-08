@@ -9,11 +9,7 @@ import { WorkspaceTitle } from '../../src/workspace-title'
 import { TaskViews } from '../../src/task-views'
 import { KnowledgeManager } from '../../src/workspaces/knowledge-manager'
 import type { Bootstrap } from '../../src/types'
-import '../../src/style.css'
-import '../../src/themes.css'
-import '../../src/workspace-style.css'
-import '../../src/web-improvements.css'
-import '../../src/workspace-chrome.css'
+import '../../src/app.css'
 import '../../src/task-workbench.css'
 const boot = { capabilities: { todo_write: true }, version: 'test' } as Bootstrap
 window.fetch = async (url) => {

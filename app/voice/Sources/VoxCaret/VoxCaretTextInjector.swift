@@ -24,6 +24,8 @@ enum VoxCaretTextInjector {
         /// Accessibility permission is missing, so the text was left on the clipboard
         /// for the person to paste themselves.
         case copiedToPasteboardOnly
+        /// The original field or selection can no longer be verified.
+        case copiedForChangedTarget
     }
 
     enum Failure: LocalizedError {
@@ -40,16 +42,6 @@ enum VoxCaretTextInjector {
             case .livePreviewUnavailable:
                 return "实时预览的位置发生了变化，已停止继续写入。"
             }
-        }
-    }
-
-    struct LiveReplacementPlan: Equatable {
-        let selectionLength: Int
-        let replacement: String
-
-        init(previous: String, replacement: String) {
-            selectionLength = previous.count
-            self.replacement = replacement
         }
     }
 
@@ -118,62 +110,48 @@ enum VoxCaretTextInjector {
         )
     }
 
-    /// Replaces the text most recently previewed at the target insertion point.
-    /// Unlike the final injector this never activates an app and never leaves partial
-    /// text on the clipboard: losing focus disables streaming and the final transcript
-    /// falls back to the normal safe path.
+    /// A verified AX selection chooses the preview span; paste still goes through
+    /// the normal keyboard path so the target app receives its usual input events.
     static func replaceLivePreview(
         _ previousText: String,
         with replacement: String,
-        in application: NSRunningApplication?,
+        target: VoxCaretLiveTextTarget,
         isCurrent: @MainActor () -> Bool = { !Task.isCancelled }
     ) async throws -> Outcome {
-        guard previousText != replacement else { return .injected }
-        guard isCurrent(), !Task.isCancelled else { throw CancellationError() }
-        guard AXIsProcessTrusted() else { return .copiedToPasteboardOnly }
-        guard let application,
-              !application.isTerminated,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier
-        else { throw Failure.targetApplicationUnavailable }
-
-        let plan = LiveReplacementPlan(previous: previousText, replacement: replacement)
         let pasteboard = NSPasteboard.general
         let snapshot = VoxCaretPasteboardSnapshot(pasteboard: pasteboard)
         var injectedChangeCount: Int?
-
-        if !plan.replacement.isEmpty {
-            pasteboard.clearContents()
-            guard pasteboard.setString(plan.replacement, forType: .string) else {
-                snapshot.restore(to: pasteboard)
-                throw Failure.pasteboardWriteFailed
-            }
-            injectedChangeCount = pasteboard.changeCount
-        }
-
-        // Selection and replacement form one indivisible edit. Re-check immediately
-        // before it begins; once characters are selected we must always complete the
-        // paste/delete so the target is not left with a live selection.
-        guard isCurrent(), !Task.isCancelled,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier
-        else {
+        defer {
             if let injectedChangeCount, pasteboard.changeCount == injectedChangeCount {
                 snapshot.restore(to: pasteboard)
             }
-            throw CancellationError()
         }
-
-        await postSelectTrailingCharacters(plan.selectionLength)
-        if plan.replacement.isEmpty {
-            await postDeleteSelection()
-        } else {
-            await postPasteKeystroke()
-        }
-        await VoxCaretPasteKeySequence.pause(milliseconds: 180)
-
-        if let injectedChangeCount, pasteboard.changeCount == injectedChangeCount {
-            snapshot.restore(to: pasteboard)
+        try await target.replace(previous: previousText, with: replacement, isCurrent: isCurrent) { text in
+            if text.isEmpty {
+                await postDeleteSelection()
+            } else {
+                pasteboard.clearContents()
+                guard pasteboard.setString(text, forType: .string) else {
+                    snapshot.restore(to: pasteboard)
+                    throw Failure.pasteboardWriteFailed
+                }
+                injectedChangeCount = pasteboard.changeCount
+                await postPasteKeystroke()
+            }
+            await VoxCaretPasteKeySequence.pause(milliseconds: 180)
         }
         return .injected
+    }
+
+    static func copyForChangedTarget(_ text: String) throws -> Outcome {
+        let pasteboard = NSPasteboard.general
+        let snapshot = VoxCaretPasteboardSnapshot(pasteboard: pasteboard)
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            snapshot.restore(to: pasteboard)
+            throw Failure.pasteboardWriteFailed
+        }
+        return .copiedForChangedTarget
     }
 
     /// Synthesizes ⌘V at the HID level, which is the layer where an app cannot tell it
@@ -191,27 +169,6 @@ enum VoxCaretTextInjector {
             keyDown: { keyDown.post(tap: .cghidEventTap) },
             keyUp: { keyUp.post(tap: .cghidEventTap) }
         )
-    }
-
-    private static func postSelectTrailingCharacters(_ count: Int) async {
-        guard count > 0 else { return }
-        let source = CGEventSource(stateID: .hidSystemState)
-        guard let keyDown = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: CGKeyCode(kVK_LeftArrow),
-            keyDown: true
-        ), let keyUp = CGEvent(
-            keyboardEventSource: source,
-            virtualKey: CGKeyCode(kVK_LeftArrow),
-            keyDown: false
-        ) else { return }
-        keyDown.flags = .maskShift
-        keyUp.flags = .maskShift
-        for _ in 0..<count {
-            keyDown.post(tap: .cghidEventTap)
-            keyUp.post(tap: .cghidEventTap)
-        }
-        await VoxCaretPasteKeySequence.pause(milliseconds: 35)
     }
 
     private static func postDeleteSelection() async {

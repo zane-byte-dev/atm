@@ -2,14 +2,17 @@
 set -euo pipefail
 
 VOICE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VOICE_APP="$VOICE_ROOT/dist/VoxCaret.app"
+VOICE_OUTPUT_DIR="${VOXCARET_OUTPUT_DIR:-$VOICE_ROOT/dist}"
+mkdir -p "$VOICE_OUTPUT_DIR"
+VOICE_OUTPUT_DIR="$(cd "$VOICE_OUTPUT_DIR" && pwd)"
+VOICE_APP="$VOICE_OUTPUT_DIR/VoxCaret.app"
 
-"$VOICE_ROOT/Scripts/build-app.sh" >/dev/null
+VOXCARET_OUTPUT_DIR="$VOICE_OUTPUT_DIR" "$VOICE_ROOT/Scripts/build-app.sh" >/dev/null
 
 VOICE_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$VOICE_APP/Contents/Info.plist")"
 VOICE_ARCH="$(/usr/bin/uname -m)"
-VOICE_ARCHIVE="$VOICE_ROOT/dist/VoxCaret-$VOICE_VERSION-macos-$VOICE_ARCH.zip"
-VOICE_STAGING="$(/usr/bin/mktemp -d "$VOICE_ROOT/dist/.package.XXXXXX")"
+VOICE_ARCHIVE="$VOICE_OUTPUT_DIR/VoxCaret-$VOICE_VERSION-macos-$VOICE_ARCH.zip"
+VOICE_STAGING="$(/usr/bin/mktemp -d "$VOICE_OUTPUT_DIR/.package.XXXXXX")"
 trap '/bin/rm -rf "$VOICE_STAGING"' EXIT
 
 /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$VOICE_APP" "$VOICE_STAGING/archive.zip"

@@ -2,7 +2,9 @@ import { useEffect, useRef } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, LoaderCircle, Play, RefreshCw, X } from 'lucide-react'
 import { call } from '../api'
-import { Notice } from '../editor'
+import { Notice } from '../markdown'
+import { domainsForJob, invalidateDomains } from '../query-domains'
+import { useLiveConnection } from '../live-connection'
 import type { Bootstrap } from '../types'
 import './workspace-forms.css'
 
@@ -71,6 +73,7 @@ export function RuntimeJobs({
   secondaryActions?: boolean
 }) {
   const enabled = jobsEnabled(boot)
+  const live = useLiveConnection()
   const client = useQueryClient()
   const previous = useRef(new Map<string, string>())
   const pendingOperations = useRef(new Map<string, { input: JobInput; key: string }>())
@@ -78,7 +81,7 @@ export function RuntimeJobs({
     queryKey: ['runtime-jobs'],
     queryFn: ({ signal }) => call<{ jobs: RuntimeJob[] }>('jobs.list', { limit: 30 }, signal),
     enabled,
-    refetchInterval: (query) => (query.state.data?.jobs.some(active) ? 1500 : 15000),
+    refetchInterval: (query) => (live ? 60000 : query.state.data?.jobs.some(active) ? 1500 : 15000),
     refetchIntervalInBackground: false,
   })
   const run = useMutation({
@@ -88,10 +91,7 @@ export function RuntimeJobs({
     onSuccess: (job, operation) => {
       pendingOperations.current.delete(JSON.stringify(operation.input))
       void client.invalidateQueries({ queryKey: ['runtime-jobs'] })
-      if (!active(job))
-        void client.invalidateQueries({
-          predicate: (query) => query.queryKey[0] !== 'runtime-jobs',
-        })
+      if (!active(job)) void invalidateDomains(client, domainsForJob(job.kind))
     },
   })
   const cancel = useMutation({
@@ -100,14 +100,14 @@ export function RuntimeJobs({
     onSuccess: () => client.invalidateQueries({ queryKey: ['runtime-jobs'] }),
   })
   useEffect(() => {
-    let finished = false
+    const changed = new Set<string>()
     for (const job of jobs.data?.jobs || []) {
       const last = previous.current.get(job.id)
-      if (last && last !== job.status && !active(job)) finished = true
+      if (last && last !== job.status && !active(job))
+        for (const domain of domainsForJob(job.kind)) changed.add(domain)
       previous.current.set(job.id, job.status)
     }
-    if (finished)
-      void client.invalidateQueries({ predicate: (query) => query.queryKey[0] !== 'runtime-jobs' })
+    if (changed.size) void invalidateDomains(client, [...changed])
   }, [jobs.data, client])
   if (!enabled) return null
   const matching = (jobs.data?.jobs || []).filter((job) => kinds.includes(job.kind))

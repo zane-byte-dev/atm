@@ -20,7 +20,7 @@ ATM 是一个自成一体、本地优先的多 Agent 控制台，也是用户统
 
 项目已从 macOS 开发练手转向个人日常使用。主工作区运行在浏览器，同一个 Go 二进制通过 `serve`
 提供本机页面、API 和后台职责，CLI 保持独立可用；菜单栏只保留提醒与入口，全局语音作为独立工具。
-旧 Swift 主工作区只保留源码作为历史实现参考，当前 Go 不再提供它使用的 runtime 或进程间接口。
+旧 Swift 主工作区已从源码树移除，历史实现保存在 Git；当前产品只构建 Go/Web、独立 ATM Menu 与 VoxCaret。
 实施依据见[本地 Web 技术方案](docs/design/local-web-runtime.md)，当前交付边界见 README。
 
 ## 设计原则

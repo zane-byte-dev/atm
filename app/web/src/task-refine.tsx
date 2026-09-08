@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, LoaderCircle, Sparkles, X } from 'lucide-react'
 import { ApiError, call } from './api'
-import { Notice } from './editor'
+import { Notice } from './markdown'
 import type { TodoDetail } from './types'
 
 type RefineRequest = { kind: 'todo.refine'; todo_id: string; expected_etag: string; hint?: string }

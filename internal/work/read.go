@@ -2,7 +2,6 @@ package work
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"sort"
@@ -95,22 +94,11 @@ type ListResult struct {
 	DocumentExists map[string]bool
 }
 
-// ListPageInput is the bounded scalar list contract used by resident UIs. It
-// intentionally excludes Query: Markdown full-text search still uses List until
-// it has its own durable index.
-type ListPageInput struct {
-	Status  string
-	Project string
-	Limit   int
-	Offset  int
-}
+// ListPageInput is the bounded scalar list contract used by resident UIs.
+// Workbench queries search metadata; Markdown full-text search uses List.
+type ListPageInput store.TodoPageQuery
 
-type ListPageResult struct {
-	Todos    []Todo
-	Total    int
-	Counts   map[string]int
-	Projects []string
-}
+type ListPageResult = store.TodoPage
 
 type DocInput struct {
 	TodoID     string `json:"todo_id,omitempty"`
@@ -126,84 +114,43 @@ type DocResult struct {
 }
 
 func (service Service) Show(ctx context.Context, call application.Call, input ShowInput) (ShowResult, error) {
-	_, todo, err := loadTodoForRead(ctx, call, input.TodoID)
-	if err != nil {
-		return ShowResult{}, err
-	}
-	return inspectTodoReadModel(*todo)
+	return service.showTodo(ctx, call, input, false)
 }
 
 // ShowIncludingArchived is the read-only detail surface for interfaces that
-// expose archive/restore. Existing CLI current-todo resolution stays unchanged.
+// expose archive/restore. Current-todo resolution still requires a live task.
 func (service Service) ShowIncludingArchived(ctx context.Context, call application.Call, input ShowInput) (ShowResult, error) {
-	result, err := service.Show(ctx, call, input)
-	var appErr *application.Error
-	if err == nil || !errors.As(err, &appErr) || appErr.Code != application.CodeNotFound || strings.TrimSpace(input.TodoID) == "" {
-		return result, err
-	}
-	archived, archiveErr := store.LoadArchivedTodos()
-	if archiveErr != nil {
-		return ShowResult{}, readApplicationError("load archived todo", archiveErr)
-	}
-	for _, todo := range archived {
-		if todo.ID == store.NormalizeTodoID(input.TodoID) {
-			result, err := inspectTodoReadModel(todo.Todo)
-			result.Archived = true
-			return result, err
-		}
-	}
-	return ShowResult{}, err
+	return service.showTodo(ctx, call, input, true)
 }
 
-// ReadDocument never creates or reconciles Markdown. Doc intentionally retains
-// the historical CLI materialization behavior; HTTP queries use this method.
-func (service Service) ReadDocument(ctx context.Context, call application.Call, input ShowInput) (DocResult, error) {
-	result, err := service.ShowIncludingArchived(ctx, call, input)
+func (service Service) showTodo(ctx context.Context, call application.Call, input ShowInput, includeArchived bool) (ShowResult, error) {
+	ctx, query, err := prepareTodoRead(ctx, call, input.TodoID, includeArchived)
 	if err != nil {
-		return DocResult{}, err
+		return ShowResult{}, err
 	}
-	content, err := store.ReadTodoDoc(result.Todo.ID)
-	if errors.Is(err, os.ErrNotExist) {
-		return DocResult{TodoID: result.Todo.ID, Exists: false}, nil
-	}
+	detail, err := store.ReadTodoDetail(ctx, query)
 	if err != nil {
-		return DocResult{}, readApplicationError("read todo document", err)
+		return ShowResult{}, readApplicationError("load todo detail", err)
 	}
-	return DocResult{TodoID: result.Todo.ID, Exists: true, Content: content}, nil
-}
-
-func inspectTodoReadModel(todo Todo) (ShowResult, error) {
-
-	bindings, err := store.ListTodoSessionBindings(todo.ID)
-	if err != nil {
-		return ShowResult{}, readApplicationError("load todo session bindings", err)
+	if err := checkTodoReference(detail.Reference, query, input.TodoID); err != nil {
+		return ShowResult{}, err
 	}
-	db, err := store.OpenReadOnly()
-	if err != nil {
-		return ShowResult{}, readApplicationError("open todo read model", err)
-	}
-	defer db.Close()
-	sessions, err := store.FindSessionsForTodo(db, todo.ID)
-	if err != nil {
-		return ShowResult{}, readApplicationError("load sessions for todo", err)
-	}
-	if err := nameTodoSessions(db, sessions); err != nil {
-		return ShowResult{}, readApplicationError("name sessions for todo", err)
-	}
-
+	nameTodoSessions(detail.Sessions, detail.UserMessages)
 	result := ShowResult{
-		Todo:     todo,
-		Document: inspectTodoDocument(todo.ID, 5),
-		Bindings: bindings,
-		Sessions: sessions,
+		Todo: detail.Todo, Archived: detail.Reference.Archived,
+		Document: inspectTodoDocument(detail.Todo.ID, 5),
+		Bindings: detail.Bindings, Sessions: detail.Sessions,
 	}
-	result.LatestPlan, err = latestPlanSnapshot(todo.ID)
-	if err != nil {
-		return ShowResult{}, readApplicationError("load latest todo plan", err)
+	if detail.LatestPlan != nil {
+		plan, err := decodePlanSnapshot(detail.LatestPlan)
+		if err != nil {
+			return ShowResult{}, readApplicationError("load latest todo plan", err)
+		}
+		result.LatestPlan = &plan
 	}
-	if len(sessions) > 0 {
-		summary := SessionSummary{Sessions: len(sessions)}
-		for _, session := range sessions {
+	if len(detail.Sessions) > 0 {
+		summary := SessionSummary{Sessions: len(detail.Sessions)}
+		for _, session := range detail.Sessions {
 			summary.Queries += session.Queries
 			summary.ToolCalls += session.ToolCalls
 			summary.CostUSD += session.CostUSD
@@ -211,6 +158,67 @@ func inspectTodoReadModel(todo Todo) (ShowResult, error) {
 		result.Summary = &summary
 	}
 	return result, nil
+}
+
+// ReadDocument never creates or reconciles Markdown. Only task identity and
+// archive state are read from SQLite; the file has its own read boundary.
+// Doc intentionally retains the historical CLI materialization behavior.
+func (service Service) ReadDocument(ctx context.Context, call application.Call, input ShowInput) (DocResult, error) {
+	ctx, query, err := prepareTodoRead(ctx, call, input.TodoID, true)
+	if err != nil {
+		return DocResult{}, err
+	}
+	reference, err := store.ReadTodoReference(ctx, query)
+	if err != nil {
+		return DocResult{}, readApplicationError("load todo reference", err)
+	}
+	if err := checkTodoReference(reference, query, input.TodoID); err != nil {
+		return DocResult{}, err
+	}
+	content, err := store.ReadTodoDoc(reference.ID)
+	if errors.Is(err, os.ErrNotExist) {
+		return DocResult{TodoID: reference.ID, Exists: false}, nil
+	}
+	if err != nil {
+		return DocResult{}, readApplicationError("read todo document", err)
+	}
+	return DocResult{TodoID: reference.ID, Exists: true, Content: content}, nil
+}
+
+func prepareTodoRead(ctx context.Context, call application.Call, rawID string, includeArchived bool) (context.Context, store.TodoReadQuery, error) {
+	ctx, err := validateReadCall(ctx, call)
+	if err != nil {
+		return ctx, store.TodoReadQuery{}, err
+	}
+	id := strings.TrimSpace(rawID)
+	if id == "" || strings.EqualFold(id, "current") {
+		sessionID := strings.TrimSpace(call.Actor.SessionID)
+		if sessionID == "" {
+			return ctx, store.TodoReadQuery{}, readInvalidArgument("session ID is required to resolve the current todo", "actor.session_id", call.Actor.SessionID)
+		}
+		return ctx, store.TodoReadQuery{SessionID: sessionID}, nil
+	}
+	return ctx, store.TodoReadQuery{TodoID: id, IncludeArchived: includeArchived}, nil
+}
+
+func checkTodoReference(reference store.TodoReference, query store.TodoReadQuery, rawID string) error {
+	if reference.ID == "" {
+		err := application.NewError(application.CodeNotFound,
+			"no todo bound to current session; run `atm todo match --prompt` then `atm session bind <id>`")
+		err.Details = map[string]any{"session_id": query.SessionID}
+		return err
+	}
+	if reference.Found && (!reference.Archived || query.IncludeArchived) {
+		return nil
+	}
+	id := strings.TrimSpace(rawID)
+	if query.TodoID == "" {
+		id = reference.ID
+	}
+	cause := reference.NotFoundError(id)
+	err := application.WrapError(application.CodeNotFound, cause.Error(), cause)
+	err.Details = map[string]any{"todo_id": reference.ID}
+	return err
 }
 
 func (service Service) List(ctx context.Context, call application.Call, input ListInput) (ListResult, error) {
@@ -274,16 +282,9 @@ func (service Service) List(ctx context.Context, call application.Call, input Li
 		if !config.ProjectMatches(todo.Project, input.Project) || creator != "" && todo.Creator != creator {
 			continue
 		}
-		if QueryRelevance(todo, input.Query) < 0 {
-			continue
-		}
 		filtered = append(filtered, todo)
 	}
-	if strings.TrimSpace(input.Query) != "" {
-		sort.SliceStable(filtered, func(left, right int) bool {
-			return QueryRelevance(filtered[left], input.Query) > QueryRelevance(filtered[right], input.Query)
-		})
-	}
+	filtered = rankTodoMatches(filtered, input.Query, QueryRelevance)
 	filtered = paginateReadResult(filtered, input.Offset, input.Limit)
 	documents := make(map[string]bool, len(filtered))
 	for _, todo := range filtered {
@@ -296,23 +297,30 @@ func (service Service) ListPage(ctx context.Context, call application.Call, inpu
 	if _, err := validateReadCall(ctx, call); err != nil {
 		return ListPageResult{}, err
 	}
-	status, _, archived, err := normalizeListStatus(input.Status)
-	if err != nil {
-		return ListPageResult{}, err
-	}
-	if archived {
-		status = "archived"
-	} else if strings.EqualFold(strings.TrimSpace(input.Status), "all") {
-		status = "all"
+	if input.Workbench {
+		if err := store.ValidateTodoWorkbenchQuery(store.TodoPageQuery(input)); err != nil {
+			return ListPageResult{}, readInvalidArgument(err.Error(), "query", nil)
+		}
+	} else {
+		status, _, archived, err := normalizeListStatus(input.Status)
+		if err != nil {
+			return ListPageResult{}, err
+		}
+		if archived {
+			status = "archived"
+		} else if strings.EqualFold(strings.TrimSpace(input.Status), "all") {
+			status = "all"
+		}
+		input.Status = status
 	}
 	if input.Offset < 0 || input.Limit < 1 || input.Limit > 200 {
 		return ListPageResult{}, readInvalidArgument("limit must be 1–200 and offset non-negative", "limit", input.Limit)
 	}
-	page, err := store.ReadTodoPage(ctx, store.TodoPageQuery{Status: status, Project: input.Project, Limit: input.Limit, Offset: input.Offset})
+	page, err := store.ReadTodoPage(ctx, store.TodoPageQuery(input))
 	if err != nil {
 		return ListPageResult{}, readApplicationError("load todo page", err)
 	}
-	return ListPageResult{Todos: page.Todos, Total: page.Total, Counts: page.Counts, Projects: page.Projects}, nil
+	return page, nil
 }
 
 func (service Service) Doc(ctx context.Context, call application.Call, input DocInput) (DocResult, error) {
@@ -341,6 +349,33 @@ func (service Service) Doc(ctx context.Context, call application.Call, input Doc
 		return DocResult{}, readApplicationError("read todo document", err)
 	}
 	return DocResult{TodoID: todo.ID, Path: path, Exists: true, Content: content}, nil
+}
+
+// rankTodoMatches fixes each candidate's score before sorting. Besides avoiding
+// repeated file reads, this keeps comparisons stable if a document changes
+// during the request.
+func rankTodoMatches(todos []Todo, query string, relevance func(Todo, string) int) []Todo {
+	if strings.TrimSpace(query) == "" {
+		return todos
+	}
+	type match struct {
+		todo  Todo
+		score int
+	}
+	matches := make([]match, 0, len(todos))
+	for _, todo := range todos {
+		if score := relevance(todo, query); score >= 0 {
+			matches = append(matches, match{todo: todo, score: score})
+		}
+	}
+	sort.SliceStable(matches, func(left, right int) bool {
+		return matches[left].score > matches[right].score
+	})
+	result := make([]Todo, 0, len(matches))
+	for _, match := range matches {
+		result = append(result, match.todo)
+	}
+	return result
 }
 
 // QueryRelevance preserves the list query's AND matching and field weighting.
@@ -532,9 +567,10 @@ func extractTodoProgress(content string, limit int) []string {
 	return logs
 }
 
-func nameTodoSessions(db *sql.DB, sessions []TodoBoundSession) error {
+// SQLite name candidates arrive with the detail snapshot. Codex's local title
+// file is an optional presentation fallback read after the transaction ends.
+func nameTodoSessions(sessions []TodoBoundSession, messages map[string][]string) {
 	var codexTitles map[string]string
-	pending := []string{}
 	for index := range sessions {
 		session := &sessions[index]
 		if session.Summary != "" {
@@ -549,22 +585,6 @@ func nameTodoSessions(db *sql.DB, sessions []TodoBoundSession) error {
 				continue
 			}
 		}
-		if session.IndexedID != "" {
-			pending = append(pending, session.IndexedID)
-		}
-	}
-	if len(pending) == 0 {
-		return nil
-	}
-	messages, err := store.EarliestUserMessages(db, pending, 8)
-	if err != nil {
-		return err
-	}
-	for index := range sessions {
-		session := &sessions[index]
-		if session.Summary != "" {
-			continue
-		}
 		for _, message := range messages[session.IndexedID] {
 			visible := parser.FirstLine(parser.VisibleUserText(message))
 			runes := []rune(visible)
@@ -577,7 +597,6 @@ func nameTodoSessions(db *sql.DB, sessions []TodoBoundSession) error {
 			}
 		}
 	}
-	return nil
 }
 
 func readApplicationError(operation string, err error) error {

@@ -29,11 +29,12 @@ type eventBroker struct {
 	sequence uint64
 	subs     map[*eventSubscriber]bool
 	done     chan struct{}
+	refresh  chan struct{}
 	closed   bool
 }
 
 func newEventBroker(instance string) *eventBroker {
-	return &eventBroker{instance: instance, subs: map[*eventSubscriber]bool{}, done: make(chan struct{})}
+	return &eventBroker{instance: instance, subs: map[*eventSubscriber]bool{}, done: make(chan struct{}), refresh: make(chan struct{}, 1)}
 }
 func (b *eventBroker) close() {
 	b.mu.Lock()
@@ -110,21 +111,17 @@ func (server *Server) Invalidate(domains ...string) {
 	if server.events == nil {
 		return
 	}
-	// A successful in-process mutation is already the invalidation clients need.
-	// Rebaseline its durable fingerprints before publishing so the poller does
-	// not emit the same change again two seconds later. Failure is harmless: the
-	// poller will conservatively publish a second event.
-	if server.options.Fingerprints != nil {
-		if len(domains) == 0 && server.events.hasSubscribers() {
-			domains = allEventDomains()
-		}
-		if len(domains) > 0 {
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-			_, _ = server.refreshFingerprintChanges(ctx, domains)
-			cancel()
-		}
+	// Rebaseline and publish in the watcher. Neither directory discovery nor a
+	// competing fingerprint scan may hold up a successful write response. The
+	// single pending signal also coalesces bursts of progress/mutation updates.
+	if server.options.Fingerprints == nil || !server.events.hasSubscribers() {
+		server.events.publish()
+		return
 	}
-	server.events.publish()
+	select {
+	case server.events.refresh <- struct{}{}:
+	default:
+	}
 }
 
 func (server *Server) refreshFingerprintChanges(ctx context.Context, domains []string) ([]string, error) {
@@ -167,24 +164,34 @@ func (server *Server) pollFingerprintChanges(ctx context.Context) error {
 	return nil
 }
 
-func (server *Server) watchChanges() {
+func (server *Server) watchChanges(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
+		localChange := false
 		select {
+		case <-ctx.Done():
+			return
 		case <-server.events.done:
 			return
+		case <-server.events.refresh:
+			localChange = true
 		case <-ticker.C:
 		}
 		if !server.events.hasSubscribers() {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-		err := server.pollFingerprintChanges(ctx)
-		cancel()
-		if err != nil {
-			continue
+		scanCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+		if localChange {
+			// Scan before publishing: consumers refetch after this baseline, so
+			// external edits observed by the scan are covered by the same reset.
+			// A failed scan must never swallow the known in-process mutation.
+			_, _ = server.refreshFingerprintChanges(scanCtx, allEventDomains())
+			server.events.publish()
+		} else {
+			_ = server.pollFingerprintChanges(scanCtx)
 		}
+		cancel()
 	}
 }
 func (server *Server) serveEvents(w http.ResponseWriter, r *http.Request, session browserSession) {

@@ -23,7 +23,8 @@ import {
 import { WorkspaceTitle } from '../workspace-title'
 import { WorkspaceSearchButton } from '../global-search'
 import { call, errorText } from '../api'
-import { Markdown, Notice } from '../editor'
+import type { LegacyApiMethod } from '../api-contracts'
+import { Markdown, Notice } from '../markdown'
 import type { Bootstrap } from '../types'
 import type {
   CollectionHistory,
@@ -220,8 +221,14 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
     enabled: !!sourceID && view === 'history',
   })
   const mutation = useMutation({
-    mutationFn: ({ method, input }: { method: string; input: unknown; message: string }) =>
-      call(method, input),
+    mutationFn: ({
+      method,
+      input,
+    }: {
+      method: Extract<LegacyApiMethod, `collect.${string}`>
+      input: unknown
+      message: string
+    }) => call(method, input),
     onSuccess: async (_, variables) => {
       setAnnouncement(variables.message)
       await client.invalidateQueries({ queryKey: ['collection'] })
@@ -246,7 +253,11 @@ export function CollectionWorkspace({ boot }: { boot: Bootstrap }) {
       return next
     })
   }
-  function change(method: string, input: unknown, message: string) {
+  function change(
+    method: Extract<LegacyApiMethod, `collect.${string}`>,
+    input: unknown,
+    message: string,
+  ) {
     setAnnouncement('')
     mutation.mutate({ method, input, message })
   }
@@ -1056,7 +1067,11 @@ function SourcePanel({
   run?: CollectionRun
   writable: boolean
   busy: boolean
-  change: (method: string, input: unknown, message: string) => void
+  change: (
+    method: Extract<LegacyApiMethod, `collect.${string}`>,
+    input: unknown,
+    message: string,
+  ) => void
   onEdit: () => void
   onHistory: () => void
 }) {

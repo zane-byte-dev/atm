@@ -11,86 +11,116 @@ final class VoxCaretLiveInsertionSession {
     private let replace: Replacer
     private let rollbackReplace: Replacer
     private let debounce: Duration
+    private let copyFinalText: @MainActor (String) throws -> VoxCaretTextInjector.Outcome
 
     private(set) var renderedText = ""
+    private(set) var latestTranscript = ""
     private var pendingText: String?
     private var worker: Task<Void, Never>?
+    private var finalReplacement: Task<VoxCaretTextInjector.Outcome, Error>?
     private var unavailable = false
 
-    var hasRenderedText: Bool { !renderedText.isEmpty }
-
     init(
-        application: NSRunningApplication?,
+        target: VoxCaretLiveTextTarget?,
         isCurrent: @escaping @MainActor () -> Bool
     ) {
         replace = { previous, replacement in
-            try await VoxCaretTextInjector.replaceLivePreview(
+            guard let target else { throw VoxCaretTextInjector.Failure.livePreviewUnavailable }
+            return try await VoxCaretTextInjector.replaceLivePreview(
                 previous,
                 with: replacement,
-                in: application,
+                target: target,
                 isCurrent: isCurrent
             )
         }
-        rollbackReplace = { previous, replacement in
-            try await VoxCaretTextInjector.replaceLivePreview(
+        rollbackReplace = { previous, _ in
+            guard let target else { throw VoxCaretTextInjector.Failure.livePreviewUnavailable }
+            return try await VoxCaretTextInjector.replaceLivePreview(
                 previous,
-                with: replacement,
-                in: application,
+                with: target.originalSelection,
+                target: target,
                 isCurrent: { true }
             )
         }
         debounce = .milliseconds(140)
+        copyFinalText = VoxCaretTextInjector.copyForChangedTarget
     }
 
     init(
         debounce: Duration,
         replace: @escaping Replacer,
-        rollbackReplace: Replacer? = nil
+        rollbackReplace: Replacer? = nil,
+        copyFinalText: @escaping @MainActor (String) throws -> VoxCaretTextInjector.Outcome = VoxCaretTextInjector.copyForChangedTarget
     ) {
         self.replace = replace
         self.rollbackReplace = rollbackReplace ?? replace
         self.debounce = debounce
+        self.copyFinalText = copyFinalText
     }
 
     func submit(_ text: String) {
+        latestTranscript = text
         guard !unavailable, !text.isEmpty, text != renderedText else { return }
         pendingText = text
         startWorkerIfNeeded()
     }
 
     /// Reconciles the currently visible preview with the final cleaned transcript.
-    /// Returns nil when no preview ever reached the target, telling the coordinator
-    /// to use its ordinary one-shot injection path.
-    func finish(with finalText: String) async throws -> VoxCaretTextInjector.Outcome? {
+    /// Even when no partial reached the field, the first insertion uses the anchor
+    /// captured at key-down. An unverifiable target falls back to an explicit copy.
+    func finish(with finalText: String) async throws -> VoxCaretTextInjector.Outcome {
         pendingText = nil
         let activeWorker = worker
         await activeWorker?.value
-
-        guard !renderedText.isEmpty else { return nil }
-        guard renderedText != finalText else { return .injected }
-
-        let outcome = try await replace(renderedText, finalText)
-        guard outcome == .injected else {
-            throw VoxCaretTextInjector.Failure.livePreviewUnavailable
+        try Task.checkCancellation()
+        latestTranscript = finalText
+        let replacement = Task { @MainActor in
+            try Task.checkCancellation()
+            if !unavailable {
+                do {
+                    let outcome = try await replace(renderedText, finalText)
+                    if outcome == .injected {
+                        // Record a confirmed paste even if Esc arrived during its
+                        // key hold. Rollback waits for this task before removing it.
+                        renderedText = finalText
+                        return outcome
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    unavailable = true
+                }
+            }
+            try Task.checkCancellation()
+            return try copyFinalText(finalText)
         }
-        renderedText = finalText
-        return .injected
+        finalReplacement = replacement
+        defer { finalReplacement = nil }
+        return try await withTaskCancellationHandler {
+            try await replacement.value
+        } onCancel: {
+            replacement.cancel()
+        }
     }
 
-    /// Removes anything already previewed. Used for Esc and for recognizer failures,
-    /// preserving the promise that cancellation leaves no dictated text behind.
-    func rollback() async {
+    /// Waits for dispatched edits, then restores only the verified preview span.
+    /// False means the location changed; callers retain the text for manual recovery.
+    @discardableResult
+    func rollback() async -> Bool {
         pendingText = nil
         let activeWorker = worker
         await activeWorker?.value
-        guard !renderedText.isEmpty else { return }
+        let activeFinal = finalReplacement
+        _ = try? await activeFinal?.value
+        guard !renderedText.isEmpty else { return !unavailable }
 
         do {
             let outcome = try await rollbackReplace(renderedText, "")
-            if outcome == .injected { renderedText = "" }
+            if outcome == .injected { renderedText = ""; return true }
         } catch {
             VoxCaretLog.failure("voice_live_preview_rollback_failed", error: error.localizedDescription)
         }
+        return false
     }
 
     private func startWorkerIfNeeded() {
@@ -112,7 +142,7 @@ final class VoxCaretLiveInsertionSession {
                 switch outcome {
                 case .injected:
                     renderedText = next
-                case .copiedToPasteboardOnly:
+                case .copiedToPasteboardOnly, .copiedForChangedTarget:
                     // Live previews never take over the clipboard as a fallback.
                     // The final one-shot injection still can, so no speech is lost.
                     unavailable = true

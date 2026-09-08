@@ -17,18 +17,19 @@ import {
 } from 'lucide-react'
 import { ApiError, call, errorText } from '../api'
 import type { Bootstrap } from '../types'
-import { Markdown, Notice } from '../editor'
+import { Markdown, Notice } from '../markdown'
 import { QueryLoading } from '../query-loading'
 import type {
   KnowledgeCollection,
   KnowledgeDocument,
-  KnowledgeDocumentRow,
+  KnowledgeQueryInput,
   MemoryEventResult,
   MemoryHit,
 } from './knowledge-types'
 import { KnowledgeDetailPage } from './knowledge-detail-page'
 import { WorkspaceTitle } from '../workspace-title'
 import { KnowledgeManager } from './knowledge-manager'
+import { useKnowledgeDocuments } from './knowledge-query'
 import { KnowledgeActions } from './knowledge-actions'
 import { InlineKnowledgeField, useInlineKnowledge } from './knowledge-inline'
 import './knowledge.css'
@@ -67,7 +68,7 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
   const memoryID = params.get('memory') || ''
   const text = params.get('q') || ''
   const scope = params.get('scope') || ''
-  const status = params.get('status') || ''
+  const status = (params.get('status') || '') as NonNullable<KnowledgeQueryInput['status']>
   const compose = params.get('compose') || ''
   const writable = boot.capabilities?.workspace_write === true
   const listPositions = useRef(new Map<string, number>())
@@ -92,18 +93,12 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
   }
   const catalog = useQuery({
     queryKey: ['knowledge', 'catalog'],
-    queryFn: ({ signal }) => call<KnowledgeCollection[]>('knowledge.catalog', {}, signal),
+    queryFn: ({ signal }) => call('knowledge.catalog', {}, signal),
   })
-  const documents = useQuery({
-    queryKey: ['knowledge', 'query', collection, text, status],
-    queryFn: ({ signal }) =>
-      call<{ documents: KnowledgeDocumentRow[] }>(
-        'knowledge.query',
-        { collection, text, status, limit: 200 },
-        signal,
-      ),
-    enabled: !memoryTab,
-  })
+  const documents = useKnowledgeDocuments(
+    { collection, text, status, exclude_archived: !status },
+    !memoryTab,
+  )
   const memories = useQuery({
     queryKey: ['knowledge', 'memory', text, scope],
     queryFn: ({ signal }) =>
@@ -112,8 +107,7 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
   })
   const document = useQuery({
     queryKey: ['knowledge', 'document', documentID],
-    queryFn: ({ signal }) =>
-      call<KnowledgeDocument>('knowledge.document.get', { document_id: documentID }, signal),
+    queryFn: ({ signal }) => call('knowledge.document.get', { document_id: documentID }, signal),
     enabled: !memoryTab && !!documentID,
   })
   const memory = useQuery({
@@ -381,9 +375,7 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
           </header>
           <div className="knowledge-list-heading">
             <span aria-live="polite">
-              {memoryTab
-                ? (memories.data?.hits.length ?? '—')
-                : (documents.data?.documents.length ?? '—')}
+              {memoryTab ? (memories.data?.hits.length ?? '—') : (documents.total ?? '—')}
               {memoryTab ? ' 条记忆' : ' 篇文档'}
             </span>
             <span>{text ? '按相关性排序' : memoryTab ? '记忆内容与来源' : '最近更新 ↓'}</span>
@@ -446,12 +438,12 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
             ) : (
               <>
                 {documents.isPending && (
-                  <Loading label="读取文档…" retry={() => void documents.refetch()} />
+                  <Loading label="读取文档…" retry={() => void documents.refresh()} />
                 )}
                 {documents.error && (
-                  <Notice error={documents.error} retry={() => void documents.refetch()} />
+                  <Notice error={documents.error} retry={() => void documents.refresh()} />
                 )}
-                {documents.data?.documents.length === 0 && (
+                {!documents.isPending && documents.documents.length === 0 && (
                   <Empty
                     icon="document"
                     title={text || status ? '没有匹配的文档' : '这里还没有文档'}
@@ -464,43 +456,52 @@ export function KnowledgeWorkspace({ boot }: { boot: Bootstrap }) {
                     }
                   />
                 )}
-                {(documents.data?.documents || [])
-                  .filter((item) => status || item.status !== 'archived')
-                  .map((item) => (
-                    <button
-                      key={item.document_id}
-                      type="button"
-                      disabled={busy}
-                      className="knowledge-result-row"
-                      data-knowledge-id={item.document_id}
-                      onClick={() => openItem('document', item.document_id)}
-                    >
-                      <FileText size={18} className="knowledge-row-icon" />
-                      <div className="knowledge-row-content">
-                        <div className="knowledge-row-title">
-                          <h3>{item.title}</h3>
-                          {item.status !== 'active' && (
-                            <span className={`knowledge-status ${item.status}`}>
-                              {statusLabels[item.status] || item.status}
-                            </span>
-                          )}
-                        </div>
-                        {item.snippet && <p className="knowledge-snippet">{item.snippet}</p>}
-                        <div className="knowledge-result-meta">
-                          <span>{collectionName(item.collection)}</span>
-                          {item.projects?.length ? <span>{item.projects.join(' · ')}</span> : null}
-                        </div>
+                {documents.documents.map((item) => (
+                  <button
+                    key={item.document_id}
+                    type="button"
+                    disabled={busy}
+                    className="knowledge-result-row"
+                    data-knowledge-id={item.document_id}
+                    onClick={() => openItem('document', item.document_id)}
+                  >
+                    <FileText size={18} className="knowledge-row-icon" />
+                    <div className="knowledge-row-content">
+                      <div className="knowledge-row-title">
+                        <h3>{item.title}</h3>
+                        {item.status !== 'active' && (
+                          <span className={`knowledge-status ${item.status}`}>
+                            {statusLabels[item.status] || item.status}
+                          </span>
+                        )}
                       </div>
-                      {item.updated_at && (
-                        <time className="knowledge-row-date">{formatDate(item.updated_at)}</time>
-                      )}
+                      {item.snippet && <p className="knowledge-snippet">{item.snippet}</p>}
+                      <div className="knowledge-result-meta">
+                        <span>{collectionName(item.collection)}</span>
+                        {item.projects?.length ? <span>{item.projects.join(' · ')}</span> : null}
+                      </div>
+                    </div>
+                    {item.updated_at && (
+                      <time className="knowledge-row-date">{formatDate(item.updated_at)}</time>
+                    )}
+                  </button>
+                ))}
+                <div className="knowledge-list-footnote">
+                  {documents.total !== undefined && (
+                    <span>
+                      已加载 {documents.documents.length} / {documents.total} 篇文档
+                    </span>
+                  )}
+                  {documents.hasNextPage && (
+                    <button
+                      className="text-button"
+                      disabled={busy || documents.isFetching}
+                      onClick={() => void documents.fetchNextPage()}
+                    >
+                      {documents.isFetchingNextPage ? '正在加载…' : '加载更多文档'}
                     </button>
-                  ))}
-                {(documents.data?.documents.length || 0) >= 200 && (
-                  <p className="knowledge-list-footnote">
-                    已显示前 200 条，更多内容请使用全局搜索。
-                  </p>
-                )}
+                  )}
+                </div>
               </>
             )}
           </div>
@@ -692,16 +693,10 @@ function CollectionBranch({
   useEffect(() => {
     if (active) setExpanded(true)
   }, [active, documentID])
-  const documents = useQuery({
-    queryKey: ['knowledge', 'query', item.id, '', ''],
-    queryFn: ({ signal }) =>
-      call<{ documents: KnowledgeDocumentRow[] }>(
-        'knowledge.query',
-        { collection: item.id, text: '', status: '', limit: 200 },
-        signal,
-      ),
-    enabled: expanded && !memoryCollection,
-  })
+  const documents = useKnowledgeDocuments(
+    { collection: item.id, exclude_archived: true },
+    expanded && !memoryCollection,
+  )
   const memories = useQuery({
     queryKey: ['knowledge', 'memory', '', ''],
     queryFn: ({ signal }) =>
@@ -713,12 +708,12 @@ function CollectionBranch({
         document_id: memory.id,
         title: memory.content.trim().split(/\r?\n/)[0] || '未命名记忆',
       }))
-    : documents.data?.documents.filter((doc) => doc.status !== 'archived')
+    : documents.documents
   const pending = memoryCollection ? memories.isPending : documents.isPending
   const error = memoryCollection ? memories.error : documents.error
   const retry = () => {
     if (memoryCollection) void memories.refetch()
-    else void documents.refetch()
+    else void documents.refresh()
   }
   const contentLabel = memoryCollection ? '记忆' : '文档'
   return (
@@ -803,8 +798,17 @@ function CollectionBranch({
               </button>
             ))}
             {rows?.length === 0 && <p className="knowledge-side-note">暂无{contentLabel}</p>}
-            {(rows?.length || 0) >= 200 && (
-              <p className="knowledge-side-note">已显示前 200 条，更多内容请使用全局搜索。</p>
+            {!memoryCollection && documents.hasNextPage && (
+              <button
+                className="text-button"
+                disabled={busy || documents.isFetching}
+                onClick={() => void documents.fetchNextPage()}
+              >
+                {documents.isFetchingNextPage ? '正在加载…' : '加载更多文档'}
+              </button>
+            )}
+            {memoryCollection && (rows?.length || 0) >= 200 && (
+              <p className="knowledge-side-note">已显示前 200 条记忆，请使用关键词缩小范围。</p>
             )}
           </>
         )}
@@ -1402,17 +1406,25 @@ function DocumentComposer({
   )
   const { draft, patch } = draftState
   const mutation = useMutation({
-    mutationFn: () =>
-      call<KnowledgeDocument>(editing ? 'knowledge.document.update' : 'knowledge.document.create', {
-        ...(editing
-          ? { document_id: original?.metadata.id, etag: draft.etag, status: draft.status }
-          : { collection: draft.collection }),
+    mutationFn: () => {
+      const content = {
         title: draft.title.trim(),
         content: draft.content,
         tags: splitValues(draft.tags),
         domains: splitValues(draft.domains),
         projects: splitValues(draft.projects),
-      }),
+      }
+      if (editing) {
+        if (!original) throw new Error('文档尚未读取，请刷新后重试。')
+        return call('knowledge.document.update', {
+          document_id: original.metadata.id,
+          etag: draft.etag,
+          status: draft.status,
+          ...content,
+        })
+      }
+      return call('knowledge.document.create', { collection: draft.collection, ...content })
+    },
     retry: false,
     onSuccess: async (result) => {
       draftState.clear()
@@ -1420,8 +1432,7 @@ function DocumentComposer({
     },
   })
   const latest = useMutation({
-    mutationFn: () =>
-      call<KnowledgeDocument>('knowledge.document.get', { document_id: original?.metadata.id }),
+    mutationFn: () => call('knowledge.document.get', { document_id: original?.metadata.id || '' }),
   })
   useEffect(() => {
     props.onBusy(mutation.isPending)
@@ -1684,7 +1695,7 @@ function CollectionComposer(props: ComposerProps<KnowledgeCollection>) {
   const { draft, patch } = draftState
   const mutation = useMutation({
     mutationFn: () =>
-      call<KnowledgeCollection>('knowledge.collection.create', {
+      call('knowledge.collection.create', {
         id: draft.id.trim(),
         name: draft.name.trim(),
         description: draft.description.trim(),

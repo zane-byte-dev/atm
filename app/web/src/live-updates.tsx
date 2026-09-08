@@ -1,50 +1,45 @@
-import { useEffect } from 'react'
+import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import { useLocation } from 'react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import type { Bootstrap } from './types'
-
-const routes: Record<string, string[]> = {
-  tasks: ['todos', 'presence', 'jobs'],
-  collection: ['collection', 'jobs'],
-  agents: ['sessions', 'presence', 'jobs'],
-  knowledge: ['knowledge', 'memory'],
-  usage: ['usage', 'day', 'jobs'],
-  'ai-day': ['day', 'jobs'],
-  settings: ['settings', 'jobs', 'presence'],
-}
-const queryDomains: Record<string, string[]> = {
-  todos: ['todos', 'todo', 'doc', 'dependencies'],
-  collection: ['collection'],
-  sessions: ['activity-status', 'activity-sessions', 'activity-search', 'activity-session'],
-  usage: ['activity-usage', 'activity-quota'],
-  knowledge: ['knowledge'],
-  memory: ['knowledge'],
-  day: ['day.snapshot'],
-  settings: ['settings.get'],
-  jobs: ['runtime-jobs', 'runtime-job'],
-  presence: ['activity-status', 'presence'],
-}
+import { invalidateDomains, subscriptionDomains } from './query-domains'
+import { setLiveConnection } from './live-connection'
 
 export function useLiveUpdates(boot: Bootstrap | undefined) {
   const query = useQueryClient()
   const { pathname } = useLocation()
   const route = pathname.split('/')[1] || 'tasks'
+  const subscribe = useCallback(
+    (notify: () => void) => query.getQueryCache().subscribe(notify),
+    [query],
+  )
+  const getDomains = useCallback(() => subscriptionDomains(query, route).join(','), [query, route])
+  const domainKey = useSyncExternalStore(subscribe, getDomains, getDomains)
   useEffect(() => {
+    setLiveConnection(false)
     if (boot?.capabilities?.sse !== true) return
-    const domains = routes[route] ?? ['todos']
+    const domains = domainKey.split(',')
     let source: EventSource | undefined
     let stopped = false
     let lastProbe = 0
     let probing = false
     const invalidate = (changed: string[]) => {
-      const keys = new Set(changed.flatMap((domain) => queryDomains[domain] ?? []))
-      void query.invalidateQueries({ predicate: (item) => keys.has(String(item.queryKey[0])) })
+      void invalidateDomains(query, changed)
     }
     const connect = () => {
       source?.close()
+      setLiveConnection(false)
       if (stopped || document.visibilityState === 'hidden') return
       source = new EventSource(`/api/v1/events?domains=${domains.join(',')}`)
+      const current = source
+      source.onopen = () => {
+        if (stopped || source !== current) return
+        setLiveConnection(true)
+        invalidate(domains)
+      }
       source.onerror = () => {
+        if (stopped || source !== current) return
+        setLiveConnection(false)
         if (probing || Date.now() - lastProbe < 5000 || stopped) return
         lastProbe = Date.now()
         probing = true
@@ -73,6 +68,7 @@ export function useLiveUpdates(boot: Bootstrap | undefined) {
       })
       source.addEventListener('reset', () => invalidate(domains))
       source.addEventListener('session.expired', () => {
+        setLiveConnection(false)
         source?.close()
         window.dispatchEvent(new Event('atm:session-expired'))
       })
@@ -85,8 +81,9 @@ export function useLiveUpdates(boot: Bootstrap | undefined) {
     document.addEventListener('visibilitychange', visibility)
     return () => {
       stopped = true
+      setLiveConnection(false)
       source?.close()
       document.removeEventListener('visibilitychange', visibility)
     }
-  }, [boot, query, route])
+  }, [boot, query, domainKey])
 }

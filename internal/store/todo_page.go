@@ -16,19 +16,57 @@ type TodoPageQuery struct {
 	Project string
 	Limit   int
 	Offset  int
+	// Workbench uses metadata-only search and exact facet matching. The legacy
+	// navigator/CLI contract above retains its project aliases and status default.
+	Workbench    bool
+	Focus        string
+	Priority     string
+	Creator      string
+	Tag          string
+	From         string
+	To           string
+	Query        string
+	Sort         string
+	Direction    string
+	GroupBy      string
+	GroupKey     string
+	Partition    string
+	MetadataOnly bool
 }
 
 type TodoPage struct {
-	Todos    []Todo
-	Total    int
-	Counts   map[string]int
-	Projects []string
+	Todos             []Todo
+	Total             int
+	Counts            map[string]int
+	Projects          []string
+	MatchedTotal      int
+	Groups            []TodoPageGroup
+	Facets            map[string][]TodoPageFacet
+	ViewCounts        map[string]int
+	SelectionRevision string
+}
+
+type TodoPageGroup struct {
+	Key         string `json:"key"`
+	Project     string `json:"project"`
+	Status      string `json:"status"`
+	Total       int    `json:"total"`
+	ActiveTotal int    `json:"active_total"`
+	DoneTotal   int    `json:"done_total"`
+}
+
+type TodoPageFacet struct {
+	Value string `json:"value"`
+	Count int    `json:"count"`
 }
 
 // ReadTodoPage keeps counts, the selected page and its dependencies on one
 // SQLite snapshot. It never loads descriptions, links, images or the
 // complete Todo set merely to render a bounded navigator page.
 func ReadTodoPage(ctx context.Context, input TodoPageQuery) (TodoPage, error) {
+	if input.Workbench {
+		return readTodoWorkbenchPage(ctx, input)
+	}
 	result := TodoPage{
 		Todos:    []Todo{},
 		Counts:   map[string]int{"all": 0, "open": 0, "in_progress": 0, "review": 0, "done": 0, "archived": 0},
@@ -106,14 +144,14 @@ func ReadTodoPage(ctx context.Context, input TodoPageQuery) (TodoPage, error) {
 		result.Total = result.Counts[input.Status]
 	}
 	args = append(args, input.Limit, input.Offset)
-	rows, err = tx.QueryContext(ctx, `SELECT id,title,priority,status,project,wake_condition,review_at,created,done_ts,creator
+	rows, err = tx.QueryContext(ctx, `SELECT id,title,priority,status,project,wake_condition,review_at,created,done_ts,creator,updated_at
 		FROM todos`+where+` ORDER BY created DESC,CAST(SUBSTR(id,2) AS INTEGER) DESC,id DESC LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return result, err
 	}
 	for rows.Next() {
 		var todo Todo
-		if err := rows.Scan(&todo.ID, &todo.Title, &todo.Priority, &todo.Status, &todo.Project, &todo.WakeCondition, &todo.ReviewAt, &todo.Created, &todo.DoneTS, &todo.Creator); err != nil {
+		if err := rows.Scan(&todo.ID, &todo.Title, &todo.Priority, &todo.Status, &todo.Project, &todo.WakeCondition, &todo.ReviewAt, &todo.Created, &todo.DoneTS, &todo.Creator, &todo.UpdatedAt); err != nil {
 			rows.Close()
 			return result, err
 		}
@@ -126,54 +164,8 @@ func ReadTodoPage(ctx context.Context, input TodoPageQuery) (TodoPage, error) {
 		return result, err
 	}
 
-	if len(result.Todos) > 0 {
-		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(result.Todos)), ",")
-		ids := make([]any, 0, len(result.Todos))
-		byID := make(map[string]*Todo, len(result.Todos))
-		for index := range result.Todos {
-			ids = append(ids, result.Todos[index].ID)
-			byID[result.Todos[index].ID] = &result.Todos[index]
-		}
-		rows, err = tx.QueryContext(ctx, `SELECT todo_id,tag FROM todo_tags WHERE todo_id IN (`+placeholders+`) ORDER BY todo_id,position,tag`, ids...)
-		if err != nil {
-			return result, err
-		}
-		for rows.Next() {
-			var todoID, tag string
-			if err := rows.Scan(&todoID, &tag); err != nil {
-				rows.Close()
-				return result, err
-			}
-			if todo := byID[todoID]; todo != nil {
-				todo.Tags = append(todo.Tags, tag)
-			}
-		}
-		if err := rows.Close(); err != nil {
-			return result, err
-		}
-		if err := rows.Err(); err != nil {
-			return result, err
-		}
-		rows, err = tx.QueryContext(ctx, `SELECT todo_id,dependency_id FROM todo_dependencies WHERE todo_id IN (`+placeholders+`) ORDER BY todo_id,position,dependency_id`, ids...)
-		if err != nil {
-			return result, err
-		}
-		for rows.Next() {
-			var todoID, dependencyID string
-			if err := rows.Scan(&todoID, &dependencyID); err != nil {
-				rows.Close()
-				return result, err
-			}
-			if todo := byID[todoID]; todo != nil {
-				todo.DependsOn = append(todo.DependsOn, dependencyID)
-			}
-		}
-		if err := rows.Close(); err != nil {
-			return result, err
-		}
-		if err := rows.Err(); err != nil {
-			return result, err
-		}
+	if err := readTodoPageRelations(ctx, tx, result.Todos); err != nil {
+		return result, err
 	}
 	return result, tx.Commit()
 }

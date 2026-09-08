@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Pencil, Check, X } from 'lucide-react'
 import { call } from './api'
-import { Notice } from './editor'
+import { Notice } from './markdown'
 import type { TodoDetail } from './types'
 
 export function TaskInlineProperty({
@@ -24,7 +24,9 @@ export function TaskInlineProperty({
       call('todo.update', {
         todo_id: data.todo.id,
         expected_etag: draft!.etag,
-        [field]: draft!.value.trim(),
+        ...(field === 'priority'
+          ? { priority: draft!.value.trim() }
+          : { project: draft!.value.trim() }),
       }),
     onSuccess: async () => {
       setDraft(undefined)

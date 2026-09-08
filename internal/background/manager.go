@@ -72,6 +72,8 @@ type Job struct {
 	// collection titles belong in the notification feed, not in the generic job
 	// history returned to every workspace client.
 	Collection *CollectionCompletion `json:"-"`
+	revision   uint64
+	writes     *jobWriteState
 }
 
 func (j Job) Terminal() bool { return j.Status != "queued" && j.Status != "running" }
@@ -84,7 +86,8 @@ type Options struct {
 	OpenDB  func() (*sql.DB, error)
 	Execute Executor
 	Refine  TodoRefineOptions
-	// WithConfig pins mutable package configuration for the entire operation.
+	// WithConfig pins outbound policy and protects local state access; explicit
+	// external I/O boundaries can release the host configuration gate.
 	WithConfig ConfigGate
 	OnChange   func(Job)
 	// Schedule opts into the existing automatic work. Zero value has no timers.
@@ -111,6 +114,9 @@ type queuedJob struct {
 	// a retryable failed job. A durable journal is retried independently.
 	usagePending bool
 	usageLost    bool
+	// finalizing keeps the last published snapshot visible until its terminal
+	// receipt is durable or pendingFinal owns its recovery.
+	finalizing bool
 }
 
 type Manager struct {
@@ -128,6 +134,9 @@ type Manager struct {
 	durabilityWake                    chan struct{}
 	pendingFinal                      map[string]Job
 	pendingUsage                      map[string]struct{}
+	pendingProgress                   map[string]Job
+	admission                         chan struct{}
+	writeGate                         chan struct{}
 }
 
 func New(options Options) (*Manager, error) {
@@ -171,10 +180,19 @@ func New(options Options) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	// This handle only stores small control receipts. Keep its own SQLite lock
+	// wait short; content/index writers use their independent store handles.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.Exec(`PRAGMA busy_timeout=100`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Manager{
 		options: options, db: db, queue: make(chan *queuedJob, 16),
 		active: map[string]*queuedJob{}, done: make(chan struct{}),
 		durabilityWake: make(chan struct{}, 1), pendingFinal: map[string]Job{}, pendingUsage: map[string]struct{}{},
+		pendingProgress: map[string]Job{}, admission: make(chan struct{}, 1), writeGate: make(chan struct{}, 1),
 	}, nil
 }
 
@@ -184,14 +202,20 @@ func (m *Manager) Start(ctx context.Context) error {
 	if ctx == nil {
 		return invalid("context is required")
 	}
+	if err := m.acquireAdmission(ctx); err != nil {
+		return err
+	}
+	defer m.releaseAdmission()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return busy("background runtime is closed")
 	}
 	if m.started {
+		m.mu.Unlock()
 		return nil
 	}
+	m.mu.Unlock()
 	records, err := store.ListBackgroundJobs(ctx, m.db, 200, true)
 	if err != nil {
 		return err
@@ -201,6 +225,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		if err := json.Unmarshal([]byte(record.ResultJSON), &job); err != nil {
 			return err
 		}
+		job.revision, job.writes = 1, &jobWriteState{}
 		job.Status = "interrupted"
 		job.Phase = "上次运行已中断"
 		job.FinishedAt = m.timestamp()
@@ -211,6 +236,11 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	if err := m.options.WithConfig(ctx, func(ctx context.Context) error { return RecoverUsage(ctx, m.options.DataDir) }); err != nil {
 		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return busy("background runtime is closed")
 	}
 	m.ctx, m.cancel = context.WithCancel(ctx)
 	m.started = true
@@ -266,11 +296,18 @@ func (m *Manager) Run(ctx context.Context, call application.Call, request Reques
 	keyData, _ := json.Marshal(keyRequest)
 	hash := sha256.Sum256(keyData)
 	digest := hex.EncodeToString(hash[:])
+	if err := m.acquireAdmission(ctx); err != nil {
+		return Job{}, err
+	}
+	defer m.releaseAdmission()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if !m.started || m.closed {
+		m.mu.Unlock()
 		return Job{}, busy("background runtime is not accepting jobs")
 	}
+	m.wg.Add(1)
+	m.mu.Unlock()
+	defer m.wg.Done()
 	if err := ctx.Err(); err != nil {
 		return Job{}, err
 	}
@@ -286,6 +323,7 @@ func (m *Manager) Run(ctx context.Context, call application.Call, request Reques
 		err := json.Unmarshal([]byte(record.ResultJSON), &job)
 		return job, err
 	}
+	m.mu.Lock()
 	// Never queue a duplicate operation behind its currently running copy. An
 	// explicit different idempotency key is not evidence that repetition is useful.
 	for _, active := range m.active {
@@ -293,42 +331,46 @@ func (m *Manager) Run(ctx context.Context, call application.Call, request Reques
 		if string(current) == string(data) {
 			err := application.NewError(application.CodeBusy, "this operation is already queued or running")
 			err.Details = map[string]any{"job_id": active.job.ID}
+			m.mu.Unlock()
 			return Job{}, err
 		}
 	}
 	if len(m.active) >= 18 || len(m.queue) == cap(m.queue) {
+		m.mu.Unlock()
 		return Job{}, busy("background queue is full")
 	}
+	m.mu.Unlock()
 	id, err := randomID()
 	if err != nil {
 		return Job{}, err
 	}
-	job := Job{ID: id, Kind: request.Kind, TodoID: request.TodoID, Status: "queued", Phase: "等待执行", CreatedAt: m.timestamp()}
+	job := Job{ID: id, Kind: request.Kind, TodoID: request.TodoID, Status: "queued", Phase: "等待执行", CreatedAt: m.timestamp(), revision: 1, writes: &jobWriteState{}}
 	result, _ := json.Marshal(job)
 	err = store.InsertBackgroundJob(ctx, m.db, store.BackgroundJobRecord{ID: id, Key: key, Digest: digest, Kind: string(request.Kind), Status: job.Status, RequestJSON: string(data), ResultJSON: string(result), CreatedAt: m.options.Now().UnixNano(), Automatic: automatic})
 	if err != nil {
 		return Job{}, err
 	}
 	entry := &queuedJob{job: job, request: request, call: call}
-	m.active[id] = entry
-	select {
-	case m.queue <- entry:
-	default:
-		delete(m.active, id)
-		job.Status = "interrupted"
-		job.Phase = "队列已满"
-		job.FinishedAt = m.timestamp()
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		job.revision++
+		job.Status, job.Phase, job.FinishedAt = "interrupted", "服务已关闭，未执行", m.timestamp()
 		_ = m.persist(job)
-		return Job{}, busy("background queue is full")
+		return Job{}, busy("background runtime is not accepting jobs")
 	}
-	// Listener calls happen outside locks in workers; enqueue also wakes a worker
-	// immediately, so a synchronous notification is unnecessary here.
+	m.active[id] = entry
+	m.queue <- entry // admission and the active bound reserve this slot
+	m.mu.Unlock()
 	return job, nil
 }
 
 func (m *Manager) Get(ctx context.Context, id string) (Job, error) {
 	m.mu.Lock()
 	pending, ok := m.pendingFinal[id]
+	if entry := m.active[id]; entry != nil && !entry.job.Terminal() {
+		pending, ok = entry.job, true
+	}
 	m.mu.Unlock()
 	if ok {
 		return pending, nil
@@ -355,9 +397,12 @@ func (m *Manager) List(ctx context.Context, limit int) ([]Job, error) {
 	}
 	jobs := make([]Job, 0, len(records))
 	m.mu.Lock()
-	pending := make(map[string]Job, len(m.pendingFinal))
+	pending := make(map[string]Job, len(m.pendingFinal)+len(m.active))
 	for id, job := range m.pendingFinal {
 		pending[id] = job
+	}
+	for id, entry := range m.active {
+		pending[id] = entry.job
 	}
 	m.mu.Unlock()
 	for _, record := range records {
@@ -390,20 +435,33 @@ func (m *Manager) List(ctx context.Context, limit int) ([]Job, error) {
 }
 
 func (m *Manager) Cancel(ctx context.Context, id string) (Job, error) {
+	if ctx == nil {
+		return Job{}, invalid("context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return Job{}, err
+	}
 	m.mu.Lock()
 	entry := m.active[id]
 	if entry == nil {
 		m.mu.Unlock()
 		return m.Get(ctx, id)
 	}
+	if entry.finalizing || entry.job.Terminal() {
+		job := entry.job
+		m.mu.Unlock()
+		return job, nil
+	}
 	entry.job.CancelRequested = true
 	entry.job.Phase = "正在取消，等待当前操作收尾"
+	entry.job.revision++
 	if entry.cancel != nil {
 		entry.cancel()
 	}
 	job := entry.job
-	err := m.persist(job)
+	delete(m.pendingProgress, id)
 	m.mu.Unlock()
+	err := m.persistContext(ctx, job)
 	m.changed(job)
 	return job, err
 }
@@ -455,12 +513,13 @@ func (m *Manager) execute(entry *queuedJob) {
 	if entry.job.CancelRequested {
 		cancel()
 	}
+	entry.job.revision++
 	entry.job.Status = "running"
 	entry.job.Phase = "开始执行"
 	entry.job.StartedAt = m.timestamp()
 	job := entry.job
-	err := m.persist(job)
 	m.mu.Unlock()
+	err := m.persist(job)
 	m.changed(job)
 	defer cancel()
 	if err != nil {
@@ -499,85 +558,91 @@ func (m *Manager) progress(entry *queuedJob, phase string) {
 		phase = phase[:240]
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active[entry.job.ID] != entry || entry.finalizing || entry.job.Terminal() || entry.job.CancelRequested || entry.job.Phase == phase {
+		return
+	}
 	entry.job.Phase = phase
-	job := entry.job
-	_ = m.persist(job)
-	m.mu.Unlock()
-	m.changed(job)
+	entry.job.revision++
+	m.pendingProgress[entry.job.ID] = entry.job
 }
 
 func (m *Manager) finish(entry *queuedJob, result any, err error) {
 	m.mu.Lock()
-	entry.job.FinishedAt = m.timestamp()
-	entry.job.Status = "succeeded"
-	entry.job.Phase = "已完成"
+	entry.finalizing = true
+	job := entry.job
+	job.revision++
+	job.FinishedAt = m.timestamp()
+	job.Status = "succeeded"
+	job.Phase = "已完成"
 	if entry.usagePending {
-		entry.job.Phase = "已完成；用量账本已保留并将在后台补记"
+		job.Phase = "已完成；用量账本已保留并将在后台补记"
 	} else if entry.usageLost {
-		entry.job.Phase = "已完成；用量记录未能保存"
+		job.Phase = "已完成；用量记录未能保存"
 	}
 	if err != nil {
-		entry.job.Status = "failed"
-		entry.job.Phase = "执行失败"
-		entry.job.Error = &JobError{Code: "unavailable", Message: "操作未完成，请检查相关来源状态后重试"}
+		job.Status = "failed"
+		job.Phase = "执行失败"
+		job.Error = &JobError{Code: "unavailable", Message: "操作未完成，请检查相关来源状态后重试"}
 		var appErr *application.Error
 		if errors.As(err, &appErr) {
 			switch appErr.Code {
 			case application.CodeConflict:
-				entry.job.Error = &JobError{Code: "conflict", Message: "内容已被更新，请刷新后重新操作"}
+				job.Error = &JobError{Code: "conflict", Message: "内容已被更新，请刷新后重新操作"}
 			case application.CodeNotFound:
-				entry.job.Error = &JobError{Code: "not_found", Message: "操作对象已不存在，请刷新页面"}
+				job.Error = &JobError{Code: "not_found", Message: "操作对象已不存在，请刷新页面"}
 			case application.CodeInvalidArgument:
-				entry.job.Error = &JobError{Code: "invalid_argument", Message: "操作参数不符合要求，请检查后重试"}
+				job.Error = &JobError{Code: "invalid_argument", Message: "操作参数不符合要求，请检查后重试"}
 			case application.CodeForbidden:
-				entry.job.Error = &JobError{Code: "forbidden", Message: "当前操作未获允许"}
+				job.Error = &JobError{Code: "forbidden", Message: "当前操作未获允许"}
 			}
 		}
 		if errors.Is(err, context.Canceled) {
-			entry.job.Status = "canceled"
-			entry.job.Phase = "已取消"
-			entry.job.Error = nil
+			job.Status = "canceled"
+			job.Phase = "已取消"
+			job.Error = nil
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
-			entry.job.Error = &JobError{Code: "timeout", Message: "操作超时，已请求停止"}
+			job.Error = &JobError{Code: "timeout", Message: "操作超时，已请求停止"}
 		}
 		if m.closed {
-			entry.job.Status = "interrupted"
-			entry.job.Phase = "服务关闭，操作已中断"
-			entry.job.Error = &JobError{Code: "interrupted", Message: "服务关闭前未完成，未自动重试"}
+			job.Status = "interrupted"
+			job.Phase = "服务关闭，操作已中断"
+			job.Error = &JobError{Code: "interrupted", Message: "服务关闭前未完成，未自动重试"}
 		}
 	}
 	if result != nil {
 		if collection, ok := result.(collectionJobResult); ok {
-			entry.job.Collection = collection.completion
+			job.Collection = collection.completion
 		}
 		if data, e := json.Marshal(result); e == nil && len(data) <= 32*1024 {
-			entry.job.Result = data
+			job.Result = data
 		}
 	}
-	job := entry.job
+	delete(m.pendingProgress, job.ID)
+	m.mu.Unlock()
+	pending := false
 	if persistErr := m.persist(job); persistErr != nil {
+		job.revision++
 		job.Status = "interrupted"
 		job.Phase = "执行结果未能保存"
 		job.Error = &JobError{Code: "unavailable", Message: "结果状态未能保存，请先核对实际结果再重试"}
-		entry.job = job
-		if retryErr := m.persist(job); retryErr != nil {
-			m.pendingFinal[job.ID] = job
-			m.wakeDurabilityLocked()
-		}
+		pending = m.persist(job) != nil
+	}
+	m.mu.Lock()
+	// Publish the terminal snapshot atomically across all readers. Until this
+	// point the active entry still holds the last running/queued snapshot.
+	entry.job = job
+	if pending {
+		m.pendingFinal[job.ID] = job
+		m.wakeDurabilityLocked()
 	}
 	delete(m.active, job.ID)
 	m.mu.Unlock()
-	_ = store.PruneScheduledBackgroundJobs(context.Background(), m.db)
+	pruneCtx, cancel := context.WithTimeout(context.Background(), controlWriteTimeout)
+	_ = store.PruneScheduledBackgroundJobs(pruneCtx, m.db)
+	cancel()
 	m.changed(job)
-}
-
-func (m *Manager) persist(job Job) error {
-	data, err := json.Marshal(job)
-	if err != nil {
-		return err
-	}
-	return m.options.updateJob(context.Background(), m.db, job.ID, job.Status, string(data))
 }
 
 // durabilityWorker retries only already-recorded local state. It never calls
@@ -587,8 +652,12 @@ func (m *Manager) durabilityWorker() {
 	defer m.wg.Done()
 	ticker := time.NewTicker(m.options.durabilityRetry)
 	defer ticker.Stop()
+	progressTick := time.NewTicker(50 * time.Millisecond)
+	defer progressTick.Stop()
 	for {
 		select {
+		case <-progressTick.C:
+			m.flushProgress()
 		case <-m.durabilityWake:
 			m.retryDurability(m.ctx)
 		case <-ticker.C:
@@ -678,6 +747,14 @@ func usageJournalExists(dataDir, id string) bool {
 }
 
 func (m *Manager) changed(job Job) {
+	if job.writes != nil {
+		job.writes.events.Lock()
+		defer job.writes.events.Unlock()
+		if job.revision <= job.writes.published {
+			return
+		}
+		job.writes.published = job.revision
+	}
 	if m.options.OnChange != nil {
 		m.options.OnChange(job)
 	}

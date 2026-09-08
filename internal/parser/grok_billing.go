@@ -1,6 +1,7 @@
 package parser
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,6 +99,10 @@ func grokAuthToken() (string, error) {
 // GrokLiveQuota fetches the current credits snapshot from the billing API.
 // It never touches the network without a locally stored, unexpired token.
 func GrokLiveQuota() (*QuotaInfo, error) {
+	return GrokLiveQuotaContext(context.Background())
+}
+
+func GrokLiveQuotaContext(ctx context.Context) (*QuotaInfo, error) {
 	token, err := grokAuthToken()
 	if err != nil {
 		return nil, err
@@ -108,15 +113,19 @@ func GrokLiveQuota() (*QuotaInfo, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("x-grok-client-mode", "cli")
-	resp, err := grokBillingHTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("grok billing request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("grok billing API returned %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var body []byte
+	err = config.External(ctx, func(externalCtx context.Context) error {
+		resp, err := grokBillingHTTPClient.Do(req.WithContext(externalCtx))
+		if err != nil {
+			return fmt.Errorf("grok billing request failed: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("grok billing API returned %d", resp.StatusCode)
+		}
+		body, err = io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -139,6 +148,10 @@ func GrokLiveQuota() (*QuotaInfo, error) {
 // GrokQuotaAuto is the merge strategy behind `atm quota`:
 // live (opt-in) → fresh cache → live fetch → stale cache → local log.
 func GrokQuotaAuto(live bool) *QuotaInfo {
+	return GrokQuotaAutoContext(context.Background(), live)
+}
+
+func GrokQuotaAutoContext(ctx context.Context, live bool) *QuotaInfo {
 	if !live {
 		return GrokQuota()
 	}
@@ -146,7 +159,7 @@ func GrokQuotaAuto(live bool) *QuotaInfo {
 	if cached := readGrokQuotaCache(now, grokQuotaCacheFresh); cached != nil {
 		return grokFillPlanFromLog(cached)
 	}
-	if info, err := GrokLiveQuota(); err == nil {
+	if info, err := GrokLiveQuotaContext(ctx); err == nil {
 		return grokFillPlanFromLog(info)
 	}
 	if cached := readGrokQuotaCache(now, grokQuotaCacheMaxStale); cached != nil {

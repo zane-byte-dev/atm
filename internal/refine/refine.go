@@ -165,8 +165,9 @@ func NormalizeOptions(opts Options) Options {
 // applies Prepare itself against the latest Todo snapshot.
 func Propose(ctx context.Context, todo store.Todo, card string, opts Options) (Proposal, string, error) {
 	opts = NormalizeOptions(opts)
+	policy := config.PolicyForExecution(ctx)
 	data, err := runModel(ctx, textmodel.TaskTodoRefine, opts.Timeout, proposalJSONSchema,
-		PromptWithInstructions(todo, card, config.TodoRefinePrompt, opts.Hint))
+		PromptWithInstructions(todo, card, policy.TodoRefinePrompt, opts.Hint))
 	if err != nil {
 		return Proposal{}, "", err
 	}
@@ -174,7 +175,7 @@ func Propose(ctx context.Context, todo store.Todo, card string, opts Options) (P
 	if err != nil {
 		return Proposal{}, "", err
 	}
-	return proposal, normalizeSourceLabel(config.TextModelSource), nil
+	return proposal, normalizeSourceLabel(policy.TextModelSource), nil
 }
 
 // runModel is the one seam tests replace. Production talks to ATM's built-in

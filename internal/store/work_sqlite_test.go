@@ -111,7 +111,7 @@ func TestEnsureSchemaRejectsUnsupportedVersions(t *testing.T) {
 		name, want string
 		version    int
 	}{
-		{name: "previous", version: SchemaVersion - 1, want: "no longer supported"},
+		{name: "unsupported older", version: MinUpgradableVersion - 1, want: "no longer supported"},
 		{name: "newer", version: SchemaVersion + 1, want: "newer"},
 	} {
 		t.Run(test.name, func(t *testing.T) {

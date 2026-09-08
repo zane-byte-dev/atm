@@ -8,15 +8,15 @@
 
 当前实现包含：
 
-- 同一个完整 Go 二进制提供 CLI、七个 Web 工作区、白名单 API、嵌入资源和同源 Vite HMR。
+- 同一个完整 Go 二进制提供 CLI、六个 Web 工作区、白名单 API、嵌入资源和同源 Vite HMR；AI Day 徽章日历归入统计页。
 - 任务创建/编辑/生命周期、计划/进展/依赖/等待、图片选择/拖放/粘贴上传；本地知识文档 ETag 编辑、共享记忆、来源增删改、业务设置和只写凭证。
-- 任务及知识草稿按编辑器实例存入 `localStorage`，关闭后可显式恢复；不会相互删除不同编辑器的草稿。
-- schema v57 是当前完整基线；旧迁移梯子与旧库只读预览已经删除，当前构建不猜测历史 schema。
+- 新建任务在 `localStorage` 记住最近填写内容，再次打开时自动填入；已有任务编辑不持久化。知识与记忆编辑器各自提供草稿恢复。
+- schema v58 是当前完整结构，仅保留 v57 → v58 的任务最后变更时间迁移；旧库只读预览已删除，`serve` 对 v57 提示先显式迁移。
 - `jobs.run/list/show/cancel` 支持同步、采集、重处理、AI Day、额度刷新和 `todo.refine`，保留幂等身份、ETag、取消与重启中断语义。
 - Go 默认接管后台：同步约 5 分钟，AI Day 约 7 分钟，采集按配置检查到期；Hook 即时接收，每 8 秒回补 presence。
-- SSE 按当前页面域订阅，服务内提交主动失效；有订阅时每 2 秒检查对应域版本与文件指纹，关闭页面不停止 Go 后台。
+- SSE 合并为 reset，由页面刷新当前查询；有订阅时每 2 秒检查全部业务域版本与文件指纹，服务内提交异步触发扫描，关闭页面不停止 Go 后台。
 - 用户级 LaunchAgent `serve install --print/install/uninstall`，固定当前完整二进制绝对路径，受控停机、登录启动及异常退出恢复。
-- 独立 [ATM Menu](../../app/menubar/README.md) 和 [ATM Voice](../../app/voice/README.md)，各自构建、偏好域和权限；旧 Swift 主工作区已从工作树移除，历史源码保存在 Git 中；当前 Go/Web/Menu/Voice 构建均独立于旧实现。
+- 独立 [ATM Menu](../../app/menubar/README.md) 和 [VoxCaret](../../app/voice/README.md)，各自构建、偏好域和权限；旧 Swift 主工作区已从工作树移除，历史源码保存在 Git 中；当前 Go/Web/Menu/Voice 构建均独立于旧实现。
 - 原生偏好按白名单迁移：Web 的知识/来源顺序及三项用量筛选；Menu 的通知、声音与呼出快捷键；Voice 的七项语音偏好和已下载完整模型。配置凭证与转写历史不混入迁移文件。
 
 先前只读和任务阶段已完成真实数据页面核对、隔离创建/编辑/冲突、生命周期与知识/记忆操作验证；本轮增加跨进程锁、持久执行、SSE、上传、配置冲突和原生拆分的针对性测试。
@@ -150,6 +150,8 @@ runtime/
 
 收到退出信号后停止接收新写请求和新后台工作，取消可取消的读取，等待已开始的事务/当前批次完成，落模型用量和状态，再关闭 SSE、HTTP、socket 和数据库连接。设置总关停预算，但不能把尚未完成的外部操作标为成功。
 
+HTTP 排空与变更 watcher 共用 10 秒预算，watcher 的扫描/文档时间投影接收取消 context；后台 runtime 清理另有 25 秒预算。实例锁只在旧写操作退出后释放。若只有 watcher 超时，`Close` 返回错误并保留锁，待它后续退出自动清理实例文件和锁；HTTP 或 runtime 自身未完成排空时继续保留所有权。已关闭的变更 tracker 拒绝新扫描，活动投影退出后再释放其数据库连接，避免关闭后重新打开或提前拆除资源。
+
 已提供用户级 `atm serve install --print`、`serve install`、`serve uninstall`。安装记录当前完整二进制的绝对路径、固定数据目录/端口和环境 PATH，不复制文件或安装系统级 daemon；launchd 使用 RunAtLoad/KeepAlive 和 10 秒退避，关停预算 45 秒。输出日志写到数据目录 `runtime/`。重新加载已停止服务执行 `serve install`，没有单独 `restart` 子命令。
 
 `serve stop` 对托管实例先卸载当前登录会话中的 job，保留 plist 供下次登录，避免 KeepAlive 立即拉起；`uninstall` 同时移除登录配置，保留数据和 Go owner 标记。不覆盖无关 LaunchAgent，已有未托管实例须先停止。登录服务的实际安装与异常恢复仍需在目标账户验证。
@@ -225,20 +227,16 @@ TypeScript DTO 维护 Go 公开契约的小型明确映射，不把整个 store 
 
 ### 6.1 配置并发
 
-当前 config 以 package 全局变量/map 为主，部分保存后调用 LoadConfig；已有文件锁保证磁盘读改写，不保证 HTTP 并发读与 reload 安全。
+`Host.WithConfig` 在操作开始时复制外发配置，包括模型、地址、凭证、提示词、额度来源、连接器 registry、采集策略与时区。HTTP、子进程和外部执行锁等待期间显式释放配置读锁；回到本地状态处理时恢复读锁并重新核对业务状态。慢操作继续使用启动时的快照，新操作使用更新后的配置，常驻服务的数据目录固定。
 
-首个可用版本增加 runtime 级 RW gate：普通 service 请求和后台工作持读锁，配置保存/reload 获得写锁后重建捕获旧配置的 service 依赖。所有入口必须经过 gate，包括内置后台任务和文件变更触发的 reload；专用配置 handler 不再嵌套进入普通 handler，避免死锁。
-
-配置写侧使用非阻塞 TryLock：有操作在读配置时，人工保存返回 busy 并保留输入，外部 reload 由定时器稍后重试。不能直接排队等待 RWMutex.Lock，因为等待中的写者会阻止后来的读者，把一个慢作业放大成整个界面读取阻塞。网络作业设置时限，文件写入也有明确结束条件；拿到写锁后的更新区段保持短小。
-
-这是有意的过渡：持续长任务可能延迟配置生效，但不能冻结其他查询。后续只有这项限制影响使用时，再改成不可变 ConfigSnapshot + provider，使每次操作持有一个配置代次。
+本地配置和业务状态访问仍经过 runtime RW gate，配置保存/reload 获得写锁后重建依赖。写侧使用非阻塞 TryLock，短本地区段争用时返回 busy 并保留输入，外部 reload 稍后重试；远程等待不会长时间阻止保存设置。专用配置 handler 不嵌套进入普通 handler，网络操作与配置写入均有明确结束条件。
 
 外部 CLI 改配置时，runtime 通过配置文件签名检查后排队 reload。data_dir、监听地址和数据加密等启动级配置只能重启生效；重新加载需要从默认值重建，避免删除配置键后留下旧全局值。定价变化同时使对应统计缓存失效。
 
 ### 6.2 SQLite、事务与多进程
 
 - 保留 CLI 直接读写同库，不把 HTTP 服务变成唯一允许访问数据的入口。
-- runtime 在启动阶段检查 schema；当前构建只接受 v57 或新建空库，不提供旧库只读模式。以后若明确注册一阶迁移，才由 `serve migrate` 在备份和执行锁保护下执行，不由 HTTP 请求或后台工作隐式升级。
+- runtime 在启动阶段检查 schema；当前服务只运行在 v58 或新建空库，不提供旧库只读模式。v57 必须先通过 `serve migrate` 在备份和执行锁保护下执行唯一的一阶迁移，不由 HTTP 请求或后台工作隐式升级。
 - 只读 HTTP 请求不得走隐式同步或建库；无索引时返回可展示的状态，后台初始化明确走写入口。
 - 常驻查询和变更监测使用正常 WAL 可见连接，不能使用 `immutable=1` 回退；现有只读 fallback 在沙箱中可能忽略未 checkpoint 的 WAL，不能成为 Web 的长期视图。
 - 增加可注入的 DB opener/provider 时保留连接所有权：当前许多 service 会 defer Close，不能把共享池直接塞进去再被一次请求关闭。先维持安全的独立句柄，确认需要优化后再统一生命周期。
@@ -257,6 +255,8 @@ TypeScript DTO 维护 Go 公开契约的小型明确映射，不把整个 store 
 只管理明确类型：同步、收集、任务整理等现有操作。耗时操作在 SQLite 提交执行记录后返回 Job（包含 id、kind、status、phase），通过 SSE/查询显示 queued/running/succeeded/failed/canceled/interrupted；不把 HTTP 成功响应当作执行已完成。近期展示状态有界保留，持久记录按恢复需要保留，服务重启把未完成项标成 interrupted；可重复的索引同步可以按策略重跑，有外部副作用的工作必须先查已有结果。不要把索引同步称为只读操作。
 
 超时按操作设置，取消传播到支持 context 的接口。现有不接受 context 的扫描需逐步补足；完成前只能停止下一批，不能承诺浏览器取消即可立即中断所有底层操作。
+
+管理器总锁只保护内存，SQLite 执行回执在锁外写入，单次截止时间 250 毫秒，独立连接的 busy timeout 为 100 毫秒。进度每 50 毫秒合并，并以每个执行的内部版本防止延迟进度覆盖终态或发出过期通知。持久化失败只重试回执与用量落库，不重新执行已经发生的外部操作。
 
 ## 7. 后台调度与事件
 
@@ -292,21 +292,21 @@ SSE 只发送小型事件，例如：
 
 ```text
 id: <instance_id>:<sequence>
-event: resource.changed
-data: {"domains":["todos"]}
+event: reset
+data: {}
 ```
 
-服务内成功提交后发布 `resource.changed`，presence 和 job 使用各自的域。前端据此刷新相关 query，不能用 SSE 复制全部数据库或整段 transcript。
+服务内成功提交只排入容量为一的刷新信号，watcher 完成指纹重建后发布 reset；扫描失败也会发布这次已知提交的 reset，不能吞掉已提交变更。写响应不等待文件系统扫描。前端只重新查询当前页面需要的数据，不通过 SSE 复制数据库或会话正文。
 
-订阅使用 `/api/v1/events?domains=todos,presence` 声明当前页面域，域名白名单校验；当前没有对象 ID 订阅参数。
-路由变化重建连接，后台标签页释放连接，同域消费者共享一次变更检查。Go 的 Hook 和 presence 回补独立运行，
+订阅仍接受 `/api/v1/events?domains=todos,presence` 并校验白名单，当前合并通知不再按域分发，也没有对象 ID 订阅参数。
+路由变化重建连接，后台标签页释放连接，所有消费者共享一次变更检查。Go 的 Hook 和 presence 回补独立运行，
 不依赖浏览器订阅；ATM Menu 使用专门的本机控制接口读取轻量 snapshot/通知 feed。
 
-SSE 支持自动重连、心跳和有界 replay buffer。收到不属于当前实例或已超出 buffer 的 Last-Event-ID 时发送 reset，让客户端重新查询当前页面相关域；认证失效另走重新连接流程。慢客户端不能阻塞后台发布；队列满时断开并重连重建。多标签页按连接数设置温和上限，首期无需 SharedWorker。[SSE 机制](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)
+SSE 支持自动重连与心跳。每个连接只保留一个待处理 reset；它覆盖此前的失效通知，慢客户端不会阻塞发布。Last-Event-ID 必须同时匹配实例和当前序号，否则发送 reset；没有历史事件回放。认证过期另发 `session.expired`，同时连接数最多 32。
 
-**CLI 写库必须被发现。** 首期保留 CLI 原路径，通过固定的一条 `sql.Conn` 每约 2 秒检查 `PRAGMA data_version`；其值只能与同一连接过去的值比较。不能在连接池里每次随机借一条连接做比较。[SQLite 文档](https://sqlite.org/pragma.html#pragma_data_version)
+**CLI 写库必须被发现。** 有订阅时 watcher 每 2 秒以一条 SQLite 查询读取全部 `workspace_changes` 业务域修订计数，不依赖连接池中的 `PRAGMA data_version`。Todo/知识/config 等固定路径另有文件摘要：复用 size、mtime、文件身份等元数据未变的缓存，每分钟完整校验内容，覆盖原子替换、删除和伪装为相同元数据的修改；不跟随任意符号链接。无订阅时不执行这轮检查，也不重算全量统计。
 
-data_version 只表示疑似变化。当前 schema 的 `workspace_changes` 按域触发修订计数，CLI telemetry 不会让无关业务域全部失效。当前订阅域另外检查 Todo/知识/config 等固定目录的内容指纹，覆盖同长度修改、原子替换和删除，不跟随任意符号链接。无订阅不执行这轮检查，也不借变更发现重算全量统计。
+外部 Todo 文档时间按每批最多 200 条写入持久 `updated_at`，成功批次才记录已投影时间，失败批次留待下轮重试。投影完成后重读 Todo 域修订再通知页面，使排序和列表刷新观察同一已提交结果。
 
 统计使用短 TTL/同步完成事件使当前查询范围过期，回到前台再校验；未打开的统计范围只标记 stale。共享记忆存储在 SQLite，归 memory 域失效；知识 Markdown、Todo 文档和配置文件需单独监测相关路径的签名。目录变动、原子替换、同长度改写和删除都要覆盖。文件通知可用于加速，但仍保留低频校验与页面重新聚焦校验。
 
@@ -315,6 +315,8 @@ data_version 只表示疑似变化。当前 schema 的 `workspace_changes` 按�
 ### 8.1 技术选型
 
 当前采用 React + TypeScript + Vite、React Router、TanStack Query，样式使用共享 CSS variables 和按工作区加载的 CSS。没有引入 SSR、Next.js、Redux 或通用低代码框架。
+
+公共样式由 `app/web/src/app.css` 统一组织基础尺寸、主题、工作区布局和导航规则。Agent 与统计分别加载 `activity.tsx/activity.css` 和 `usage.tsx/usage.css`，共有状态查询、格式化和基础样式归 `activity-shared.tsx/css`；页头组件只导入自己的样式。
 
 这是针对已有 Go 后端、浏览器内交互和单人维护的选择；依赖版本在实施时选择相互兼容的稳定版本并锁定，不在文档里追逐 patch 版本。Vite 可以构建可直接静态托管的资源。[React 工程说明](https://react.dev/learn/build-a-react-app-from-scratch)、[Vite 构建文档](https://vite.dev/guide/build.html)
 
@@ -327,8 +329,8 @@ data_version 只表示疑似变化。当前 schema 的 `workspace_changes` 按�
 /agents                 /agents?session=...
 /knowledge              /knowledge?collection=...&document=...
 /collection             /collection?source=...&item=...
-/usage
-/ai-day
+/usage                  /usage?view=badges
+/ai-day                 # 兼容旧书签，重定向至 /usage?view=badges
 /settings
 ```
 
@@ -337,15 +339,17 @@ data_version 只表示疑似变化。当前 schema 的 `workspace_changes` 按�
 - 服务数据：按领域 query key，例如 `['todo', id]`、`['usage', range, agent]`；不建包含所有字段的全局 store。
 - 临时交互：组件本地 state。列表选中不会让整份业务缓存重新排序。
 - 偏好：主题、知识/来源顺序与用量筛选存在浏览器本地存储；属于客户端，不自动成为 Go 配置。窗口和分栏宽度采用响应式布局，未复制旧原生几何参数。
-- 草稿：按对象与编辑器实例持久保存在 localStorage，任务保留 ETag、基线与幂等身份。跨标签页/重启恢复需要明确选择并复制记录；提交只清理自己的对应快照，不能删除其他编辑器的草稿。知识与记忆也提供独立恢复入口；存储失败会明确提示。
+- 任务填写：新建任务共用一份浏览器最近输入，保存标题、说明、项目、优先级与幂等身份，再次打开自动填入；较早的创建响应不能清除较新的输入。已有任务每次从服务端版本开始编辑，当前编辑期间保留 ETag 与基线用于冲突核对，关闭后不保存或恢复旧输入。知识与记忆按对象及编辑器实例保存草稿并提供独立恢复入口；存储失败会明确提示。
 - 刷新：有缓存时先显示，后台只重验相关 query。HTTP 客户端支持 AbortSignal；取消旧读取和按 ID 存放响应，避免快速切换时旧结果覆盖新选择。
 - 默认重试显式配置：普通读取最多少量退避重试，验证/身份错误不重试，写操作默认不自动重试。TanStack Query 的默认 stale/refocus/retry 行为需要按此目标覆盖。[查询默认行为](https://tanstack.com/query/latest/docs/framework/react/guides/important-defaults)
 
-当前任务、会话、知识、记忆各有搜索，不依赖 Spotlight。跨域统一搜索仍是可选交互设想，不属于已交付接口；需要时可复用这些独立读取，不引入新的索引事实源。
+当前统一搜索复用任务、会话、知识与记忆的独立读取，默认限定当前工作区及项目/集合上下文，可切换全部内容；不依赖 Spotlight，也不引入新的索引事实源。
 
 ### 8.3 大列表、长文、图片
 
-任务先加载活动集摘要，完成历史和归档按需分页；列表数量增长后再启用虚拟列表。服务端查询也必须有边界，前端只隐藏 DOM 不会减少全量 SQL、JSON 和排序成本。
+任务使用 `todo.list` 的 `workbench:true` 查询：SQLite 先返回整个筛选范围的 facets、视图计数和分组，行请求只加载可见分组的 active/done 页，分别每次 50/5 项。搜索只读标题、ID、项目、创建者与标签等元数据，默认 CLI 查询仍保留既有全文语义。列表按持久 `updated_at` 排序，不在每次查询时读取全部文档。
+
+全选表示完整筛选范围并支持排除，布局切换保留选择；服务端按成员集合返回 `selection_revision`，仅成员变化才清空已有选择并提示。批量预览最多 100 项并重新取 ETag，明确导出 CSV 才遍历完整选择范围。SSE 健康时每 60 秒兜底刷新，断线列表每 15 秒、详情每 5 秒。任务页独立懒加载与错误边界，Markdown/Notice 使用共用模块。
 
 会话正文分批加载，不要求全部挂在 DOM 上。Markdown 使用禁用原始 HTML 的共享渲染组件；独立全文下载、内容 hash 解析缓存和复杂代码高亮仍是按需优化方向，不属于本轮已交付能力。
 
@@ -418,6 +422,8 @@ CLI 的 Todo 生命周期通知已优先转交 Go owner，通过有确认回执�
 
 ATM 的业务数据不迁到语音 App，语音不读取 ATM 数据库。新 Go/Web/Menu 构建已隔离语音依赖，`sherpa-onnx-spm` 只用于独立 Voice target。旧 `app/macos` 目录已删除，源码和资源可从 Git 历史查阅，不属于运行时回退。
 
+VoxCaret 的每次录音持有独立转写器，过期会话的结束或取消不影响下一次录音。实时预览及撤回都会核对录音开始时的辅助功能元素、选区和内容；目标改变或无法验证时停止自动改写，最终转写通过复制保留并说明原因。Esc 等待在途编辑结束后再验证撤回，无法安全撤回时保留原字段内容和可手动恢复的转写。模型下载、导入与删除按操作身份串行更新，删除期间显示忙碌状态，过期结果不能重新装入已删除模型。
+
 ### 11.1 具体迁移清单
 
 代码范围是 `ATMVoiceInput`、`ATMVoiceInputCoordinator`、`ATMVoiceTranscriberRouter`、`ATMAppleSpeechTranscriber`、`ATMSenseVoiceTranscriber`、`ATMSenseVoiceModel`、`ATMVoiceTextCleanup`、`ATMVoiceOverlay`、`ATMTextInjector`，加上通用热键代码和对应测试。`sherpa-onnx-spm` 只进入语音 target。
@@ -472,13 +478,13 @@ internal/presence/             # Hook、presence、通知状态与渠道
 internal/<domain>/             # 现有 application services
 internal/store/                # SQLite、业务文件、当前 schema 基线
 app/web/src/                   # 路由、任务、草稿、API、主题、SSE
-app/web/src/workspaces/         # 六个其他工作区及偏好迁移
+app/web/src/workspaces/         # 按领域拆分的工作区、统计内徽章日历及偏好迁移
 app/web/public/                # 静态资源
 app/web/dist/                  # Vite 生成资源，不手写
 app/web/assets_embed.go        # webui 构建标签 + go:embed
 app/web/assets_stub.go         # 无 webui 时的明确降级
 app/menubar/                   # 独立 ATM Menu，无旧主界面依赖
-app/voice/                     # 独立 ATM Voice，无 Go 数据依赖
+app/voice/                     # 独立 VoxCaret，无 Go 数据依赖
 scripts/export-web-preferences.swift # 独立的旧原生偏好导出工具
 ```
 
@@ -490,7 +496,7 @@ scripts/export-web-preferences.swift # 独立的旧原生偏好导出工具
 
 Vite 提供 HMR，Go 提供 API。已实现浏览器始终访问 Go 的同一个 origin：开发模式用 `--dev-ui http://127.0.0.1:5173` 把非 API 请求代理给 Vite，并配置 HMR WebSocket 走同一开发入口。明确代理白名单，生产包不启用此模式，不因开发方便放开生产 CORS。
 
-开发与日用实例不要共享同一数据目录。使用 `--data-dir` 指定空工作区或脱敏 fixture 副本；每个 `serve` 实例都会运行后台职责并允许写入，因此涉及生命周期、收集、通知的测试始终使用隔离目录。不要通过改 HOME 重定向其他工具的数据和凭据。
+`make dev` 默认沿用日用 CLI 的数据目录，编译与签名成功后接替该目录的现有服务，页面修改会写入真实数据。涉及生命周期、收集、通知的测试必须显式设置 `DEV_DATA_DIR`，或用 `--data-dir` 指定空工作区/脱敏副本；每个 `serve` 实例都会运行后台职责并允许写入。不要通过改 HOME 重定向其他工具的数据和凭据。
 
 ### 13.2 单二进制资源
 
@@ -509,11 +515,19 @@ README 已区分默认 go install 与完整发布包。Release 的资源与 Go A
 
 index.html 使用 no-cache，带内容 hash 的资源可长期缓存；API/敏感附件默认不进共享缓存。第一版不启用 Service Worker，避免升级后旧页面缓存继续调用新 API。页面资源离线可用，连接器和远程模型能力仍取决于各自网络。
 
-### 13.3 备份、升级和回退
+### 13.3 CI 与原生组包
 
-当前构建创建并只接受 schema v57。历史迁移梯子与旧库只读 Web 模式已经删除：旧库需先用仍支持其
-schema 的历史版本升级，或按错误提示备份不可重建数据并重建当前数据库。`serve migrate` 只保留未来
-明确注册的一阶迁移边界，在当前基线上是无操作。自定义数据目录必须保持一致，新建空工作区直接创建当前基线。
+`scripts/release-check.sh` 按 `go`、`web`、`dev`、`native`、`release` 分阶段。普通 CI 的 Linux job 负责 Go 测试/vet/CLI 契约与 Web 测试/生产资源/嵌入构建，另执行开发 supervisor 回归；macOS job 只运行 Swift 测试和实际 Release App 组装。完整六平台交叉构建保留在标签发布门禁，发布同时等待独立 macOS 原生门禁通过。
+
+原生门禁检查两个 `.app` 的 Info.plist、可执行文件与 hardened runtime 签名，核对 Menu 的声音及许可副本、VoxCaret 的图标/本地化资源/权限说明和实际签入的录音 entitlement。输出位于仓库 `bin/atm-release-check.*` 的唯一临时目录，检查结束清理，不覆盖日用 CLI、现有 `dist` App 或用户安装。
+
+这轮自动检查不启动 App。麦克风、Apple Speech、辅助功能、通知与登录项授权，以及真实目标 App 内快捷键、取消和文本注入仍需实机验收。分阶段命令和独立组包输出变量见 [Web 开发说明](../../app/web/README.md#ci-与交付检查)。
+
+### 13.4 备份、升级和回退
+
+当前 schema 为 v58，仅保留 [v57 → v58 的一阶迁移](../../internal/store/todo_updated.go)，增加任务 `updated_at`。迁移在事务内按完成时间与既有任务文档 mtime 的较大值回填，不重写 Markdown。`serve` 遇到 v57 会拒绝启动并提示显式 `atm serve migrate`；该命令要求服务已停止，先备份，再持有执行锁迁移。常规 CLI 写入口使用相同的迁移实现，只读入口不升级数据库。更早的库需使用仍支持其 schema 的历史版本处理，新建空库直接创建 v58。
+
+任务属性与子关系修改在写事务内更新最后变更时间，单纯手动排序不更新它；外部文档编辑由后台变更扫描按每批最多 200 条投影到 SQLite，删除文档或恢复较早 mtime 不会令该时间倒退。列表按持久值排序，不为每次读取扫描全部任务文档。自定义数据目录必须保持一致；本轮构建和隔离测试不迁移用户日用库。
 
 页面实现不改变 Todo、Session、Knowledge 的事实归属。确需修改 schema 时只增加当前版本到下一版本的
 一阶迁移和版本拒绝规则，先备份；唯一日用库升级完成后将新结构收平为基线，不把 schema 降级交给前端处理。

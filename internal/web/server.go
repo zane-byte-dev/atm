@@ -62,6 +62,8 @@ type Server struct {
 	serveErr       error
 	runtimeCleanup func(context.Context) error
 	events         *eventBroker
+	watcherCancel  context.CancelFunc
+	watcherDone    chan struct{}
 	fingerprintMu  sync.Mutex
 	fingerprints   map[string]string
 	devUI          http.Handler
@@ -149,7 +151,13 @@ func Start(options Options) (*Server, error) {
 	}
 	server.runtimeCleanup = cleanup
 	if server.events != nil {
-		go server.watchChanges()
+		watcherCtx, cancel := context.WithCancel(context.Background())
+		server.watcherCancel = cancel
+		server.watcherDone = make(chan struct{})
+		go func() {
+			defer close(server.watcherDone)
+			server.watchChanges(watcherCtx)
+		}()
 	}
 	go func() {
 		err := server.http.Serve(listener)
@@ -178,6 +186,9 @@ func (server *Server) Wait(ctx context.Context) error {
 
 func (server *Server) Close() {
 	server.closeOnce.Do(func() {
+		if server.watcherCancel != nil {
+			server.watcherCancel()
+		}
 		if server.events != nil {
 			server.events.close()
 		}
@@ -187,6 +198,11 @@ func (server *Server) Close() {
 		if drainErr != nil {
 			_ = server.http.Close()
 		}
+		// Fingerprint callbacks may project external document changes into the
+		// database. They must stop before another instance can acquire ownership.
+		// Share the HTTP drain budget; an uncooperative callback cannot make
+		// shutdown wait forever, but its timeout must retain the instance lock.
+		watcherErr := server.waitForChangeWatcher(ctx)
 		if server.runtimeCleanup != nil {
 			runtimeCtx, runtimeCancel := context.WithTimeout(context.Background(), 25*time.Second)
 			defer runtimeCancel()
@@ -201,29 +217,60 @@ func (server *Server) Close() {
 				return
 			}
 		}
-		if drainErr != nil {
+		if drainErr != nil || watcherErr != nil {
 			// Closing a connection does not wait for an in-flight mutation to
-			// finish its filesystem projection. Keep ownership until process
-			// exit when the graceful HTTP drain budget was exhausted.
+			// finish its filesystem projection. The same applies to an in-flight
+			// watcher projection. Keep ownership until process exit when either
+			// worker exceeded the shared graceful drain budget.
 			server.mu.Lock()
-			server.serveErr = drainErr
+			server.serveErr = errors.Join(drainErr, watcherErr)
 			server.mu.Unlock()
+			if drainErr == nil && watcherErr != nil {
+				// HTTP and runtime workers have stopped. The watcher is the only
+				// remaining writer, so its eventual exit can release ownership
+				// without requiring another Close call or process restart.
+				go func() {
+					<-server.watcherDone
+					server.releaseOwnership()
+				}()
+			}
 			close(server.done)
 			return
 		}
-		// We hold the instance lock until request handlers finish. Never unlink
-		// server.lock: another process may already be waiting on that inode.
-		runtimeDir := filepath.Join(server.info.DataDir, "runtime")
-		content, err := os.ReadFile(filepath.Join(runtimeDir, "server.json"))
-		var current Instance
-		if err == nil && json.Unmarshal(content, &current) == nil && current.InstanceID == server.info.InstanceID {
-			_ = os.Remove(filepath.Join(runtimeDir, "server.json"))
-			_ = os.Remove(filepath.Join(runtimeDir, "control.token"))
-		}
-		unlockInstance(server.lock)
-		_ = server.lock.Close()
+		server.releaseOwnership()
 		close(server.done)
 	})
+}
+
+func (server *Server) releaseOwnership() {
+	// Call only after all writers have stopped. Never unlink server.lock:
+	// another process may already be waiting on that inode.
+	runtimeDir := filepath.Join(server.info.DataDir, "runtime")
+	content, err := os.ReadFile(filepath.Join(runtimeDir, "server.json"))
+	var current Instance
+	if err == nil && json.Unmarshal(content, &current) == nil && current.InstanceID == server.info.InstanceID {
+		_ = os.Remove(filepath.Join(runtimeDir, "server.json"))
+		_ = os.Remove(filepath.Join(runtimeDir, "control.token"))
+	}
+	unlockInstance(server.lock)
+	_ = server.lock.Close()
+}
+
+func (server *Server) waitForChangeWatcher(ctx context.Context) error {
+	if server.watcherDone == nil {
+		return nil
+	}
+	select {
+	case <-server.watcherDone:
+		return nil
+	default:
+	}
+	select {
+	case <-server.watcherDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("workspace change watcher did not stop: %w", ctx.Err())
+	}
 }
 
 func (server *Server) BrowserURL() (string, error) {

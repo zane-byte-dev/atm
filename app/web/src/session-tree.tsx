@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { call } from './api'
-import { Notice } from './editor'
+import { Notice } from './markdown'
 import type { SessionList, SessionSummary } from './workspaces/activity-types'
 
 export function SessionChildren({

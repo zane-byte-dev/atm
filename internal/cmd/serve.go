@@ -103,6 +103,7 @@ func runServe(command *cobra.Command, args []string) error {
 	host.SetWorkEffects(localWorkEffectExecutor{NotifyTodo: notifyTodoEvent})
 	host.SetPresenceLoader(loadDashboardLiveStatus)
 	tracker := apphost.NewChangeTracker(config.AtmDir)
+	tracker.SetTodoDocumentProjector(store.ProjectTodoDocumentTimes)
 	defer tracker.Close()
 	options := webapp.Options{DataDir: config.AtmDir, Version: rootCmd.Version, Port: servePort, Assets: assets, Dispatch: host.Call, Attachment: host.Attachment,
 		DevUI:        serveDevUI,

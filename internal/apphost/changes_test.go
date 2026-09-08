@@ -4,13 +4,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -101,6 +104,90 @@ func TestChangeTrackerDetectsExternalProcessCommits(t *testing.T) {
 			t.Fatalf("todo commit invalidated sessions: before=%v after=%v", before, after)
 		}
 		before = after
+	}
+}
+
+func TestTodoDocumentProjectionBatchesRetriesAndSkipsUnchangedFiles(t *testing.T) {
+	dir, db, tracker := changeTrackerFixture(t)
+	root := filepath.Join(dir, "todos")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for id := 1; id <= 205; id++ {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("t%d.md", id)), []byte("document"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("ignored"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	calls, projected := 0, 0
+	tracker.SetTodoDocumentProjector(func(ctx context.Context, dataDir string, batch map[string]int64) error {
+		calls++
+		if dataDir != dir || len(batch) > 200 || len(batch) == 0 {
+			t.Fatalf("invalid projection: dir=%s count=%d", dataDir, len(batch))
+		}
+		if calls == 1 {
+			return errors.New("temporarily busy")
+		}
+		projected += len(batch)
+		_, err := db.ExecContext(ctx, `UPDATE workspace_changes SET revision=revision+1 WHERE domain='todos'`)
+		return err
+	})
+	if _, err := tracker.Fingerprints(context.Background(), []string{"todos"}); err == nil {
+		t.Fatal("projection failure was hidden")
+	}
+	before := fingerprintsForTest(t, tracker, "todos")
+	if calls != 3 || projected != 205 {
+		t.Fatalf("retry lost documents: calls=%d projected=%d", calls, projected)
+	}
+	after := fingerprintsForTest(t, tracker, "todos")
+	if calls != 3 || !reflect.DeepEqual(before, after) {
+		t.Fatalf("unchanged projection was repeated: calls=%d before=%v after=%v", calls, before, after)
+	}
+	stamp := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(root, "t1.md"), stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	changed := fingerprintsForTest(t, tracker, "todos")
+	if calls != 4 || projected != 206 || reflect.DeepEqual(after, changed) {
+		t.Fatalf("incremental projection not observed: calls=%d projected=%d", calls, projected)
+	}
+}
+
+func TestTodoDocumentProjectionIsDurableBeforeResetBaseline(t *testing.T) {
+	testHost(t)
+	seed(t, card("t1", "external edit", "open", "atm"))
+	root := filepath.Join(config.AtmDir, "todos")
+	if err := os.MkdirAll(root, 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "t1.md")
+	if err := os.WriteFile(path, []byte("edited outside ATM"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	stamp := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	tracker := NewChangeTracker(config.AtmDir)
+	defer tracker.Close()
+	tracker.SetTodoDocumentProjector(store.ProjectTodoDocumentTimes)
+	before := fingerprintsForTest(t, tracker, "todos")
+	db, err := store.OpenReadOnly()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var updated int64
+	if err := db.QueryRow(`SELECT updated_at FROM todos WHERE id='t1'`).Scan(&updated); err != nil {
+		t.Fatal(err)
+	}
+	if updated != stamp.Unix() {
+		t.Fatalf("projected updated_at=%d want=%d", updated, stamp.Unix())
+	}
+	if after := fingerprintsForTest(t, tracker, "todos"); !reflect.DeepEqual(before, after) {
+		t.Fatalf("projection caused duplicate change: %v -> %v", before, after)
 	}
 }
 
@@ -278,7 +365,66 @@ func TestChangeTrackerCancellationAndCloseReleaseConnection(t *testing.T) {
 	}
 	tracker.Close()
 	tracker.Close()
+	if _, err := tracker.Fingerprints(context.Background(), []string{"todos"}); !errors.Is(err, errChangeTrackerClosed) {
+		t.Fatalf("closed tracker reopened: %v", err)
+	}
+	tracker.SetTodoDocumentProjector(store.ProjectTodoDocumentTimes)
+	if tracker.db != nil || tracker.files != nil || tracker.projectTodos != nil || tracker.projectedTodos != nil {
+		t.Fatal("closed tracker recreated resources")
+	}
 	if err := database.QueryRowContext(context.Background(), `SELECT 1`).Scan(new(int)); err == nil {
 		t.Fatalf("close left connection usable: %v", err)
+	}
+}
+
+func TestChangeTrackerCloseDefersCleanupUntilActiveProjectionExits(t *testing.T) {
+	dir, _, tracker := changeTrackerFixture(t)
+	if err := os.MkdirAll(filepath.Join(dir, "todos"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "todos", "t1.md"), []byte("external edit"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	tracker.SetTodoDocumentProjector(func(context.Context, string, map[string]int64) error {
+		close(entered)
+		<-release
+		return nil
+	})
+	finished := make(chan error, 1)
+	go func() {
+		_, err := tracker.Fingerprints(context.Background(), []string{"todos"})
+		finished <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("projection did not start")
+	}
+	closed := make(chan struct{})
+	go func() { tracker.Close(); tracker.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close blocked indefinitely on an uncooperative projection")
+	}
+	if _, err := tracker.Fingerprints(context.Background(), []string{"todos"}); !errors.Is(err, errChangeTrackerClosed) {
+		t.Fatalf("closed tracker allowed another scan: %v", err)
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("Close tore down resources still used by the projection: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("released projection did not finish")
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if tracker.db != nil || tracker.files != nil || tracker.projectTodos != nil || tracker.projectedTodos != nil {
+		t.Fatal("finished projection did not close tracker resources")
 	}
 }

@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { ApiError, call, errorText } from '../api'
-import { Markdown } from '../editor'
+import { Markdown } from '../markdown'
 import type { KnowledgeDocument } from './knowledge-types'
 
 const KnowledgeCrepe = lazy(() => import('./knowledge-crepe'))
@@ -75,7 +75,7 @@ export function useInlineKnowledge(doc: KnowledgeDocument, enabled: boolean) {
       const sent = draft
       setPending(true)
       try {
-        const result = await call<KnowledgeDocument>('knowledge.document.update', {
+        const result = await call('knowledge.document.update', {
           document_id: doc.metadata.id,
           etag: sent.etag,
           title: sent.title.trim(),
@@ -140,7 +140,7 @@ export function useInlineKnowledge(doc: KnowledgeDocument, enabled: boolean) {
                 onClick={async () => {
                   try {
                     setLatest(
-                      await call<KnowledgeDocument>('knowledge.document.get', {
+                      await call('knowledge.document.get', {
                         document_id: doc.metadata.id,
                       }),
                     )

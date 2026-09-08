@@ -66,12 +66,18 @@ type BlockedConnector struct {
 const authBlockedRetryInterval = 30 * time.Minute
 
 func DefaultService() Service {
-	registry, registryErr := DefaultRegistry()
+	return ServiceForExecution(context.Background())
+}
+
+func ServiceForExecution(ctx context.Context) Service {
+	policy := config.PolicyForExecution(ctx)
+	registry, registryErr := registryFromConfig(policy.Connectors)
+	location := policy.Location
 	return Service{
 		Connectors: registry, RegistryError: registryErr,
 		Extractor:  AutomaticExtractor{},
 		Summarizer: AutomaticSummarizer{},
-		Now:        func() time.Time { return time.Now().In(config.Loc) },
+		Now:        func() time.Time { return time.Now().In(location) },
 		ApplyCollectionEnabled: func(enabled bool) (bool, error) {
 			settings, err := config.Default.Apply(config.SettingsPatch{CollectionEnabled: &enabled})
 			return settings.CollectionEnabled, err
@@ -105,14 +111,15 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 	}
 	defer lock.Close()
 	if service.Connectors == nil {
-		registry, err := DefaultRegistry()
+		registry, err := registryFromConfig(config.PolicyForExecution(ctx).Connectors)
 		if err != nil {
 			return RunReport{}, err
 		}
 		service.Connectors = registry
 	}
 	if service.Now == nil {
-		service.Now = func() time.Time { return time.Now().In(config.Loc) }
+		location := config.PolicyForExecution(ctx).Location
+		service.Now = func() time.Time { return time.Now().In(location) }
 	}
 	db, err := store.Open()
 	if err != nil {
@@ -194,7 +201,7 @@ func (service Service) run(ctx context.Context, sourceID string, dueOnly bool) (
 	// the next run retries it, so it does not fail the run; `atm doctor` reports
 	// chat that outlived its retention window, which is what a stuck prune looks
 	// like from outside.
-	if cutoff := store.RetentionCutoff(config.CollectionMessageRetentionDays, service.Now()); cutoff > 0 {
+	if cutoff := store.RetentionCutoff(config.PolicyForExecution(ctx).CollectionMessageRetentionDays, service.Now()); cutoff > 0 {
 		_, _ = store.PruneCollectionMessages(db, cutoff)
 	}
 	if len(errors) > 0 {
@@ -292,7 +299,13 @@ func (service Service) runSource(ctx context.Context, db *sql.DB, source store.C
 		finish(&run)
 		return run
 	}
-	messages, newest, err := fetcher.Fetch(ctx, source, since)
+	var messages []Message
+	var newest int64
+	err = config.External(ctx, func(externalCtx context.Context) error {
+		var fetchErr error
+		messages, newest, fetchErr = fetcher.Fetch(externalCtx, source, since)
+		return fetchErr
+	})
 	if err != nil {
 		run.Status, run.Error, run.FailedCount = "failed", err.Error(), 1
 		finish(&run)
@@ -679,7 +692,12 @@ func (service Service) decideBatch(ctx context.Context, batch MessageBatch) (Dec
 	if err != nil {
 		return Decision{}, err
 	}
-	decision, err := service.Extractor.Extract(ctx, batch, todos.Items)
+	var decision Decision
+	err = config.External(ctx, func(externalCtx context.Context) error {
+		var extractErr error
+		decision, extractErr = service.Extractor.Extract(externalCtx, batch, todos.Items)
+		return extractErr
+	})
 	if err != nil {
 		return Decision{}, err
 	}

@@ -12,7 +12,6 @@ import {
   type NativePreferenceFile,
   type NativePreferences,
 } from './native-preferences'
-import type { KnowledgeCollection } from './knowledge-types'
 import type { CollectionOverview } from './collection-types'
 import './workspace-forms.css'
 
@@ -27,7 +26,7 @@ export function NativePreferencesImport() {
   const readVersion = useRef(0)
   const catalog = useQuery({
     queryKey: ['knowledge', 'catalog'],
-    queryFn: ({ signal }) => call<KnowledgeCollection[]>('knowledge.catalog', {}, signal),
+    queryFn: ({ signal }) => call('knowledge.catalog', {}, signal),
     enabled: !!preview?.preferences.knowledge_collection_order,
   })
   const collection = useQuery({

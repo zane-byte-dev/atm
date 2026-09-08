@@ -132,7 +132,7 @@ func TestFirstFingerprintInvalidatesChangesAfterInitialReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
-	go func() { defer close(done); server.watchChanges() }()
+	go func() { defer close(done); server.watchChanges(context.Background()) }()
 	defer func() { broker.close(); <-done }()
 	select {
 	case event := <-sub.queue:

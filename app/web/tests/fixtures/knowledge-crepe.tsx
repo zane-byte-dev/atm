@@ -4,8 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { InlineKnowledgeField, useInlineKnowledge } from '../../src/workspaces/knowledge-inline'
 import type { KnowledgeDocument } from '../../src/workspaces/knowledge-types'
-import '../../src/themes.css'
-import '../../src/style.css'
+import '../../src/app.css'
 import '../../src/workspaces/knowledge.css'
 let server: KnowledgeDocument = {
   etag: 'v1',

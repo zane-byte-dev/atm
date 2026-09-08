@@ -355,10 +355,9 @@ func (h *Host) WorkspaceSettings(ctx context.Context, call application.Call) (Wo
 	if err := validate(ctx, call); err != nil {
 		return WorkspaceSettings{}, err
 	}
-	// Refresh opportunistically when no operation has pinned the current
-	// configuration. While a background job is running, serve the exact cached
-	// snapshot it uses instead of making the settings page return a transient
-	// 503 for the duration of the job.
+	// Refresh between protected local state accesses. Outbound work has its own
+	// captured policy and permits new settings generations while it is running.
+	// A busy local segment serves the last published settings generation.
 	if h.gate.TryLock() {
 		defer h.gate.Unlock()
 		revision, err := config.Default.ReloadRevision()
@@ -438,9 +437,7 @@ func safeModelBaseURL(value string) string {
 }
 
 func (h *Host) SaveWorkspaceBusiness(ctx context.Context, call application.Call, input WorkspaceBusinessInput) (WorkspaceSettings, error) {
-	if !h.gate.TryLock() {
-		return WorkspaceSettings{}, configBusy()
-	}
+	h.gate.Lock()
 	defer h.gate.Unlock()
 	if err := validateWrite(ctx, call); err != nil {
 		return WorkspaceSettings{}, err
@@ -486,9 +483,7 @@ func (h *Host) SaveWorkspaceBusiness(ctx context.Context, call application.Call,
 }
 
 func (h *Host) saveWorkspaceCredential(ctx context.Context, call application.Call, input *config.CredentialSaveInput) (config.CredentialStatus, error) {
-	if !h.gate.TryLock() {
-		return config.CredentialStatus{}, configBusy()
-	}
+	h.gate.Lock()
 	defer h.gate.Unlock()
 	if err := validateWrite(ctx, call); err != nil {
 		return config.CredentialStatus{}, err
@@ -510,9 +505,7 @@ func (h *Host) saveWorkspaceCredential(ctx context.Context, call application.Cal
 }
 
 func (h *Host) SaveWorkspacePreferences(ctx context.Context, call application.Call, input WorkspacePreferencesInput) (WorkspaceSettings, error) {
-	if !h.gate.TryLock() {
-		return WorkspaceSettings{}, configBusy()
-	}
+	h.gate.Lock()
 	defer h.gate.Unlock()
 	if err := validate(ctx, call); err != nil {
 		return WorkspaceSettings{}, err

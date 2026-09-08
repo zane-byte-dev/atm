@@ -18,10 +18,12 @@ import (
 // This Web vocabulary deliberately omits the service's session_id (which
 // records retrievals), import paths, source URIs, and file-backed edits.
 type KnowledgeQueryInput struct {
-	Text       string `json:"text,omitempty"`
-	Collection string `json:"collection,omitempty"`
-	Status     string `json:"status,omitempty"`
-	Limit      int    `json:"limit,omitempty"`
+	Text            string `json:"text,omitempty"`
+	Collection      string `json:"collection,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Limit           int    `json:"limit,omitempty"`
+	Cursor          string `json:"cursor,omitempty"`
+	ExcludeArchived bool   `json:"exclude_archived,omitempty"`
 }
 
 type KnowledgeCreateInput struct {
@@ -97,21 +99,10 @@ func (h *Host) callKnowledge(ctx context.Context, call application.Call, method 
 			default:
 				return nil, invalid("invalid knowledge status")
 			}
-			result, err := service.Query(ctx, knowledge.QueryInput{Text: value.Text, Collection: value.Collection, Status: value.Status, Limit: value.Limit})
-			if err != nil {
-				return nil, err
-			}
-			// Search returns matching chunks; present each document once while
-			// retaining its strongest matching snippet and the service's ranking.
-			seen := map[string]bool{}
-			documents := make([]knowledge.DocumentView, 0, len(result.Documents))
-			for _, document := range result.Documents {
-				if !seen[document.DocumentID] {
-					seen[document.DocumentID] = true
-					documents = append(documents, document)
-				}
-			}
-			return knowledge.QueryResult{Documents: documents}, nil
+			return service.QueryPage(ctx, knowledge.QueryPageInput{
+				Text: value.Text, Collection: value.Collection, Status: value.Status, Limit: value.Limit,
+				Cursor: value.Cursor, ExcludeArchived: value.ExcludeArchived,
+			})
 		})
 	case "knowledge.document.get":
 		return invoke(input, func(value knowledge.GetInput) (any, error) {
@@ -165,10 +156,14 @@ func (h *Host) callKnowledge(ctx context.Context, call application.Call, method 
 			if !registered {
 				return nil, application.NewError(application.CodeNotFound, "create or select a registered collection first")
 			}
-			return service.SaveDocument(ctx, knowledge.SaveDocumentInput{Create: &knowledge.CreateDocumentInput{
+			document, err := service.SaveDocument(ctx, knowledge.SaveDocumentInput{Create: &knowledge.CreateDocumentInput{
 				Title: value.Title, Content: value.Content, Collection: value.Collection,
 				Domains: value.Domains, Tags: value.Tags, Projects: value.Projects, Producer: "atm-web",
 			}})
+			if err != nil {
+				return nil, err
+			}
+			return knowledge.VersionDocument(document), nil
 		})
 	case "knowledge.collection.create":
 		return invoke(input, func(value KnowledgeCollectionCreateInput) (any, error) {

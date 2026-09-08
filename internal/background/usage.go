@@ -61,9 +61,9 @@ func (r *usageRecorder) record(call textmodel.Call) {
 	}()
 	fields := map[string]any{"task": call.Task, "model": call.Model, "input": call.Usage.InputTokens, "output": call.Usage.OutputTokens, "cache_hit": call.Usage.CacheHitTokens, "duration_ms": call.DurationMS}
 	if call.Err == "" {
-		logging.Lifecycle("builtin_model_call", fields)
+		logging.LifecycleAt(r.dataDir, "builtin_model_call", fields)
 	} else {
-		logging.Failure("builtin_model_call", "background", errors.New("built-in model request failed"), fields)
+		logging.FailureAt(r.dataDir, "builtin_model_call", "background", errors.New("built-in model request failed"), fields)
 	}
 	if !call.Usage.Reported() {
 		return
@@ -207,7 +207,7 @@ func flushUsageFile(ctx context.Context, dataDir, id string) error {
 	if incomplete {
 		// A process can die between the JSON write and its newline/fsync. Recover
 		// complete records only, and retain the damaged tail for inspection.
-		logging.Failure("builtin_model_usage_incomplete", "background", errors.New("interrupted usage journal tail retained"), map[string]any{"recovered_calls": len(calls)})
+		logging.FailureAt(dataDir, "builtin_model_usage_incomplete", "background", errors.New("interrupted usage journal tail retained"), map[string]any{"recovered_calls": len(calls)})
 		return os.Rename(path, path+".incomplete")
 	}
 	return os.Remove(path)

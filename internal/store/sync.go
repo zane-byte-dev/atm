@@ -22,7 +22,7 @@ func SyncAllContext(ctx context.Context, db *sql.DB) (int, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	lock, err := executionlock.AcquireDatabase(ctx, db, "sync")
+	lock, err := acquireSyncLock(ctx, db)
 	if err != nil {
 		return 0, err
 	}
@@ -53,7 +53,7 @@ func SyncAgentContext(ctx context.Context, db *sql.DB, agent string) (int, error
 	if a == nil {
 		return 0, fmt.Errorf("unknown agent: %s", agent)
 	}
-	lock, err := executionlock.AcquireDatabase(ctx, db, "sync")
+	lock, err := acquireSyncLock(ctx, db)
 	if err != nil {
 		return 0, err
 	}
@@ -70,6 +70,19 @@ func SyncAgentContext(ctx context.Context, db *sql.DB, agent string) (int, error
 		// RepriceUsage for why stored cost cannot be left to the insert path.
 		return n, RepriceUsage(db)
 	})
+}
+
+// The connection already identifies this index. Waiting for another process is
+// external to local configuration; resume protected state reads only after the
+// lock has been acquired (or the wait canceled).
+func acquireSyncLock(ctx context.Context, db *sql.DB) (*executionlock.Lock, error) {
+	var lock *executionlock.Lock
+	err := config.External(ctx, func(externalCtx context.Context) error {
+		var err error
+		lock, err = executionlock.AcquireDatabase(externalCtx, db, "sync")
+		return err
+	})
+	return lock, err
 }
 
 // sourceVersioner lets an agent report a composite change fingerprint when the

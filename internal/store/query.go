@@ -1954,6 +1954,10 @@ type TodoBoundSession struct {
 // bindings use the thread UUID while the transcript index keeps the rollout
 // filename as its id, whose final component is that same UUID.
 func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) {
+	return findSessionsForTodo(db, todoID)
+}
+
+func findSessionsForTodo(db sqlQueryer, todoID string) ([]TodoBoundSession, error) {
 	query := `SELECT b.session_id,
 		COALESCE(s.id, '') AS indexed_id,
 		COALESCE(NULLIF(s.short_id, ''), SUBSTR(b.session_id, 1, 8)) AS short_id,
@@ -2022,6 +2026,10 @@ func FindSessionsForTodo(db *sql.DB, todoID string) ([]TodoBoundSession, error) 
 // plugin lists and instruction preambles as "user" turns, so more than one
 // candidate has to come back for the caller to filter.
 func EarliestUserMessages(db *sql.DB, sessionIDs []string, perSession int) (map[string][]string, error) {
+	return earliestUserMessages(db, sessionIDs, perSession)
+}
+
+func earliestUserMessages(db sqlQueryer, sessionIDs []string, perSession int) (map[string][]string, error) {
 	messages := make(map[string][]string, len(sessionIDs))
 	if len(sessionIDs) == 0 || perSession <= 0 {
 		return messages, nil

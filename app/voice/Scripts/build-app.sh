@@ -2,11 +2,13 @@
 set -euo pipefail
 NATIVE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NATIVE_CONFIGURATION="${VOXCARET_BUILD_CONFIGURATION:-release}"
+NATIVE_OUTPUT_DIR="${VOXCARET_OUTPUT_DIR:-$NATIVE_ROOT/dist}"
 NATIVE_ENTITLEMENTS="$NATIVE_ROOT/Resources/VoxCaret.entitlements"
 NATIVE_ICON_SOURCE="$NATIVE_ROOT/Resources/AppIcon.png"
 swift build --package-path "$NATIVE_ROOT" --scratch-path "$NATIVE_ROOT/.build" --cache-path "$NATIVE_ROOT/.cache" --disable-sandbox -c "$NATIVE_CONFIGURATION"
-mkdir -p "$NATIVE_ROOT/dist"
-NATIVE_STAGING="$(mktemp -d "$NATIVE_ROOT/dist/.build.XXXXXX")"
+mkdir -p "$NATIVE_OUTPUT_DIR"
+NATIVE_OUTPUT_DIR="$(cd "$NATIVE_OUTPUT_DIR" && pwd)"
+NATIVE_STAGING="$(mktemp -d "$NATIVE_OUTPUT_DIR/.build.XXXXXX")"
 trap 'rm -rf "$NATIVE_STAGING"' EXIT
 NATIVE_APP="$NATIVE_STAGING/VoxCaret.app"
 NATIVE_ASSETS="$NATIVE_STAGING/Assets.xcassets"
@@ -43,6 +45,6 @@ else
     "$NATIVE_ROOT/../../scripts/codesign-local.sh" --entitlements "$NATIVE_ENTITLEMENTS" "$NATIVE_APP"
 fi
 codesign --verify --strict "$NATIVE_APP"
-rm -rf "$NATIVE_ROOT/dist/VoxCaret.app"
-mv "$NATIVE_APP" "$NATIVE_ROOT/dist/VoxCaret.app"
-print "$NATIVE_ROOT/dist/VoxCaret.app"
+rm -rf "$NATIVE_OUTPUT_DIR/VoxCaret.app"
+mv "$NATIVE_APP" "$NATIVE_OUTPUT_DIR/VoxCaret.app"
+print "$NATIVE_OUTPUT_DIR/VoxCaret.app"

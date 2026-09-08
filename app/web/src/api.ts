@@ -1,4 +1,18 @@
 import type { Bootstrap } from './types'
+import type {
+  ApiInput,
+  ApiMethod,
+  ApiOutput,
+  LegacyApiMethod,
+  TodoLegacyListInput,
+  TodoMetadataInput,
+  TodoPageInput,
+  TodoMutationRequest,
+  TodoMutationResult,
+  TodoScopedMutationRequest,
+} from './api-contracts'
+import type { TaskPage, TaskWorkbenchMetadata } from './task-query'
+import type { TodoList } from './types'
 
 type Envelope<T> = {
   data: T
@@ -72,12 +86,59 @@ export function reconnect() {
   return bootstrap()
 }
 
-export function call<T>(
+type ExactInput<Input, Shape> = Input & Record<Exclude<keyof Input, keyof Shape>, never>
+// A union of independent method/input arguments loses their correlation.
+// Dynamic mutations use the discriminated request helpers below instead.
+type SingleMethod<Method, All = Method> = Method extends All
+  ? [All] extends [Method]
+    ? Method
+    : never
+  : never
+export function call<I extends TodoMetadataInput>(
+  method: 'todo.list',
+  input: ExactInput<I, TodoMetadataInput>,
+  signal?: AbortSignal,
+  idempotencyKey?: string,
+): Promise<TaskWorkbenchMetadata>
+export function call<I extends TodoPageInput>(
+  method: 'todo.list',
+  input: ExactInput<I, TodoPageInput>,
+  signal?: AbortSignal,
+  idempotencyKey?: string,
+): Promise<TaskPage>
+export function call<I extends TodoLegacyListInput>(
+  method: 'todo.list',
+  input: ExactInput<I, TodoLegacyListInput>,
+  signal?: AbortSignal,
+  idempotencyKey?: string,
+): Promise<TodoList>
+export function call<M extends Exclude<ApiMethod, 'todo.list'>, I extends NoInfer<ApiInput<M>>>(
+  method: M & SingleMethod<M>,
+  input: ExactInput<I, ApiInput<M>>,
+  signal?: AbortSignal,
+  idempotencyKey?: string,
+): Promise<ApiOutput<M>>
+export function call<T = unknown>(
+  method: LegacyApiMethod,
+  input: unknown,
+  signal?: AbortSignal,
+  idempotencyKey?: string,
+): Promise<T>
+export function call(
   method: string,
   input: unknown,
   signal?: AbortSignal,
   idempotencyKey?: string,
-) {
+): Promise<unknown> {
+  return invoke(method, input, signal, idempotencyKey)
+}
+
+function invoke<T>(
+  method: string,
+  input: unknown,
+  signal?: AbortSignal,
+  idempotencyKey?: string,
+): Promise<T> {
   return request<T>(`/api/v1/${method}`, {
     method: 'POST',
     signal,
@@ -88,6 +149,22 @@ export function call<T>(
     },
     body: JSON.stringify(input),
   })
+}
+
+export function callTodoMutation(
+  action: TodoMutationRequest,
+  signal?: AbortSignal,
+  idempotencyKey?: string,
+): Promise<TodoMutationResult> {
+  return invoke(action.method, action.input, signal, idempotencyKey)
+}
+
+export function callScopedTodoMutation(
+  todoID: string,
+  action: TodoScopedMutationRequest,
+  signal?: AbortSignal,
+): Promise<TodoMutationResult> {
+  return invoke(action.method, { ...action.input, todo_id: todoID }, signal)
 }
 
 export function uploadTaskImage<T>(todoID: string, file: File, etag: string, signal?: AbortSignal) {

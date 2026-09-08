@@ -5,7 +5,6 @@ import { Check, LoaderCircle } from 'lucide-react'
 import { call, errorText } from '../api'
 import type { CollectionSource } from './collection-types'
 import type { WorkspaceSettings } from './aiday-settings-types'
-import type { KnowledgeCollection } from './knowledge-types'
 import { SourceSearch } from './source-search'
 import './workspace-forms.css'
 
@@ -41,7 +40,7 @@ export function SourceEditor({
   })
   const catalog = useQuery({
     queryKey: ['knowledge', 'catalog'],
-    queryFn: ({ signal }) => call<KnowledgeCollection[]>('knowledge.catalog', {}, signal),
+    queryFn: ({ signal }) => call('knowledge.catalog', {}, signal),
   })
   const connectors = [
     ...new Set([

@@ -18,7 +18,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { Todo } from './types'
-import { filterTasks, statuses } from './task-view-model'
+import { matchingTasks, statuses } from './task-view-model'
+import type { TaskFacet } from './task-query'
 import './task-filter-menu.css'
 const categories: { key: string; label: string; icon: LucideIcon }[] = [
   { key: 'status', label: '状态', icon: CircleDot },
@@ -39,8 +40,10 @@ export function TaskFilterMenu({
   params,
   items,
   onChange,
+  facets,
 }: {
   params: URLSearchParams
+  facets?: Record<string, TaskFacet[]>
   items: Todo[]
   onChange: (params: URLSearchParams) => void
 }) {
@@ -78,10 +81,11 @@ export function TaskFilterMenu({
     } else patch(key, params.get(key) === value ? '' : value)
   }
   const count = (key: string, value: string) => {
+    if (facets) return facets[key]?.find((item) => item.value === value)?.count || 0
     const next = new URLSearchParams(params)
     next.set(key, value)
     if (key === 'status') next.set('focus', 'all')
-    return filterTasks(items, next).length
+    return matchingTasks(items, next).length
   }
   const options =
     category === 'status'
@@ -95,11 +99,13 @@ export function TaskFilterMenu({
         : [
             ...new Set(
               [
-                ...items.flatMap((item) =>
-                  category === 'tag'
-                    ? item.tags || []
-                    : [item[category as 'project' | 'creator'] || ''],
-                ),
+                ...(facets?.[category]
+                  ? facets[category].map((item) => item.value)
+                  : items.flatMap((item) =>
+                      category === 'tag'
+                        ? item.tags || []
+                        : [item[category as 'project' | 'creator'] || ''],
+                    )),
                 params.get(category) || '',
               ].filter(Boolean),
             ),

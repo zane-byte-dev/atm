@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
-import './workspace-chrome.css'
+import './workspace-title.css'
 
 // One type scale for workspace navigation titles, independent of document typography.
 export function WorkspaceTitle({

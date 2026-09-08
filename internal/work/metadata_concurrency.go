@@ -40,6 +40,9 @@ type todoSnapshot struct {
 
 func todoContentSnapshot(todo Todo) todoSnapshot {
 	copy := cloneTodo(todo)
+	// The display timestamp also tracks document projection and external edits;
+	// it is not editable Todo metadata and must not create ETag conflicts.
+	copy.UpdatedAt = 0
 	sort.Strings(copy.Tags)
 	sort.Strings(copy.DependsOn)
 	snapshot := todoSnapshot{Todo: copy}

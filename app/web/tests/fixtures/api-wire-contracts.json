@@ -1,0 +1,406 @@
+{
+  "knowledgeCatalog": [
+    {
+      "id": "fixture-notes",
+      "name": "Fixture notes",
+      "role": "reference",
+      "description": "Synthetic collection",
+      "topics": [
+        "API contracts"
+      ],
+      "use_when": [
+        "Checking response types"
+      ],
+      "avoid_when": [
+        "Reading real user data"
+      ],
+      "instructions": [
+        "Use synthetic examples"
+      ],
+      "document_count": 2
+    }
+  ],
+  "knowledgeDocument": {
+    "metadata": {
+      "id": "doc:fixture-001",
+      "schemaVersion": 1,
+      "title": "Fixture document",
+      "status": "active",
+      "domains": [
+        "testing"
+      ],
+      "tags": [
+        "contract"
+      ],
+      "projects": [
+        "fixture-project"
+      ],
+      "producer": "fixture",
+      "createdAt": "2026-09-08T08:00:00Z",
+      "updatedAt": "2026-09-08T08:00:00Z"
+    },
+    "collection": "fixture-notes",
+    "content": "# Fixture document\n\nSynthetic API contract content.\n",
+    "etag": "cb1280e16dd9384dc10cac11cecadc6e82b9aa46980d5176f3d78fd1454f6f63",
+    "editable": true
+  },
+  "knowledgeQuery": {
+    "documents": [
+      {
+        "document_id": "doc:fixture-001",
+        "title": "Fixture document",
+        "collection": "fixture-notes",
+        "status": "active",
+        "domains": [
+          "testing"
+        ],
+        "tags": [
+          "contract"
+        ],
+        "projects": [
+          "fixture-project"
+        ],
+        "producer": "fixture",
+        "created_at": "2026-09-08T08:00:00Z",
+        "updated_at": "2026-09-08T08:00:00Z",
+        "snippet": "Synthetic API contract content."
+      }
+    ],
+    "total": 2,
+    "has_more": true,
+    "next_cursor": "synthetic-opaque-next-page-cursor"
+  },
+  "knowledgeQueryEmpty": {
+    "documents": [],
+    "total": 0,
+    "has_more": false
+  },
+  "taskMetadata": {
+    "items": [],
+    "total": 3,
+    "limit": 1,
+    "offset": 0,
+    "projects": [
+      "fixture-project"
+    ],
+    "counts": {
+      "all": 3,
+      "archived": 0,
+      "done": 1,
+      "in_progress": 1,
+      "open": 1,
+      "review": 0
+    },
+    "has_more": false,
+    "matched_total": 3,
+    "groups": [
+      {
+        "key": "[\"fixture-project\",\"\"]",
+        "project": "fixture-project",
+        "status": "",
+        "total": 3,
+        "active_total": 2,
+        "done_total": 1
+      }
+    ],
+    "facets": {
+      "creator": [
+        {
+          "value": "fixture-agent",
+          "count": 1
+        }
+      ],
+      "priority": [
+        {
+          "value": "P0",
+          "count": 0
+        },
+        {
+          "value": "P1",
+          "count": 1
+        },
+        {
+          "value": "P2",
+          "count": 1
+        },
+        {
+          "value": "P3",
+          "count": 1
+        }
+      ],
+      "project": [
+        {
+          "value": "fixture-project",
+          "count": 3
+        }
+      ],
+      "status": [
+        {
+          "value": "open",
+          "count": 1
+        },
+        {
+          "value": "in_progress",
+          "count": 1
+        },
+        {
+          "value": "review",
+          "count": 0
+        },
+        {
+          "value": "done",
+          "count": 1
+        },
+        {
+          "value": "archived",
+          "count": 0
+        }
+      ],
+      "tag": [
+        {
+          "value": "contract",
+          "count": 1
+        }
+      ]
+    },
+    "view_counts": {
+      "all": 3,
+      "review": 0,
+      "unfinished": 2,
+      "waiting": 0
+    },
+    "selection_revision": "todo-members-v1-0737fd57c844921951919204d06edd273e557fba2cf7147a62fd0f530e12bfdc"
+  },
+  "taskMetadataEmpty": {
+    "items": [],
+    "total": 0,
+    "limit": 1,
+    "offset": 0,
+    "projects": [
+      "fixture-project"
+    ],
+    "counts": {
+      "all": 0,
+      "archived": 0,
+      "done": 0,
+      "in_progress": 0,
+      "open": 0,
+      "review": 0
+    },
+    "has_more": false,
+    "matched_total": 0,
+    "groups": [],
+    "facets": {
+      "creator": [
+        {
+          "value": "fixture-agent",
+          "count": 0
+        }
+      ],
+      "priority": [
+        {
+          "value": "P0",
+          "count": 0
+        },
+        {
+          "value": "P1",
+          "count": 0
+        },
+        {
+          "value": "P2",
+          "count": 0
+        },
+        {
+          "value": "P3",
+          "count": 0
+        }
+      ],
+      "project": [
+        {
+          "value": "fixture-project",
+          "count": 0
+        }
+      ],
+      "status": [
+        {
+          "value": "open",
+          "count": 0
+        },
+        {
+          "value": "in_progress",
+          "count": 0
+        },
+        {
+          "value": "review",
+          "count": 0
+        },
+        {
+          "value": "done",
+          "count": 0
+        },
+        {
+          "value": "archived",
+          "count": 0
+        }
+      ],
+      "tag": [
+        {
+          "value": "contract",
+          "count": 0
+        }
+      ]
+    },
+    "view_counts": {
+      "all": 0,
+      "review": 0,
+      "unfinished": 0,
+      "waiting": 0
+    },
+    "selection_revision": "todo-members-v1-e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "taskPage": {
+    "items": [
+      {
+        "updated_at": 1788854400,
+        "creator": "fixture-agent",
+        "tags": [
+          "contract"
+        ],
+        "id": "t902",
+        "title": "Fixture: planned task",
+        "status": "in_progress",
+        "priority": "P1",
+        "project": "fixture-project",
+        "created": "2026-09-07",
+        "depends_on": [
+          "t901"
+        ],
+        "archived": false
+      }
+    ],
+    "total": 2,
+    "limit": 1,
+    "offset": 0,
+    "projects": null,
+    "counts": null,
+    "has_more": true,
+    "groups": null
+  },
+  "todoDetailEmpty": {
+    "todo": {
+      "updated_at": 1788854400,
+      "id": "t901",
+      "title": "Fixture: empty task",
+      "status": "open",
+      "priority": "P2",
+      "project": "fixture-project",
+      "created": "2026-09-06",
+      "depends_on": [],
+      "archived": false,
+      "description": "",
+      "links": [],
+      "images": [],
+      "closed": null,
+      "closed_reason": null
+    },
+    "etag": "todo-v1-f09afa05c003f81bb634e98de8797d98fcebdb4c03ec8ceb8ea711da760b77c4",
+    "latest_plan": null,
+    "bindings": [],
+    "sessions": [],
+    "summary": null
+  },
+  "todoDetailWithPlan": {
+    "todo": {
+      "updated_at": 1788854400,
+      "tags": [
+        "contract"
+      ],
+      "id": "t902",
+      "title": "Fixture: planned task",
+      "status": "in_progress",
+      "priority": "P1",
+      "project": "fixture-project",
+      "created": "2026-09-07",
+      "depends_on": [
+        "t901"
+      ],
+      "archived": false,
+      "description": "",
+      "links": [],
+      "images": [],
+      "closed": null,
+      "closed_reason": null,
+      "creator": "fixture-agent"
+    },
+    "etag": "todo-v1-4ba9cb91cd243c86f651b9b28de6ba154400de06f76d4b48a2b6885a58e45416",
+    "latest_plan": {
+      "todo_id": "t902",
+      "revision": 1,
+      "explanation": "Synthetic plan contract",
+      "items": [
+        {
+          "step": "Read the fixture",
+          "status": "completed"
+        },
+        {
+          "step": "Check the response",
+          "status": "in_progress"
+        }
+      ],
+      "created_at": 1788854400,
+      "actor_kind": "human",
+      "origin": "web"
+    },
+    "bindings": [],
+    "sessions": [],
+    "summary": null
+  },
+  "todoList": {
+    "items": [
+      {
+        "updated_at": 1788854400,
+        "id": "t903",
+        "title": "Fixture: completed task",
+        "status": "done",
+        "priority": "P3",
+        "project": "fixture-project",
+        "created": "2026-09-08",
+        "depends_on": [],
+        "archived": false
+      },
+      {
+        "updated_at": 1788854400,
+        "creator": "fixture-agent",
+        "tags": [
+          "contract"
+        ],
+        "id": "t902",
+        "title": "Fixture: planned task",
+        "status": "in_progress",
+        "priority": "P1",
+        "project": "fixture-project",
+        "created": "2026-09-07",
+        "depends_on": [
+          "t901"
+        ],
+        "archived": false
+      }
+    ],
+    "total": 3,
+    "limit": 2,
+    "offset": 0,
+    "projects": [
+      "fixture-project"
+    ],
+    "counts": {
+      "all": 3,
+      "archived": 0,
+      "done": 1,
+      "in_progress": 1,
+      "open": 1,
+      "review": 0
+    },
+    "has_more": true,
+    "groups": null
+  }
+}

@@ -13,7 +13,7 @@ import {
 } from 'lucide-react'
 import { WorkspaceTitle } from '../workspace-title'
 import { call } from '../api'
-import { Notice } from '../editor'
+import { Notice } from '../markdown'
 import { QueryLoading } from '../query-loading'
 import { AppearanceSettings } from '../appearance-settings'
 import type { Bootstrap } from '../types'

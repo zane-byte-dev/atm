@@ -9,11 +9,11 @@ import (
 // with one live database, so old migration rungs are removed after that database
 // reaches the new baseline. Older and newer schemas fail fast instead of being
 // guessed at by compatibility code.
-const SchemaVersion = 57
+const SchemaVersion = 58
 
-// MinUpgradableVersion is the oldest schema this build can open. It equals the
-// current baseline while no one-step migration is intentionally in flight.
-const MinUpgradableVersion = SchemaVersion
+// MinUpgradableVersion is the oldest schema this build can upgrade in place.
+// Only the immediately preceding task-timestamp migration is retained.
+const MinUpgradableVersion = 57
 
 // datePattern matches the 'YYYY-MM-DD' form used by every date-only column.
 // Empty string is the domain's "unset" value and is allowed alongside it.
@@ -352,6 +352,7 @@ func createSchema(tx *sql.Tx) error {
 			on_done           TEXT NOT NULL DEFAULT '',
 			start_ts          INTEGER,
 			done_ts           INTEGER,
+			updated_at        INTEGER NOT NULL DEFAULT 0,
 			-- NULL means live. An archived todo keeps its row so its ID is never
 			-- reused and dependencies, documents, and progress notes can still
 			-- name it; loadTodos excludes it from the working set.

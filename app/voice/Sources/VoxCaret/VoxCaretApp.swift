@@ -123,7 +123,7 @@ struct VoiceSettings: View {
                             Spacer()
                             switch model.state {
                             case .downloading(let progress): ProgressView(value: progress).frame(width: 120); Button("取消") { model.cancelDownload() }
-                            case .installing: ProgressView().controlSize(.small)
+                            case .installing, .deleting: ProgressView().controlSize(.small)
                             case .ready:
                                 if model.source?.isManagedByVoxCaret == true {
                                     Button("移除独立模型", role: .destructive) { model.deleteModel() }
@@ -232,6 +232,7 @@ struct VoiceSettings: View {
         case .missing: return "本地模型未下载（约 160 MB）"
         case .downloading: return "下载中"
         case .installing: return "校验并安装中"
+        case .deleting: return "移除模型中"
         case .ready:
             return model.source == .compatibleLegacy
                 ? "已复用本机兼容的 SenseVoice Small（无需下载）"

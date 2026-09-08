@@ -2,24 +2,6 @@ import XCTest
 @testable import VoxCaret
 
 final class VoxCaretTextInjectorTests: XCTestCase {
-    func testLiveReplacementSelectsThePreviousPreviewByGrapheme() {
-        let plan = VoxCaretTextInjector.LiveReplacementPlan(
-            previous: "你好👋",
-            replacement: "你好，世界"
-        )
-        XCTAssertEqual(plan.selectionLength, 3)
-        XCTAssertEqual(plan.replacement, "你好，世界")
-    }
-
-    func testLiveRollbackSelectsEverythingAndReplacesWithNothing() {
-        let plan = VoxCaretTextInjector.LiveReplacementPlan(
-            previous: "实时预览",
-            replacement: ""
-        )
-        XCTAssertEqual(plan.selectionLength, 4)
-        XCTAssertTrue(plan.replacement.isEmpty)
-    }
-
     @MainActor
     func testLiveSessionCoalescesPartialsAndReconcilesTheFinalText() async throws {
         var edits: [(String, String)] = []
@@ -54,7 +36,7 @@ final class VoxCaretTextInjectorTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(25))
         await session.rollback()
 
-        XCTAssertFalse(session.hasRenderedText)
+        XCTAssertTrue(session.renderedText.isEmpty)
         XCTAssertEqual(edits.count, 2)
         XCTAssertEqual(edits[0].0, "")
         XCTAssertEqual(edits[0].1, "会被撤回")

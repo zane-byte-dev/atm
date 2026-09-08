@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import {
   ChevronDown,
   ChevronRight,
@@ -25,7 +25,15 @@ import { progressiveTasks } from './task-progressive'
 import { TaskDataTable } from './task-data-table'
 import type { Todo } from './types'
 import { readTaskLayout, updateTaskLayout } from './task-navigation'
-import { fields, statuses, filterTasks, visibleFields } from './task-view-model'
+import { fields, statuses, filterTasks, visibleFields, groupTasks } from './task-view-model'
+import {
+  collectTaskPages,
+  selectedTaskRows,
+  taskSelectionScope,
+  type RemoteTaskWorkbench,
+  type TaskGroup,
+} from './task-query'
+import { TaskPagedGroup, TaskPageControls } from './task-paged-group'
 import { TaskFilterMenu } from './task-filter-menu'
 import { TaskDisplayMenu } from './task-display-menu'
 import { WorkspaceTitle } from './workspace-title'
@@ -48,8 +56,10 @@ export function TaskWorkbench({
   loading,
   error,
   onRetry,
+  remote,
 }: {
   items: Todo[]
+  remote?: RemoteTaskWorkbench
   params: URLSearchParams
   onChange: (params: URLSearchParams) => void
   onOpen: (id: string) => void
@@ -63,21 +73,112 @@ export function TaskWorkbench({
   const effectiveParams = new URLSearchParams(params)
   if (!params.has('focus') && !params.has('status') && !params.has('view'))
     effectiveParams.set('focus', 'unfinished')
-  const shown = filterTasks(items, effectiveParams)
+  const queryString = params.toString()
+  const shown = useMemo(
+    () => (remote ? [] : filterTasks(items, effectiveParams)),
+    [items, queryString, remote],
+  )
+  const groupedItems = useMemo(() => groupTasks(shown), [shown])
+  const remoteGroupIndex = useMemo(
+    () => new Map((remote?.metadata.groups || []).map((group) => [group.key, group])),
+    [remote?.metadata.groups],
+  )
+  const remoteProjects = useMemo(() => {
+    const projects = new Map<string, { total: number; statuses: Map<string, TaskGroup> }>()
+    for (const group of remote?.metadata.groups || []) {
+      const project = projects.get(group.project) || {
+        total: 0,
+        statuses: new Map<string, TaskGroup>(),
+      }
+      project.total += group.total
+      project.statuses.set(group.status, group)
+      projects.set(group.project, project)
+    }
+    return projects
+  }, [remote?.metadata.groups])
+  const total = remote?.metadata.matched_total ?? shown.length
   const focus = effectiveParams.get('focus') || 'all'
   const presence = useQuery({
     queryKey: ['activity-status'],
     queryFn: ({ signal }) => call<SessionStatus>('session.status', {}, signal),
-    refetchInterval: 15000,
+    refetchInterval: remote?.refetchInterval ?? 60000,
     refetchIntervalInBackground: false,
   })
   const [selected, setSelected] = useState<string[]>([])
-  useEffect(() => setSelected([]), [params.toString()])
-  const selectedItems = shown.filter((item) => selected.includes(item.id))
-  const toggleSelected = (id: string) =>
-    setSelected((previous) =>
-      previous.includes(id) ? previous.filter((value) => value !== id) : [...previous, id],
-    )
+  const [allSelected, setAllSelected] = useState(false)
+  const [excluded, setExcluded] = useState<string[]>([])
+  const [selectionNotice, setSelectionNotice] = useState('')
+  const previousMembership = useRef<string | undefined>(undefined)
+  const selectionScope = taskSelectionScope(params)
+  useEffect(() => {
+    setSelected([])
+    setAllSelected(false)
+    setExcluded([])
+    setSelectionNotice('')
+    previousMembership.current = undefined
+  }, [selectionScope])
+  const selectedSet = useMemo(() => new Set(selected), [selected])
+  const excludedSet = useMemo(() => new Set(excluded), [excluded])
+  const isSelected = (id: string) => (allSelected ? !excludedSet.has(id) : selectedSet.has(id))
+  const selectionCount = allSelected ? Math.max(0, total - excluded.length) : selected.length
+  const clearSelection = () => {
+    setSelected([])
+    setAllSelected(false)
+    setExcluded([])
+  }
+  useEffect(() => {
+    const revision = remote?.metadata.selection_revision
+    if (revision === undefined) return
+    if (previousMembership.current !== undefined && previousMembership.current !== revision) {
+      if (allSelected || selected.length) setSelectionNotice('筛选结果已变化，已清除之前的选择。')
+      clearSelection()
+    }
+    previousMembership.current = revision
+  }, [remote?.metadata.selection_revision])
+  const selectAll = (checked: boolean) => {
+    clearSelection()
+    if (checked) setAllSelected(true)
+  }
+  const loadSelected = async (): Promise<{ id: string }[]> => {
+    if (!allSelected) return selected.map((id) => ({ id }))
+    if (!remote) return shown.filter((row) => !excludedSet.has(row.id))
+    const rows = await collectTaskPages(async (offset) => {
+      const page = await call('todo.list', {
+        ...remote.input,
+        group_by: 'none',
+        limit: 200,
+        offset,
+      })
+      if (page.total - excluded.length > 100)
+        throw new Error('筛选结果已变化，请重新选择最多 100 项任务。')
+      return page
+    })
+    return selectedTaskRows(rows, excludedSet, 100)
+  }
+  const loadRows = async (): Promise<Todo[]> =>
+    remote
+      ? collectTaskPages((offset) =>
+          call('todo.list', { ...remote.input, group_by: 'none', limit: 200, offset }),
+        )
+      : shown
+  const exportRows = async (): Promise<Todo[]> => {
+    if (!selectionCount) return loadRows()
+    if (allSelected) return (await loadRows()).filter((row) => !excludedSet.has(row.id))
+    if (!remote) return shown.filter((row) => selectedSet.has(row.id))
+    const rows: Todo[] = []
+    for (const id of selected) rows.push((await call('todo.show', { todo_id: id })).todo)
+    return rows
+  }
+  const toggleSelected = (id: string) => {
+    if (allSelected)
+      setExcluded((previous) =>
+        previous.includes(id) ? previous.filter((value) => value !== id) : [...previous, id],
+      )
+    else
+      setSelected((previous) =>
+        previous.includes(id) ? previous.filter((value) => value !== id) : [...previous, id],
+      )
+  }
   const properties = visibleFields(params)
   const [menu, setMenu] = useState('')
   const toolbar = useRef<HTMLDivElement>(null)
@@ -127,15 +228,12 @@ export function TaskWorkbench({
     const activity = taskActivity(todo, presence.isError ? undefined : presence.data)
     const activityText = taskActivityLabel(activity)
     return (
-      <div
-        key={todo.id}
-        className={`workbench-row ${selected.includes(todo.id) ? 'is-selected' : ''}`}
-      >
+      <div key={todo.id} className={`workbench-row ${isSelected(todo.id) ? 'is-selected' : ''}`}>
         <input
           className="task-row-select"
           type="checkbox"
           aria-label={`选择 ${todo.id}`}
-          checked={selected.includes(todo.id)}
+          checked={isSelected(todo.id)}
           onChange={() => toggleSelected(todo.id)}
         />
         <button className="workbench-card" data-task-id={todo.id} onClick={() => onOpen(todo.id)}>
@@ -204,16 +302,13 @@ export function TaskWorkbench({
     groupBy === 'none'
       ? [['全部任务', shown]]
       : groupBy === 'project'
-        ? [...new Set(shown.map((item) => item.project || '无项目'))].map((project) => [
-            project,
-            shown.filter((item) => (item.project || '无项目') === project),
-          ])
-        : statuses.map(([status, label]) => [label, shown.filter((item) => item.status === status)])
+        ? [...groupedItems.byProject].map(([project, rows]) => [project || '无项目', rows])
+        : statuses.map(([status, label]) => [label, groupedItems.byStatus.get(status) || []])
   return (
     <section className={`task-workbench density-${params.get('density') || 'compact'}`}>
       <header className="workbench-heading">
         <WorkspaceTitle icon={ListTodo}>
-          任务 <small>{shown.length}</small>
+          任务 <small>{total}</small>
         </WorkspaceTitle>
         {writable && (
           <button className="button" onClick={onCreate}>
@@ -228,6 +323,7 @@ export function TaskWorkbench({
           items={items}
           onChange={onChange}
           onOpenMenu={() => setMenu('')}
+          metadata={remote?.metadata}
         />
         <div className="workbench-tools">
           <WorkspaceSearchButton />
@@ -284,7 +380,12 @@ export function TaskWorkbench({
               </>
             )}
             {menu === 'filter' && (
-              <TaskFilterMenu params={effectiveParams} items={items} onChange={onChange} />
+              <TaskFilterMenu
+                params={effectiveParams}
+                items={items}
+                onChange={onChange}
+                facets={remote?.metadata.facets}
+              />
             )}
             {menu === 'group' && (
               <>
@@ -367,19 +468,23 @@ export function TaskWorkbench({
         </div>
       )}
       <TaskBulkActions
-        selected={selectedItems}
+        selected={selected.map((id) => ({ id }))}
+        selectionCount={selectionCount}
+        selectionScopeLabel={allSelected ? '全部筛选结果' : undefined}
+        loadSelected={loadSelected}
         writable={writable}
-        onClear={() => setSelected([])}
+        onClear={clearSelection}
       />
-      {layout !== 'table' && shown.length > 0 && (
+      {selectionNotice && <p role="status">{selectionNotice}</p>}
+      {layout !== 'table' && total > 0 && (
         <label className="task-select-all">
           <input
             type="checkbox"
             aria-label="选择全部筛选结果"
-            checked={!!selectedItems.length && selectedItems.length === shown.length}
-            onChange={(e) => setSelected(e.target.checked ? shown.map((item) => item.id) : [])}
+            checked={total > 0 && selectionCount === total}
+            onChange={(e) => selectAll(e.target.checked)}
           />
-          选择全部 {shown.length} 项
+          选择全部 {total} 项
         </label>
       )}
       <div className={`workbench-content ${layout === 'table' ? 'table-content' : ''}`}>
@@ -392,7 +497,7 @@ export function TaskWorkbench({
             {error}
             <button onClick={onRetry}>重试</button>
           </div>
-        ) : !shown.length ? (
+        ) : !total ? (
           <div className="workbench-empty">
             <List size={28} />
             <h3>没有匹配的任务</h3>
@@ -416,6 +521,137 @@ export function TaskWorkbench({
               查看全部任务
             </button>
           </div>
+        ) : remote ? (
+          <>
+            {layout === 'table' ? (
+              <TaskDataTable
+                items={[]}
+                remote={remote}
+                properties={properties}
+                params={params}
+                onChange={onChange}
+                onOpen={onOpen}
+                onColumns={() => setMenu('columns')}
+                selected={selected}
+                onSelectionChange={setSelected}
+                activityStatus={presence.isError ? undefined : presence.data}
+                selectionCount={selectionCount}
+                total={total}
+                isSelected={isSelected}
+                onToggleSelected={toggleSelected}
+                onSelectAll={selectAll}
+                onClearSelection={clearSelection}
+                onExportRows={exportRows}
+              />
+            ) : layout === 'swimlane' ? (
+              <table className="workbench-swimlane">
+                <thead>
+                  <tr>
+                    <th>项目</th>
+                    {statuses.map(([status, label]) => (
+                      <th key={status}>{label}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...remoteProjects].map(([project, projectGroups]) => (
+                    <tr key={project}>
+                      <th>
+                        {project || '无项目'}
+                        <small>{projectGroups.total}</small>
+                      </th>
+                      {statuses.map(([status]) => {
+                        const group = projectGroups.statuses.get(status)
+                        return group ? (
+                          <TaskPagedGroup key={status} remote={remote} group={group}>
+                            {(page, ref) => (
+                              <td ref={ref as RefObject<HTMLTableCellElement | null>}>
+                                {page.rows.map(card)}
+                                <TaskPageControls page={page} />
+                              </td>
+                            )}
+                          </TaskPagedGroup>
+                        ) : (
+                          <td key={status} />
+                        )
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            ) : (
+              <div className={layout === 'kanban' ? 'workbench-board' : undefined}>
+                {(layout === 'kanban'
+                  ? statuses.map(
+                      ([status]) =>
+                        remoteGroupIndex.get(JSON.stringify(['', status])) || {
+                          key: JSON.stringify(['', status]),
+                          project: '',
+                          status,
+                          total: 0,
+                          active_total: 0,
+                          done_total: 0,
+                        },
+                    )
+                  : remote.metadata.groups
+                ).map((group) => {
+                  const label =
+                    remote.input.group_by === 'status'
+                      ? statuses.find(([status]) => status === group.status)?.[1] || group.status
+                      : remote.input.group_by === 'project'
+                        ? group.project || '无项目'
+                        : '全部任务'
+                  const collapseKey = remote.input.group_by === 'status' ? label : group.key
+                  const folded = layout === 'list' && collapsed.includes(collapseKey)
+                  return (
+                    <TaskPagedGroup key={group.key} remote={remote} group={group} enabled={!folded}>
+                      {(page, ref) => (
+                        <section
+                          className={layout === 'list' ? 'workbench-group' : undefined}
+                          ref={ref as RefObject<HTMLElement | null>}
+                        >
+                          {layout === 'kanban' ? (
+                            <h2>
+                              {label}
+                              <small>{group.total}</small>
+                            </h2>
+                          ) : (
+                            <button
+                              className="workbench-group-title"
+                              aria-expanded={!folded}
+                              onClick={() =>
+                                setCollapsed((previous) =>
+                                  folded
+                                    ? previous.filter((name) => name !== collapseKey)
+                                    : [...previous, collapseKey],
+                                )
+                              }
+                            >
+                              {folded ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                              {remote.input.group_by === 'status' && (
+                                <span
+                                  className={`task-state state-${group.status}`}
+                                  aria-hidden="true"
+                                />
+                              )}
+                              {label}
+                              <small>{group.total}</small>
+                            </button>
+                          )}
+                          {!folded && (
+                            <>
+                              {page.rows.map(card)}
+                              <TaskPageControls page={page} />
+                            </>
+                          )}
+                        </section>
+                      )}
+                    </TaskPagedGroup>
+                  )
+                })}
+              </div>
+            )}
+          </>
         ) : (
           <>
             {layout === 'list' &&
@@ -462,6 +698,13 @@ export function TaskWorkbench({
                 selected={selected}
                 onSelectionChange={setSelected}
                 activityStatus={presence.isError ? undefined : presence.data}
+                selectionCount={selectionCount}
+                total={total}
+                isSelected={isSelected}
+                onToggleSelected={toggleSelected}
+                onSelectAll={selectAll}
+                onClearSelection={clearSelection}
+                onExportRows={exportRows}
               />
             )}
             {layout === 'kanban' && (
@@ -470,12 +713,9 @@ export function TaskWorkbench({
                   <section key={status}>
                     <h2>
                       {label}
-                      <small>{shown.filter((todo) => todo.status === status).length}</small>
+                      <small>{(groupedItems.byStatus.get(status) || []).length}</small>
                     </h2>
-                    {cards(
-                      shown.filter((todo) => todo.status === status),
-                      'board:' + status,
-                    )}
+                    {cards(groupedItems.byStatus.get(status) || [], 'board:' + status)}
                   </section>
                 ))}
               </div>
@@ -491,21 +731,17 @@ export function TaskWorkbench({
                   </tr>
                 </thead>
                 <tbody>
-                  {[...new Set(shown.map((todo) => todo.project || '无项目'))].map((project) => (
+                  {[...groupedItems.byProject.keys()].map((project) => (
                     <tr key={project}>
                       <th>
-                        {project}
-                        <small>
-                          {shown.filter((todo) => (todo.project || '无项目') === project).length}
-                        </small>
+                        {project || '无项目'}
+                        <small>{(groupedItems.byProject.get(project) || []).length}</small>
                       </th>
                       {statuses.map(([status]) => (
                         <td key={status}>
                           {cards(
-                            shown.filter(
-                              (todo) =>
-                                (todo.project || '无项目') === project && todo.status === status,
-                            ),
+                            groupedItems.byProjectStatus.get(JSON.stringify([project, status])) ||
+                              [],
                             'swim:' + project + ':' + status,
                           )}
                         </td>

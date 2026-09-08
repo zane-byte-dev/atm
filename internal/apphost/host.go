@@ -90,11 +90,24 @@ func ConfigureDataDir(path string) error {
 }
 
 type ListInput struct {
-	Status  string `json:"status,omitempty"`
-	Query   string `json:"query,omitempty"`
-	Project string `json:"project,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
-	Offset  int    `json:"offset,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Query        string `json:"query,omitempty"`
+	Project      string `json:"project,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+	Offset       int    `json:"offset,omitempty"`
+	Workbench    bool   `json:"workbench,omitempty"`
+	Focus        string `json:"focus,omitempty"`
+	Priority     string `json:"priority,omitempty"`
+	Creator      string `json:"creator,omitempty"`
+	Tag          string `json:"tag,omitempty"`
+	From         string `json:"from,omitempty"`
+	To           string `json:"to,omitempty"`
+	Sort         string `json:"sort,omitempty"`
+	Direction    string `json:"direction,omitempty"`
+	GroupBy      string `json:"group_by,omitempty"`
+	GroupKey     string `json:"group_key,omitempty"`
+	Partition    string `json:"partition,omitempty"`
+	MetadataOnly bool   `json:"metadata_only,omitempty"`
 }
 
 type TodoInput struct {
@@ -143,12 +156,18 @@ type TodoView struct {
 }
 
 type ListResult struct {
-	Items    []TodoSummary  `json:"items"`
-	Total    int            `json:"total"`
-	Limit    int            `json:"limit"`
-	Offset   int            `json:"offset"`
-	Projects []string       `json:"projects"`
-	Counts   map[string]int `json:"counts"`
+	Items             []TodoSummary                    `json:"items"`
+	Total             int                              `json:"total"`
+	Limit             int                              `json:"limit"`
+	Offset            int                              `json:"offset"`
+	Projects          []string                         `json:"projects"`
+	Counts            map[string]int                   `json:"counts"`
+	HasMore           bool                             `json:"has_more"`
+	MatchedTotal      *int                             `json:"matched_total,omitempty"`
+	Groups            []store.TodoPageGroup            `json:"groups"`
+	Facets            map[string][]store.TodoPageFacet `json:"facets,omitempty"`
+	ViewCounts        map[string]int                   `json:"view_counts,omitempty"`
+	SelectionRevision string                           `json:"selection_revision,omitempty"`
 }
 
 type ShowResult struct {
@@ -178,14 +197,29 @@ func (h *Host) ListTodos(ctx context.Context, call application.Call, input ListI
 		input.Limit = 50
 	}
 	status := strings.TrimSpace(input.Status)
-	switch status {
-	case "", "all", "open", "in_progress", "review", "done", "archived":
-	default:
-		return ListResult{}, invalid("invalid todo status")
+	if !input.Workbench {
+		switch status {
+		case "", "all", "open", "in_progress", "review", "done", "archived":
+		default:
+			return ListResult{}, invalid("invalid todo status")
+		}
 	}
 	result := ListResult{Items: []TodoSummary{}, Limit: input.Limit, Offset: input.Offset, Projects: []string{}, Counts: map[string]int{"all": 0, "open": 0, "in_progress": 0, "review": 0, "done": 0, "archived": 0}}
-	if strings.TrimSpace(input.Query) == "" {
-		page, err := h.work.ListPage(ctx, call, work.ListPageInput{Status: status, Project: input.Project, Limit: input.Limit, Offset: input.Offset})
+	if input.Workbench && input.MetadataOnly {
+		result.MatchedTotal = &result.Total
+		result.Groups = []store.TodoPageGroup{}
+		result.Facets = map[string][]store.TodoPageFacet{"status": {}, "priority": {}, "project": {}, "creator": {}, "tag": {}}
+		result.ViewCounts = map[string]int{"all": 0, "unfinished": 0, "review": 0, "waiting": 0}
+		result.SelectionRevision = store.EmptyTodoSelectionRevision
+	}
+	if input.Workbench || strings.TrimSpace(input.Query) == "" {
+		page, err := h.work.ListPage(ctx, call, work.ListPageInput{
+			Status: status, Project: input.Project, Limit: input.Limit, Offset: input.Offset,
+			Workbench: input.Workbench, Focus: input.Focus, Priority: input.Priority, Creator: input.Creator,
+			Tag: input.Tag, From: input.From, To: input.To, Query: input.Query, Sort: input.Sort,
+			Direction: input.Direction, GroupBy: input.GroupBy, GroupKey: input.GroupKey,
+			Partition: input.Partition, MetadataOnly: input.MetadataOnly,
+		})
 		if err != nil {
 			if errors.Is(err, store.ErrDatabaseMissing) {
 				return result, nil
@@ -193,11 +227,17 @@ func (h *Host) ListTodos(ctx context.Context, call application.Call, input ListI
 			return ListResult{}, err
 		}
 		result.Total, result.Counts, result.Projects = page.Total, page.Counts, page.Projects
+		if input.Workbench && input.MetadataOnly {
+			result.MatchedTotal = &page.MatchedTotal
+			result.Groups, result.Facets, result.ViewCounts = page.Groups, page.Facets, page.ViewCounts
+			result.SelectionRevision = page.SelectionRevision
+		}
 		for _, todo := range page.Todos {
 			item := summary(todo)
 			item.Archived = status == "archived"
 			result.Items = append(result.Items, item)
 		}
+		result.HasMore = !input.MetadataOnly && input.Offset+len(result.Items) < result.Total
 		return result, nil
 	}
 	listed, err := h.work.List(ctx, call, work.ListInput{Status: "all"})
@@ -266,6 +306,7 @@ func (h *Host) ListTodos(ctx context.Context, call application.Call, input ListI
 		result.Projects = append(result.Projects, project)
 	}
 	sort.Strings(result.Projects)
+	result.HasMore = input.Offset+len(result.Items) < result.Total
 	return result, nil
 }
 
@@ -300,15 +341,12 @@ func (h *Host) Doc(ctx context.Context, call application.Call, input TodoInput) 
 	return DocResult{Exists: result.Exists, Content: result.Content}, err
 }
 
-// Task documents track description/progress edits; done_ts preserves completion
-// ordering when an older task has no document. Reads never touch either source.
+// UpdatedAt is projected by writes and the document watcher. Reads never stat
+// every task document simply to render or sort a list.
 func todoUpdatedAt(todo work.Todo) int64 {
-	var updated int64
+	updated := todo.UpdatedAt
 	if todo.DoneTS != nil {
-		updated = *todo.DoneTS
-	}
-	if info, err := os.Stat(store.TodoDocPath(todo.ID)); err == nil && info.ModTime().Unix() > updated {
-		updated = info.ModTime().Unix()
+		updated = max(updated, *todo.DoneTS)
 	}
 	return updated
 }

@@ -4,8 +4,7 @@ import { createRoot } from 'react-dom/client'
 import { TaskViews } from '../../src/task-views'
 import { filterTasks } from '../../src/task-view-model'
 import type { Todo } from '../../src/types'
-import '../../src/style.css'
-import '../../src/themes.css'
+import '../../src/app.css'
 import '../../src/task-workbench.css'
 const items = [
   { id: 't1', title: '需要验收的任务', status: 'review', priority: 'P1', project: 'atm' },

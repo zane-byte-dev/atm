@@ -25,6 +25,14 @@ type reader struct {
 	agent       string
 	displayName string
 	read        func(live bool) *parser.QuotaInfo
+	readContext func(context.Context, bool) *parser.QuotaInfo
+}
+
+func (source reader) reading(ctx context.Context, live bool) *parser.QuotaInfo {
+	if source.readContext != nil {
+		return source.readContext(ctx, live)
+	}
+	return source.read(live)
 }
 
 // readers is ATM's fixed reporting order. It is a table rather than three
@@ -41,7 +49,7 @@ var readers = []reader{
 		displayName: "Grok Build",
 		// Live is opt-in (grok_live_quota / ATM_GROK_LIVE_QUOTA); the default stays
 		// a local log read with no network traffic.
-		read: func(live bool) *parser.QuotaInfo { return parser.GrokQuotaAuto(live) },
+		readContext: parser.GrokQuotaAutoContext,
 	},
 	{
 		agent: "antigravity",
@@ -49,7 +57,7 @@ var readers = []reader{
 		// model groups; see the Antigravity parser for why the other cannot be
 		// reported alongside it.
 		displayName: "Antigravity (Gemini models)",
-		read:        func(bool) *parser.QuotaInfo { return parser.AntigravityQuota() },
+		readContext: func(ctx context.Context, _ bool) *parser.QuotaInfo { return parser.AntigravityQuotaContext(ctx) },
 	},
 }
 
@@ -124,7 +132,7 @@ func (service Service) Snapshot(
 		if !want(source.agent) {
 			continue
 		}
-		reading := source.read(input.Live)
+		reading := source.reading(ctx, input.Live)
 		entry := service.agentQuota(source, reading, now)
 		// A requested agent is present even when it reported nothing, as an
 		// explicit null: "asked and got nothing" is not the same answer as
@@ -241,9 +249,13 @@ func (service Service) trends(agent string, reading *parser.QuotaInfo, now time.
 // a sync that already holds a writable one, and a second writer would contend
 // with it for no gain.
 func (service Service) RecordSamples(db *sql.DB, now time.Time) error {
+	return service.RecordSamplesContext(context.Background(), db, now)
+}
+
+func (service Service) RecordSamplesContext(ctx context.Context, db *sql.DB, now time.Time) error {
 	var samples []store.QuotaSample
 	for _, source := range readers {
-		reading := source.read(false)
+		reading := source.reading(ctx, false)
 		if reading == nil {
 			continue
 		}

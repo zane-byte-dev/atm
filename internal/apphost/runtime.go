@@ -34,9 +34,10 @@ func (h *Host) SetPresenceLoader(loader func(context.Context, string) (dashboard
 	h.runtimeMu.Unlock()
 }
 
-// WithConfig pins the configuration used by an actual background execution,
-// rather than only its enqueueing. Settings writers use TryLock so a slow job
-// cannot put an exclusive waiter in front of unrelated Web reads.
+// WithConfig captures outbound policy at execution time. Local state access
+// remains protected, while explicit external boundaries release the gate so a
+// slow provider cannot prevent settings updates. The same policy survives every
+// pause; local commits recheck current database state after reacquiring the gate.
 func (h *Host) WithConfig(ctx context.Context, run func(context.Context) error) error {
 	if ctx == nil || run == nil {
 		return invalid("context and config operation are required")
@@ -49,6 +50,12 @@ func (h *Host) WithConfig(ctx context.Context, run func(context.Context) error) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	policy := config.CaptureExecutionPolicy()
+	ctx = config.WithExecutionPolicy(ctx, policy, func(ctx context.Context, external func(context.Context) error) error {
+		h.gate.RUnlock()
+		defer h.gate.RLock()
+		return external(ctx)
+	})
 	return run(ctx)
 }
 
@@ -297,10 +304,6 @@ func companionError(err error) error {
 		return application.WrapError(application.CodeUnavailable, "notification preference could not be saved", err)
 	}
 	return application.WrapError(application.CodeInvalidArgument, "invalid notification acknowledgement", err)
-}
-
-func configBusy() error {
-	return application.NewError(application.CodeBusy, "background work is using the configuration; retry after it finishes")
 }
 
 func (h *Host) workspaceRuntime() WorkspaceRuntime {

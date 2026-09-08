@@ -3,10 +3,9 @@ import { useNavigate, useLocation } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Search, Plus, ArrowUpRight } from 'lucide-react'
 import { call } from './api'
-import type { TodoList } from './types'
 import type { CollectionList } from './workspaces/collection-types'
 import type { SessionSearch } from './workspaces/activity-types'
-import type { KnowledgeDocumentRow, MemoryHit } from './workspaces/knowledge-types'
+import type { MemoryHit } from './workspaces/knowledge-types'
 
 type Result = { title: string; path: string; meta?: string }
 type Group = { name: string; items: Result[]; failed?: boolean }
@@ -32,13 +31,18 @@ async function searchAll(
   context?: SearchContext,
 ): Promise<Group[]> {
   const params = context?.params || new URLSearchParams()
+  const requestedStatus = params.get('status')
+  const knowledgeStatus =
+    requestedStatus === 'active' || requestedStatus === 'draft' || requestedStatus === 'archived'
+      ? requestedStatus
+      : ''
   const wants = (workspace: string) => !context || context.workspace === workspace
   const requests: [string, Promise<Result[]>][] = []
   const add = (workspace: string, name: string, request: () => Promise<Result[]>) => {
     if (wants(workspace)) requests.push([name, request()])
   }
   add('tasks', '任务', () =>
-    call<TodoList>(
+    call(
       'todo.list',
       {
         query,
@@ -109,12 +113,12 @@ async function searchAll(
   )
   if (!context || params.get('tab') !== 'memory')
     add('knowledge', '知识', () =>
-      call<{ documents: KnowledgeDocumentRow[] }>(
+      call(
         'knowledge.query',
         {
           text: query,
           collection: params.get('collection') || '',
-          status: params.get('status') || '',
+          status: knowledgeStatus,
           limit: 20,
         },
         signal,

@@ -110,6 +110,9 @@ func ensureSchema(db *sql.DB) error {
 	if version == SchemaVersion {
 		return nil
 	}
+	if version == 57 {
+		return migrateTodoUpdatedAt(db)
+	}
 	if version < MinUpgradableVersion {
 		// ATM has one live database. Once it reaches the current baseline, keeping
 		// every historical migration is more risk than value. Back up irreplaceable

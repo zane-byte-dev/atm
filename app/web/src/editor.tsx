@@ -2,9 +2,8 @@ import { Select } from './components/select'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, LoaderCircle } from 'lucide-react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import { ApiError, call, errorText } from './api'
+import { ApiError, call } from './api'
+import { Markdown, Notice } from './markdown'
 import { createNewTaskInputStore } from './new-task-input'
 import {
   applyMergeReview,
@@ -15,7 +14,7 @@ import {
   unresolvedFields,
 } from './editor-state'
 import type { MergeChoices, MergeReview } from './editor-state'
-import type { Draft, Todo, TodoDetail, OperationWarning } from './types'
+import type { Draft, TodoDetail, OperationWarning } from './types'
 import { TaskImageUpload } from './task-images'
 import type { TaskImageUploadHandle } from './task-images'
 
@@ -164,11 +163,7 @@ export function Editor({
     const controller = new AbortController()
     latestRequest.current = controller
     try {
-      const result = await call<TodoDetail>(
-        'todo.show',
-        { todo_id: current.todo.id },
-        controller.signal,
-      )
+      const result = await call('todo.show', { todo_id: current.todo.id }, controller.signal)
       if (!alive.current || controller.signal.aborted) return
       setImageTodo(result.todo)
       setMerge(buildMergeReview(draftRef.current, result))
@@ -190,12 +185,13 @@ export function Editor({
         priority: submitted.priority,
         project: submitted.project.trim(),
       }
-      const result = await call<{ todo: Todo; etag: string; warnings?: OperationWarning[] }>(
-        current ? 'todo.update' : 'todo.create',
-        current ? { ...payload, todo_id: current.todo.id, expected_etag: submitted.etag } : payload,
-        undefined,
-        current ? undefined : submitted.operationID,
-      )
+      const result = current
+        ? await call('todo.update', {
+            ...payload,
+            todo_id: current.todo.id,
+            expected_etag: submitted.etag,
+          })
+        : await call('todo.create', payload, undefined, submitted.operationID)
       completed.current = true
       ++writeSequence.current
       let draftRemoved = !creating
@@ -579,44 +575,5 @@ export function Editor({
         </button>
       </div>
     </form>
-  )
-}
-
-export function Markdown({ text }: { text: string }) {
-  return (
-    <div className="markdown">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        skipHtml
-        components={{
-          a: ({ children, href }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          ),
-          img: ({ src, alt }) =>
-            typeof src === 'string' && src.startsWith('/api/v1/attachments/') ? (
-              <img src={src} alt={alt ?? ''} loading="lazy" />
-            ) : (
-              <span className="image-placeholder">[图片{alt ? `：${alt}` : ''}]</span>
-            ),
-        }}
-      >
-        {text}
-      </ReactMarkdown>
-    </div>
-  )
-}
-
-export function Notice({ error, retry }: { error: unknown; retry?: () => void }) {
-  return (
-    <div className="notice" role="alert">
-      <span>{errorText(error)}</span>
-      {retry && (
-        <button onClick={retry} type="button">
-          重试
-        </button>
-      )}
-    </div>
   )
 }

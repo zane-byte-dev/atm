@@ -1,15 +1,16 @@
 package apphost
 
 import (
-	"github.com/zane-byte-dev/atm/internal/store"
-	"github.com/zane-byte-dev/atm/internal/work"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/zane-byte-dev/atm/internal/store"
+	"github.com/zane-byte-dev/atm/internal/work"
 )
 
-func TestTodoUpdatedAtUsesLatestAvailableEvidence(t *testing.T) {
+func TestTodoUpdatedAtUsesDurableProjectionWithoutDocumentReads(t *testing.T) {
 	testHost(t)
 	done := int64(200)
 	todo := work.Todo{ID: "t1", DoneTS: &done}
@@ -28,9 +29,12 @@ func TestTodoUpdatedAtUsesLatestAvailableEvidence(t *testing.T) {
 		if err := os.Chtimes(path, stamp, stamp); err != nil {
 			t.Fatal(err)
 		}
-		want := max(ts, done)
-		if got := todoUpdatedAt(todo); got != want {
-			t.Fatalf("got %d want %d", got, want)
+		if got := todoUpdatedAt(todo); got != done {
+			t.Fatalf("summary read unprojected document mtime: got %d want %d", got, done)
 		}
+	}
+	todo.UpdatedAt = 400
+	if got := todoUpdatedAt(todo); got != 400 {
+		t.Fatalf("durable timestamp ignored: got %d", got)
 	}
 }

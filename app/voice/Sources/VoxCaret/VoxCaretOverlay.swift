@@ -141,7 +141,7 @@ private struct VoxCaretOverlayView: View {
         case .cancelling:
             return "撤销中"
         case .success:
-            return coordinator.lastOutcome == .copiedToPasteboardOnly ? "已复制" : "已写入"
+            return coordinator.lastOutcome == .injected ? "已写入" : "已复制"
         case .failed:
             return "输入失败"
         }
@@ -165,6 +165,9 @@ private struct VoxCaretOverlayView: View {
         case .cancelling:
             return "正在移除已经实时写入的文字"
         case .success(let text):
+            if coordinator.lastOutcome == .copiedForChangedTarget {
+                return "无法确认原输入位置，转写已复制；请在目标位置按 ⌘V 粘贴"
+            }
             guard coordinator.lastOutcome == .copiedToPasteboardOnly else { return text }
             return "缺少辅助功能权限，没法自动粘贴 —— 按 ⌘V 贴上"
         case .failed(let message):

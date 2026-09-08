@@ -50,6 +50,7 @@ type Todo struct {
 	Links            []TodoLink  `json:"links,omitempty"`
 	Images           []TodoImage `json:"images,omitempty"`
 	Created          string      `json:"created"`
+	UpdatedAt        int64       `json:"updated_at,omitempty"`
 	Source           string      `json:"source,omitempty"`
 	// Creator is who filed the todo: "me", "collect", or an agent name. See
 	// todo_creator.go for the vocabulary and why it is separate from Source.
@@ -134,7 +135,7 @@ func LoadArchivedTodos() ([]ArchivedTodo, error) {
 	}
 	defer db.Close()
 	rows, err := db.Query(`SELECT id,title,description,priority,status,project,created,source,creator,
-		closed,closed_reason,archived_at FROM todos
+		closed,closed_reason,archived_at,updated_at,done_ts FROM todos
 		WHERE archived_at IS NOT NULL
 		-- Newest first. IDs sort numerically, so t9 does not outrank t10.
 		ORDER BY archived_at DESC, closed DESC, CAST(SUBSTR(id,2) AS INTEGER) DESC`)
@@ -147,7 +148,7 @@ func LoadArchivedTodos() ([]ArchivedTodo, error) {
 		var todo ArchivedTodo
 		if err := rows.Scan(&todo.ID, &todo.Title, &todo.Description, &todo.Priority, &todo.Status,
 			&todo.Project, &todo.Created, &todo.Source, &todo.Creator, &todo.Closed,
-			&todo.ClosedReason, &todo.ArchivedAt); err != nil {
+			&todo.ClosedReason, &todo.ArchivedAt, &todo.UpdatedAt, &todo.DoneTS); err != nil {
 			return nil, err
 		}
 		archived = append(archived, todo)

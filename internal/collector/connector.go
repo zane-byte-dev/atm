@@ -144,17 +144,21 @@ func ConnectorLoginCommand(id string) string {
 // ~/.atm/config.json. Integrations can therefore live and ship independently
 // from ATM's public core.
 func DefaultRegistry() (*Registry, error) {
+	return registryFromConfig(config.CollectionConnectors)
+}
+
+func registryFromConfig(connectors map[string]config.CollectionConnectorConfig) (*Registry, error) {
 	registry, err := NewRegistry()
 	if err != nil {
 		return nil, err
 	}
-	ids := make([]string, 0, len(config.CollectionConnectors))
-	for id := range config.CollectionConnectors {
+	ids := make([]string, 0, len(connectors))
+	for id := range connectors {
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
 	for _, id := range ids {
-		configured := config.CollectionConnectors[id]
+		configured := connectors[id]
 		command := strings.TrimSpace(configured.Command)
 		if strings.HasPrefix(command, "~/") {
 			command = filepath.Join(config.Home, command[2:])

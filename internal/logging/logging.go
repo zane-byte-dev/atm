@@ -77,11 +77,17 @@ type entry struct {
 // RedactQuoted. Fields must hold identifiers, counts and statuses — never user
 // content. See the package comment.
 func Failure(event, command string, err error, fields map[string]any) {
+	FailureAt(config.AtmDir, event, command, err, fields)
+}
+
+// FailureAt writes a failure to a captured data directory. Background callbacks
+// use this when settings can reload while their external operation is running.
+func FailureAt(dataDir, event, command string, err error, fields map[string]any) {
 	message := ""
 	if err != nil {
 		message = RedactQuoted(err.Error())
 	}
-	write(entry{Level: "error", Event: event, Command: command, Error: message, Fields: fields})
+	write(dataDir, entry{Level: "error", Event: event, Command: command, Error: message, Fields: fields})
 }
 
 // RedactQuoted replaces the inside of every double-quoted span with an ellipsis.
@@ -145,10 +151,15 @@ func RedactQuoted(message string) string {
 // Lifecycle records a process boundary. These are the only non-failure lines, and
 // they exist so an unclean exit is detectable at all.
 func Lifecycle(event string, fields map[string]any) {
-	write(entry{Level: "info", Event: event, Fields: fields})
+	LifecycleAt(config.AtmDir, event, fields)
 }
 
-func write(record entry) {
+// LifecycleAt records a lifecycle event without consulting mutable settings.
+func LifecycleAt(dataDir, event string, fields map[string]any) {
+	write(dataDir, entry{Level: "info", Event: event, Fields: fields})
+}
+
+func write(dataDir string, record entry) {
 	record.Time = time.Now().UTC().Format(time.RFC3339)
 	line, err := json.Marshal(record)
 	if err != nil {
@@ -158,14 +169,16 @@ func write(record entry) {
 
 	mutex.Lock()
 	defer mutex.Unlock()
-	if err := os.MkdirAll(Dir(), 0700); err != nil {
+	dir := filepath.Join(dataDir, "logs")
+	path := filepath.Join(dir, "cli.log")
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return
 	}
-	rotateIfNeeded(Path(), len(line))
+	rotateIfNeeded(path, len(line))
 	// O_APPEND so concurrent atm processes interleave whole lines instead of
 	// overwriting each other. A single write under the pipe buffer size is
 	// atomic in practice, which is enough for a diagnostic log.
-	file, err := os.OpenFile(Path(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
 	}

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -23,11 +24,16 @@ const (
 	workspaceContentVerifyEvery = time.Minute
 )
 
+var errChangeTrackerClosed = errors.New("workspace change tracker is closed")
+
 type ChangeTracker struct {
-	mu    sync.Mutex
-	dir   string
-	db    *sql.DB
-	files map[string]*workspaceHashState
+	mu             sync.Mutex
+	closed         atomic.Bool
+	dir            string
+	db             *sql.DB
+	files          map[string]*workspaceHashState
+	projectTodos   func(context.Context, string, map[string]int64) error
+	projectedTodos map[string]int64
 }
 
 type workspaceHashFile struct {
@@ -45,20 +51,64 @@ type workspaceHashState struct {
 func NewChangeTracker(dataDir string) *ChangeTracker {
 	return &ChangeTracker{dir: dataDir, files: map[string]*workspaceHashState{}}
 }
-func (tracker *ChangeTracker) Close() {
+
+// SetTodoDocumentProjector enables the resident watcher's derived timestamp
+// projection. Ordinary trackers remain read-only, and HTTP reads never call it.
+func (tracker *ChangeTracker) SetTodoDocumentProjector(project func(context.Context, string, map[string]int64) error) {
+	if tracker.closed.Load() {
+		return
+	}
 	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
+	defer tracker.unlock()
+	if tracker.closed.Load() {
+		return
+	}
+	tracker.projectTodos = project
+	tracker.projectedTodos = make(map[string]int64)
+}
+func (tracker *ChangeTracker) Close() {
+	tracker.closed.Store(true)
+	// Server shutdown drains the watcher first. If an uncooperative callback
+	// exceeds that budget, do not block process exit here or tear down resources
+	// it is still using. Its final unlock will perform the deferred cleanup.
+	if tracker.mu.TryLock() {
+		tracker.closeLocked()
+		tracker.mu.Unlock()
+	}
+}
+
+func (tracker *ChangeTracker) unlock() {
+	tracker.mu.Unlock()
+	// Check after unlocking so Close cannot miss cleanup by racing between a
+	// closed check and the unlock. Close retries safely under the same mutex.
+	if tracker.closed.Load() {
+		tracker.Close()
+	}
+}
+
+func (tracker *ChangeTracker) closeLocked() {
 	if tracker.db != nil {
 		_ = tracker.db.Close()
 		tracker.db = nil
 	}
 	tracker.files = nil
+	tracker.projectTodos = nil
+	tracker.projectedTodos = nil
 }
 
 func (tracker *ChangeTracker) Fingerprints(ctx context.Context, domains []string) (map[string]string, error) {
+	if tracker.closed.Load() {
+		return nil, errChangeTrackerClosed
+	}
 	tracker.mu.Lock()
-	defer tracker.mu.Unlock()
+	defer tracker.unlock()
+	if tracker.closed.Load() {
+		return nil, errChangeTrackerClosed
+	}
 	result := map[string]string{}
+	if len(domains) == 0 {
+		return result, ctx.Err()
+	}
 	if tracker.db == nil {
 		path := filepath.Join(tracker.dir, "atm.db")
 		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
@@ -80,16 +130,37 @@ func (tracker *ChangeTracker) Fingerprints(ctx context.Context, domains []string
 		}
 		tracker.db = db
 	}
+	// Read domain revisions together from one SQLite statement/snapshot.
+	args := make([]any, len(domains))
+	for index, domain := range domains {
+		args[index] = domain
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(args)), ",")
+	rows, err := tracker.db.QueryContext(ctx, `SELECT domain,revision FROM workspace_changes WHERE domain IN (`+placeholders+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	revisions := make(map[string]int64, len(domains))
+	for rows.Next() {
+		var domain string
+		var revision int64
+		if err := rows.Scan(&domain, &revision); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		revisions[domain] = revision
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	for _, domain := range domains {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		var revision int64
-		err := tracker.db.QueryRowContext(ctx, `SELECT revision FROM workspace_changes WHERE domain=?`, domain).Scan(&revision)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return nil, err
-		}
-		value := strconv.FormatInt(revision, 10)
+		value := strconv.FormatInt(revisions[domain], 10)
 		var paths []string
 		switch domain {
 		case "todos":
@@ -108,9 +179,78 @@ func (tracker *ChangeTracker) Fingerprints(ctx context.Context, domains []string
 			}
 			value += ":" + signature
 		}
+		if domain == "todos" && tracker.projectTodos != nil {
+			changed, err := tracker.projectTodoDocumentTimes(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if changed {
+				// Projection is durable before observers refetch rows ordered by
+				// updated_at. Rebaseline its revision in this same notification.
+				var revision int64
+				if err := tracker.db.QueryRowContext(ctx, `SELECT revision FROM workspace_changes WHERE domain='todos'`).Scan(&revision); err != nil {
+					return nil, err
+				}
+				value = strconv.FormatInt(revision, 10) + strings.TrimPrefix(value, strconv.FormatInt(revisions[domain], 10))
+			}
+		}
 		result[domain] = value
 	}
 	return result, nil
+}
+
+func (tracker *ChangeTracker) projectTodoDocumentTimes(ctx context.Context) (bool, error) {
+	root := filepath.Join(tracker.dir, "todos")
+	state := tracker.files[root]
+	if state == nil {
+		return false, nil
+	}
+	observed := make(map[string]int64)
+	for path, file := range state.files {
+		if file.info == nil || filepath.Dir(path) != root || filepath.Ext(path) != ".md" {
+			continue
+		}
+		id := strings.TrimSuffix(filepath.Base(path), ".md")
+		if len(id) < 2 || id[0] != 't' {
+			continue
+		}
+		number, err := strconv.ParseUint(id[1:], 10, 64)
+		if err != nil || number == 0 || "t"+strconv.FormatUint(number, 10) != id {
+			continue
+		}
+		observed[id] = max(0, file.info.ModTime().Unix())
+	}
+	var pending []string
+	for id, stamp := range observed {
+		if previous, ok := tracker.projectedTodos[id]; !ok || previous != stamp {
+			pending = append(pending, id)
+		}
+	}
+	sort.Strings(pending)
+	changed := len(pending) > 0
+	for len(pending) > 0 {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		count := min(len(pending), 200)
+		batch := make(map[string]int64, count)
+		for _, id := range pending[:count] {
+			batch[id] = observed[id]
+		}
+		if err := tracker.projectTodos(ctx, tracker.dir, batch); err != nil {
+			return false, err
+		}
+		for id, stamp := range batch {
+			tracker.projectedTodos[id] = stamp
+		}
+		pending = pending[count:]
+	}
+	for id := range tracker.projectedTodos {
+		if _, exists := observed[id]; !exists {
+			delete(tracker.projectedTodos, id)
+		}
+	}
+	return changed, nil
 }
 
 func (tracker *ChangeTracker) hashWorkspaceFiles(ctx context.Context, root string) (string, error) {

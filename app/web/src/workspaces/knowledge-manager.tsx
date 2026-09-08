@@ -1,12 +1,12 @@
 import { Select } from '../components/select'
 import { useEffect, useRef, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQueryClient } from '@tanstack/react-query'
 import { Archive, Files, FolderInput, RotateCcw, X } from 'lucide-react'
 import { call, errorText } from '../api'
 import type {
   KnowledgeCollection,
-  KnowledgeDocument,
   KnowledgeDocumentRow,
+  KnowledgeQueryInput,
 } from './knowledge-types'
 import {
   updateDocumentBatch,
@@ -14,6 +14,7 @@ import {
   type DocumentPatch,
 } from './knowledge-batch'
 import './knowledge-manager.css'
+import { useKnowledgeDocuments } from './knowledge-query'
 const statuses = [
   ['', '全部'],
   ['active', '有效'],
@@ -38,7 +39,7 @@ export function KnowledgeManager({
   const dialog = useRef<HTMLDialogElement>(null)
   const selectAll = useRef<HTMLInputElement>(null)
   const [collection, setCollection] = useState(initialCollection)
-  const [status, setStatus] = useState('')
+  const [status, setStatus] = useState<NonNullable<KnowledgeQueryInput['status']>>('')
   const [selected, setSelected] = useState<string[]>([])
   const [target, setTarget] = useState('')
   const [pending, setPending] = useState(false)
@@ -47,16 +48,8 @@ export function KnowledgeManager({
   const [batchTotal, setBatchTotal] = useState(0)
   const [results, setResults] = useState<DocumentBatchResult[]>([])
   const [refreshError, setRefreshError] = useState('')
-  const query = useQuery({
-    queryKey: ['knowledge', 'manager', collection, status],
-    queryFn: ({ signal }) =>
-      call<{ documents: KnowledgeDocumentRow[] }>(
-        'knowledge.query',
-        { collection, status, limit: 200 },
-        signal,
-      ),
-  })
-  const rows = query.data?.documents || []
+  const query = useKnowledgeDocuments({ collection, status })
+  const rows = query.documents
   const picked = rows.filter((row) => selected.includes(row.document_id))
   const allSelected = rows.length > 0 && picked.length === rows.length
   useEffect(() => {
@@ -68,7 +61,7 @@ export function KnowledgeManager({
   const changeFilter = (key: 'collection' | 'status', value: string) => {
     if (running.current) return
     if (key === 'collection') setCollection(value)
-    else setStatus(value)
+    else setStatus(value as NonNullable<KnowledgeQueryInput['status']>)
     setSelected([])
     setResults([])
   }
@@ -85,9 +78,9 @@ export function KnowledgeManager({
         picked,
         patch,
         {
-          get: (id) => call<KnowledgeDocument>('knowledge.document.get', { document_id: id }),
+          get: (id) => call('knowledge.document.get', { document_id: id }),
           update: (doc, change) =>
-            call<KnowledgeDocument>('knowledge.document.update', {
+            call('knowledge.document.update', {
               document_id: doc.metadata.id,
               etag: doc.etag,
               content: doc.content || '',
@@ -265,7 +258,7 @@ export function KnowledgeManager({
       {query.isError && (
         <p className="knowledge-manager-feedback" role="alert">
           {errorText(query.error)}{' '}
-          <button className="text-button" disabled={pending} onClick={() => void query.refetch()}>
+          <button className="text-button" disabled={pending} onClick={() => void query.refresh()}>
             重新加载
           </button>
         </p>
@@ -279,7 +272,7 @@ export function KnowledgeManager({
                   <input
                     ref={selectAll}
                     type="checkbox"
-                    aria-label="选择当前列表全部文档"
+                    aria-label="选择当前已加载文档"
                     checked={allSelected}
                     disabled={pending || query.isError || !rows.length}
                     onChange={() =>
@@ -349,9 +342,16 @@ export function KnowledgeManager({
       </div>
       <footer>
         <span>
-          {rows.length >= 200
-            ? '已加载前 200 篇，请按集合和状态缩小范围。'
-            : `当前列表 ${rows.length} 篇文档`}
+          已加载 {rows.length} / {query.total ?? '—'} 篇文档（批量选择仅限已加载文档）
+          {query.hasNextPage && (
+            <button
+              className="text-button"
+              disabled={pending || query.isFetching}
+              onClick={() => void query.fetchNextPage()}
+            >
+              {query.isFetchingNextPage ? '正在加载…' : '加载更多文档'}
+            </button>
+          )}
         </span>
         <span>{writable ? '归档可恢复，移动保留正文与来源。' : '当前为只读模式。'}</span>
       </footer>

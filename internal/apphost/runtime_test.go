@@ -133,74 +133,36 @@ func TestRuntimeJobsExposeDirectJobAndDurableList(t *testing.T) {
 	}
 }
 
-func TestConfigWritersFailFastWithoutBlockingOtherReads(t *testing.T) {
+func TestSettingsWriteWaitsForProtectedLocalState(t *testing.T) {
 	h := testHost(t)
 	entered, release, finished := make(chan struct{}), make(chan struct{}), make(chan error, 1)
 	go func() {
 		finished <- h.WithConfig(context.Background(), func(context.Context) error { close(entered); <-release; return nil })
 	}()
 	<-entered
-	defer func() {
-		close(release)
-		if err := <-finished; err != nil {
-			t.Error(err)
-		}
-	}()
-	checks := []func() error{
-		func() error {
-			_, err := h.SaveWorkspacePreferences(context.Background(), webCall(), WorkspacePreferencesInput{OwnerName: "fixture"})
-			return err
-		},
-		func() error {
-			_, err := h.SaveWorkspaceBusiness(context.Background(), webCall(), WorkspaceBusinessInput{})
-			return err
-		},
-		func() error { _, err := h.saveWorkspaceCredential(context.Background(), webCall(), nil); return err },
-	}
-	for i, check := range checks {
-		result := make(chan error, 1)
-		go func() { result <- check() }()
-		select {
-		case err := <-result:
-			if !errors.Is(err, application.ErrBusy) {
-				t.Fatalf("writer %d: %v", i, err)
-			}
-		case <-time.After(time.Second):
-			t.Fatalf("writer %d queued behind job", i)
-		}
-	}
-	collectionWrite := make(chan error, 1)
+	written := make(chan error, 1)
 	go func() {
-		_, err := h.callCollection(context.Background(), webCall(), "collect.item.read", json.RawMessage(`{"item_id":"ci_0000000000000000","read":true}`))
-		collectionWrite <- err
+		_, err := h.SaveWorkspacePreferences(context.Background(), webCall(), WorkspacePreferencesInput{OwnerName: "fixture"})
+		written <- err
 	}()
 	select {
-	case err := <-collectionWrite:
-		if errors.Is(err, application.ErrBusy) {
-			t.Fatalf("collection write incorrectly shared the config writer gate: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("collection write queued behind config-bound background work")
+	case err := <-written:
+		close(release)
+		<-finished
+		t.Fatalf("writer bypassed protected local state: %v", err)
+	case <-time.After(20 * time.Millisecond):
 	}
-	settingsRead := make(chan error, 1)
-	go func() { _, err := h.WorkspaceSettings(context.Background(), webCall()); settingsRead <- err }()
-	select {
-	case err := <-settingsRead:
-		if err != nil {
-			t.Fatalf("settings snapshot blocked by background work: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("settings snapshot queued behind background work")
+	close(release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
 	}
-	read := make(chan error, 1)
-	go func() { _, err := h.ListTodos(context.Background(), webCall(), ListInput{}); read <- err }()
 	select {
-	case err := <-read:
+	case err := <-written:
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("busy settings writer blocked unrelated page read")
+	case <-time.After(2 * time.Second):
+		t.Fatal("writer did not resume after local state completed")
 	}
 }
 

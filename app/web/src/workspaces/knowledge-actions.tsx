@@ -29,7 +29,7 @@ export function KnowledgeActions({
   const [message, setMessage] = useState('')
   const mutation = useMutation({
     mutationFn: (patch: { status?: string; collection?: string }) =>
-      call<KnowledgeDocument>('knowledge.document.update', {
+      call('knowledge.document.update', {
         document_id: doc.metadata.id,
         etag: doc.etag,
         content: doc.content || '',

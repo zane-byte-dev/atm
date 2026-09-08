@@ -36,7 +36,7 @@ type todoRow struct {
 // accidentally list, transition, or overwrite them.
 func loadTodos(q sqlQueryer) (*TodoFile, error) {
 	rows, err := q.Query(`SELECT id,title,description,priority,status,project,wake_condition,
-		review_at,maintenance_limit,created,source,creator,closed,closed_reason,on_done,start_ts,done_ts
+		review_at,maintenance_limit,created,source,creator,closed,closed_reason,on_done,start_ts,done_ts,updated_at
 		FROM todos WHERE archived_at IS NULL ORDER BY position,id`)
 	if err != nil {
 		return nil, err
@@ -50,7 +50,7 @@ func loadTodos(q sqlQueryer) (*TodoFile, error) {
 			&todo.ID, &todo.Title, &todo.Description, &todo.Priority, &todo.Status,
 			&todo.Project, &todo.WakeCondition, &todo.ReviewAt,
 			&todo.MaintenanceLimit, &todo.Created, &todo.Source, &todo.Creator, &todo.Closed,
-			&todo.ClosedReason, &todo.OnDone, &todo.StartTS, &todo.DoneTS,
+			&todo.ClosedReason, &todo.OnDone, &todo.StartTS, &todo.DoneTS, &todo.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -219,6 +219,14 @@ func writeTodos(store sqlWorkStore, file *TodoFile) error {
 	for position := range file.Items {
 		todo := &file.Items[position]
 		base, existed := file.baseline[todo.ID]
+		// Child metadata changes are task updates too. Repacking positions after
+		// another task is removed is bookkeeping and must not reorder every card.
+		if !existed || !reflect.DeepEqual(base.todo, *todo) {
+			todo.UpdatedAt = max(todo.UpdatedAt, time.Now().Unix())
+			if todo.DoneTS != nil {
+				todo.UpdatedAt = max(todo.UpdatedAt, *todo.DoneTS)
+			}
+		}
 		switch {
 		case !existed:
 			if err := insertTodo(store, position, todo); err != nil {
@@ -274,23 +282,23 @@ func sameTodoScalars(a, b *Todo) bool {
 func insertTodo(store sqlExecer, position int, todo *Todo) error {
 	_, err := store.Exec(`INSERT INTO todos
 		(id,position,title,description,priority,status,project,wake_condition,review_at,
-		 maintenance_limit,created,source,creator,closed,closed_reason,on_done,start_ts,done_ts)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 maintenance_limit,created,source,creator,closed,closed_reason,on_done,start_ts,done_ts,updated_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		todo.ID, position, todo.Title, todo.Description, todo.Priority, todo.Status,
 		todo.Project, todo.WakeCondition, todo.ReviewAt, todo.MaintenanceLimit,
 		todo.Created, todo.Source, todo.Creator, todo.Closed, todo.ClosedReason,
-		todo.OnDone, todo.StartTS, todo.DoneTS)
+		todo.OnDone, todo.StartTS, todo.DoneTS, todo.UpdatedAt)
 	return err
 }
 
 func updateTodo(store sqlExecer, position int, todo *Todo) error {
 	_, err := store.Exec(`UPDATE todos SET position=?,title=?,description=?,priority=?,status=?,
 		project=?,wake_condition=?,review_at=?,maintenance_limit=?,created=?,source=?,creator=?,
-		closed=?,closed_reason=?,on_done=?,start_ts=?,done_ts=? WHERE id=?`,
+		closed=?,closed_reason=?,on_done=?,start_ts=?,done_ts=?,updated_at=MAX(updated_at,?) WHERE id=?`,
 		position, todo.Title, todo.Description, todo.Priority, todo.Status,
 		todo.Project, todo.WakeCondition, todo.ReviewAt, todo.MaintenanceLimit,
 		todo.Created, todo.Source, todo.Creator, todo.Closed, todo.ClosedReason,
-		todo.OnDone, todo.StartTS, todo.DoneTS, todo.ID)
+		todo.OnDone, todo.StartTS, todo.DoneTS, todo.UpdatedAt, todo.ID)
 	return err
 }
 
@@ -681,7 +689,7 @@ func (state *WorkStateTx) moveTodosOutOfWorkingSet(ids []string, requireClosed b
 		if _, err := state.UnbindTodoSessions(id, unbindReason); err != nil {
 			return nil, err
 		}
-		if _, err := state.tx.Exec(`UPDATE todos SET archived_at=? WHERE id=?`, now, id); err != nil {
+		if _, err := state.tx.Exec(`UPDATE todos SET archived_at=?,updated_at=MAX(updated_at,?) WHERE id=?`, now, now, id); err != nil {
 			return nil, err
 		}
 		state.Todos.forget(id, todo.Status)
@@ -698,7 +706,7 @@ func (state *WorkStateTx) RestoreTodos(ids []string) ([]string, error) {
 		if _, archived := ArchivedStatus(state.Todos, id); !archived {
 			return nil, fmt.Errorf("todo %s is not archived", id)
 		}
-		if _, err := state.tx.Exec(`UPDATE todos SET archived_at=NULL WHERE id=?`, id); err != nil {
+		if _, err := state.tx.Exec(`UPDATE todos SET archived_at=NULL,updated_at=MAX(updated_at,?) WHERE id=?`, time.Now().Unix(), id); err != nil {
 			return nil, err
 		}
 		delete(state.Todos.archived, id)

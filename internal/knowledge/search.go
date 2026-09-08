@@ -24,6 +24,16 @@ func searchDocuments(documents []Document, query string, options SearchOptions, 
 	if options.Limit <= 0 {
 		options.Limit = 10
 	}
+	hits := rankSearchDocuments(documents, query, options, qualityIndex)
+	if len(hits) > options.Limit {
+		hits = hits[:options.Limit]
+	}
+	return hits
+}
+
+// rankSearchDocuments keeps the established chunk scoring and tie-breaks while
+// letting document browsing deduplicate before applying its page boundary.
+func rankSearchDocuments(documents []Document, query string, options SearchOptions, qualityIndex map[string]float64) []SearchHit {
 	allChunks := chunkDocuments(documents)
 	var chunks []chunk
 	for _, candidate := range allChunks {
@@ -112,9 +122,6 @@ func searchDocuments(documents []Document, query string, options SearchOptions, 
 		}
 		return hits[i].Score > hits[j].Score
 	})
-	if len(hits) > options.Limit {
-		hits = hits[:options.Limit]
-	}
 	return hits
 }
 

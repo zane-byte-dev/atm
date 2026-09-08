@@ -12,7 +12,7 @@ test('batch edits use preview versions, report partial failures and never retry 
     snapshots,
     'project',
     ' atm ',
-    async (method, input) => {
+    async ({ method, input }) => {
       calls.push({ method, input })
       if (input.todo_id === 't2') throw new Error('version conflict')
     },
@@ -36,7 +36,7 @@ test('archive uses the retention action, never completion', async () => {
     [{ todo: { id: 't1', title: 'A' }, etag: 'v1' }],
     'archive',
     '',
-    async (method, input) => {
+    async ({ method, input }) => {
       calls.push({ method, input })
     },
     () => {},

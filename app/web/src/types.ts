@@ -35,7 +35,7 @@ export type TodoDetail = {
     revision: number
     explanation?: string
     items: { step: string; status: string }[]
-  }
+  } | null
   bindings?: {
     session_id: string
     todo_id: string
@@ -69,7 +69,7 @@ export type TodoDetail = {
     output_tokens: number
     cost_usd: number
   }[]
-  summary?: { sessions: number; queries: number; tool_calls: number; cost_usd: number }
+  summary?: { sessions: number; queries: number; tool_calls: number; cost_usd: number } | null
 }
 export type Bootstrap = {
   csrf_token: string

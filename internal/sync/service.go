@@ -129,7 +129,7 @@ func (service Service) Run(
 	if err != nil {
 		return RunResult{}, unavailable("sync sessions", err)
 	}
-	if warning := service.sample(db); warning != "" {
+	if warning := service.sample(ctx, db); warning != "" {
 		result.Warnings = append(result.Warnings, warning)
 	}
 	return result, nil
@@ -140,11 +140,18 @@ func (service Service) Run(
 // vanish either: nobody reads stderr when the server runs this on a timer, and
 // quota history silently never accumulating is exactly the kind of fault that
 // needs a record.
-func (service Service) sample(db *sql.DB) string {
+func (service Service) sample(ctx context.Context, db *sql.DB) string {
 	if service.sampler == nil {
 		return ""
 	}
-	err := service.sampler.RecordSamples(db, service.now())
+	var err error
+	if sampler, ok := service.sampler.(interface {
+		RecordSamplesContext(context.Context, *sql.DB, time.Time) error
+	}); ok {
+		err = sampler.RecordSamplesContext(ctx, db, service.now())
+	} else {
+		err = service.sampler.RecordSamples(db, service.now())
+	}
 	if err == nil {
 		return ""
 	}

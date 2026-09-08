@@ -15,7 +15,7 @@ import type { Todo } from './types'
 import {
   fields,
   statuses,
-  filterTasks,
+  matchingTasks,
   parseViews,
   savedViewsKey,
   viewQuery,
@@ -32,6 +32,7 @@ import {
 } from './task-view-preferences'
 import { readTaskLayout } from './task-navigation'
 import './task-views.css'
+import type { TaskWorkbenchMetadata } from './task-query'
 
 const layouts = [
   ['list', '列表'],
@@ -70,8 +71,10 @@ export function TaskViews({
   items,
   onChange,
   onOpenMenu,
+  metadata,
 }: {
   params: URLSearchParams
+  metadata?: TaskWorkbenchMetadata
   items: Todo[]
   onChange: (params: URLSearchParams) => void
   onOpenMenu: () => void
@@ -216,11 +219,13 @@ export function TaskViews({
         ? ['P0', 'P1', 'P2', 'P3'].map((value) => [value, value])
         : [
             ...new Set(
-              items
-                .flatMap((item) =>
-                  key === 'tag' ? item.tags || [] : [item[key as 'creator' | 'project'] || ''],
-                )
-                .filter(Boolean),
+              metadata?.facets[key]
+                ? metadata.facets[key].map((item) => item.value)
+                : items
+                    .flatMap((item) =>
+                      key === 'tag' ? item.tags || [] : [item[key as 'creator' | 'project'] || ''],
+                    )
+                    .filter(Boolean),
             ),
           ]
             .sort()
@@ -246,7 +251,13 @@ export function TaskViews({
               onClick={() => select(entry)}
             >
               {entry.name}
-              {entry.focus && <small>{filterTasks(items, countParams).length}</small>}
+              {entry.focus && (
+                <small>
+                  {metadata
+                    ? metadata.view_counts[entry.focus] || 0
+                    : matchingTasks(items, countParams).length}
+                </small>
+              )}
             </button>
           )
         })}
