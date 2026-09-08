@@ -1,5 +1,8 @@
 # ATM macOS 客户端性能排查
 
+> 历史记录：本文描述审计及修复当时的原生客户端。旧 `app/macos` 已于 2026-09-08 从工作树移除，源码保存在 [删除前的 Git 快照](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos)。文中的 Swift 命令、构建产物及验收结论仅适用于当时版本；当前开发入口见 [Web 开发说明](../app/web/README.md)。
+> 源码链接固定到删除前快照，已包含后续修复；链接文字中的 `L` 保留首次排查行号，不代表该快照中的行号。
+
 核验时间：2026-09-03。源码基线：`c87f3cf`，排查开始时工作区干净。本文保留首次只读排查时的现象、源码行号和实测基线；其中“当前”“本轮”均指首次排查阶段。随后根据用户要求实施了修复，见 [修复与回归记录](performance-fixes-2026-09-03.md)。
 
 ## 结论与证据边界
@@ -18,7 +21,7 @@
 
 运行路径为 `app/macos/.build/dev-app/ATM Dev.app/Contents/MacOS/ATMMenuBarApp`。开发脚本使用 `.build/debug` 和未指定 Release 的 `swift build`；构建描述中有 `-Onone`、`-enable-testing`、`-g`。这是性能放大因素，不足以证明换成 Release 就能解决全部问题。
 
-来源：[开发脚本](/Users/mj/mox/atm/app/macos/Scripts/run-dev-app.sh:5)、[Release 构建脚本](/Users/mj/mox/atm/app/macos/Scripts/build-app.sh:12)。运行包经签名后与未打包二进制哈希不同，本轮没有把它们宣称为逐字节相同。
+来源：[开发脚本（原 L5）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Scripts/run-dev-app.sh)、[Release 构建脚本（原 L12）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Scripts/build-app.sh)。运行包经签名后与未打包二进制哈希不同，本轮没有把它们宣称为逐字节相同。
 
 ### 后台全量快照约 9.4 秒
 
@@ -62,7 +65,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 影响：看任务也周期性承担统计聚合；任务刷新受最慢支路影响；重复启动聚合增加负载。建议 work 独立更新，stats 按需按范围取数、共享有版本的缓存，quota 独立落地；合并启动刷新，保留任务乐观更新及旧响应保护。
 
-来源：[刷新调度](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:1089)、[等待全部请求](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:2397)、[统计展开](/Users/mj/mox/atm/internal/dashboard/service.go:257)、[每范围查询](/Users/mj/mox/atm/internal/dashboard/service.go:409)。
+来源：[刷新调度（原 L1089）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)、[等待全部请求（原 L2397）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)、[统计展开（原 L257）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/internal/dashboard/service.go)、[每范围查询（原 L409）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/internal/dashboard/service.go)。
 
 ### F02 · P1 · 选择一个任务会重新分组、重复排序所有完成任务【采样命中 + 静态确认】
 
@@ -70,7 +73,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 影响：历史任务越多，点击当前任务越容易带出无关工作。建议在任务集合版本或日期边界变化时计算分组；预计算排序键，一次排序后分桶；选择态更新只影响旧、新选中行和详情。不能把“折叠了”当成“没有计算”。
 
-来源：[重复排序](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:273)、[分组计算属性](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:1197)。
+来源：[重复排序（原 L273）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)、[分组计算属性（原 L1197）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)。
 
 ### F03 · P1 · 实时状态通过全局 Store 使任务等无关界面失效【静态确认】
 
@@ -80,7 +83,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议按 tasks / presence / collection / knowledge / settings 拆分可观察状态，或增加页面、列表派生数据的相等边界；时钟和年龄展示局部更新。保持后台通知能力，不用简单关轮询来换流畅度。
 
-来源：[共享 Store](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:842)、[overlay 更新](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:1240)、[状态时间字段](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/SessionModels.swift:450)、[常驻轮询](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMAgentAttentionNotifier.swift:59)。
+来源：[共享 Store（原 L842）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)、[overlay 更新（原 L1240）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)、[状态时间字段（原 L450）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/SessionModels.swift)、[常驻轮询（原 L59）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMAgentAttentionNotifier.swift)。
 
 ### F04 · P2 · 详情打开提前加载未查看的内容，快速切换后请求继续运行【静态确认】
 
@@ -88,7 +91,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议按页签和可见区域加载，按任务版本缓存并后台校验；明确请求所有权，取消已经无消费者的读取。若需要预取，限制并发并避免预取结果触发整个工作区更新。
 
-来源：[详情加载入口](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:1829)、[progress / sessions](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:2861)、[建议节流](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:1501)。
+来源：[详情加载入口（原 L1829）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)、[progress / sessions（原 L2861）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)、[建议节流（原 L1501）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)。
 
 ### F05 · P2 · 通用切换组件把动画与视图销毁绑定【静态确认】
 
@@ -96,7 +99,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议把视觉过渡和状态生命周期分开；详情壳保持稳定，按对象管理状态，选择反馈立即显示，内容过渡缩短或取消。某些重置是正确语义，例如切换任务不能沿用另一任务的编辑草稿，不能直接全局删除 `.id` 而不补状态规则。
 
-来源：[通用实现](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMTheme.swift:168)、[任务详情](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:1245)、[Agent 动态](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopAgentsView.swift:792)。
+来源：[通用实现（原 L168）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMTheme.swift)、[任务详情（原 L1245）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)、[Agent 动态（原 L792）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopAgentsView.swift)。
 
 ### F06 · P2 · Markdown 重复解析发生在视图构建路径【采样命中 + 静态确认】
 
@@ -104,7 +107,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议缓存按原文版本生成的分块和富文本，复用链接检测器，在需要时后台解析；字体/主题变化与文本解析分离。对超长内容限制首批渲染量。尚未测量长 Markdown 的绝对耗时。
 
-来源：[分块与富文本](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMMarkdownContentView.swift:17)、[链接保护](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMMarkdown.swift:357)、[进展正文](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/TodoProgressView.swift:104)。
+来源：[分块与富文本（原 L17）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMMarkdownContentView.swift)、[链接保护（原 L357）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMMarkdown.swift)、[进展正文（原 L104）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/TodoProgressView.swift)。
 
 ### F07 · P2 · 分组内及完整会话未按行虚拟化【静态确认；大数据场景】
 
@@ -112,7 +115,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议虚拟化到“行/轮次”而不是只到“组”，必要时分页；长会话首批展示可见轮次，保留全文检索和跳转能力。旧的纯文本弹窗已经使用 NSTextView，不应把这一发现误套到它。
 
-来源：[分组容器](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDesignSystem.swift:130)、[会话全轮次](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopSessionTranscriptView.swift:109)、[时序](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopSessionTranscriptView.swift:195)。
+来源：[分组容器（原 L130）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDesignSystem.swift)、[会话全轮次（原 L109）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopSessionTranscriptView.swift)、[时序（原 L195）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopSessionTranscriptView.swift)。
 
 ### F08 · P2 · 图片读盘与粘贴转码在 UI 路径同步执行【静态确认；图片场景】
 
@@ -120,7 +123,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议异步生成下采样缩略图，按路径/修改时间/显示尺寸缓存；UI 仅接收结果。粘贴先确认图像类型，再后台转码和写临时文件，用稳定占位保持布局。
 
-来源：[任务图片](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:2151)、[表单图片](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:2862)、[粘贴转码](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:2948)。
+来源：[任务图片（原 L2151）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)、[表单图片（原 L2862）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)、[粘贴转码（原 L2948）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)。
 
 ### F09 · P2 · 跨工作区返回会丢缓存；知识列表读取存在串行放大【静态确认】
 
@@ -130,7 +133,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议数据与阅读位置上移到工作区级模型，返回先显示缓存；对跨库读取共享进行中的请求，按需展开或限制并发加载，保留缓存失效规则。
 
-来源：[页面替换](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:781)、[知识页面状态](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopKnowledgeView.swift:23)、[知识列表读取](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopKnowledgeView.swift:1594)、[AI Day Store](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopAIDayView.swift:14)。
+来源：[页面替换（原 L781）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)、[知识页面状态（原 L23）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopKnowledgeView.swift)、[知识列表读取（原 L1594）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopKnowledgeView.swift)、[AI Day Store（原 L14）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopAIDayView.swift)。
 
 ### F10 · P2 · 搜索清空旧结果后等待最慢的搜索域【静态确认】
 
@@ -138,7 +141,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议保留上一次结果并明确刷新态，各域独立显示；任务可优先基于内存检索，远程/磁盘结果随后补充；去重和排序尽量由支持分页的接口承担。实际最慢域需单独测量。
 
-来源：[搜索流程](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopSearchPalette.swift:563)、[后端读取范围](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:2995)。
+来源：[搜索流程（原 L563）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopSearchPalette.swift)、[后端读取范围（原 L2995）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)。
 
 ### F11 · P2 · IPC 大结果经过多轮 JSON 转换；短命令完成靠轮询发现【静态确认】
 
@@ -146,7 +149,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议用一次 typed envelope 解码完成版本/verb/错误校验和 payload 解码；用进程终止回调及异步管道收集替代定时检查，保留 timeout、取消及 stderr 防阻塞。**runner 已在 detached task 中运行，这不是主线程 waitUntilExit 问题。** 本轮没有单独量化 JSON 的耗时比例。
 
-来源：[IPC 转换](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMIPC.swift:333)、[进程 runner](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:395)。
+来源：[IPC 转换（原 L333）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMIPC.swift)、[进程 runner（原 L395）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)。
 
 ### F12 · P2 · 收集行构建反复扫描整批记录【静态确认；记录较多时】
 
@@ -154,7 +157,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议一次生成 source 分桶、todo 补充记录索引、未读计数和有效 selectedID，行仅做 O(1) 查询；收集已读操作的刷新应限定到受影响记录。
 
-来源：[列表派生属性](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopCollectionView.swift:78)、[行构建](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopCollectionView.swift:624)、[补充记录扫描](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/CollectionModels.swift:661)。
+来源：[列表派生属性（原 L78）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopCollectionView.swift)、[行构建（原 L624）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopCollectionView.swift)、[补充记录扫描（原 L661）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/CollectionModels.swift)。
 
 ### F13 · P2 · 长输入框每次输入/改尺寸都强制全文布局【静态确认；长输入场景】
 
@@ -162,7 +165,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议增长到高度上限后停止全文高度测量，固定高度滚动；避免无变化的字体、inset 写回触发额外布局。项目候选按任务版本缓存，当前文本推断只算一次。短标题输入不应优先于任务切换和全局刷新处理。
 
-来源：[高度测量](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMComposerTextView.swift:271)、[重复建议计算](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift:2661)。
+来源：[高度测量（原 L271）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMComposerTextView.swift)、[重复建议计算（原 L2661）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/DesktopContentView.swift)。
 
 ### F14 · P3 · 常驻 Store 的完整会话缓存没有容量限制【条件性风险】
 
@@ -170,7 +173,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议按字节预算和最近使用淘汰，保留当前阅读项；离开读取页可取消无消费者任务。保留已有摘要/完整/时序分开读取及缓存命中机制。
 
-来源：[缓存字段](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:930)、[缓存读取](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift:3192)。
+来源：[缓存字段（原 L930）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)、[缓存读取（原 L3192）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift)。
 
 ### F15 · P3 · 语音粘贴存在明确的主线程 50 ms 阻塞【静态确认；语音完成时】
 
@@ -178,7 +181,7 @@ P1 为应优先修复的高频或全局问题；P2 为后续应处理的问题�
 
 建议把键盘事件间隔改为可挂起的延迟，保留按下/松开的顺序及剪贴板恢复协议；剪贴板读取范围和大数据恢复策略另行评估。
 
-来源：[主线程粘贴](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMTextInjector.swift:14)、[同步休眠](/Users/mj/mox/atm/app/macos/Sources/ATMMenuBarApp/ATMTextInjector.swift:109)。
+来源：[主线程粘贴（原 L14）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMTextInjector.swift)、[同步休眠（原 L109）](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMTextInjector.swift)。
 
 ## 已有优化与排除项
 

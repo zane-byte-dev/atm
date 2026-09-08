@@ -2,7 +2,7 @@
 
 日期：2026-09-03。状态：Go/Web、后台职责与两个可选原生产品的代码已落地；新 bundle 权限验收另行记录。
 
-本方案依据当前仓库源码和产品讨论编写。初始设计基线为 `c87f3cf`，本轮保留已有 t355 macOS 性能修复和其他用户改动。
+本方案依据当前仓库源码和产品讨论编写，初始设计基线为 `c87f3cf`。2026-09-08 已移除旧 Swift 主工作区；其源码、资源和 t355 性能修复保存在 [删除前的 Git 快照](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos)。
 历史设计取舍继续保留，具体实现以本节、后文更正以及 [Web 开发说明](../../app/web/README.md)为准。
 源码、构建和隔离测试通过不等同于登录服务已安装或麦克风/辅助功能权限已验收。
 
@@ -16,7 +16,7 @@
 - Go 默认接管后台：同步约 5 分钟，AI Day 约 7 分钟，采集按配置检查到期；Hook 即时接收，每 8 秒回补 presence。
 - SSE 按当前页面域订阅，服务内提交主动失效；有订阅时每 2 秒检查对应域版本与文件指纹，关闭页面不停止 Go 后台。
 - 用户级 LaunchAgent `serve install --print/install/uninstall`，固定当前完整二进制绝对路径，受控停机、登录启动及异常退出恢复。
-- 独立 [ATM Menu](../../app/menubar/README.md) 和 [ATM Voice](../../app/voice/README.md)，各自构建、偏好域和权限；旧 Swift 主工作区只保留源码参考，不是新产品构建依赖，也没有当前 Go runtime/IPC 支持。
+- 独立 [ATM Menu](../../app/menubar/README.md) 和 [ATM Voice](../../app/voice/README.md)，各自构建、偏好域和权限；旧 Swift 主工作区已从工作树移除，历史源码保存在 Git 中；当前 Go/Web/Menu/Voice 构建均独立于旧实现。
 - 原生偏好按白名单迁移：Web 的知识/来源顺序及三项用量筛选；Menu 的通知、声音与呼出快捷键；Voice 的七项语音偏好和已下载完整模型。配置凭证与转写历史不混入迁移文件。
 
 先前只读和任务阶段已完成真实数据页面核对、隔离创建/编辑/冲突、生命周期与知识/记忆操作验证；本轮增加跨进程锁、持久执行、SSE、上传、配置冲突和原生拆分的针对性测试。
@@ -55,9 +55,9 @@ DESIGN.md 已更新相应决定并链接本方案；各运行入口和构建边�
 | [apphost](../../internal/apphost/host.go)、[web](../../internal/web/server.go) | 装配领域 use case；HTTP 使用白名单 method 与本机会话 | Web 复用业务服务而不执行 CLI；Menu 只走有界 control API |
 | [Work](../../internal/work/service.go)、[Session](../../internal/session/service.go)、[Knowledge](../../internal/knowledge/service.go) 等 | 大量业务已收敛到 service | 页面迁移不重写规则；残余 cmd 编排按迁移功能下沉 |
 | [SQLite 打开逻辑](../../internal/store/db.go) | WAL、写连接 busy timeout、只读入口、schema 检查 | 保留多进程访问；新增常驻连接、锁和迁移生命周期约束 |
-| [历史 Swift Store](../../app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift) | 曾负责同步、收集、配额、状态和页面缓存 | 仅作实现参考；当前职责已分别归 Go runtime 或前端 |
+| [历史 Swift Store](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMDataStore.swift) | 曾负责同步、收集、配额、状态和页面缓存 | 仅作实现参考；当前职责已分别归 Go runtime 或前端 |
 | [presence](../../internal/presence/runtime.go) | 接收 `~/.atm/notch.sock`，合并 Agent 事件并维护通知状态 | Go 服务是唯一接收者；界面只消费状态，不持有 socket |
-| [关注提醒](../../app/macos/Sources/ATMMenuBarApp/ATMAgentAttentionNotifier.swift) | 维持状态轮询、状态音和阻塞通知 | 当前源码已移除常驻刘海绘制；README 有历史描述，刘海不列为必须迁移的当前功能 |
+| [历史关注提醒](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMAgentAttentionNotifier.swift) | 曾维持状态轮询、状态音和阻塞通知 | 删除前已移除常驻刘海绘制；当前提醒由 Go 和独立 Menu 负责 |
 | [内置模型记账](../../internal/cmd/builtin_model_usage.go) | 模型调用暂存在内存，CLI 结束时落库 | `serve` 必须周期/按批次落库，不能无限积累直到服务退出 |
 
 [性能排查](../performance-audit-2026-09-03.md)和[修复记录](../performance-fixes-2026-09-03.md)已经说明：全量统计、无关状态更新和长文重复计算会放大界面成本。Web 必须继承按域加载、范围查询、取消和缓存预算；换渲染技术不保证这些问题消失。
@@ -384,7 +384,7 @@ Markdown 默认禁用原始 HTML/脚本，限制 URL scheme；外部消息和模
 
 连接器/模型密钥由 Go 管理，前端只显示 configured 状态；模型凭证修改是只写请求。Web 没有开放 `local.open`、连接器登录命令或任意 shell 执行 API。连接器仍由用户在原有工具中登录，之后显式重试采集。
 
-原生来源跳转的历史实现保留在 [ATMAgentSessionLauncher](../../app/macos/Sources/ATMMenuBarApp/ATMAgentSessionLauncher.swift)：子会话返回根会话、Terminal/iTerm 按 TTY 定位、IDE 按工作目录打开。当前 Web 负责会话阅读和任务关联，未复制这些需要 macOS 自动化权限的动作。以后确有需要时只提取明确的固定动作，元数据不足时给出降级说明。
+原生来源跳转的历史实现可查阅 Git 中的 [ATMAgentSessionLauncher](https://github.com/zane-byte-dev/atm/blob/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/ATMAgentSessionLauncher.swift)：子会话返回根会话、Terminal/iTerm 按 TTY 定位、IDE 按工作目录打开。当前 Web 负责会话阅读和任务关联，未复制这些需要 macOS 自动化权限的动作。以后确有需要时只提取明确的固定动作，元数据不足时给出降级说明。
 
 ## 10. 菜单栏伴随 App
 
@@ -416,13 +416,13 @@ CLI 的 Todo 生命周期通知已优先转交 Go owner，通过有确认回执�
 
 系统麦克风、语音识别、辅助功能授权不能假定随代码复制而继承；新 bundle 必须按真实系统流程重新获得权限。热键注册也要在旧语音模块关闭后接管，不能让两个 App 同时持有同一组合键。
 
-ATM 的业务数据不迁到语音 App，语音不读取 ATM 数据库。新 Go/Web/Menu 构建已隔离语音依赖，`sherpa-onnx-spm` 只用于独立 Voice target。旧 `app/macos` 中的源代码和资源只保留作为历史实现参考，不属于运行时回退。
+ATM 的业务数据不迁到语音 App，语音不读取 ATM 数据库。新 Go/Web/Menu 构建已隔离语音依赖，`sherpa-onnx-spm` 只用于独立 Voice target。旧 `app/macos` 目录已删除，源码和资源可从 Git 历史查阅，不属于运行时回退。
 
 ### 11.1 具体迁移清单
 
 代码范围是 `ATMVoiceInput`、`ATMVoiceInputCoordinator`、`ATMVoiceTranscriberRouter`、`ATMAppleSpeechTranscriber`、`ATMSenseVoiceTranscriber`、`ATMSenseVoiceModel`、`ATMVoiceTextCleanup`、`ATMVoiceOverlay`、`ATMTextInjector`，加上通用热键代码和对应测试。`sherpa-onnx-spm` 只进入语音 target。
 
-正式 App 当前的 UserDefaults domain 是 `dev.zanebyte.atm.menubar`。首次迁移只复制以下白名单，并记录迁移版本；Debug 的偏好域需单独识别，不假设等于正式版：
+旧正式 App 的 UserDefaults domain 是 `dev.zanebyte.atm.menubar`。首次迁移只复制以下白名单，并记录迁移版本；Debug 的偏好域需单独识别，不假设等于正式版：
 
 ```text
 ATMVoiceInputHotKeyEnabled
@@ -434,7 +434,7 @@ ATMVoiceInputRemoveTrailingPeriod
 ATMVoiceInputDictionary
 ```
 
-当前模型目录为 `~/Library/Application Support/ATM/VoiceModels/SenseVoiceSmall-int8-2024-07-17/`，包含 `model.int8.onnx` 与 `tokens.txt`。迁移通过临时目录复制、完整性验证后原子改名，避免网络重复下载或中断后留下半个模型。当前最近转写只在内存，不存在必须自动搬迁的转写历史。
+旧 App 的模型目录为 `~/Library/Application Support/ATM/VoiceModels/SenseVoiceSmall-int8-2024-07-17/`，包含 `model.int8.onnx` 与 `tokens.txt`。迁移通过临时目录复制、完整性验证后原子改名，避免网络重复下载或中断后留下半个模型。当前最近转写只在内存，不存在必须自动搬迁的转写历史。
 
 热键 manager 按 target 明确允许的 action：伴随 App 只有 launcher；语音 App 只有 voiceInput 和录音期间的 cancelVoice。不能直接把会注册全部枚举 action 的旧 manager 同时放进两个 App。
 
@@ -444,7 +444,7 @@ ATMVoiceInputDictionary
 
 ### 11.2 其他原生偏好如何处理
 
-实际提供 `app/macos/Scripts/export-web-preferences.swift [--dev]`，导出 `kind: atm-native-preferences`、`version: 1` 和明确的正式/开发 bundle ID。
+提供独立脚本 [scripts/export-web-preferences.swift](../../scripts/export-web-preferences.swift)，使用方式为 `swift scripts/export-web-preferences.swift [--dev]`，导出 `kind: atm-native-preferences`、`version: 1` 和明确的正式/开发 bundle ID。
 浏览器在“设置 → 外观”选择 JSON、预览勾选后确认，只读取以下五项：
 
 | 原生键 | 导出字段 | Web 使用方式 |
@@ -479,7 +479,7 @@ app/web/assets_embed.go        # webui 构建标签 + go:embed
 app/web/assets_stub.go         # 无 webui 时的明确降级
 app/menubar/                   # 独立 ATM Menu，无旧主界面依赖
 app/voice/                     # 独立 ATM Voice，无 Go 数据依赖
-app/macos/                     # 保留历史源码和已有 t355 改动；无当前 Go transport，不参与新产品构建
+scripts/export-web-preferences.swift # 独立的旧原生偏好导出工具
 ```
 
 先在当前仓库内明确构建目标和依赖边界，避免同时引入多仓库发布协调。语音是独立产品边界，不意味着首日必须完成仓库搬家。
@@ -534,7 +534,7 @@ schema 的历史版本升级，或按错误提示备份不可重建数据并重�
 | 任务新建/编辑/归档/恢复/人工验收 | 生命周期、绑定关闭、审计、副作用与 CLI/现有 service 一致 |
 | 快速切换任务、慢响应、断网 | 旧结果不覆盖新选择，错误与最后成功数据可区分 |
 | 重启服务、SSE 断线、实例变化 | 页面重建当前域状态，不靠无限保存历史事件恢复 |
-| 尝试启动旧 Swift 主工作区 | 明确属于不支持路径；当前 Go 不提供它依赖的 runtime 或进程协议 |
+| 当前构建入口 | 仅包含 Go/Web、独立 Menu 和 Voice；已删除的旧 Swift 主工作区不再出现在构建路径中 |
 | 模型调用后长期运行 | 用量及时可查，缓冲有界，退出不是唯一落账时机 |
 | 外部网页请求本机服务 | 无法读取业务数据或触发写入；附件无任意路径入口 |
 | Guard | Web 不借本机 token 或伪造来源放宽现有人工决策约束 |
@@ -542,7 +542,7 @@ schema 的历史版本升级，或按错误提示备份不可重建数据并重�
 
 ### 14.2 性能目标与测量方法
 
-使用同一台 Mac、同一份可重复数据、Release Go 与生产前端；对照当前优化后的原生版本，不能只与旧 Debug 全量快照比较。
+使用同一台 Mac、同一份可重复数据、Release Go 与生产前端；如需原生对照，应使用 Git 历史中完成性能修复的版本及其配套 CLI，不能只与旧 Debug 全量快照比较。
 
 建议初始目标：缓存内任务选择反馈 p95 不超过 100 ms；已运行服务的任务页首批可交互内容 p95 不超过 1 s；CLI 普通变化在约 3 s 内反映到可见页面；hook 已到达服务后的可见状态更新目标 500 ms 内。大规模同步期间分别记录劣化值，不把正常情况下的目标写成所有场景保证。
 
@@ -566,12 +566,12 @@ schema 的历史版本升级，或按错误提示备份不可重建数据并重�
 | P3：接管后台 | 接管调度、hook 接收与状态合并、通知路由 | 关浏览器/菜单栏后后台仍正常；无重复同步、socket 抢占或通知双发 |
 | P4：完整工作区 | 会话、知识/记忆、收集管理、统计、AI Day、设置、来源跳转；补必要后台自启动 | 常用工作无需回旧主窗口；长文、上传、源文件回写边界清楚 |
 | P5：原生产品拆分 | 提取菜单栏伴随 App；语音独立 target、偏好/模型导入及权限验证 | 两个 App 各自运行/退出；语音不依赖 ATM 服务；仅保留有用入口 |
-| P6：收尾 | 新产品构建脱离旧 Swift 主工作区与语音依赖，整理文档/构建/安装；保留旧源码和 t355 既有改动作为历史参考 | 主产品使用一套 Web 工作区；旧源码不参与新构建，也没有当前 Go transport |
+| P6：收尾 | 新产品构建脱离旧 Swift 主工作区与语音依赖，整理文档/构建/安装；移除旧 Swift 主工作区，旧源码和 t355 改动保存在 Git 历史 | 主产品使用一套 Web 工作区；当前源码树与构建入口均不包含旧主工作区 |
 
-上述阶段仍是切换顺序，而非同时运行两套后台的许可。代码状态：P1/P2/P4 已有完整 Web 操作，P3 已有 Go 调度/Hook/通知与执行锁，P5 已有独立 Menu/Voice 及白名单导入，P6 已完成产品构建隔离和文档调整。
+上述阶段仍是切换顺序，而非同时运行两套后台的许可。代码状态：P1/P2/P4 已有完整 Web 操作，P3 已有 Go 调度/Hook/通知与执行锁，P5 已有独立 Menu/Voice 及白名单导入，P6 已完成产品构建隔离、旧主工作区删除和文档调整。
 实际退出条件仍需部署现场核验：真实库基线与备份、稳定二进制路径、唯一后台 owner、登录服务以及新 App 的系统权限。
 
-当前产品已提供独立 Voice，无需把旧主 App 作为语音常驻依赖。旧 Swift 与 t355 工作只保留为源码记录；
+当前产品已提供独立 Voice，无需把旧主 App 作为语音常驻依赖。旧 Swift 与 t355 工作保存在 Git 历史中；
 这不表示旧主工作区仍可连接当前 Go 或作为运行时回退。
 
 ## 16. 风险与实施时仍需核验的事项
@@ -583,7 +583,7 @@ schema 的历史版本升级，或按错误提示备份不可重建数据并重�
 | 统计仍因任何写入重算 | 按域指纹、按需范围、TTL；CLI telemetry 不等同于统计全量刷新信号 |
 | 双启动抢 socket、重复收集/通知 | 单一 Go owner、实例锁、跨进程工作锁和渠道切换 |
 | 原生文件路径导入无法等价搬到浏览器 | 上传副本与关联源文件明确区分，保留 CLI 路径导入 |
-| 语音权限/模型路径迁移 | 首次导入与独立授权验收，成功前保留旧资源 |
+| 语音权限/模型路径迁移 | 首次导入与独立授权验收，成功前保留用户机器上的旧偏好与模型数据；与旧源码目录无关 |
 | 浏览器资源占用/体验不符合预期 | 同机生产构建实测，不承诺自动比 Swift 更快 |
 | 现有公开安装方式只构建 Go | 明确完整包与 CLI-only 构建区别，发布时资源缺失必须失败 |
 | 功能迁移膨胀成新平台 | 保持一个 Go 单体、一套数据、一套 Web 主界面，原生部分可选 |

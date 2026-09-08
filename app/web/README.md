@@ -39,8 +39,8 @@ ATM 的主界面由浏览器承载，同一个 Go 二进制提供 CLI、Web API�
 
 CLI 和 Web 复用业务服务、同步/采集执行锁及模型记账；Go 负责通知事实、去重和渠道路由。
 可选 [ATM Menu](../menubar/README.md) 负责原生显示，独立 [ATM Voice](../voice/README.md) 负责全局语音。
-旧 `app/macos` 只保留源码与已有性能改动供历史参考，新 Go/Web/Menu/Voice 产品构建不依赖旧主工作区，
-当前 Go 也不再提供旧主工作区使用的 runtime 或 IPC 接口。
+旧 Swift 主工作区已移除，源码及性能改动保存在 [Git 历史](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos)。
+旧界面偏好导出工具独立保留在 [`scripts/export-web-preferences.swift`](../../scripts/export-web-preferences.swift)。
 API 不提供任意命令、配置键、Guard 审批或任意文件读取入口。
 
 ## 构建完整程序
@@ -176,7 +176,8 @@ atm serve uninstall             # 移除登录服务；保留业务数据与 Go 
 从仓库根目录导出正式版或开发版偏好：
 
 ```sh
-swift app/macos/Scripts/export-web-preferences.swift > bin/atm-native-preferences.json
+mkdir -p bin
+swift scripts/export-web-preferences.swift > bin/atm-native-preferences.json
 # 旧 ATM Dev 使用 --dev
 ```
 

@@ -1,5 +1,7 @@
 # AI Day Badge System v2 — Q 版精简
 
+> 历史设计记录：本文保留 v2 的视觉方案及母版；旧 Swift 主工作区已删除，后续设计见 [v3](./ai-day-badges-v3.md)。
+
 v2 延续 v1 的“计算物件”世界观，但将每枚徽章收敛为更友好、更易读的 Q 版收藏物件。重点不是增加细节，而是用一个清楚的轮廓表达一种行为。
 
 ## 精简规则
@@ -32,5 +34,5 @@ v2 延续 v1 的“计算物件”世界观，但将每枚徽章收敛为更友�
 最终资产使用内置图像生成能力制作，母版为透明背景 4 × 3 图集，按固定网格切分为 12 个 362 × 362 PNG；应用继续使用原有资源 ID，因此不需要改动业务逻辑。
 
 - 母版：[ai-day-badge-atlas-v2.png](./ai-day-badge-atlas-v2.png)
-- 应用资源：`app/macos/Sources/ATMMenuBarApp/Resources/AIDayBadges/`
+- 原生应用资源曾位于 `app/macos/Sources/ATMMenuBarApp/Resources/AIDayBadges/`；[删除前资源快照](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/Resources/AIDayBadges)保留的是后续 v3 版本，v2 视觉以本文母版为准。
 - 主提示词方向：premium chibi 3D collectible；rounded compact proportions；one main body, one secondary gesture, one warm amber core；smoke-black and ice-blue glass；3–5 large components；transparent alpha；no dense mechanical detail, labels, medals, shields, or complex scene rendering。

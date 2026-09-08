@@ -19,8 +19,9 @@ Thank you for helping improve ATM.
 
 The CLI and Web workspace require Go 1.25 or newer; building embedded Web assets
 also requires Node.js 24 and npm. The optional ATM Menu and VoxCaret apps use
-Swift Package Manager and require macOS 13.4 or newer. `app/macos` is retained
-as historical source only and is not part of the supported build or test matrix.
+Swift Package Manager and require macOS 13.4 or newer. The retired Swift workspace
+has been removed; its source remains in Git history. The standalone
+`scripts/export-web-preferences.swift` utility preserves legacy preference export.
 
 Run the focused tests while developing:
 

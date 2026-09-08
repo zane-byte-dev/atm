@@ -1,5 +1,7 @@
 # ATM macOS 客户端性能修复与回归记录
 
+> 历史记录：本文描述审计及修复当时的原生客户端。旧 `app/macos` 已于 2026-09-08 从工作树移除，源码保存在 [删除前的 Git 快照](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos)。文中的 Swift 命令、构建产物及验收结论仅适用于当时版本；当前开发入口见 [Web 开发说明](../app/web/README.md)。
+
 日期：2026-09-03。任务：`t355`。分支：`codex/client-performance`，源码基线：`c87f3cf`。
 
 针对 [首次排查的 15 项问题](performance-audit-2026-09-03.md) 实施修复。任务切换不再重新排序整份完成历史，任务页不再跟随统计和实时状态的每次发布刷新；日常任务刷新改读任务和今日摘要，完整统计在查看统计页时按所选范围加载。
@@ -59,7 +61,7 @@
 
 CLI 与 App 必须配套更新：旧 CLI 对新 `summary` section 及 `ranges` / `compact` 字段可能拒绝请求。本机 `/usr/local/bin/atm` 链接仓库 `bin/atm`，该二进制已重新构建，并用它执行 App 的真实 IPC 契约测试。
 
-开发包脚本新增 `ATM_BUILD_CONFIGURATION=release` 和 `ATM_BUILD_ONLY=1`，默认仍为 Debug。Release 开发包沿用原 `ATM Dev.app` 标识，保留偏好；另生成常规签名包 `app/macos/dist/ATM.app`。可重复命令：
+开发包脚本新增 `ATM_BUILD_CONFIGURATION=release` 和 `ATM_BUILD_ONLY=1`，默认仍为 Debug。Release 开发包沿用原 `ATM Dev.app` 标识，保留偏好；另生成常规签名包 `app/macos/dist/ATM.app`。当时使用的命令如下；当前工作树不再提供旧 App 构建脚本：
 
 ```sh
 GOCACHE=/private/tmp/atm-go-cache make build

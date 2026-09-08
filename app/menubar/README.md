@@ -15,4 +15,4 @@ App 每 10 秒调用 `POST /api/v1/control/companion`，读取 `snapshot`、通�
 
 独立偏好域是 `dev.zanebyte.atm.companion`。默认读取 `~/.atm/runtime/server.json` 与 `control.token`；可从设置选择其他数据目录。客户端只接受 `schema_version=1`、匹配所选目录的实例记录和显式 `127.0.0.1` origin，并拒绝 HTTP 重定向。设置子菜单保留原生通知、声音、全局快捷键、登录启动、数据目录和旧偏好白名单导入。
 
-构建只写入仓库内 `app/menubar/dist`，不会自动安装、启动或注册登录项。新包不引用 `app/macos`；声音资源附带原许可证。
+构建只写入仓库内 `app/menubar/dist`，不会自动安装、启动或注册登录项。源码和资源均由本包独立维护；声音资源附带原许可证。

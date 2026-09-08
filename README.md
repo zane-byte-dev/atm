@@ -227,8 +227,8 @@ open "app/voice/dist/ATM Voice.app"
 菜单展示服务状态、今日 Token、当前任务和缓存额度摘要，把详情跳转到 Web，也可要求 Go 排队同步。它不直接扫描数据库、同步会话或运行采集，也不提供 Guard 决策入口。[ATM Voice](app/voice/README.md) 管理自己的快捷键、模型与权限，
 退出 ATM 服务后仍可使用。各自提供旧偏好的白名单导入，新 bundle 的系统权限必须实际授权。
 
-旧 [`app/macos`](app/macos/README.md) 主界面源码只作为历史实现参考保留，已有性能修复不删除；
-新产品的构建不依赖它，当前 Go 也不再提供它所需的运行时或 IPC 接口。不要把它作为当前数据目录的客户端运行。
+旧 Swift 主工作区已移除，源码和性能修复保存在 [Git 历史](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos)。
+旧界面偏好仍可通过 [`scripts/export-web-preferences.swift`](scripts/export-web-preferences.swift) 导出并导入 Web；Menu 和 Voice 各自保留旧偏好导入功能。
 
 ## 通知
 

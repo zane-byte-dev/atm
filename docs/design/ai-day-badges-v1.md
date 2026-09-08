@@ -1,5 +1,7 @@
 # AI Day Badge System v1
 
+> 历史设计记录：本文保留 v1 的视觉方案及母版；旧 Swift 主工作区已删除，后续设计见 [v3](./ai-day-badges-v3.md)。
+
 AI Day 徽章是一组“计算物件”，不是奖牌、图标或彩色贴纸。每枚徽章通过独立轮廓表达行为语义，同时共享同一套相机、光线与材质世界。
 
 ## 视觉语言
@@ -32,5 +34,5 @@ AI Day 徽章是一组“计算物件”，不是奖牌、图标或彩色贴纸�
 最终资产使用内置图像生成能力制作，母版为透明背景 4 × 3 图集；`model_conductor` 与 `hard_to_fool` 使用单独生成的高分辨率资产。应用侧保留 SwiftUI Canvas 作为资源缺失时的降级方案。
 
 - 母版：[ai-day-badge-atlas-v1.png](./ai-day-badge-atlas-v1.png)
-- 应用资源：`app/macos/Sources/ATMMenuBarApp/Resources/AIDayBadges/`
+- 原生应用资源曾位于 `app/macos/Sources/ATMMenuBarApp/Resources/AIDayBadges/`；[删除前资源快照](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/Resources/AIDayBadges)保留的是后续 v3 版本，v1 视觉以本文母版为准。
 - 主提示词方向：museum-grade cinematic 3D computational artifacts；smoke-black glass；cold white / ice-blue compute light；single warm amber core；transparent alpha；distinct silhouettes；no medals, shields, labels, icons, or cartoon-game styling。

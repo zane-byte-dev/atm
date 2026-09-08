@@ -1,5 +1,7 @@
 # AI Day Badge System v3 — Frosted Jelly Glyphs
 
+> 本文保留原生徽章资产的设计与母版。旧 Swift 主工作区已删除；当前 Web 徽章日历使用独立图标组件，未加载这组 PNG。
+
 v3 将徽章从“微型 3D 物件”进一步收敛为“半透明果冻符号”。它参考了柔和磨砂玻璃图标的视觉语言，但没有复制参考图中的具体图形、卡片或文字。
 
 ## 视觉原则
@@ -33,5 +35,6 @@ v3 将徽章从“微型 3D 物件”进一步收敛为“半透明果冻符号�
 资产使用内置图像生成能力、用户提供的风格参考图和透明背景后处理制作。透明边缘采用逐枚 Vision 前景分割与高阈值颜色遮罩组合：前者负责平滑外轮廓，后者只补回分离的小组件与内部暖光，避免棋盘残留和白色毛边。母版为 4 × 3 图集，按固定网格切分为 12 个 362 × 362 PNG。应用资源 ID 保持不变。
 
 - 母版：[ai-day-badge-atlas-v3.png](./ai-day-badge-atlas-v3.png)
-- 应用资源：`app/macos/Sources/ATMMenuBarApp/Resources/AIDayBadges/`
+- 历史原生资源：[删除前的 v3 PNG 快照](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos/Sources/ATMMenuBarApp/Resources/AIDayBadges)。
+- 当前 Web 实现：[badge-calendar.tsx](../../app/web/src/workspaces/badge-calendar.tsx) 与 [badge-calendar.css](../../app/web/src/workspaces/badge-calendar.css)，按徽章 family 渲染图标。
 - 主提示词方向：soft frosted blue jelly-glass glyphs；frontal orthographic view；single silhouette；thin navy rim；gentle warm ivory glow；1–3 large components；no cards, text, mechanics, faceted crystal, or complex rendering。
