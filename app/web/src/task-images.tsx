@@ -7,6 +7,7 @@ import type { Todo } from './types'
 
 export type TaskImageUploadHandle = { add: (files: File[]) => void }
 type Props = {
+  compact?: boolean
   todo: Todo
   etag: string
   onUploaded?: (result: { todo: Todo; etag: string }) => void
@@ -14,7 +15,7 @@ type Props = {
   onConflict?: () => void
 }
 export const TaskImageUpload = forwardRef<TaskImageUploadHandle, Props>(function TaskImageUpload(
-  { todo, etag, onUploaded, onBusyChange, onConflict },
+  { todo, etag, onUploaded, onBusyChange, onConflict, compact = false },
   ref,
 ) {
   const input = useRef<HTMLInputElement>(null)
@@ -85,7 +86,7 @@ export const TaskImageUpload = forwardRef<TaskImageUploadHandle, Props>(function
         }}
       />
       <div
-        className={`task-image-dropzone${dragging ? ' dragging' : ''}`}
+        className={`task-image-dropzone${compact ? ' button compact' : ''}${dragging ? ' dragging' : ''}`}
         role="button"
         tabIndex={busy ? -1 : 0}
         aria-label="添加任务图片，可选择、拖入或粘贴"
@@ -125,9 +126,12 @@ export const TaskImageUpload = forwardRef<TaskImageUploadHandle, Props>(function
         {busy ? <LoaderCircle size={18} className="spin" /> : <ImagePlus size={18} />}
         <span>
           <strong>{busy ? '正在添加图片' : '添加图片'}</strong>
-          <small>选择文件、拖入，或点击此区域后粘贴 · PNG / JPEG / GIF · 每张 ≤ 10 MB</small>
+          {!compact && (
+            <small>选择文件、拖入，或点击此区域后粘贴 · PNG / JPEG / GIF · 每张 ≤ 10 MB</small>
+          )}
         </span>
       </div>
+      {compact && <span className="task-image-hint">支持拖入或粘贴图片</span>}
       {result && (
         <p className="task-upload-status" role="status">
           {result}

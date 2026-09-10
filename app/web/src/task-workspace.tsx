@@ -15,12 +15,9 @@ import {
   Clock3,
   FileText,
   Folder,
-  ImagePlus,
-  Link2,
   LoaderCircle,
   Pencil,
   RefreshCw,
-  Sparkles,
   X,
 } from 'lucide-react'
 import { call, errorText, callScopedTodoMutation } from './api'
@@ -29,8 +26,6 @@ import { Editor } from './editor'
 import { Markdown, Notice } from './markdown'
 import { AppShell } from './workspace-shell'
 import { TaskPlanEditor, TaskProgressForm, TaskRelationships } from './task-operations'
-import { TaskImageUpload } from './task-images'
-import { TaskRefine } from './task-refine'
 import { TaskWorkbench } from './task-workbench'
 import { useLiveConnection } from './live-connection'
 import { taskWorkbenchInput } from './task-query'
@@ -247,6 +242,7 @@ export function TaskWorkspace({ boot }: { boot: Bootstrap }) {
                     <Editor
                       key={id}
                       initial={detail.data}
+                      canRefine={canWrite && boot.capabilities?.runtime_jobs === true}
                       onClose={() => setEditing(false)}
                       onSaved={(todoID) => {
                         setEditing(false)
@@ -260,6 +256,7 @@ export function TaskWorkspace({ boot }: { boot: Bootstrap }) {
                       canWrite={canWrite}
                       canRefine={canWrite && boot.capabilities?.runtime_jobs === true}
                       onEdit={() => setEditing(true)}
+                      onClose={closeTask}
                     />
                   )}
                 </>
@@ -311,11 +308,13 @@ function TaskDetail({
   canWrite,
   canRefine,
   onEdit,
+  onClose,
 }: {
   data: TodoDetail
   canWrite: boolean
   canRefine: boolean
   onEdit: () => void
+  onClose: () => void
 }) {
   const todo = data.todo
   const live = useLiveConnection()
@@ -327,9 +326,11 @@ function TaskDetail({
   const query = useQueryClient()
   const [tab, setTab] = useState('description')
   const [editingPlan, setEditingPlan] = useState(false)
+  const [editingDescription, setEditingDescription] = useState(false)
   const [lifecycleAction, setLifecycleAction] = useState<TaskLifecycleAction>()
   useEffect(() => {
     setTab('description')
+    setEditingDescription(false)
     setLifecycleAction(undefined)
   }, [todo.id])
   const document = useQuery({
@@ -343,6 +344,7 @@ function TaskDetail({
     mutationFn: (request: TodoScopedMutationRequest) => callScopedTodoMutation(todo.id, request),
     onSuccess: async () => {
       setLifecycleAction(undefined)
+      onClose()
       await Promise.all([
         query.invalidateQueries({ queryKey: ['todos'] }),
         query.invalidateQueries({ queryKey: ['todo', todo.id] }),
@@ -377,10 +379,6 @@ function TaskDetail({
                   )}
                   <span className="task-context-id">{todo.id}</span>
                 </span>
-                <span className={`status-badge status-${todo.status}`}>
-                  <StatusIcon todo={todo} />
-                  {statuses[todo.status] ?? todo.status}
-                </span>
                 {archived && (
                   <span className="project-badge">
                     <Archive size={13} />
@@ -398,7 +396,7 @@ function TaskDetail({
                   )}
                   {archived ? (
                     <button
-                      className="button primary"
+                      className="button"
                       disabled={action.isPending}
                       onClick={() => setLifecycleAction('restore')}
                     >
@@ -409,7 +407,7 @@ function TaskDetail({
                     <>
                       {todo.status === 'open' && (
                         <button
-                          className="button primary"
+                          className="button"
                           disabled={action.isPending}
                           onClick={() => setLifecycleAction('start')}
                         >
@@ -419,7 +417,7 @@ function TaskDetail({
                       )}
                       {todo.status !== 'done' && (
                         <button
-                          className={todo.status === 'open' ? 'button' : 'button primary'}
+                          className="button"
                           disabled={action.isPending}
                           onClick={() => setLifecycleAction('done')}
                         >
@@ -429,7 +427,7 @@ function TaskDetail({
                       )}
                       {todo.status === 'done' && (
                         <button
-                          className="button primary"
+                          className="button"
                           disabled={action.isPending}
                           onClick={() => setLifecycleAction('reopen')}
                         >
@@ -439,7 +437,7 @@ function TaskDetail({
                       )}
                       <button
                         type="button"
-                        className="button subtle"
+                        className="button"
                         disabled={action.isPending}
                         onClick={() => setLifecycleAction('archive')}
                       >
@@ -466,49 +464,30 @@ function TaskDetail({
                 </button>
               </div>
             )}
-            {todo.wake_condition && (
-              <div className="waiting-banner">
-                <Clock3 size={16} />
-                <div>
-                  <strong>等待条件</strong>
-                  <p>{todo.wake_condition}</p>
-                </div>
-              </div>
+            {(latestProgress || (todo.status !== 'done' && nextStep?.step) || document.error) && (
+              <section className="task-current-summary" aria-label="任务当前进展">
+                {document.error && (
+                  <Notice error={document.error} retry={() => void document.refetch()} />
+                )}
+                {latestProgress && (
+                  <>
+                    <div>
+                      <strong>最新进展</strong>
+                      <button className="button" onClick={() => setTab('progress')}>
+                        查看记录
+                      </button>
+                    </div>
+                    <p className="latest-progress-text">{latestProgress}</p>
+                  </>
+                )}
+                {todo.status !== 'done' && nextStep?.step && (
+                  <div className="task-next-step">
+                    <strong>下一步</strong>
+                    <span>{nextStep.step}</span>
+                  </div>
+                )}
+              </section>
             )}
-            {todo.depends_on && todo.depends_on.length > 0 && (
-              <div className="dependencies">
-                <span>依赖任务</span>
-                {todo.depends_on.map((dep) => (
-                  <Link key={dep} to={`/tasks/${dep}${location.search}`}>
-                    {dep}
-                  </Link>
-                ))}
-              </div>
-            )}
-            <section className="task-current-summary" aria-label="任务当前进展">
-              <div>
-                <strong>最新进展</strong>
-                <button onClick={() => setTab('progress')}>查看记录</button>
-              </div>
-              {document.isPending ? (
-                <p role="status">正在读取进展…</p>
-              ) : document.error ? (
-                <Notice error={document.error} retry={() => void document.refetch()} />
-              ) : (
-                <p className="latest-progress-text">{latestProgress || '尚未记录进展。'}</p>
-              )}
-              <div className="task-next-step">
-                <strong>{todo.status === 'done' ? '完成状态' : '下一步'}</strong>
-                <span>
-                  {todo.status === 'done'
-                    ? todo.closed_reason || '已完成'
-                    : todo.wake_condition
-                      ? `等待：${todo.wake_condition}`
-                      : nextStep?.step ||
-                        (todo.status === 'review' ? '等待人工验收' : '尚未记录下一步')}
-                </span>
-              </div>
-            </section>
             <div className="detail-tabs">
               <button
                 className={tab === 'description' ? 'selected' : ''}
@@ -516,13 +495,15 @@ function TaskDetail({
               >
                 任务说明
               </button>
-              <button
-                className={tab === 'progress' ? 'selected' : ''}
-                onClick={() => setTab('progress')}
-              >
-                进展记录
-              </button>
-              {(data.latest_plan || (canWrite && !archived)) && (
+              {(latestProgress || (canWrite && !archived) || tab === 'progress') && (
+                <button
+                  className={tab === 'progress' ? 'selected' : ''}
+                  onClick={() => setTab('progress')}
+                >
+                  {latestProgress ? '进展记录' : '记录进展'}
+                </button>
+              )}
+              {(!!data.latest_plan?.items.length || tab === 'plan') && (
                 <button className={tab === 'plan' ? 'selected' : ''} onClick={() => setTab('plan')}>
                   执行计划<span>{data.latest_plan?.items.length ?? 0}</span>
                 </button>
@@ -546,7 +527,47 @@ function TaskDetail({
               <div className="detail-body">
                 {tab === 'description' ? (
                   <>
-                    <Markdown text={todo.description || '还没有任务说明。'} />
+                    {editingDescription ? (
+                      <Editor
+                        key={todo.id}
+                        initial={data}
+                        canRefine={canRefine}
+                        descriptionOnly
+                        onClose={() => setEditingDescription(false)}
+                        onSaved={() => setEditingDescription(false)}
+                      />
+                    ) : (
+                      <div className={canWrite && !archived ? 'task-editable-description' : ''}>
+                        {canWrite && !archived && (
+                          <button
+                            className="button task-edit-description"
+                            onClick={() => setEditingDescription(true)}
+                          >
+                            <Pencil size={14} />
+                            编辑说明
+                          </button>
+                        )}
+                        <div
+                          onClick={(event) => {
+                            if (
+                              canWrite &&
+                              !archived &&
+                              !(event.target as Element).closest('a, button, input') &&
+                              !window.getSelection()?.toString()
+                            )
+                              setEditingDescription(true)
+                          }}
+                        >
+                          {todo.description ? (
+                            <Markdown text={todo.description} />
+                          ) : canWrite && !archived ? (
+                            <button className="button" onClick={() => setEditingDescription(true)}>
+                              填写任务说明
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    )}
                     {todo.links && todo.links.length > 0 && (
                       <div className="related-links">
                         <span className="eyebrow">相关链接</span>
@@ -613,49 +634,53 @@ function TaskDetail({
                   </div>
                 )}
               </div>
-              {tab === 'description' && todo.images && todo.images.length > 0 && (
-                <div className="attachments">
-                  <span className="eyebrow">附件</span>
-                  <div className="attachment-grid">
-                    {todo.images
-                      .filter((item) => item.url?.startsWith('/api/v1/attachments/'))
-                      .map((item) => (
-                        <a key={item.url} href={item.url} target="_blank" rel="noreferrer noopener">
-                          <img src={item.url} alt={item.name} loading="lazy" />
-                          <span>{item.name}</span>
-                        </a>
-                      ))}
+              {tab === 'description' &&
+                todo.images?.some(
+                  (item) =>
+                    item.url?.startsWith('/api/v1/attachments/') &&
+                    !todo.description?.includes(item.url),
+                ) && (
+                  <div className="attachments">
+                    <span className="eyebrow">附件</span>
+                    <div className="attachment-grid">
+                      {todo.images
+                        .filter(
+                          (item) =>
+                            item.url?.startsWith('/api/v1/attachments/') &&
+                            !todo.description?.includes(item.url),
+                        )
+                        .map((item) => (
+                          <a
+                            key={item.url}
+                            href={item.url}
+                            target="_blank"
+                            rel="noreferrer noopener"
+                          >
+                            <img src={item.url} alt={item.name} loading="lazy" />
+                            <span>{item.name}</span>
+                          </a>
+                        ))}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
               {tab === 'description' && canWrite && !archived && (
                 <div className="task-description-tools" aria-label="任务说明工具" key={todo.id}>
-                  {canRefine && (
-                    <details className="task-description-tool">
-                      <summary>
-                        <Sparkles size={15} />
-                        AI 整理<span>优化标题与说明</span>
-                      </summary>
-                      <TaskRefine data={data} />
-                    </details>
+                  <TaskRelationships data={data} canWrite />
+                  {!data.latest_plan?.items.length && (
+                    <button
+                      className="button"
+                      onClick={() => {
+                        setTab('plan')
+                        setEditingPlan(true)
+                      }}
+                    >
+                      <Pencil size={14} />
+                      创建计划
+                    </button>
                   )}
-                  <details className="task-description-tool">
-                    <summary>
-                      <ImagePlus size={15} />
-                      添加图片<span>选择、拖入或粘贴</span>
-                    </summary>
-                    <TaskImageUpload todo={todo} etag={data.etag} />
-                  </details>
-                  <details className="task-description-tool">
-                    <summary>
-                      <Link2 size={15} />
-                      依赖与等待
-                    </summary>
-                    <TaskRelationships data={data} canWrite />
-                  </details>
                 </div>
               )}
-              {tab === 'description' && !canWrite && (
+              {tab === 'description' && (!canWrite || archived) && (
                 <TaskRelationships data={data} canWrite={false} />
               )}
             </div>
@@ -742,99 +767,82 @@ function TaskInspector({ data, canWrite }: { data: TodoDetail; canWrite: boolean
           )}
         </dl>
       </section>
-      {(!!todo.wake_condition || !!todo.depends_on?.length) && (
+      {(sessions.length > 0 || activeBindings.length > 0) && (
         <section>
-          <h3>等待关系</h3>
-          {todo.wake_condition && (
-            <p className="task-inspector-wait">
-              <Clock3 size={13} />
-              <span>{todo.wake_condition}</span>
-            </p>
-          )}
-          {!!todo.depends_on?.length && (
-            <div className="task-inspector-dependencies">
-              {todo.depends_on.map((dependency) => (
-                <Link key={dependency} to={`/tasks/${dependency}`}>
-                  {dependency}
-                </Link>
-              ))}
+          <div className="task-inspector-section-heading">
+            <h3>Agent 会话</h3>
+            <span>{sessions.length}</span>
+          </div>
+          <p className="task-activity-note">
+            {status.isError
+              ? '暂时无法读取活动状态'
+              : taskActivityLabel(activity) || '暂未观察到关联会话活动'}
+            {activity.lastAt && (
+              <span> · 最近观察 {new Date(activity.lastAt).toLocaleString('zh-CN')}</span>
+            )}
+          </p>
+          {summary && (
+            <div className="task-inspector-metrics" aria-label="任务执行汇总">
+              <span>
+                <b>{summary.queries}</b>轮对话
+              </span>
+              <span>
+                <b>{summary.tool_calls}</b>次工具
+              </span>
+              <span>
+                <b>
+                  $
+                  {summary.cost_usd.toFixed(
+                    summary.cost_usd > 0 && summary.cost_usd < 0.01 ? 4 : 2,
+                  )}
+                </b>
+                费用
+              </span>
             </div>
+          )}
+          {sessions.length ? (
+            <div className="task-inspector-sessions">
+              {sessions.map((session) => {
+                const target = session.indexed_id || session.session_id
+                const active = session.unbound_at == null
+                return (
+                  <article key={session.session_id}>
+                    <div className="task-inspector-session-line">
+                      <span className={`activity-avatar ${session.agent}`}>
+                        {agentLabel(session.agent).slice(0, 1)}
+                      </span>
+                      <div>
+                        <strong>{agentLabel(session.agent)}</strong>
+                        <span>
+                          {active ? '当前关联' : '历史关联'} · {epochDateTime(session.last_at)}
+                        </span>
+                      </div>
+                      {session.indexed ? (
+                        <Link
+                          className="icon-button"
+                          to={`/agents?session=${encodeURIComponent(target)}`}
+                          title="查看会话"
+                          aria-label={`查看 ${agentLabel(session.agent)} 会话`}
+                        >
+                          <ArrowUpRight size={14} />
+                        </Link>
+                      ) : null}
+                    </div>
+                    <div className="task-inspector-session-stats">
+                      <span>{session.queries} 轮</span>
+                      <span>{session.tool_calls} 工具调用</span>
+                      {session.cost_usd > 0 && <span>${session.cost_usd.toFixed(3)}</span>}
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
+          ) : null}
+          {activeBindings.length > 0 && (
+            <p className="task-inspector-note">当前有 {activeBindings.length} 个有效绑定。</p>
           )}
         </section>
       )}
-      <section>
-        <div className="task-inspector-section-heading">
-          <h3>Agent 会话</h3>
-          <span>{sessions.length}</span>
-        </div>
-        <p className="task-activity-note">
-          {status.isError
-            ? '暂时无法读取活动状态'
-            : taskActivityLabel(activity) || '暂未观察到关联会话活动'}
-          {activity.lastAt && (
-            <span> · 最近观察 {new Date(activity.lastAt).toLocaleString('zh-CN')}</span>
-          )}
-        </p>
-        {summary && (
-          <div className="task-inspector-metrics" aria-label="任务执行汇总">
-            <span>
-              <b>{summary.queries}</b>轮对话
-            </span>
-            <span>
-              <b>{summary.tool_calls}</b>次工具
-            </span>
-            <span>
-              <b>
-                ${summary.cost_usd.toFixed(summary.cost_usd > 0 && summary.cost_usd < 0.01 ? 4 : 2)}
-              </b>
-              费用
-            </span>
-          </div>
-        )}
-        {sessions.length ? (
-          <div className="task-inspector-sessions">
-            {sessions.map((session) => {
-              const target = session.indexed_id || session.session_id
-              const active = session.unbound_at == null
-              return (
-                <article key={session.session_id}>
-                  <div className="task-inspector-session-line">
-                    <span className={`activity-avatar ${session.agent}`}>
-                      {agentLabel(session.agent).slice(0, 1)}
-                    </span>
-                    <div>
-                      <strong>{agentLabel(session.agent)}</strong>
-                      <span>
-                        {active ? '当前关联' : '历史关联'} · {epochDateTime(session.last_at)}
-                      </span>
-                    </div>
-                    {session.indexed ? (
-                      <Link
-                        className="icon-button"
-                        to={`/agents?session=${encodeURIComponent(target)}`}
-                        title="查看会话"
-                        aria-label={`查看 ${agentLabel(session.agent)} 会话`}
-                      >
-                        <ArrowUpRight size={14} />
-                      </Link>
-                    ) : null}
-                  </div>
-                  <div className="task-inspector-session-stats">
-                    <span>{session.queries} 轮</span>
-                    <span>{session.tool_calls} 工具调用</span>
-                    {session.cost_usd > 0 && <span>${session.cost_usd.toFixed(3)}</span>}
-                  </div>
-                </article>
-              )
-            })}
-          </div>
-        ) : (
-          <p className="task-inspector-empty">暂无关联会话。</p>
-        )}
-        {activeBindings.length > 0 && (
-          <p className="task-inspector-note">当前有 {activeBindings.length} 个有效绑定。</p>
-        )}
-      </section>
     </aside>
   )
 }
@@ -964,7 +972,7 @@ function TaskLifecycleDialog({
         {error ? <Notice error={error} /> : null}
       </div>
       <footer>
-        <button className="button subtle" disabled={pending} onClick={onClose}>
+        <button className="button" disabled={pending} onClick={onClose}>
           取消
         </button>
         <button

@@ -133,8 +133,7 @@ export function TaskRefine({ data }: { data: TodoDetail }) {
         </button>
         <span>整理标题与说明，必要时拆分为最多 5 个子任务。</span>
       </div>
-      <details className="task-refine-options">
-        <summary>补充整理要求</summary>
+      <div className="task-refine-options">
         <label className="field-label" htmlFor="task-refine-hint">
           希望怎样整理（可选）
         </label>
@@ -147,7 +146,7 @@ export function TaskRefine({ data }: { data: TodoDetail }) {
           onChange={(event) => setHint(event.target.value)}
           placeholder="例如：保留技术背景，按可独立验收的步骤拆分。"
         />
-      </details>
+      </div>
       {jobs.error && <Notice error={jobs.error} retry={() => void jobs.refetch()} />}
       {run.error && <Notice error={run.error} />}
       {current.error && <Notice error={current.error} retry={() => void current.refetch()} />}

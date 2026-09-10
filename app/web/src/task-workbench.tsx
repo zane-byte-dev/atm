@@ -16,9 +16,10 @@ import {
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
-import { call } from './api'
+import { call, errorText } from './api'
 import type { SessionStatus } from './workspaces/activity-types'
 import { waitingReason, taskActivity, taskActivityLabel } from './task-attention'
+import { updateTaskGroupSelection } from './task-selection'
 import { TaskBulkActions } from './task-bulk-actions'
 import { WorkspaceSearchButton } from './global-search'
 import { progressiveTasks } from './task-progressive'
@@ -108,8 +109,14 @@ export function TaskWorkbench({
   const [allSelected, setAllSelected] = useState(false)
   const [excluded, setExcluded] = useState<string[]>([])
   const [selectionNotice, setSelectionNotice] = useState('')
+  const selectionEpoch = useRef(0)
+  const groupSelectionLock = useRef(false)
+  const batchBusy = useRef(false)
+  const batchSelection = useRef({ scope: '', epoch: 0 })
   const previousMembership = useRef<string | undefined>(undefined)
   const selectionScope = taskSelectionScope(params)
+  const currentScope = useRef(selectionScope)
+  currentScope.current = selectionScope
   useEffect(() => {
     setSelected([])
     setAllSelected(false)
@@ -117,11 +124,18 @@ export function TaskWorkbench({
     setSelectionNotice('')
     previousMembership.current = undefined
   }, [selectionScope])
+  const knownRows = useRef(new Map<string, Todo>())
+  for (const row of shown) knownRows.current.set(row.id, row)
+  const selectionVersion = `${selectionScope}:${remote?.metadata.selection_revision || ''}`
+  const currentSelectionVersion = useRef(selectionVersion)
+  currentSelectionVersion.current = selectionVersion
+  const [selectingGroup, setSelectingGroup] = useState(false)
   const selectedSet = useMemo(() => new Set(selected), [selected])
   const excludedSet = useMemo(() => new Set(excluded), [excluded])
   const isSelected = (id: string) => (allSelected ? !excludedSet.has(id) : selectedSet.has(id))
   const selectionCount = allSelected ? Math.max(0, total - excluded.length) : selected.length
   const clearSelection = () => {
+    selectionEpoch.current += 1
     setSelected([])
     setAllSelected(false)
     setExcluded([])
@@ -130,8 +144,9 @@ export function TaskWorkbench({
     const revision = remote?.metadata.selection_revision
     if (revision === undefined) return
     if (previousMembership.current !== undefined && previousMembership.current !== revision) {
-      if (allSelected || selected.length) setSelectionNotice('筛选结果已变化，已清除之前的选择。')
-      clearSelection()
+      if (!batchBusy.current && (allSelected || selected.length))
+        setSelectionNotice('筛选结果已变化，已清除之前的选择。')
+      if (!batchBusy.current) clearSelection()
     }
     previousMembership.current = revision
   }, [remote?.metadata.selection_revision])
@@ -179,6 +194,68 @@ export function TaskWorkbench({
         previous.includes(id) ? previous.filter((value) => value !== id) : [...previous, id],
       )
   }
+  const groupCheckbox = (label: string, rows: Todo[], group?: TaskGroup) => {
+    for (const row of rows) knownRows.current.set(row.id, row)
+    const belongs = (id: string) => {
+      const row = knownRows.current.get(id)
+      if (!group || !remote) return rows.some((item) => item.id === id)
+      if (!row) return false
+      return (
+        (remote.input.group_by !== 'status' || row.status === group.status) &&
+        (remote.input.group_by !== 'project' || (row.project || '') === group.project)
+      )
+    }
+    const count = group?.total ?? rows.length
+    const checkedCount = allSelected
+      ? count - excluded.filter(belongs).length
+      : selected.filter(belongs).length
+    return (
+      <input
+        type="checkbox"
+        className="task-row-select"
+        aria-label={`选择${label}分组全部 ${count} 项`}
+        checked={count > 0 && checkedCount === count}
+        ref={(node) => {
+          if (node) node.indeterminate = checkedCount > 0 && checkedCount < count
+        }}
+        disabled={!count || selectingGroup}
+        aria-busy={selectingGroup}
+        onChange={async (event) => {
+          if (groupSelectionLock.current) return
+          groupSelectionLock.current = true
+          const epoch = selectionEpoch.current
+          const checked = event.target.checked
+          const version = selectionVersion
+          setSelectingGroup(true)
+          try {
+            const targets =
+              remote && group
+                ? await collectTaskPages((offset) =>
+                    call('todo.list', {
+                      ...remote.input,
+                      group_key: group.key,
+                      limit: 200,
+                      offset,
+                    }),
+                  )
+                : rows
+            if (currentSelectionVersion.current !== version || selectionEpoch.current !== epoch)
+              return
+            for (const row of targets) knownRows.current.set(row.id, row)
+            const ids = new Set(targets.map((row) => row.id))
+            if (allSelected)
+              setExcluded((previous) => updateTaskGroupSelection(previous, ids, checked, true))
+            else setSelected((previous) => updateTaskGroupSelection(previous, ids, checked, false))
+          } catch (error) {
+            if (currentSelectionVersion.current === version) setSelectionNotice(errorText(error))
+          } finally {
+            groupSelectionLock.current = false
+            setSelectingGroup(false)
+          }
+        }}
+      />
+    )
+  }
   const properties = visibleFields(params)
   const [menu, setMenu] = useState('')
   const toolbar = useRef<HTMLDivElement>(null)
@@ -194,7 +271,14 @@ export function TaskWorkbench({
       if (!toolbar.current?.contains(event.target as Node)) setMenu('')
     }
     const escape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenu('')
+      if (event.key === 'Escape') {
+        setMenu('')
+        if (
+          !event.defaultPrevented &&
+          !document.querySelector('dialog[open], [popover]:popover-open')
+        )
+          clearSelection()
+      }
     }
     document.addEventListener('pointerdown', close)
     document.addEventListener('keydown', escape)
@@ -224,6 +308,7 @@ export function TaskWorkbench({
         ? todo.created?.slice(0, 10)
         : String(todo[field as keyof Todo] || '')
   const card = (todo: Todo) => {
+    knownRows.current.set(todo.id, todo)
     const waiting = waitingReason(todo)
     const activity = taskActivity(todo, presence.isError ? undefined : presence.data)
     const activityText = taskActivityLabel(activity)
@@ -305,7 +390,9 @@ export function TaskWorkbench({
         ? [...groupedItems.byProject].map(([project, rows]) => [project || '无项目', rows])
         : statuses.map(([status, label]) => [label, groupedItems.byStatus.get(status) || []])
   return (
-    <section className={`task-workbench density-${params.get('density') || 'compact'}`}>
+    <section
+      className={`task-workbench ${selectionCount ? 'has-bulk-selection' : ''} density-${params.get('density') || 'compact'}`}
+    >
       <header className="workbench-heading">
         <WorkspaceTitle icon={ListTodo}>
           任务 <small>{total}</small>
@@ -474,19 +561,23 @@ export function TaskWorkbench({
         loadSelected={loadSelected}
         writable={writable}
         onClear={clearSelection}
+        onBusyChange={(busy) => {
+          batchBusy.current = busy
+          if (busy)
+            batchSelection.current = { scope: selectionScope, epoch: selectionEpoch.current }
+        }}
+        onRemaining={(ids) => {
+          if (
+            batchSelection.current.scope !== currentScope.current ||
+            batchSelection.current.epoch !== selectionEpoch.current
+          )
+            return
+          clearSelection()
+          previousMembership.current = undefined
+          setSelected(ids)
+        }}
       />
       {selectionNotice && <p role="status">{selectionNotice}</p>}
-      {layout !== 'table' && total > 0 && (
-        <label className="task-select-all">
-          <input
-            type="checkbox"
-            aria-label="选择全部筛选结果"
-            checked={total > 0 && selectionCount === total}
-            onChange={(e) => selectAll(e.target.checked)}
-          />
-          选择全部 {total} 项
-        </label>
-      )}
       <div className={`workbench-content ${layout === 'table' ? 'table-content' : ''}`}>
         {loading ? (
           <p role="status" className="workbench-empty">
@@ -616,27 +707,30 @@ export function TaskWorkbench({
                               <small>{group.total}</small>
                             </h2>
                           ) : (
-                            <button
-                              className="workbench-group-title"
-                              aria-expanded={!folded}
-                              onClick={() =>
-                                setCollapsed((previous) =>
-                                  folded
-                                    ? previous.filter((name) => name !== collapseKey)
-                                    : [...previous, collapseKey],
-                                )
-                              }
-                            >
-                              {folded ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
-                              {remote.input.group_by === 'status' && (
-                                <span
-                                  className={`task-state state-${group.status}`}
-                                  aria-hidden="true"
-                                />
-                              )}
-                              {label}
-                              <small>{group.total}</small>
-                            </button>
+                            <div className="workbench-group-header">
+                              {groupCheckbox(label, page.rows, group)}
+                              <button
+                                className="workbench-group-title"
+                                aria-expanded={!folded}
+                                onClick={() =>
+                                  setCollapsed((previous) =>
+                                    folded
+                                      ? previous.filter((name) => name !== collapseKey)
+                                      : [...previous, collapseKey],
+                                  )
+                                }
+                              >
+                                {folded ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                                {remote.input.group_by === 'status' && (
+                                  <span
+                                    className={`task-state state-${group.status}`}
+                                    aria-hidden="true"
+                                  />
+                                )}
+                                {label}
+                                <small>{group.total}</small>
+                              </button>
+                            </div>
                           )}
                           {!folded && (
                             <>
@@ -659,31 +753,34 @@ export function TaskWorkbench({
                 .filter(([, rows]) => rows.length)
                 .map(([label, rows]) => (
                   <section className="workbench-group" key={label}>
-                    <button
-                      className="workbench-group-title"
-                      aria-expanded={!collapsed.includes(label)}
-                      onClick={() =>
-                        setCollapsed(
-                          collapsed.includes(label)
-                            ? collapsed.filter((value) => value !== label)
-                            : [...collapsed, label],
-                        )
-                      }
-                    >
-                      {collapsed.includes(label) ? (
-                        <ChevronRight size={13} />
-                      ) : (
-                        <ChevronDown size={13} />
-                      )}
-                      {groupBy === 'status' && (
-                        <span
-                          className={`task-state state-${statuses.find(([, name]) => name === label)?.[0] || 'open'}`}
-                          aria-hidden="true"
-                        />
-                      )}
-                      {label}
-                      <small>{rows.length}</small>
-                    </button>
+                    <div className="workbench-group-header">
+                      {groupCheckbox(label, rows)}
+                      <button
+                        className="workbench-group-title"
+                        aria-expanded={!collapsed.includes(label)}
+                        onClick={() =>
+                          setCollapsed(
+                            collapsed.includes(label)
+                              ? collapsed.filter((value) => value !== label)
+                              : [...collapsed, label],
+                          )
+                        }
+                      >
+                        {collapsed.includes(label) ? (
+                          <ChevronRight size={13} />
+                        ) : (
+                          <ChevronDown size={13} />
+                        )}
+                        {groupBy === 'status' && (
+                          <span
+                            className={`task-state state-${statuses.find(([, name]) => name === label)?.[0] || 'open'}`}
+                            aria-hidden="true"
+                          />
+                        )}
+                        {label}
+                        <small>{rows.length}</small>
+                      </button>
+                    </div>
                     {!collapsed.includes(label) && cards(rows, 'list:' + label)}
                   </section>
                 ))}

@@ -362,6 +362,12 @@ export function TaskRelationships({ data, canWrite }: { data: TodoDetail; canWri
           </button>
         </form>
       )}
+      {data.todo.wake_condition && (
+        <p className="task-wait-date">
+          <Clock3 size={14} />
+          {data.todo.wake_condition}
+        </p>
+      )}
       {data.todo.review_at && (
         <p className="task-wait-date">
           <Clock3 size={14} />

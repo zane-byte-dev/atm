@@ -84,6 +84,7 @@ export type EditableFields = {
   priority: string
 }
 export type Draft = EditableFields & {
+  creation?: { id: string; etag: string; uploaded: Record<string, string> }
   etag: string
   operationID: string
   // The fields represented by etag, before local edits. Older drafts may lack

@@ -70,3 +70,28 @@ test('storage failures and malformed input surface without overwriting remembere
   await assert.rejects(denied.save(input))
   await assert.rejects(denied.clearIfUnchanged(input))
 })
+
+test('creation checkpoint survives reopening a draft without losing uploaded image references', async () => {
+  const memory = new Map()
+  const store = createNewTaskInputStore(() => ({
+    getItem: (key) => memory.get(key) ?? null,
+    setItem: (key, value) => memory.set(key, value),
+    removeItem: (key) => memory.delete(key),
+  }))
+  const draft = {
+    title: 'A',
+    description: '![a](atm-draft-image:abc)',
+    project: '',
+    priority: 'P2',
+    etag: '',
+    operationID: 'op',
+    creation: {
+      id: 't1',
+      etag: 'v2',
+      uploaded: { 'atm-draft-image:abc': '/api/v1/attachments/t1/a.png' },
+    },
+  }
+  await store.save(draft)
+  assert.deepEqual(await store.read(), draft)
+  assert.equal(await store.clearIfUnchanged(draft), true)
+})

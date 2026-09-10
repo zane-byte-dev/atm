@@ -14,6 +14,20 @@ function parse(raw: string): Draft {
     !value.operationID
   )
     throw new Error('新建任务填写内容无法读取')
+  if (
+    value.creation &&
+    (!/^t\d+$/.test(value.creation.id) ||
+      typeof value.creation.etag !== 'string' ||
+      !value.creation.uploaded ||
+      typeof value.creation.uploaded !== 'object' ||
+      Object.entries(value.creation.uploaded).some(
+        ([key, url]) =>
+          !key.startsWith('atm-draft-image:') ||
+          typeof url !== 'string' ||
+          !url.startsWith('/api/v1/attachments/'),
+      ))
+  )
+    throw new Error('新建任务保存进度无法读取')
   return {
     title: value.title,
     description: value.description,
@@ -21,6 +35,7 @@ function parse(raw: string): Draft {
     priority: value.priority,
     etag: '',
     operationID: value.operationID,
+    ...(value.creation ? { creation: value.creation } : {}),
   }
 }
 export function createNewTaskInputStore(storage: () => InputStorage) {

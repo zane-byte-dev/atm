@@ -1,9 +1,9 @@
 import { Select } from './components/select'
-import { useEffect, useId, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useId, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Check, LoaderCircle } from 'lucide-react'
-import { ApiError, call } from './api'
-import { Markdown, Notice } from './markdown'
+import { ApiError, call, uploadTaskImage } from './api'
+import { Notice } from './markdown'
 import { createNewTaskInputStore } from './new-task-input'
 import {
   applyMergeReview,
@@ -15,8 +15,16 @@ import {
 } from './editor-state'
 import type { MergeChoices, MergeReview } from './editor-state'
 import type { Draft, TodoDetail, OperationWarning } from './types'
-import { TaskImageUpload } from './task-images'
-import type { TaskImageUploadHandle } from './task-images'
+import {
+  draftImageURLs,
+  readDraftImage,
+  removeDraftImages,
+  removeDraftImageMarkup,
+  storeDraftImage,
+} from './task-draft-images'
+import { TaskRefine } from './task-refine'
+import { imageUploadError, taskImageLimit } from './image-uploads'
+const TaskRichEditor = lazy(() => import('./task-rich-editor'))
 
 export type EditorProps = {
   initial?: TodoDetail
@@ -24,6 +32,8 @@ export type EditorProps = {
   onSaved: (id: string, warnings?: OperationWarning[]) => void
   onBusyChange?: (busy: boolean) => void
   defaultProject?: string
+  descriptionOnly?: boolean
+  canRefine?: boolean
 }
 
 type StorageState = 'loading' | 'saving' | 'saved' | 'failed'
@@ -40,6 +50,8 @@ export function Editor({
   onSaved,
   onBusyChange,
   defaultProject = '',
+  descriptionOnly = false,
+  canRefine = false,
 }: EditorProps) {
   // A polling refresh must never replace the version the user started editing.
   const original = useRef(initial)
@@ -52,10 +64,10 @@ export function Editor({
   const [ready, setReady] = useState(false)
   const readyRef = useRef(false)
   const [storageState, setStorageState] = useState<StorageState>('loading')
-  const [preview, setPreview] = useState(false)
   const [uploading, setUploading] = useState(false)
-  const [imageTodo, setImageTodo] = useState(original.current?.todo)
-  const imageUpload = useRef<TaskImageUploadHandle>(null)
+  const uploadLock = useRef(false)
+  const imageTodoRef = useRef(original.current?.todo)
+  const [composing, setComposing] = useState(false)
   const [merge, setMerge] = useState<MergeReview>()
   const [choices, setChoices] = useState<MergeChoices>({})
   const [conflictLocked, setConflictLocked] = useState(false)
@@ -73,7 +85,6 @@ export function Editor({
   const latestRequest = useRef<AbortController | undefined>(undefined)
   const titleInput = useRef<HTMLInputElement>(null)
   const titleId = useId()
-  const descriptionId = useId()
   const query = useQueryClient()
 
   const replaceDraft = (next: Draft) => {
@@ -165,7 +176,7 @@ export function Editor({
     try {
       const result = await call('todo.show', { todo_id: current.todo.id }, controller.signal)
       if (!alive.current || controller.signal.aborted) return
-      setImageTodo(result.todo)
+      imageTodoRef.current = result.todo
       setMerge(buildMergeReview(draftRef.current, result))
       setChoices({})
     } catch (error) {
@@ -185,13 +196,64 @@ export function Editor({
         priority: submitted.priority,
         project: submitted.project.trim(),
       }
-      const result = current
-        ? await call('todo.update', {
+      let result
+      if (current)
+        result = await call('todo.update', {
+          ...payload,
+          todo_id: current.todo.id,
+          expected_etag: submitted.etag,
+        })
+      else {
+        const urls = draftImageURLs(submitted.description)
+        // Validate all local files before creating a task.
+        const files = await Promise.all(urls.map(readDraftImage))
+        let checkpoint = submitted.creation
+        if (!checkpoint) {
+          result = await call(
+            'todo.create',
+            { ...payload, description: removeDraftImageMarkup(payload.description) },
+            undefined,
+            submitted.operationID,
+          )
+          checkpoint = { id: result.todo.id, etag: result.etag, uploaded: {} }
+          if (urls.length) {
+            replaceDraft({ ...draftRef.current, creation: checkpoint })
+            await inputStore.save(draftRef.current)
+          }
+        }
+        if (urls.length || submitted.creation) {
+          for (let index = 0; index < urls.length; index++) {
+            const url = urls[index]
+            if (checkpoint.uploaded[url]) continue
+            const next: TodoDetail = await uploadTaskImage<TodoDetail>(
+              checkpoint.id,
+              files[index],
+              checkpoint.etag,
+            )
+            const image = next.todo.images?.at(-1)
+            if (!image?.url) throw new Error('图片已上传，但未返回图片地址，请打开任务核对。')
+            checkpoint = {
+              ...checkpoint,
+              etag: next.etag,
+              uploaded: { ...checkpoint.uploaded, [url]: image.url },
+            }
+            replaceDraft({ ...draftRef.current, creation: checkpoint })
+            await inputStore.save(draftRef.current)
+          }
+          let description = payload.description
+          for (const [local, remote] of Object.entries(checkpoint.uploaded))
+            description = description.split(local).join(remote)
+          result = await call('todo.update', {
             ...payload,
-            todo_id: current.todo.id,
-            expected_etag: submitted.etag,
+            description,
+            todo_id: checkpoint.id,
+            expected_etag: checkpoint.etag,
           })
-        : await call('todo.create', payload, undefined, submitted.operationID)
+          replaceDraft({ ...draftRef.current, creation: { ...checkpoint, etag: result.etag } })
+          await inputStore.save(draftRef.current)
+        }
+      }
+      if (!result) throw new Error('任务尚未保存，请重试。')
       completed.current = true
       ++writeSequence.current
       let draftRemoved = !creating
@@ -199,18 +261,21 @@ export function Editor({
       // request is in flight. Its newer draft must survive the old response.
       if (creating) {
         try {
-          draftRemoved = await inputStore.clearIfUnchanged(submitted)
+          draftRemoved = await inputStore.clearIfUnchanged(draftRef.current)
         } catch {
           /* Keep the draft and report below. */
         }
       }
+      if (creating && draftRemoved)
+        void removeDraftImages(draftImageURLs(submitted.description)).catch(() => {})
       return { ...result, draftRemoved }
     },
     onError: (error) => {
       if (!alive.current) return
       if (!(error instanceof ApiError) || error.status !== 409) return
       if (original.current) void loadLatest()
-      else setCreationConflict({ todoID: existingCreationID(error.details) })
+      else if (!draftRef.current.creation)
+        setCreationConflict({ todoID: existingCreationID(error.details) })
     },
     onSuccess: async (result) => {
       await Promise.all([
@@ -238,7 +303,13 @@ export function Editor({
 
   const disabled = !ready || mutation.isPending || uploading || conflictLocked || !!savedWithDraft
   const submit = () => {
-    if (!disabled && draftRef.current.title.trim() && !creationConflict && !completed.current)
+    if (
+      !disabled &&
+      !composing &&
+      draftRef.current.title.trim() &&
+      !creationConflict &&
+      !completed.current
+    )
       mutation.mutate({ ...draftRef.current })
   }
   const patch = (next: Partial<Draft>) => {
@@ -247,28 +318,56 @@ export function Editor({
     mutation.reset()
     setMerged(false)
   }
+  const uploadImages = async (files: File[]): Promise<{ name: string; url: string }[]> => {
+    if (disabled || uploadLock.current) throw new Error('请等待当前操作完成。')
+    const count = creating
+      ? draftImageURLs(draftRef.current.description).length
+      : imageTodoRef.current?.images?.length || 0
+    if (count + files.length > taskImageLimit) throw new Error('每个任务最多添加 10 张图片。')
+    for (const file of files) {
+      const error = imageUploadError(file)
+      if (error) throw new Error(error)
+    }
+    uploadLock.current = true
+    setUploading(true)
+    const images: { name: string; url: string }[] = []
+    try {
+      for (const file of files) {
+        if (creating) images.push(await storeDraftImage(file))
+        else {
+          const result = await uploadTaskImage<TodoDetail>(
+            original.current!.todo.id,
+            file,
+            draftRef.current.etag,
+          )
+          imageTodoRef.current = result.todo
+          replaceDraft({ ...draftRef.current, etag: result.etag })
+          const image = result.todo.images?.at(-1)
+          if (image?.url) images.push({ name: image.name, url: image.url })
+        }
+      }
+      return images
+    } catch (error) {
+      // Keep successful uploads visible even when a later file fails.
+      if (images.length)
+        patch({
+          description:
+            draftRef.current.description +
+            '\n' +
+            images.map((image) => `![图片](<${image.url}>)`).join('\n'),
+        })
+      if (error instanceof ApiError && error.status === 409 && original.current) void loadLatest()
+      throw error
+    } finally {
+      uploadLock.current = false
+      setUploading(false)
+    }
+  }
   const unresolved = merge ? unresolvedFields(merge, choices) : []
 
   return (
     <form
       className={`editor ${original.current ? '' : 'editor-create'}`}
-      onPaste={(event) => {
-        const files = Array.from(event.clipboardData.files)
-        if (files.length && imageUpload.current && !disabled) {
-          event.preventDefault()
-          imageUpload.current.add(files)
-        }
-      }}
-      onDragOver={(event) => {
-        if (imageUpload.current && event.dataTransfer.types.includes('Files'))
-          event.preventDefault()
-      }}
-      onDrop={(event) => {
-        if (event.dataTransfer.files.length && imageUpload.current && !disabled) {
-          event.preventDefault()
-          imageUpload.current.add(Array.from(event.dataTransfer.files))
-        }
-      }}
       onSubmit={(event) => {
         event.preventDefault()
         submit()
@@ -304,82 +403,65 @@ export function Editor({
           </button>
         </div>
       )}
-      <label className="field-label" htmlFor={titleId}>
-        任务标题
-      </label>
-      <input
-        ref={titleInput}
-        id={titleId}
-        className="title-input"
-        autoFocus
-        required
-        maxLength={500}
-        placeholder="想推进什么事情？"
-        value={draft.title}
-        disabled={disabled}
-        onChange={(event) => patch({ title: event.target.value })}
-      />
-      <div className="description-label">
-        <label className="field-label" htmlFor={descriptionId}>
-          任务说明
-        </label>
-        <button type="button" className="text-button" onClick={() => setPreview(!preview)}>
-          {preview ? '继续编辑' : '预览'}
-        </button>
-      </div>
-      {preview ? (
-        <div className="editor-preview">
-          <Markdown text={draft.description || '预览会显示在这里。'} />
-        </div>
-      ) : (
-        <textarea
-          id={descriptionId}
-          value={draft.description}
-          disabled={disabled}
-          onChange={(event) => patch({ description: event.target.value })}
-          placeholder="写下背景、目标，以及怎样才算完成。支持 Markdown。"
-          rows={12}
-        />
-      )}
-      <div className="editor-metadata">
-        <label>
-          <span className="field-label">项目</span>
+      {!descriptionOnly && (
+        <>
+          <label className="field-label" htmlFor={titleId}>
+            任务标题
+          </label>
           <input
-            value={draft.project}
+            ref={titleInput}
+            id={titleId}
+            className="title-input"
+            autoFocus
+            required
+            maxLength={500}
+            placeholder="想推进什么事情？"
+            value={draft.title}
             disabled={disabled}
-            onChange={(event) => patch({ project: event.target.value })}
-            placeholder="例如 atm"
+            onChange={(event) => patch({ title: event.target.value })}
           />
-        </label>
-        <label>
-          <span className="field-label">优先级</span>
-          <Select
-            value={draft.priority}
+        </>
+      )}
+      <div className="editor-description">
+        <label className="field-label">任务说明</label>
+        <Suspense fallback={<p role="status">正在加载编辑器…</p>}>
+          <TaskRichEditor
+            value={draft.description}
             disabled={disabled}
-            onChange={(event) => patch({ priority: event.target.value })}
-          >
-            <option value="P2">P2 · 正常</option>
-            <option value="P1">P1 · 优先</option>
-            <option value="P0">P0 · 紧急</option>
-          </Select>
-        </label>
+            onChange={(description) => patch({ description })}
+            onComposing={setComposing}
+            upload={uploadImages}
+          />
+        </Suspense>
+        {canRefine && initial && <TaskRefine data={initial} />}
       </div>
-      {imageTodo && !conflictLocked ? (
-        <TaskImageUpload
-          ref={imageUpload}
-          todo={imageTodo}
-          etag={draft.etag}
-          onBusyChange={setUploading}
-          onConflict={() => void loadLatest()}
-          onUploaded={(result) => {
-            setImageTodo(result.todo)
-            replaceDraft({ ...draftRef.current, etag: result.etag })
-          }}
-        />
-      ) : (
-        !original.current && (
-          <p className="task-upload-status">创建任务后可以添加图片，支持拖入和粘贴。</p>
-        )
+      {!descriptionOnly && (
+        <div className="editor-metadata">
+          <label>
+            <span className="field-label">项目</span>
+            <input
+              value={draft.project}
+              disabled={disabled}
+              onChange={(event) => patch({ project: event.target.value })}
+              placeholder="例如 atm"
+            />
+          </label>
+          <label>
+            <span className="field-label">优先级</span>
+            <Select
+              value={draft.priority}
+              disabled={disabled}
+              onChange={(event) => patch({ priority: event.target.value })}
+            >
+              <option value="P2">P2 · 正常</option>
+              <option value="P1">P1 · 优先</option>
+              <option value="P0">P0 · 紧急</option>
+            </Select>
+          </label>
+        </div>
+      )}
+      {draft.creation && (
+        <p role="status">任务 {draft.creation.id} 已创建，重试会继续保存图片和正文。</p>
       )}
       {mutation.error && !creationConflict && <Notice error={mutation.error} />}
       {conflictLocked && (
@@ -571,7 +653,7 @@ export function Editor({
           type="submit"
         >
           {mutation.isPending ? <LoaderCircle className="spin" size={15} /> : <Check size={15} />}
-          {original.current ? '保存修改' : '创建任务'}
+          {original.current ? '保存修改' : draft.creation ? '继续保存' : '创建任务'}
         </button>
       </div>
     </form>
