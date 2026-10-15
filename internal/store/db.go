@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync/atomic"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 
 	_ "modernc.org/sqlite"
@@ -30,9 +31,47 @@ func Open() (*sql.DB, error) {
 	}
 	if err := ensureSchema(db); err != nil {
 		db.Close()
-		return nil, err
+		return nil, schemaOpenError(err)
 	}
 	return db, nil
+}
+
+// SchemaMismatchError reports that this binary and the database disagree about
+// the schema version. Every variant is permanent: the same binary against the
+// same database fails identically, so no retry can succeed. The version numbers
+// carried in Message are the only actionable part of the failure.
+type SchemaMismatchError struct {
+	// Database is the schema version recorded in the database.
+	Database int
+	// Build is the schema version this binary produces.
+	Build int
+	// Message explains the mismatch and names the recovery step.
+	Message string
+}
+
+func (err *SchemaMismatchError) Error() string {
+	if err == nil {
+		return "<nil>"
+	}
+	return err.Message
+}
+
+// schemaOpenError promotes a schema mismatch into the application error
+// vocabulary at the one boundary every write path crosses. Left as a bare
+// infrastructure error, each caller's fallback wrapper flattens it into a
+// retryable "unavailable: <operation>", which drops the version numbers and
+// tells an agent to retry something that can never succeed.
+func schemaOpenError(err error) error {
+	var mismatch *SchemaMismatchError
+	if !errors.As(err, &mismatch) {
+		return err
+	}
+	appErr := application.WrapError(application.CodeFailedPrecondition, mismatch.Message, err)
+	appErr.Details = map[string]any{
+		"database_schema": mismatch.Database,
+		"build_schema":    mismatch.Build,
+	}
+	return appErr
 }
 
 // ErrDatabaseMissing reports that no database has been created yet. Read paths
@@ -117,19 +156,20 @@ func ensureSchema(db *sql.DB) error {
 		// ATM has one live database. Once it reaches the current baseline, keeping
 		// every historical migration is more risk than value. Back up irreplaceable
 		// records before rebuilding an unsupported database.
-		return fmt.Errorf("database schema v%d is no longer supported (current v%d): "+
-			"run `atm backup` first to keep your todos, memory and knowledge, "+
-			"then remove %s and run `atm sync` to rebuild the session index",
-			version, SchemaVersion, config.AtmDB)
+		return &SchemaMismatchError{Database: version, Build: SchemaVersion, Message: fmt.Sprintf(
+			"database schema v%d is no longer supported (current v%d): "+
+				"run `atm backup` first to keep your todos, memory and knowledge, "+
+				"then remove %s and run `atm sync` to rebuild the session index",
+			version, SchemaVersion, config.AtmDB)}
 	}
 	if version < SchemaVersion {
-		return fmt.Errorf("database schema v%d has no registered migration to v%d",
-			version, SchemaVersion)
+		return &SchemaMismatchError{Database: version, Build: SchemaVersion, Message: fmt.Sprintf(
+			"database schema v%d has no registered migration to v%d", version, SchemaVersion)}
 	}
 	// An older binary against a newer database must fail before reading columns
 	// it may silently misinterpret.
-	return fmt.Errorf("database schema v%d is newer than this atm build (v%d): upgrade atm",
-		version, SchemaVersion)
+	return &SchemaMismatchError{Database: version, Build: SchemaVersion, Message: fmt.Sprintf(
+		"database schema v%d is newer than this atm build (v%d): upgrade atm", version, SchemaVersion)}
 }
 
 // bootstrapSchema reads the schema version and, on an empty database, creates

@@ -8,7 +8,7 @@ import (
 
 const (
 	SyncScopeAll           = "all"
-	DefaultSyncStaleAfter  = 10 * time.Minute
+	DefaultSyncStaleAfter  = 32 * time.Hour // daily sync plus the overnight wake window
 	interruptedSyncAfter   = 10 * time.Minute
 	syncRunStatusRunning   = "running"
 	syncRunStatusSucceeded = "succeeded"

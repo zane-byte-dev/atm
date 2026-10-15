@@ -11,7 +11,7 @@ import type {
   TodoMutationResult,
   TodoScopedMutationRequest,
 } from './api-contracts'
-import type { TaskPage, TaskWorkbenchMetadata } from './task-query'
+import type { TaskPage, TaskWorkbenchMetadata } from './features/tasks/task-query'
 import type { TodoList } from './types'
 
 type Envelope<T> = {

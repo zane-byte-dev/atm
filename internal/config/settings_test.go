@@ -18,6 +18,8 @@ func TestParseSettingValues(t *testing.T) {
 		raw  string
 		want any
 	}{
+		{"session_sync_agents", "qoder-work, codex, codex", "codex,qoderwork"},
+		{"session_sync_agents", "none", "none"},
 		{"grok_live_quota", "TRUE", true},
 		{"collection_enabled", "off", false},
 		{"collection_interval_minutes", "5", 5},
@@ -38,6 +40,9 @@ func TestParseSettingValues(t *testing.T) {
 		key string
 		raw string
 	}{
+		{"session_sync_agents", "all"},
+		{"session_sync_agents", "atm"},
+		{"session_sync_agents", ""},
 		{"grok_live_quota", "maybe"},
 		{"collection_interval_minutes", "0"},
 		{"collection_message_retention_days", "-1"},

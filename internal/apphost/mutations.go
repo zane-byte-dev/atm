@@ -10,11 +10,12 @@ import (
 )
 
 type CreateInput struct {
-	Title          string `json:"title"`
-	Description    string `json:"description,omitempty"`
-	Project        string `json:"project,omitempty"`
-	Priority       string `json:"priority,omitempty"`
-	IdempotencyKey string `json:"-"`
+	KnowledgeDocumentID string `json:"knowledge_document_id,omitempty"`
+	Title               string `json:"title"`
+	Description         string `json:"description,omitempty"`
+	Project             string `json:"project,omitempty"`
+	Priority            string `json:"priority,omitempty"`
+	IdempotencyKey      string `json:"-"`
 }
 
 type UpdateInput struct {
@@ -66,7 +67,15 @@ func (h *Host) CreateTodo(ctx context.Context, call application.Call, input Crea
 	if len(input.IdempotencyKey) > 128 || strings.TrimSpace(input.IdempotencyKey) == "" {
 		return MutationResult{}, invalid("Idempotency-Key is required and must not exceed 128 bytes")
 	}
-	result, err := h.work.Add(ctx, call, work.AddInput{Title: input.Title, Description: input.Description, Project: input.Project, Priority: input.Priority, IdempotencyKey: input.IdempotencyKey})
+	knowledgeTitle := ""
+	if input.KnowledgeDocumentID != "" {
+		document, err := h.knowledgeForTask(ctx, input.KnowledgeDocumentID)
+		if err != nil {
+			return MutationResult{}, err
+		}
+		knowledgeTitle = document.Metadata.Title
+	}
+	result, err := h.work.Add(ctx, call, work.AddInput{Title: input.Title, Description: input.Description, Project: input.Project, Priority: input.Priority, IdempotencyKey: input.IdempotencyKey, KnowledgeDocumentID: input.KnowledgeDocumentID, KnowledgeTitle: knowledgeTitle})
 	if err != nil {
 		return MutationResult{}, err
 	}
@@ -183,4 +192,50 @@ func postCommitError(todo work.Todo, cause error) error {
 	err := application.WrapError(application.CodeUnavailable, "todo saved, but a local follow-up failed; reload before retrying", cause)
 	err.Details = map[string]any{"committed": true, "todo_id": todo.ID, "etag": work.TodoETag(todo)}
 	return err
+}
+
+// ReturnToOpenInput requires the revision the user saw before moving work back
+// to the queue. Lifecycle changes stay outside the metadata update endpoint.
+type ReturnToOpenInput struct {
+	TodoID       string `json:"todo_id"`
+	ExpectedETag string `json:"expected_etag"`
+}
+
+func (h *Host) ReturnTodoToOpen(ctx context.Context, call application.Call, input ReturnToOpenInput) (MutationResult, error) {
+	h.gate.RLock()
+	defer h.gate.RUnlock()
+	if err := h.validateLifecycle(ctx, call, input.TodoID); err != nil {
+		return MutationResult{}, err
+	}
+	if strings.TrimSpace(input.ExpectedETag) == "" {
+		return MutationResult{}, invalid("expected_etag is required")
+	}
+	h.effectsMu.Lock()
+	defer h.effectsMu.Unlock()
+	result, err := h.work.ReturnToOpen(ctx, call, work.ReturnToOpenInput{TodoID: input.TodoID, ExpectedETag: input.ExpectedETag})
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if err = h.work.DeliverEffects(ctx, call, result.Effects, h.effects); err != nil {
+		return MutationResult{}, postCommitError(result.Todo, err)
+	}
+	return MutationResult{Todo: view(result.Todo), ETag: work.TodoETag(result.Todo)}, nil
+}
+
+func (h *Host) SubmitTodo(ctx context.Context, call application.Call, input DoneInput) (MutationResult, error) {
+	h.gate.RLock()
+	defer h.gate.RUnlock()
+	if err := h.validateLifecycle(ctx, call, input.TodoID); err != nil {
+		return MutationResult{}, err
+	}
+	h.effectsMu.Lock()
+	defer h.effectsMu.Unlock()
+	result, err := h.work.Submit(ctx, call, work.SubmitInput{TodoID: input.TodoID, Reason: input.Reason})
+	if err != nil {
+		return MutationResult{}, err
+	}
+	if err = h.work.DeliverEffects(ctx, call, result.Effects, h.effects); err != nil {
+		return MutationResult{}, postCommitError(result.Todo, err)
+	}
+	return MutationResult{Todo: view(result.Todo), ETag: work.TodoETag(result.Todo)}, nil
 }

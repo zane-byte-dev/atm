@@ -93,7 +93,7 @@ func addPayloadHash(input normalizedAdd) string {
 	payload, _ := json.Marshal(AddInput{
 		Title: input.title, Description: input.description, Priority: input.priority,
 		Project: input.project, Source: input.source, Creator: input.creator,
-		OnDone: input.onDone, ImagePaths: input.imagePaths,
+		OnDone: input.onDone, ImagePaths: input.imagePaths, KnowledgeDocumentID: input.knowledgeDocumentID,
 	})
 	return contentHash(payload)
 }

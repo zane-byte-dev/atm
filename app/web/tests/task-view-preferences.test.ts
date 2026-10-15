@@ -1,11 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  builtinViews,
-  moveView,
-  orderViews,
-  parseViewPreferences,
-} from '../src/task-view-preferences.ts'
+import { builtinViews, moveView, orderViews, parseViewPreferences } from '../src/features/tasks/task-view-preferences.ts'
 
 test('damaged preferences recover and all remains visible', () => {
   assert.deepEqual(parseViewPreferences('{broken'), { order: [], hidden: [] })

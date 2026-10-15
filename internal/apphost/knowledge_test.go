@@ -59,6 +59,10 @@ func TestKnowledgeBoundaryRejectsAmbientAuthorityAndUnboundedRequests(t *testing
 		{"knowledge.document.create", `{"title":".hidden","content":"x","collection":"notes"}`},
 		{"knowledge.collection.create", `{"id":"../outside"}`},
 		{"knowledge.collection.create", `{"id":".hidden"}`},
+		{"knowledge.collection.update", `{"id":"../outside","name":"Name"}`},
+		{"knowledge.collection.update", `{"id":"notes","name":"  "}`},
+		{"knowledge.collection.update", `{"id":"notes","role":"unsupported"}`},
+		{"knowledge.collection.delete", `{"id":"notes","move_to":"../outside","confirmed":true}`},
 		{"memory.recall", `{"limit":10000}`},
 		{"memory.get", `{"memory_id":"/tmp/file"}`},
 		{"memory.create", `{"scope":"global","content":"x","metadata":{"actor":"human"}}`},
@@ -79,10 +83,12 @@ func TestKnowledgeBoundaryRejectsAmbientAuthorityAndUnboundedRequests(t *testing
 	}
 	agent := webCall()
 	agent.Actor.Kind = application.ActorAgent
-	_, err := h.callKnowledge(context.Background(), agent, "memory.create", json.RawMessage(`{"scope":"global","content":"bad"}`))
-	var appErr *application.Error
-	if !errors.As(err, &appErr) || appErr.Code != application.CodeForbidden {
-		t.Fatalf("agent write accepted: %v", err)
+	for _, method := range []string{"memory.create", "knowledge.collection.update", "knowledge.collection.delete"} {
+		_, err := h.callKnowledge(context.Background(), agent, method, json.RawMessage(`{}`))
+		var appErr *application.Error
+		if !errors.As(err, &appErr) || appErr.Code != application.CodeForbidden {
+			t.Fatalf("agent write accepted for %s: %v", method, err)
+		}
 	}
 	if _, err := os.Stat(config.AtmDB); !os.IsNotExist(err) {
 		t.Fatalf("rejected request created database: %v", err)
@@ -142,7 +148,7 @@ func TestKnowledgeRejectsSymlinkCorpusBeforeReadOrWrite(t *testing.T) {
 	if err := os.Symlink(path, filepath.Join(root, "linked.md")); err != nil {
 		t.Fatal(err)
 	}
-	for _, method := range []string{"knowledge.catalog", "knowledge.query", "knowledge.collection.create"} {
+	for _, method := range []string{"knowledge.catalog", "knowledge.query", "knowledge.collection.create", "knowledge.collection.update", "knowledge.collection.delete"} {
 		_, err := knowledgeRequest(t, h, method, map[string]any{})
 		var appErr *application.Error
 		if !errors.As(err, &appErr) || appErr.Code != application.CodeForbidden {
@@ -285,5 +291,76 @@ func TestMemoryReplacementSingleWinnerAndHistory(t *testing.T) {
 	}
 	if count, err := store.CountMemoryEvents(); err != nil || count != 2 {
 		t.Fatalf("history rows=%d err=%v", count, err)
+	}
+}
+
+func TestKnowledgeCollectionManagementPreservesDocuments(t *testing.T) {
+	h := testHost(t)
+	for _, id := range []string{"source", "target", "empty"} {
+		if _, err := knowledgeRequest(t, h, "knowledge.collection.create", map[string]any{"id": id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	created, err := knowledgeRequest(t, h, "knowledge.document.create", map[string]any{"title": "Keep me", "content": "Original content", "collection": "source"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, _ := json.Marshal(created)
+	if _, err := knowledgeRequest(t, h, "knowledge.collection.update", map[string]any{"id": "source", "name": "New name", "description": "New description"}); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := knowledge.NewService(knowledge.ServiceOptions{DataDir: config.AtmDir}).Catalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, item := range catalog {
+		if item.ID == "source" {
+			found = item.Name == "New name" && item.Description == "New description" && item.DocumentCount == 1
+		}
+	}
+	if !found {
+		t.Fatalf("rename lost collection metadata/documents: %+v", catalog)
+	}
+	for _, input := range []map[string]any{
+		{"id": "source", "confirmed": true},
+		{"id": "source", "confirmed": true, "force": true},
+		{"id": "source", "confirmed": false, "move_to": "target"},
+		{"id": "source", "confirmed": true, "move_to": "source"},
+		{"id": "source", "confirmed": true, "move_to": "missing"},
+	} {
+		if _, err := knowledgeRequest(t, h, "knowledge.collection.delete", input); err == nil {
+			t.Fatalf("accepted unsafe delete: %+v", input)
+		}
+	}
+	var doc struct {
+		Metadata struct {
+			ID string `json:"id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(before, &doc); err != nil {
+		t.Fatal(err)
+	}
+	after, err := knowledgeRequest(t, h, "knowledge.document.get", map[string]any{"document_id": doc.Metadata.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged, _ := json.Marshal(after)
+	if string(before) != string(unchanged) {
+		t.Fatalf("rename/rejected delete changed document: %s", unchanged)
+	}
+	if _, err := knowledgeRequest(t, h, "knowledge.collection.delete", map[string]any{"id": "source", "confirmed": true, "move_to": "target"}); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := knowledgeRequest(t, h, "knowledge.document.get", map[string]any{"document_id": doc.Metadata.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(moved)
+	if !strings.Contains(string(raw), `"collection":"target"`) || !strings.Contains(string(raw), "Original content") {
+		t.Fatalf("move lost document: %s", raw)
+	}
+	if _, err := knowledgeRequest(t, h, "knowledge.collection.delete", map[string]any{"id": "empty", "confirmed": true}); err != nil {
+		t.Fatal(err)
 	}
 }

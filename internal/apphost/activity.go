@@ -97,6 +97,9 @@ type CachedQuotaInput struct {
 	Agent string `json:"agent,omitempty"`
 }
 
+// Quota changes during the day even though transcript indexing is nightly.
+const cachedQuotaStaleAfter = 10 * time.Minute
+
 type CachedQuotaWindow struct {
 	Agent         string      `json:"agent"`
 	WindowMinutes int         `json:"window_minutes"`
@@ -293,7 +296,7 @@ func activityStatus(ctx context.Context) (SessionStatus, error) {
 		return result, unavailable(err)
 	}
 	defer db.Close()
-	health, err := store.ReadSyncHealth(db, store.SyncScopeAll, time.Now(), store.DefaultSyncStaleAfter)
+	health, err := store.ReadSyncHealth(db, config.PrimarySyncScope(), time.Now(), store.DefaultSyncStaleAfter)
 	if err != nil {
 		return result, unavailable(err)
 	}
@@ -416,7 +419,7 @@ func readCachedQuotaHistory(ctx context.Context, now time.Time, agent string, qu
 			return result, err
 		}
 		item.ObservedAt = time.Unix(ts, 0).UTC().Format(time.RFC3339)
-		item.Stale = now.Sub(time.Unix(ts, 0)) > store.DefaultSyncStaleAfter
+		item.Stale = now.Sub(time.Unix(ts, 0)) > cachedQuotaStaleAfter
 		item.ResetElapsed = item.ResetsAt > 0 && item.ResetsAt <= now.Unix()
 		result.Windows = append(result.Windows, item)
 	}
@@ -469,7 +472,7 @@ func runtimeCachedQuota(cache background.QuotaCache, now time.Time, filterAgent 
 			if window == nil || window.WindowMinutes <= 0 {
 				continue
 			}
-			result.Windows = append(result.Windows, CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > store.DefaultSyncStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: value.Source, Plan: value.Plan, Trend: quotaTrendDTO(window.Trend)})
+			result.Windows = append(result.Windows, CachedQuotaWindow{Agent: agent, WindowMinutes: window.WindowMinutes, UsedPercent: window.UsedPercent, ResetsAt: window.ResetsAt, ObservedAt: observed.UTC().Format(time.RFC3339), Stale: now.Sub(observed) > cachedQuotaStaleAfter, ResetElapsed: window.ResetsAt > 0 && window.ResetsAt <= now.Unix(), Source: value.Source, Plan: value.Plan, Trend: quotaTrendDTO(window.Trend)})
 		}
 	}
 	return result

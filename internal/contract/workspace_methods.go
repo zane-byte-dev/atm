@@ -14,7 +14,7 @@ var workspaceMethods = func() map[string]WorkspaceMethod {
 		"todo.list", "todo.show", "todo.doc", "todo.dependency.list",
 		"jobs.list", "jobs.show", "presence.snapshot",
 		"session.list", "session.search", "session.show", "session.status", "usage.snapshot", "quota.cached",
-		"knowledge.catalog", "knowledge.query", "knowledge.document.get", "memory.recall", "memory.get",
+		"knowledge.tasks", "knowledge.catalog", "knowledge.query", "knowledge.document.get", "memory.recall", "memory.get",
 		"collect.overview", "collect.items", "collect.item.show", "collect.history", "collect.source.search",
 		"day.snapshot", "day.show", "day.ledger", "settings.get",
 	}
@@ -23,11 +23,11 @@ var workspaceMethods = func() map[string]WorkspaceMethod {
 	}
 	writes := [][]string{
 		{
-			"todo.create", "todo.update", "todo.start", "todo.done", "todo.archive", "todo.restore",
-			"todo.plan.set", "todo.progress.append", "todo.dependency.add", "todo.dependency.remove", "todo.wait.update", "todo.wake",
+			"todo.create", "todo.update", "todo.start", "todo.done", "todo.submit", "todo.return_to_open", "todo.archive", "todo.restore",
+			"todo.knowledge.add", "todo.knowledge.remove", "todo.plan.set", "todo.progress.append", "todo.dependency.add", "todo.dependency.remove", "todo.wait.update", "todo.wake",
 		},
 		{"jobs.run", "jobs.cancel"},
-		{"knowledge.document.create", "knowledge.document.update", "knowledge.collection.create"},
+		{"knowledge.document.create", "knowledge.document.update", "knowledge.collection.create", "knowledge.collection.update", "knowledge.collection.delete"},
 		{"memory.create", "memory.supersede"},
 		{
 			"collect.item.read", "collect.item.archive", "collect.source.enabled", "collect.source.muted",

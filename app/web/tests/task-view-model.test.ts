@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { filterTasks, parseViews, viewQuery, visibleFields } from '../src/task-view-model.ts'
+import { filterTasks, parseViews, viewQuery, visibleFields } from '../src/features/tasks/task-view-model.ts'
 const items = [
   {
     id: 't1',

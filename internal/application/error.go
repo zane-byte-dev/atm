@@ -11,19 +11,42 @@ const (
 	CodeForbidden       ErrorCode = "forbidden"
 	CodeBusy            ErrorCode = "busy"
 	CodeUnavailable     ErrorCode = "unavailable"
-	CodeInternal        ErrorCode = "internal"
+	// CodeFailedPrecondition reports an environment that cannot satisfy the
+	// operation, such as a binary older than the database it opened. It is
+	// separate from CodeUnavailable because unavailable means "transient, retry
+	// later" while a failed precondition never succeeds on retry: only changing
+	// the environment does. Collapsing the two tells an agent to retry forever.
+	CodeFailedPrecondition ErrorCode = "failed_precondition"
+	CodeInternal           ErrorCode = "internal"
 )
+
+// AllErrorCodes returns the public error vocabulary in declaration order. It is
+// the single source of truth for Valid, and it exists so adapters can prove
+// their own mapping is total: a transport that switches on codes and silently
+// defaults would otherwise turn a newly added code into a generic failure
+// instead of its real meaning.
+func AllErrorCodes() []ErrorCode {
+	return []ErrorCode{
+		CodeInvalidArgument,
+		CodeNotFound,
+		CodeConflict,
+		CodeForbidden,
+		CodeBusy,
+		CodeUnavailable,
+		CodeFailedPrecondition,
+		CodeInternal,
+	}
+}
 
 // Valid reports whether code is part of the public application error
 // vocabulary.
 func (code ErrorCode) Valid() bool {
-	switch code {
-	case CodeInvalidArgument, CodeNotFound, CodeConflict, CodeForbidden,
-		CodeBusy, CodeUnavailable, CodeInternal:
-		return true
-	default:
-		return false
+	for _, candidate := range AllErrorCodes() {
+		if code == candidate {
+			return true
+		}
 	}
+	return false
 }
 
 // Error is a transport-independent application failure. Code is stable and is
@@ -107,11 +130,12 @@ func (sentinel codeSentinel) Is(target error) bool {
 // Stable category sentinels support errors.Is without discarding a concrete
 // *Error's message, details, retryability, or cause.
 var (
-	ErrInvalidArgument error = codeSentinel(CodeInvalidArgument)
-	ErrNotFound        error = codeSentinel(CodeNotFound)
-	ErrConflict        error = codeSentinel(CodeConflict)
-	ErrForbidden       error = codeSentinel(CodeForbidden)
-	ErrBusy            error = codeSentinel(CodeBusy)
-	ErrUnavailable     error = codeSentinel(CodeUnavailable)
-	ErrInternal        error = codeSentinel(CodeInternal)
+	ErrInvalidArgument    error = codeSentinel(CodeInvalidArgument)
+	ErrNotFound           error = codeSentinel(CodeNotFound)
+	ErrConflict           error = codeSentinel(CodeConflict)
+	ErrForbidden          error = codeSentinel(CodeForbidden)
+	ErrBusy               error = codeSentinel(CodeBusy)
+	ErrUnavailable        error = codeSentinel(CodeUnavailable)
+	ErrFailedPrecondition error = codeSentinel(CodeFailedPrecondition)
+	ErrInternal           error = codeSentinel(CodeInternal)
 )

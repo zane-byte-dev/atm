@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
+	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/store"
 )
 
@@ -80,7 +82,34 @@ type WorkspaceCollectionOverview struct {
 	Sources  []WorkspaceCollectionSource     `json:"sources"`
 	Runs     []WorkspaceCollectionRun        `json:"runs"`
 	Messages WorkspaceCollectionMessageStats `json:"messages"`
+	// Usage answers "how much did each connector actually run, and how often did
+	// it fail" — for the dingtalk connector that is the only visibility into the
+	// `dws` CLI it shells out to. Health alone says whether it is broken right
+	// now; the windows say whether it has been working.
+	Usage []WorkspaceConnectorUsage `json:"connector_usage"`
 }
+
+// ConnectorRunWindow is one connector's run totals inside one time window.
+type ConnectorRunWindow struct {
+	Runs         int   `json:"runs"`
+	Failed       int   `json:"failed"`
+	Fetched      int   `json:"fetched"`
+	LastRunAt    int64 `json:"last_run_at,omitempty"`
+	LastFailedAt int64 `json:"last_failed_at,omitempty"`
+}
+
+// WorkspaceConnectorUsage pairs the shared health projection with the two
+// windows the browser shows. Health is embedded verbatim so the browser and
+// `atm collect status` cannot describe the same connector differently.
+type WorkspaceConnectorUsage struct {
+	Health ConnectorHealth    `json:"health"`
+	Today  ConnectorRunWindow `json:"today"`
+	Week   ConnectorRunWindow `json:"week"`
+}
+
+// connectorUsageWeekDays is the rolling window behind 「最近 7 天」. It is rolling
+// rather than calendar so the number never collapses to zero on a Monday.
+const connectorUsageWeekDays = 7
 
 type WorkspaceCollectionListInput struct {
 	UnreadOnly bool
@@ -176,7 +205,10 @@ type WorkspaceCollectionHistory struct {
 }
 
 func (QueryService) Overview(ctx context.Context) (WorkspaceCollectionOverview, error) {
-	result := WorkspaceCollectionOverview{Sources: []WorkspaceCollectionSource{}, Runs: []WorkspaceCollectionRun{}}
+	result := WorkspaceCollectionOverview{
+		Sources: []WorkspaceCollectionSource{}, Runs: []WorkspaceCollectionRun{},
+		Usage: []WorkspaceConnectorUsage{},
+	}
 	if err := validateWorkspaceCollectionQueryContext(ctx); err != nil {
 		return result, err
 	}
@@ -199,9 +231,56 @@ func (QueryService) Overview(ctx context.Context) (WorkspaceCollectionOverview, 
 	for _, run := range overview.Runs {
 		result.Runs = append(result.Runs, workspaceCollectionRun(run))
 	}
+	usage, err := workspaceConnectorUsage(db, overview, time.Now())
+	if err != nil {
+		return result, workspaceCollectionQueryError(err)
+	}
+	result.Usage = usage
 	stats, err := store.CollectionMessageStatsFor(db)
 	result.Messages = workspaceCollectionMessageStats(stats)
 	return result, workspaceCollectionQueryError(err)
+}
+
+// workspaceConnectorUsage reads the run ledger twice — once per window — and
+// lays the totals beside the health projection. Both reads are aggregates over
+// an indexed column, so the browser gets a per-connector volume without the
+// ledger rows themselves crossing the boundary.
+func workspaceConnectorUsage(db *sql.DB, overview store.CollectionOverview, now time.Time) ([]WorkspaceConnectorUsage, error) {
+	registry, _ := DefaultRegistry()
+	health := connectorHealthFor(registry, overview)
+	dayStart, _ := store.CollectionDayBounds(now.In(config.Loc))
+	today, err := store.ConnectorRunTotalsSince(db, dayStart)
+	if err != nil {
+		return nil, err
+	}
+	week, err := store.ConnectorRunTotalsSince(db, now.AddDate(0, 0, -connectorUsageWeekDays).Unix())
+	if err != nil {
+		return nil, err
+	}
+	todayByConnector := make(map[string]store.ConnectorRunTotals, len(today))
+	for _, totals := range today {
+		todayByConnector[totals.Connector] = totals
+	}
+	weekByConnector := make(map[string]store.ConnectorRunTotals, len(week))
+	for _, totals := range week {
+		weekByConnector[totals.Connector] = totals
+	}
+	usage := make([]WorkspaceConnectorUsage, 0, len(health))
+	for _, item := range health {
+		usage = append(usage, WorkspaceConnectorUsage{
+			Health: item,
+			Today:  connectorRunWindow(todayByConnector[item.Connector]),
+			Week:   connectorRunWindow(weekByConnector[item.Connector]),
+		})
+	}
+	return usage, nil
+}
+
+func connectorRunWindow(totals store.ConnectorRunTotals) ConnectorRunWindow {
+	return ConnectorRunWindow{
+		Runs: totals.Runs, Failed: totals.Failed, Fetched: totals.Fetched,
+		LastRunAt: totals.LastRunAt, LastFailedAt: totals.LastFailedAt,
+	}
 }
 
 func (QueryService) Items(ctx context.Context, input WorkspaceCollectionListInput) (WorkspaceCollectionList, error) {

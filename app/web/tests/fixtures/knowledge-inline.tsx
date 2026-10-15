@@ -2,8 +2,9 @@
 // All API calls are intercepted here; no real knowledge data is read or written.
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { useInlineKnowledge } from '../../src/workspaces/knowledge-inline'
-import type { KnowledgeDocument } from '../../src/workspaces/knowledge-types'
+import { useInlineKnowledge } from '../../src/features/knowledge/knowledge-inline'
+import type { KnowledgeDocument } from '../../src/features/knowledge/knowledge-types'
+import { DesignSystemProvider } from '../../src/design-system'
 
 const id = `inline-test-${crypto.randomUUID()}`
 const key = `atm.knowledge.inline:${id}`
@@ -58,9 +59,11 @@ const root = createRoot(document.getElementById('root')!)
 const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 const render = (version: number, enabled = true) =>
   root.render(
-    <QueryClientProvider client={client}>
-      <Harness key={version} enabled={enabled} />
-    </QueryClientProvider>,
+    <DesignSystemProvider>
+      <QueryClientProvider client={client}>
+        <Harness key={version} enabled={enabled} />
+      </QueryClientProvider>
+    </DesignSystemProvider>,
   )
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 const check = (condition: unknown, message: string) => {

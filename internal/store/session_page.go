@@ -23,6 +23,7 @@ const sessionVisiblePageSQL = `WITH RECURSIVE
 spaces(chars) AS (VALUES(char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))),
 prefixes(prefix) AS (VALUES
  ('<recommended_plugins>'),('# AGENTS.md instructions'),('<permissions instructions>'),
+ ('<external_codex_apps_open_page>'),('<in-app-browser-context'),
  ('<app-context>'),('<environment_context>'),('<skills_instructions>'),('<image name='),('</image>'),
  ('Message Type: NEW_TASK'),('Message Type: MESSAGE'),('Message Type: FINAL_ANSWER'),
  ('Within the root conversation'),('You are an agent in a team of agents collaborating'),

@@ -717,3 +717,66 @@ func TestMergeCollectionInsightsNeedsTwoRecords(t *testing.T) {
 		t.Fatal("merging a single record was accepted")
 	}
 }
+
+// The window totals back the browser's per-connector usage card, where the
+// failure rate is the number a person acts on. A run still in flight has no
+// outcome yet, so it belongs in neither column: counting it as a success would
+// hide a connector that is failing right now, and counting it as a failure would
+// blame the connector for a fetch ATM has not finished waiting for.
+func TestConnectorRunTotalsKeepAnUnfinishedRunOutOfBothOutcomeColumns(t *testing.T) {
+	withTempStore(t)
+	db, err := Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	chat, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "dingtalk", Kind: "group", ExternalID: "g1", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := UpsertCollectionSource(db, CollectionSource{
+		Connector: "fixture", Kind: "group", ExternalID: "g2", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []CollectionRun{
+		{ID: "before-window", Connector: "dingtalk", SourceID: chat.ID, Status: "failed", StartedAt: 10, FetchedCount: 5},
+		{ID: "ok", Connector: "dingtalk", SourceID: chat.ID, Status: "succeeded", StartedAt: 100, FetchedCount: 7},
+		{ID: "bad", Connector: "dingtalk", SourceID: chat.ID, Status: "failed", StartedAt: 200},
+		{ID: "live", Connector: "dingtalk", SourceID: chat.ID, Status: "running", StartedAt: 300},
+		{ID: "elsewhere", Connector: "fixture", SourceID: other.ID, Status: "succeeded", StartedAt: 250, FetchedCount: 3},
+	} {
+		if err := SaveCollectionRun(db, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	totals, err := ConnectorRunTotalsSince(db, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byConnector := map[string]ConnectorRunTotals{}
+	for _, item := range totals {
+		byConnector[item.Connector] = item
+	}
+	if len(totals) != 2 {
+		t.Fatalf("totals = %+v", totals)
+	}
+	chat1 := byConnector["dingtalk"]
+	if chat1.Runs != 3 || chat1.Succeeded != 1 || chat1.Failed != 1 || chat1.Running != 1 {
+		t.Errorf("a running run leaked into an outcome column: %+v", chat1)
+	}
+	if chat1.Fetched != 7 {
+		t.Errorf("fetched = %d, want only what the window's finished runs read", chat1.Fetched)
+	}
+	if chat1.LastRunAt != 300 || chat1.LastFailedAt != 200 {
+		t.Errorf("last run/failed = %d/%d", chat1.LastRunAt, chat1.LastFailedAt)
+	}
+	if fixture := byConnector["fixture"]; fixture.Runs != 1 || fixture.LastFailedAt != 0 {
+		t.Errorf("a connector with no failure reported one: %+v", fixture)
+	}
+}

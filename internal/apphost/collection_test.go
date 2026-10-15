@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
@@ -231,5 +232,68 @@ func TestInboxUnreadFilterComposesWithArchiveAndPagination(t *testing.T) {
 	archived := collectionTestCall(t, h, "collect.items", `{"state":"archived","unread_only":true}`).(CollectionListResult)
 	if archived.Total != 1 || archived.Items[0].ID != items[1].ID {
 		t.Fatalf("archived unread: %+v", archived)
+	}
+}
+
+// The browser's collection read has to carry the same connector projection
+// `atm collect status` prints, plus the run volume behind it. Health without
+// volume says whether a connector is broken this minute but not whether it has
+// been working; volume without health leaves an expired login undiagnosed. For
+// the dingtalk connector this is the only place the `dws` CLI it drives is
+// visible outside a terminal, so both have to travel together.
+func TestCollectionOverviewCarriesConnectorHealthAndRunVolume(t *testing.T) {
+	h := testHost(t)
+	before := config.CollectionConnectors
+	t.Cleanup(func() { config.CollectionConnectors = before })
+	config.CollectionConnectors = map[string]config.CollectionConnectorConfig{
+		"dingtalk": {Command: "/this-command-must-never-run", LoginCommand: "~/bin/dws auth login"},
+	}
+
+	db, err := store.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := store.UpsertCollectionSource(db, store.CollectionSource{
+		Connector: "dingtalk", Kind: "group", ExternalID: "g1", Name: "Project Wanda", Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	for _, run := range []store.CollectionRun{
+		{ID: "today", Connector: "dingtalk", SourceID: source.ID, Status: "succeeded",
+			StartedAt: now, FinishedAt: now, FetchedCount: 4},
+		{ID: "this-week", Connector: "dingtalk", SourceID: source.ID, Status: "failed",
+			StartedAt: now - 3*86400, FinishedAt: now - 3*86400, Error: "collection connector dingtalk timed out after 45s"},
+		{ID: "older", Connector: "dingtalk", SourceID: source.ID, Status: "failed",
+			StartedAt: now - 10*86400, FinishedAt: now - 10*86400, Error: "dws returned an error: 未登录"},
+	} {
+		if err := store.SaveCollectionRun(db, run); err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Close()
+
+	overview := collectionTestCall(t, h, "collect.overview", `{}`).(CollectionOverviewResult)
+	if len(overview.ConnectorUsage) != 1 {
+		t.Fatalf("connector usage = %+v", overview.ConnectorUsage)
+	}
+	usage := overview.ConnectorUsage[0]
+	// The newest run succeeded, so nothing is broken right now — but the window
+	// still has to admit that two of the last three attempts failed.
+	if usage.Health.Connector != "dingtalk" || usage.Health.Status != "ready" {
+		t.Errorf("health = %+v", usage.Health)
+	}
+	if usage.Health.RecentRuns != 3 || usage.Health.RecentFailures != 2 {
+		t.Errorf("health window = %+v", usage.Health)
+	}
+	if want := config.Home + "/bin/dws auth login"; usage.Health.LoginCommand != want {
+		t.Errorf("login command = %q, want %q", usage.Health.LoginCommand, want)
+	}
+	if usage.Today.Runs != 1 || usage.Today.Failed != 0 || usage.Today.Fetched != 4 {
+		t.Errorf("today = %+v", usage.Today)
+	}
+	if usage.Week.Runs != 2 || usage.Week.Failed != 1 || usage.Week.LastFailedAt != now-3*86400 {
+		t.Errorf("week = %+v", usage.Week)
 	}
 }

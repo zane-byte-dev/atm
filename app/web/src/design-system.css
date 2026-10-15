@@ -1,0 +1,638 @@
+/* ATM design language: shared metrics and surfaces for Ant Design and legacy views. */
+:root {
+  --ds-radius-control: 9px;
+  --ds-radius-panel: 14px;
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-6: 24px;
+  --ds-shadow-panel: 0 1px 2px var(--shadow-color), 0 10px 32px var(--shadow-color);
+}
+
+/* ---------------------------------------------------------------------------
+   Ant Design compat layer.
+
+   `DesignSystemProvider` wraps the tree in `<StyleProvider layer>`, so every antd
+   CSS-in-JS rule lands in `@layer antd`. Unlayered declarations beat layered ones
+   regardless of specificity, which makes ATM's stylesheets authoritative by
+   construction — including antd's hover rule
+   `.ant-btn:not(:disabled):not(.ant-btn-disabled):hover` at (0,4,0), which would
+   otherwise outrank a legacy `.nav-item:hover` at (0,2,0).
+
+   Because layers already settle precedence, these resets use `:where()` to carry
+   zero specificity: they still beat antd (unlayered > layered) but lose to any
+   legacy class that declares the same property. That is exactly the intended
+   order — antd < this reset < the legacy class.
+
+   What still leaks is only what the legacy classes never declare: antd's fixed
+   controlHeight, and its inline padding on classes that pin a width.
+
+   Unscoped on purpose: Modals portal to document.body, outside `.workspace`.
+   --------------------------------------------------------------------------- */
+:where(.ant-btn) {
+  height: auto;
+  white-space: normal;
+}
+:where(.ant-btn).button {
+  min-height: 34px;
+}
+/* These pin a width but declare no padding anywhere, so antd's 15px inline
+   padding would squeeze the icon out of its own box. Every other legacy button
+   class declares its own padding and needs nothing. */
+:where(.ant-btn):is(
+  .icon-button,
+  .inbox-icon-button,
+  .knowledge-branch-toggle,
+  .knowledge-branch-add
+) {
+  padding-inline: 0;
+}
+
+.workspace {
+  gap: 0;
+  --workspace-navigator-width: 280px;
+  --workspace-reading-width: 920px;
+  --workspace-nav-row-height: 38px;
+  --navigator-width: var(--workspace-navigator-width);
+  --control-radius: var(--ds-radius-control);
+  --panel-radius: var(--ds-radius-panel);
+  --page-title-size: 18px;
+  --page-title-weight: 620;
+  --page-padding-inline: var(--ds-space-6);
+  --page-padding-block: var(--ds-space-6);
+}
+
+@media (max-width: 1000px) {
+  .workspace {
+    --workspace-navigator-width: 240px;
+  }
+}
+
+.workspace > .workspace-rail {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  width: 58px;
+  padding: 14px 6px 12px;
+}
+.workspace-rail .rail-brand,
+.workspace-rail .rail-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  text-decoration: none;
+}
+.workspace-rail .rail-brand {
+  margin-bottom: 20px;
+}
+.workspace-rail .rail-brand img {
+  width: 26px;
+  height: 26px;
+}
+.workspace-rail .rail-item:hover,
+.workspace-rail .rail-item:focus-visible {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.workspace-rail .rail-item.selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.workspace-rail .rail-destinations,
+.workspace-rail .rail-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+.workspace-rail .rail-bottom {
+  margin-top: auto;
+}
+.workspace .brand {
+  margin-bottom: 6px;
+}
+.workspace .sidebar-create {
+  min-height: 38px;
+  margin: 10px 0 14px;
+  padding-inline: 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--ds-radius-control);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.workspace .sidebar-create:hover {
+  background: var(--row-hover);
+  color: var(--accent-hover);
+}
+.workspace .workspace-menu.ant-menu {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.workspace .workspace-menu .ant-menu-item-group-title {
+  padding: 14px 10px 7px;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.workspace .workspace-menu .ant-menu-item {
+  width: 100%;
+  height: 36px;
+  line-height: 36px;
+  margin: 2px 0;
+  padding-inline: 10px !important;
+  border-radius: var(--ds-radius-control);
+  color: var(--muted);
+  font-size: 13px;
+}
+.workspace .workspace-menu .ant-menu-item a {
+  color: inherit;
+}
+.workspace .workspace-menu .ant-menu-item:hover {
+  background: var(--row-hover);
+  color: var(--text);
+}
+.workspace .workspace-menu .ant-menu-item-selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.workspace .workspace-menu .ant-menu-item-icon {
+  width: 16px;
+  height: 16px;
+}
+.workspace > .main {
+  border-left: 0;
+  border-radius: var(--ds-radius-panel);
+  box-shadow: var(--ds-shadow-panel);
+}
+.workspace .button,
+.workspace .icon-button {
+  border-radius: var(--ds-radius-control);
+}
+.workspace .button {
+  min-height: 34px;
+  padding-inline: 12px;
+  font-weight: 550;
+}
+.workspace .button:not(.primary):not(.subtle):hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+.workspace .notice,
+.workspace .workspace-conflict,
+.workspace .workspace-job,
+.workspace .workspace-form {
+  border-radius: var(--ds-radius-panel);
+}
+.workspace :is(.activity-heading, .collection-heading) {
+  padding-bottom: var(--ds-space-4);
+}
+.workspace :is(.activity-heading, .collection-heading) h1,
+.workspace .workspace-title {
+  font-size: var(--page-title-size);
+  font-weight: var(--page-title-weight);
+  letter-spacing: -0.02em;
+}
+
+/* The task composer uses Ant Design controls inside one shared writing surface. */
+.task-create-modal.ant-modal {
+  display: inline-block;
+  width: min(780px, calc(100vw - 48px));
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  overflow: visible;
+}
+.task-create-modal .ant-modal-container {
+  display: flex;
+  flex-direction: column;
+  height: min(540px, calc(100dvh - 48px));
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: 0 20px 60px var(--overlay);
+}
+.task-create-modal .ant-modal-header {
+  flex: none;
+  margin: 0;
+  padding: 22px 32px 18px;
+  background: transparent;
+}
+.task-create-modal .ant-modal-title {
+  font-size: 15px;
+  font-weight: 500;
+}
+.task-create-modal .ant-modal-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.task-create-modal .task-editor {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  padding: 0;
+  overflow: auto;
+  gap: 0;
+}
+.task-create-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+}
+.task-create-breadcrumb strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.task-create-modal .ant-modal-close {
+  top: 17px;
+  right: 24px;
+}
+.task-create-modal .task-editor .task-composer {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 220px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.task-create-writing {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 140px;
+  padding: 0 32px;
+}
+.task-editor .ant-input.task-create-title {
+  height: 50px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 28px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.task-editor .ant-input.task-create-title::placeholder,
+.task-editor .ant-input.task-create-description::placeholder {
+  color: var(--muted);
+}
+.task-editor .ant-input.task-create-description {
+  flex: 1;
+  min-height: 110px;
+  padding: 12px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.6;
+  resize: none;
+}
+.task-create-properties {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 16px 32px;
+}
+.task-create-property {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 14px;
+  white-space: nowrap;
+}
+.task-create-status {
+  color: var(--text);
+}
+/* antd v6 puts the border, background and padding on the `.ant-select` root;
+   v5's `.ant-select-selector` no longer exists, so these were dead rules. */
+.task-create-priority.ant-select {
+  min-width: 135px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.task-create-project {
+  min-width: 170px;
+  max-width: min(300px, 100%);
+}
+.task-create-project .ant-select {
+  flex: 1;
+  min-width: 100px;
+  padding: 0 !important;
+}
+.task-create-modal .task-editor .editor-footer {
+  flex: none;
+  align-items: center;
+  padding: 14px 32px;
+  border-top: 1px solid var(--line);
+}
+.task-create-modal .editor-footer .task-create-attachment {
+  margin-right: auto;
+}
+.task-create-modal .task-editor .editor-footer .shortcut-hint {
+  margin-left: 0;
+}
+.task-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 0;
+  color: var(--text);
+}
+.task-composer {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  overflow: hidden;
+  transition:
+    border-color 140ms,
+    box-shadow 140ms;
+}
+.task-composer:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.task-composer .ant-input.task-composer-input {
+  width: 100%;
+  min-height: 134px;
+  padding: 18px 18px 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.65;
+  resize: none;
+}
+.task-composer .ant-input.task-composer-input:focus {
+  box-shadow: none;
+}
+.task-composer .ant-input.task-composer-input::placeholder {
+  color: var(--subtle);
+}
+.task-composer-title {
+  display: block;
+  margin: 0 18px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  overflow-wrap: anywhere;
+}
+.task-composer-error {
+  margin: 0 18px 12px;
+  color: var(--danger);
+  font-size: 12px;
+}
+.task-composer-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 18px 12px;
+}
+.task-composer-image {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 74px;
+  height: 68px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.task-composer-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.task-composer-image button {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 19px;
+  height: 19px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--surface);
+  cursor: pointer;
+}
+.task-composer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--hover);
+}
+.task-composer-toolbar .ant-btn.task-composer-image-button {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+}
+.task-composer-toolbar .ant-btn.task-composer-image-button:hover {
+  background: var(--soft);
+  color: var(--accent);
+}
+.task-composer-properties {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: 1;
+  justify-content: flex-end;
+  min-width: 0;
+  gap: 8px;
+}
+.task-composer-properties .ant-select.task-composer-project {
+  width: min(210px, 45vw);
+}
+.task-composer-properties .ant-select.task-composer-priority {
+  width: 130px;
+}
+.task-composer-properties .ant-select {
+  border-radius: 8px;
+}
+.task-editor .editor-footer {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.task-editor .editor-footer .shortcut-hint {
+  margin-left: auto;
+  align-self: center;
+  font-size: 12px;
+  color: var(--subtle);
+}
+.task-create-modal .task-editor .editor-footer {
+  position: static;
+  margin: 0;
+  background: transparent;
+}
+.task-reading-surface .task-editor {
+  padding: 0;
+}
+.task-editor-refine {
+  padding: 12px 2px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+}
+.task-editor-refine > summary {
+  width: fit-content;
+  cursor: pointer;
+  font-size: 12px;
+}
+.task-editor-refine .task-refine {
+  margin-top: 12px;
+}
+.task-editor .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+@media (max-width: 800px) {
+  .workspace > .workspace-rail {
+    width: 58px;
+  }
+  .workspace .workspace-menu .ant-menu-item-group-title,
+  .workspace .workspace-menu .ant-menu-title-content {
+    display: none;
+  }
+  .workspace .workspace-menu .ant-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 !important;
+  }
+  .workspace .workspace-menu .ant-menu-item-icon {
+    margin: 0;
+  }
+  .workspace .sidebar-create {
+    justify-content: center;
+    padding: 0;
+  }
+}
+@media (max-width: 600px) {
+  .workspace > .workspace-rail {
+    width: 52px;
+    padding-inline: 4px;
+  }
+  .task-create-modal .ant-modal-container {
+    height: min(540px, calc(100dvh - 24px));
+  }
+  .task-create-modal .ant-modal-header,
+  .task-create-writing,
+  .task-create-properties {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+  .task-create-modal .task-editor .editor-footer {
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+  .task-editor .ant-input.task-create-title {
+    font-size: 23px;
+  }
+  .task-composer-toolbar {
+    flex-wrap: wrap;
+  }
+  .task-composer-properties {
+    justify-content: flex-start;
+    width: 100%;
+  }
+  .task-composer-properties .ant-select.task-composer-project {
+    flex: 1;
+    width: auto;
+  }
+}
+.as-inline-error.ant-alert {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.as-inline-error .ant-alert-title {
+  color: inherit;
+}
+
+.workspace-date-input.ant-picker {
+  width: 100%;
+}
+.workspace .workspace-date-input .ant-picker-input > input {
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace .workspace-date-input .ant-picker-input > input:focus {
+  outline: none;
+}
+
+.task-create-modal .task-editor-refine {
+  flex: none;
+  margin: 0 32px;
+  padding: 4px 0;
+  border: 0;
+  box-shadow: none;
+}
+.task-create-modal .task-editor-refine .ant-collapse-header {
+  padding-inline: 0;
+}
+
+.task-create-modal .editor-footer .ant-btn {
+  min-height: 34px;
+}
+.task-create-modal .editor-footer .ant-btn-primary {
+  color: var(--on-accent);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.task-create-modal .editor-footer .ant-btn-primary:disabled {
+  color: var(--muted);
+  background: var(--soft);
+  border-color: var(--line);
+}

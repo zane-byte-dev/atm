@@ -2,10 +2,65 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"testing"
 
 	"github.com/zane-byte-dev/atm/internal/parser"
 )
+
+func TestRepriceSkipsUnchangedRatesAndNoopUpdates(t *testing.T) {
+	db := openTempDB(t)
+	withPricingTable(t, map[string][4]float64{"model-a": {1, 0, 0, 0}, "model-b": {2, 0, 0, 0}})
+	for _, model := range []string{"model-a", "model-b"} {
+		p := &parser.ParsedFile{SessionID: model, Agent: "codex", Usage: parser.Usage{Model: model}}
+		for i := 0; i < 500; i++ {
+			p.UsageEvents = append(p.UsageEvents, parser.UsageEvent{Model: model, TS: 100, InputTokens: 1000, Fingerprint: fmt.Sprintf("%s-%d", model, i)})
+		}
+		if err := upsertSession(db, p, "/tmp/"+model, "codex", 1, 10); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, table := range []string{"usage_events", "usage"} {
+		if _, err := db.Exec(fmt.Sprintf(`CREATE TRIGGER reject_noop_%s BEFORE UPDATE ON %s WHEN OLD.cost_usd IS NEW.cost_usd BEGIN SELECT RAISE(FAIL,'unchanged price was updated'); END`, table, table)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RepriceUsage(db); err != nil {
+		t.Fatal(err)
+	}
+	var before, after int64
+	if err := db.QueryRow("SELECT revision FROM workspace_changes WHERE domain='usage'").Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if err := RepriceUsage(db); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT revision FROM workspace_changes WHERE domain='usage'").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("unchanged rates caused %d usage mutations", after-before)
+	}
+	// Changing an unrelated rate may start a pass, but must not touch these rows.
+	SetPricing(map[string][4]float64{"unrelated": {10, 0, 0, 0}})
+	if err := RepriceUsage(db); err != nil {
+		t.Fatal(err)
+	}
+	SetPricing(map[string][4]float64{"model-a": {3, 0, 0, 0}})
+	if err := RepriceUsage(db); err != nil {
+		t.Fatal(err)
+	}
+	if got := readCost(t, db, "usage_events", "model-a"); got < 1.4999 || got > 1.5001 {
+		t.Fatalf("changed rate missed: %v", got)
+	}
+	if got := readCost(t, db, "usage_events", "model-b"); got < 0.9999 || got > 1.0001 {
+		t.Fatalf("unrelated model changed: %v", got)
+	}
+	if err := db.QueryRow("SELECT revision FROM workspace_changes WHERE domain='usage'").Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("unchanged repeat: 0 usage mutations; changed one model: %d mutations for 500 events and their rollup", after-before)
+}
 
 // readCost sums one session's stored cost in either usage table. table is a test
 // literal, never input.

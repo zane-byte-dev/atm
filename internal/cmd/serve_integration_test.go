@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -301,6 +302,70 @@ func TestServeIndependentCLIAndHTTPShareStateAndDetectStaleEdits(t *testing.T) {
 	}
 	if cliShowResult.Todo.Title != "CLI still works after workspace exits" {
 		t.Fatalf("offline CLI failed: %s", cliShow)
+	}
+}
+
+func TestServeStopWaitsForRuntimeCleanupBeforeReturning(t *testing.T) {
+	dataDir := prepareServeFixture(t)
+	cleaning := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	server, err := webapp.Start(webapp.Options{
+		DataDir: dataDir, Port: 0,
+		Assets: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
+		StartRuntime: func(webapp.Instance, func(...string)) (func(context.Context) error, error) {
+			return func(ctx context.Context) error {
+				close(cleaning)
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }); server.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	command := fixtureCLICommand(t, ctx, dataDir, "serve", "stop", "--data-dir", dataDir, "--json")
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan error, 1)
+	go func() { exited <- command.Wait() }()
+	select {
+	case <-cleaning:
+	case <-ctx.Done():
+		t.Fatal("stop did not reach runtime cleanup")
+	}
+	// This is the takeover race: HTTP already refuses connections, while the
+	// old runtime still owns the data directory.
+	status, err := webapp.ReadStatus(ctx, dataDir)
+	if err != nil || status.Running {
+		t.Fatalf("HTTP is still running during cleanup: %+v / %v", status, err)
+	}
+	select {
+	case err := <-exited:
+		t.Fatalf("serve stop returned before runtime cleanup: %v / %s", err, output.String())
+	case <-time.After(300 * time.Millisecond):
+	}
+	releaseOnce.Do(func() { close(release) })
+	select {
+	case err := <-exited:
+		if err != nil {
+			t.Fatalf("serve stop: %v / %s", err, output.String())
+		}
+	case <-ctx.Done():
+		t.Fatal("serve stop did not finish after releasing runtime workers")
+	}
+	if err := webapp.WithStoppedInstance(dataDir, func() error { return nil }); err != nil {
+		t.Fatalf("serve stop returned before releasing ownership: %v", err)
 	}
 }
 

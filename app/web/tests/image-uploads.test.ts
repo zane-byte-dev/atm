@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { imageUploadError, taskImageMaxBytes } from '../src/image-uploads.ts'
+import { imageUploadError, taskImageMaxBytes } from '../src/features/tasks/image-uploads.ts'
 
 test('image upload rejects executable vector content, empty files, and oversized images before sending', () => {
   assert.match(

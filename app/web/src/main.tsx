@@ -1,32 +1,48 @@
+import { Loading } from './components/loading'
+import { Button as AntButton, Spin } from 'antd'
 import React, { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { LoaderCircle, RefreshCw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import { ApiError, bootstrap, errorText, reconnect } from './api'
 import { AppShell, workspaces } from './workspace-shell'
 import { useLiveUpdates } from './live-updates'
+import { DesignSystemProvider } from './design-system'
+import { RuntimeJobNotifications } from './features/notifications/runtime-job-notifications'
 import type { Bootstrap } from './types'
 import './app.css'
 import './theme'
 
 const TaskWorkspace = React.lazy(() =>
-  import('./task-workspace').then((module) => ({ default: module.TaskWorkspace })),
+  import('./features/tasks/task-workspace').then((module) => ({ default: module.TaskWorkspace })),
 )
 const AgentsWorkspace = React.lazy(() =>
-  import('./workspaces/activity').then((module) => ({ default: module.AgentsWorkspace })),
+  import('./features/agents/activity').then((module) => ({ default: module.AgentsWorkspace })),
 )
 const UsageWorkspace = React.lazy(() =>
-  import('./workspaces/usage').then((module) => ({ default: module.UsageWorkspace })),
+  import('./features/usage/usage').then((module) => ({ default: module.UsageWorkspace })),
 )
 const KnowledgeWorkspace = React.lazy(() =>
-  import('./workspaces/knowledge').then((module) => ({ default: module.KnowledgeWorkspace })),
+  import('./features/knowledge/knowledge').then((module) => ({
+    default: module.KnowledgeWorkspace,
+  })),
 )
 const CollectionWorkspace = React.lazy(() =>
-  import('./workspaces/collection').then((module) => ({ default: module.CollectionWorkspace })),
+  import('./features/collection/collection').then((module) => ({
+    default: module.CollectionWorkspace,
+  })),
 )
 const SettingsWorkspace = React.lazy(() =>
-  import('./workspaces/aiday-settings').then((module) => ({ default: module.SettingsWorkspace })),
+  import('./features/settings/aiday-settings').then((module) => ({
+    default: module.SettingsWorkspace,
+  })),
+)
+
+const MessagesWorkspace = React.lazy(() =>
+  import('./features/notifications/messages').then((module) => ({
+    default: module.MessagesWorkspace,
+  })),
 )
 
 const queryClient = new QueryClient({
@@ -57,7 +73,7 @@ function App() {
         <h1>连接你的工作台</h1>
         <p>{errorText(failure)}</p>
         <code>atm serve --open</code>
-        <button
+        <AntButton
           className="button primary"
           onClick={() => {
             setFailure(undefined)
@@ -74,7 +90,7 @@ function App() {
         >
           <RefreshCw size={15} />
           重新连接
-        </button>
+        </AntButton>
         <span>任务和数据仍保存在这台 Mac 上。</span>
       </div>
     )
@@ -82,71 +98,82 @@ function App() {
     return (
       <div className="connection-screen">
         <img src="/mark.svg" alt="ATM" />
-        <LoaderCircle className="spin" size={22} />
+        <Spin />
         <p>正在打开工作台…</p>
       </div>
     )
   return (
-    <Routes>
-      <Route
-        path="/tasks/:id?"
-        element={
-          <WorkspaceErrorBoundary>
-            <React.Suspense
-              fallback={
-                <AppShell boot={boot}>
-                  <Loading text="正在打开工作区…" />
-                </AppShell>
-              }
-            >
-              <TaskWorkspace boot={boot} />
-            </React.Suspense>
-          </WorkspaceErrorBoundary>
-        }
-      />
-      <Route
-        path="/collection"
-        element={
-          <ModulePage boot={boot} path="/collection">
-            <CollectionWorkspace boot={boot} />
-          </ModulePage>
-        }
-      />
-      <Route
-        path="/agents/:id?"
-        element={
-          <ModulePage boot={boot} path="/agents">
-            <AgentsWorkspace boot={boot} />
-          </ModulePage>
-        }
-      />
-      <Route
-        path="/knowledge"
-        element={
-          <ModulePage boot={boot} path="/knowledge">
-            <KnowledgeWorkspace boot={boot} />
-          </ModulePage>
-        }
-      />
-      <Route
-        path="/usage"
-        element={
-          <ModulePage boot={boot} path="/usage">
-            <UsageWorkspace boot={boot} />
-          </ModulePage>
-        }
-      />
-      <Route path="/ai-day" element={<Navigate to="/usage?view=badges" replace />} />
-      <Route
-        path="/settings"
-        element={
-          <ModulePage boot={boot} path="/settings">
-            <SettingsWorkspace boot={boot} />
-          </ModulePage>
-        }
-      />
-      <Route path="*" element={<Navigate to="/tasks" replace />} />
-    </Routes>
+    <>
+      <RuntimeJobNotifications boot={boot} />
+      <Routes>
+        <Route
+          path="/tasks/:id?"
+          element={
+            <WorkspaceErrorBoundary>
+              <React.Suspense
+                fallback={
+                  <AppShell boot={boot}>
+                    <Loading text="正在打开工作区…" />
+                  </AppShell>
+                }
+              >
+                <TaskWorkspace boot={boot} />
+              </React.Suspense>
+            </WorkspaceErrorBoundary>
+          }
+        />
+        <Route
+          path="/collection"
+          element={
+            <ModulePage boot={boot} path="/collection">
+              <CollectionWorkspace boot={boot} />
+            </ModulePage>
+          }
+        />
+        <Route
+          path="/agents/:id?"
+          element={
+            <ModulePage boot={boot} path="/agents">
+              <AgentsWorkspace boot={boot} />
+            </ModulePage>
+          }
+        />
+        <Route
+          path="/knowledge"
+          element={
+            <ModulePage boot={boot} path="/knowledge">
+              <KnowledgeWorkspace boot={boot} />
+            </ModulePage>
+          }
+        />
+        <Route
+          path="/usage"
+          element={
+            <ModulePage boot={boot} path="/usage">
+              <UsageWorkspace boot={boot} />
+            </ModulePage>
+          }
+        />
+        <Route
+          path="/messages"
+          element={
+            <ModulePage boot={boot} path="/messages">
+              <MessagesWorkspace boot={boot} />
+            </ModulePage>
+          }
+        />
+        <Route path="/ai-day" element={<Navigate to="/usage?view=badges" replace />} />
+        <Route
+          path="/settings"
+          element={
+            <ModulePage boot={boot} path="/settings">
+              <SettingsWorkspace boot={boot} />
+            </ModulePage>
+          }
+        />
+        <Route path="*" element={<Navigate to="/tasks" replace />} />
+      </Routes>
+    </>
   )
 }
 
@@ -184,30 +211,23 @@ class WorkspaceErrorBoundary extends React.Component<
         <div className="workspace-render-error" role="alert">
           <h2>这个工作区暂时无法显示</h2>
           <p>{errorText(this.state.error)}</p>
-          <button className="button" onClick={() => window.location.reload()}>
+          <AntButton className="button" onClick={() => window.location.reload()}>
             <RefreshCw size={15} />
             重新加载
-          </button>
+          </AntButton>
         </div>
       )
     return this.props.children
   }
 }
 
-function Loading({ text }: { text: string }) {
-  return (
-    <div className="loading">
-      <LoaderCircle size={19} className="spin" />
-      <span>{text}</span>
-    </div>
-  )
-}
-
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <App />
+        <DesignSystemProvider>
+          <App />
+        </DesignSystemProvider>
       </BrowserRouter>
     </QueryClientProvider>
   </React.StrictMode>,

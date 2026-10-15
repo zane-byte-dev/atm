@@ -23,7 +23,7 @@ type ExecutionPolicy struct {
 
 func CaptureExecutionPolicy() *ExecutionPolicy {
 	p := &ExecutionPolicy{
-		Settings: Settings{OwnerName: OwnerName, GrokLiveQuota: GrokLiveQuota,
+		Settings: Settings{SessionSyncAgents: SessionSyncAgents, OwnerName: OwnerName, GrokLiveQuota: GrokLiveQuota,
 			CollectionEnabled: CollectionEnabled, CollectionIntervalMinutes: CollectionIntervalMinutes,
 			CollectionLookbackMinutes: CollectionLookbackMinutes, CollectionMessageRetentionDays: CollectionMessageRetentionDays,
 			TextModelBaseURL: TextModelBaseURL, TextModelName: TextModelName, TextModelSource: TextModelSource,

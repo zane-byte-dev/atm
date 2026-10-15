@@ -8,3 +8,5 @@ skills/*-workspace/
 .gz
 /dist/
 /app/web/dist/
+outputs/
+artifacts/

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { consumeNewTaskRequest, readTaskLayout, updateTaskLayout } from '../src/task-navigation.ts'
+import { consumeNewTaskRequest, readTaskLayout, updateTaskLayout } from '../src/features/tasks/task-navigation.ts'
 
 test('new task route opens once and preserves task filters', () => {
   const original = new URLSearchParams('status=review&project=atm&q=menu&new=1')

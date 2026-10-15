@@ -56,6 +56,9 @@ func assertShowPageMatchesFull(t *testing.T, service Service, full ShowResult, o
 	if err != nil {
 		t.Fatalf("show page offset=%d limit=%d: %v", offset, limit, err)
 	}
+	if got.Summary != "Recent session" {
+		t.Fatalf("page lost session title: %q", got.Summary)
+	}
 	start := min(offset, len(full.QA))
 	end := min(start+limit, len(full.QA))
 	want := full
@@ -145,6 +148,9 @@ func TestShowPageVisibilityMatchesRequestMarkersTagsAndUnicodeSpace(t *testing.T
 		"You are an agent in a team of agents collaborating\ncontrol",
 		"Some conversation entries were omitted.\ncontrol",
 		"<recommended_plugins>control",
+		`<external_codex_apps_open_page>{"page_id":null}</external_codex_apps_open_page>`,
+		`<in-app-browser-context source="ambient-ui-state">control</in-app-browser-context>`,
+		"<in-app-browser-context>wrapped</in-app-browser-context>\n## My request:\nactual request",
 		"<recommended_plugins>wrapped\n## My request for Codex:\nactual request",
 		"## My request:\nfirst\n# My request:\nsecond\n## My request:\nlast",
 		"<ide_opened_file>file</ide_opened_file><ide_selection>selection</ide_selection>",

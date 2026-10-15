@@ -119,11 +119,19 @@ func reconcileInterruptedRunsForSnapshot(ctx context.Context, db *sql.DB) error 
 }
 
 func (service Service) connectorHealth(overview store.CollectionOverview) []ConnectorHealth {
-	connectorIDs := map[string]bool{}
 	registry := service.Connectors
 	if registry == nil && service.RegistryError == nil {
 		registry, _ = DefaultRegistry()
 	}
+	return connectorHealthFor(registry, overview)
+}
+
+// connectorHealthFor is the one projection behind every health line ATM shows.
+// The CLI status line and the browser read model both arrive here, so "ready ·
+// 最近 20 次里失败过 6 次" cannot drift between the two. A nil registry falls
+// back to the configured connectors, which is what a read-only caller has.
+func connectorHealthFor(registry *Registry, overview store.CollectionOverview) []ConnectorHealth {
+	connectorIDs := map[string]bool{}
 	if registry != nil {
 		for _, id := range registry.IDs() {
 			connectorIDs[id] = true

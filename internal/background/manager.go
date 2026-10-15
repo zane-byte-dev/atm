@@ -93,6 +93,7 @@ type Options struct {
 	// Schedule opts into the existing automatic work. Zero value has no timers.
 	Schedule     bool
 	TickInterval time.Duration
+	// Positive intervals override the nightly policy (primarily for tests).
 	SyncInterval time.Duration
 	DayInterval  time.Duration
 	JobTimeout   time.Duration
@@ -157,12 +158,6 @@ func New(options Options) (*Manager, error) {
 	}
 	if options.TickInterval <= 0 {
 		options.TickInterval = time.Minute
-	}
-	if options.SyncInterval <= 0 {
-		options.SyncInterval = 5 * time.Minute
-	}
-	if options.DayInterval <= 0 {
-		options.DayInterval = 7 * time.Minute
 	}
 	if options.JobTimeout <= 0 {
 		options.JobTimeout = 10 * time.Minute

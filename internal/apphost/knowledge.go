@@ -41,6 +41,17 @@ type KnowledgeCollectionCreateInput struct {
 	Description string `json:"description,omitempty"`
 }
 
+type KnowledgeCollectionUpdateInput struct {
+	ID          string  `json:"id"`
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+}
+type KnowledgeCollectionDeleteInput struct {
+	ID        string `json:"id"`
+	MoveTo    string `json:"move_to,omitempty"`
+	Confirmed bool   `json:"confirmed"`
+}
+
 type MemoryGetInput struct {
 	MemoryID string `json:"memory_id"`
 }
@@ -59,7 +70,7 @@ type MemorySupersedeInput struct {
 }
 
 func (h *Host) callKnowledge(ctx context.Context, call application.Call, method string, input json.RawMessage) (any, error) {
-	write := method == "knowledge.document.create" || method == "knowledge.document.update" || method == "knowledge.collection.create" || method == "memory.create" || method == "memory.supersede"
+	write := method == "knowledge.document.create" || method == "knowledge.document.update" || method == "knowledge.collection.create" || method == "knowledge.collection.update" || method == "knowledge.collection.delete" || method == "memory.create" || method == "memory.supersede"
 	// Corpus writes have their own cross-process lock and memory replacements
 	// are transactional. This gate only pins resident configuration, so a long
 	// background job must not queue an exclusive writer and stall all readers.
@@ -173,6 +184,22 @@ func (h *Host) callKnowledge(ctx context.Context, call application.Call, method 
 			return service.SaveCollection(ctx, knowledge.SaveCollectionInput{Create: &knowledge.CreateCollectionInput{
 				ID: value.ID, Name: &value.Name, Description: &value.Description,
 			}})
+		})
+	case "knowledge.collection.update":
+		return invoke(input, func(value KnowledgeCollectionUpdateInput) (any, error) {
+			if !managedCollectionID(value.ID) || (value.Name != nil && (strings.TrimSpace(*value.Name) == "" || len(*value.Name) > 500)) || (value.Description != nil && len(*value.Description) > 10000) {
+				return nil, invalid("a valid collection ID and bounded visible name/description are required")
+			}
+			return service.SaveCollection(ctx, knowledge.SaveCollectionInput{Update: &knowledge.UpdateCollectionInput{ID: value.ID, Name: value.Name, Description: value.Description}})
+		})
+	case "knowledge.collection.delete":
+		return invoke(input, func(value KnowledgeCollectionDeleteInput) (any, error) {
+			if !managedCollectionID(value.ID) || (value.MoveTo != "" && !managedCollectionID(value.MoveTo)) {
+				return nil, invalid("invalid collection ID")
+			}
+			// The Web API never force-deletes documents. Nonempty collections must move
+			// their documents to another existing collection under the corpus lock.
+			return service.DeleteCollection(ctx, knowledge.DeleteCollectionInput{ID: value.ID, MoveTo: value.MoveTo, Confirmed: value.Confirmed})
 		})
 	case "memory.recall":
 		return invoke(input, func(value knowledge.RecallMemoryInput) (any, error) {

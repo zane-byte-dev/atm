@@ -1,11 +1,12 @@
 // Isolated view-management fixture: never reads or writes ATM task data.
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { TaskViews } from '../../src/task-views'
-import { filterTasks } from '../../src/task-view-model'
+import { TaskViews } from '../../src/features/tasks/task-views'
+import { filterTasks } from '../../src/features/tasks/task-view-model'
 import type { Todo } from '../../src/types'
 import '../../src/app.css'
-import '../../src/task-workbench.css'
+import '../../src/features/tasks/task-workbench.css'
+import { DesignSystemProvider } from '../../src/design-system'
 const items = [
   { id: 't1', title: '需要验收的任务', status: 'review', priority: 'P1', project: 'atm' },
   { id: 't2', title: '开发中的任务', status: 'in_progress', priority: 'P0', project: 'atm' },
@@ -36,4 +37,8 @@ function Harness() {
     </main>
   )
 }
-createRoot(document.getElementById('root')!).render(<Harness />)
+createRoot(document.getElementById('root')!).render(
+  <DesignSystemProvider>
+    <Harness />
+  </DesignSystemProvider>,
+)

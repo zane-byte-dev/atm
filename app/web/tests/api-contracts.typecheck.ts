@@ -1,8 +1,8 @@
 import { call, callScopedTodoMutation, callTodoMutation } from '../src/api'
 import type { ApiOutput, TodoMutationRequest } from '../src/api-contracts'
 import type { TodoDetail, TodoList } from '../src/types'
-import type { TaskPage, TaskWorkbenchMetadata } from '../src/task-query'
-import type { KnowledgeDocument, KnowledgeQueryResult } from '../src/workspaces/knowledge-types'
+import type { TaskPage, TaskWorkbenchMetadata } from '../src/features/tasks/task-query'
+import type { KnowledgeDocument, KnowledgeQueryResult } from '../src/features/knowledge/knowledge-types'
 import wire from './fixtures/api-wire-contracts.json'
 
 // JSON imports widen literal strings. Widen only those enum leaves while keeping

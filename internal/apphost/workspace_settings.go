@@ -294,6 +294,7 @@ type WorkspaceBusinessInput struct {
 }
 
 type WorkspacePreferences struct {
+	SessionSyncAgents              string `json:"session_sync_agents"`
 	GrokLiveQuota                  bool   `json:"grok_live_quota"`
 	CollectionEnabled              bool   `json:"collection_enabled"`
 	CollectionIntervalMinutes      int    `json:"collection_interval_minutes"`
@@ -384,7 +385,7 @@ func (h *Host) workspaceSettings(ctx context.Context) (WorkspaceSettings, error)
 	result := WorkspaceSettings{
 		Revision:  h.configRevision,
 		OwnerName: config.OwnerName, Timezone: workspaceLocation().String(),
-		Preferences: WorkspacePreferences{GrokLiveQuota: config.GrokLiveQuota, CollectionEnabled: config.CollectionEnabled, CollectionIntervalMinutes: config.CollectionIntervalMinutes, CollectionLookbackMinutes: config.CollectionLookbackMinutes, CollectionMessageRetentionDays: config.CollectionMessageRetentionDays, TodoRefineOnAdd: config.TodoRefineOnAdd, TodoRefinePrompt: config.TodoRefinePrompt},
+		Preferences: WorkspacePreferences{SessionSyncAgents: config.SessionSyncAgents, GrokLiveQuota: config.GrokLiveQuota, CollectionEnabled: config.CollectionEnabled, CollectionIntervalMinutes: config.CollectionIntervalMinutes, CollectionLookbackMinutes: config.CollectionLookbackMinutes, CollectionMessageRetentionDays: config.CollectionMessageRetentionDays, TodoRefineOnAdd: config.TodoRefineOnAdd, TodoRefinePrompt: config.TodoRefinePrompt},
 		Model:       WorkspaceModel{Name: config.TextModelName, Source: config.TextModelSource, BaseURL: safeModelBaseURL(config.TextModelBaseURL), CredentialStatus: "missing"},
 		Providers:   []WorkspaceProvider{},
 		Runtime:     h.workspaceRuntime(),
@@ -419,7 +420,7 @@ func (h *Host) workspaceSettings(ctx context.Context) (WorkspaceSettings, error)
 	}
 	defer db.Close()
 	result.Sync.Indexed = true
-	health, err := store.ReadSyncHealth(db, store.SyncScopeAll, time.Now(), store.DefaultSyncStaleAfter)
+	health, err := store.ReadSyncHealth(db, config.PrimarySyncScope(), time.Now(), store.DefaultSyncStaleAfter)
 	if err != nil {
 		result.Sync.Status, result.Sync.HasError = "unavailable", true
 		return result, nil

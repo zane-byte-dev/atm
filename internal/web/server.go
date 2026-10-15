@@ -365,7 +365,7 @@ func (server *Server) serveAPI(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/v1/bootstrap" && r.Method == http.MethodGet {
 		capabilities := map[string]any{
 			"todo_write": true, "workspace_write": true,
-			"workspaces": []string{"tasks", "collection", "agents", "knowledge", "usage", "ai-day", "settings"},
+			"workspaces": []string{"tasks", "collection", "agents", "knowledge", "usage", "ai-day", "messages", "settings"},
 			"sse":        server.events != nil, "poll_interval_ms": 5000, "background_sync": false, "agent_hooks": false,
 			"collection_run": false, "models": false, "runtime_jobs": false, "attachments_upload": server.options.Upload != nil,
 		}
@@ -692,13 +692,29 @@ func (server *Server) serveAsset(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// applicationErrorStatus maps the public error vocabulary onto HTTP. It is a
+// package variable rather than an inline literal so a test can assert the
+// mapping stays total: the 500 fallback below would otherwise let a newly added
+// application code degrade silently into "server bug" instead of its real
+// meaning, which is indistinguishable from an actual defect on the wire.
+var applicationErrorStatus = map[application.ErrorCode]int{
+	application.CodeInvalidArgument:    400,
+	application.CodeNotFound:           404,
+	application.CodeConflict:           409,
+	application.CodeForbidden:          403,
+	application.CodeBusy:               503,
+	application.CodeUnavailable:        503,
+	application.CodeFailedPrecondition: 412,
+	application.CodeInternal:           500,
+}
+
 func (server *Server) applicationError(w http.ResponseWriter, id string, err error) {
 	var appErr *application.Error
 	if !errors.As(err, &appErr) {
 		server.respondID(w, 500, id, nil, application.NewError(application.CodeInternal, "workspace operation failed"))
 		return
 	}
-	status := map[application.ErrorCode]int{application.CodeInvalidArgument: 400, application.CodeNotFound: 404, application.CodeConflict: 409, application.CodeForbidden: 403, application.CodeBusy: 503, application.CodeUnavailable: 503, application.CodeInternal: 500}[appErr.Code]
+	status := applicationErrorStatus[appErr.Code]
 	if status == 0 {
 		status = 500
 	}

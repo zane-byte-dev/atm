@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { insertEditorImage } from '../src/editor-images.ts'
+import { insertEditorImage } from '../src/features/tasks/editor-images.ts'
 const image = { name: 'demo.png', url: '/api/v1/attachments/t1/demo.png' }
 test('image insertion preserves surrounding text and replaces only selected text', () => {
   const result = insertEditorImage('beforeSELECTafter', 6, 12, image)

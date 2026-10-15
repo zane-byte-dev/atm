@@ -1020,6 +1020,55 @@ func ListLatestCollectionRunsBySource(db *sql.DB) ([]CollectionRun, error) {
 	return runs, rows.Err()
 }
 
+// ConnectorRunTotals is one connector's run ledger inside a bounded window.
+//
+// The unit is a collection run, not an external CLI call: one run of the
+// dingtalk connector issues several `dws` calls, and the connector protocol
+// reports messages rather than how many commands produced them. These totals
+// therefore answer "how hard has this connector been working, and how often did
+// it fail", which is the part ATM actually observes. Claiming a CLI call count
+// here would be a number nothing measured.
+type ConnectorRunTotals struct {
+	Connector    string `json:"connector"`
+	Runs         int    `json:"runs"`
+	Succeeded    int    `json:"succeeded"`
+	Failed       int    `json:"failed"`
+	Running      int    `json:"running"`
+	Fetched      int    `json:"fetched"`
+	LastRunAt    int64  `json:"last_run_at"`
+	LastFailedAt int64  `json:"last_failed_at"`
+}
+
+// ConnectorRunTotalsSince aggregates every run started at or after sinceTS,
+// grouped by connector. A run still in flight counts toward Runs and Running but
+// toward neither Succeeded nor Failed: an unfinished attempt has no outcome yet,
+// and folding it into either column would misstate the failure rate.
+func ConnectorRunTotalsSince(db *sql.DB, sinceTS int64) ([]ConnectorRunTotals, error) {
+	rows, err := db.Query(`SELECT connector,COUNT(*),
+		COALESCE(SUM(CASE WHEN status='succeeded' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(CASE WHEN status='running' THEN 1 ELSE 0 END),0),
+		COALESCE(SUM(fetched_count),0),
+		COALESCE(MAX(started_at),0),
+		COALESCE(MAX(CASE WHEN status='failed' THEN started_at ELSE 0 END),0)
+		FROM collection_runs WHERE started_at>=?
+		GROUP BY connector ORDER BY connector`, sinceTS)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	totals := []ConnectorRunTotals{}
+	for rows.Next() {
+		var item ConnectorRunTotals
+		if err := rows.Scan(&item.Connector, &item.Runs, &item.Succeeded, &item.Failed,
+			&item.Running, &item.Fetched, &item.LastRunAt, &item.LastFailedAt); err != nil {
+			return nil, err
+		}
+		totals = append(totals, item)
+	}
+	return totals, rows.Err()
+}
+
 // CollectionDayBounds returns the half-open Unix range [start, end) of the local
 // day containing the given time. Digests are per local day, so every query that
 // scopes insights to "that day" has to agree on where the day starts.

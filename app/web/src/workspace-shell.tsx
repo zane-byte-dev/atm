@@ -1,25 +1,31 @@
-import { Fragment, type ReactNode } from 'react'
-import { NavLink } from 'react-router'
+import { Disclosure } from './components/disclosure'
+import type { ReactNode } from 'react'
+import { Badge, Button as AntButton, Dropdown, Tooltip } from 'antd'
+import { NavLink, useLocation } from 'react-router'
 import {
+  Bell,
   BookOpen,
   ChartNoAxesCombined,
   CheckCheck,
   Cpu,
   Inbox,
   LockKeyhole,
+  MoreHorizontal,
   Settings,
+  Search,
   SquarePen,
-  ShieldCheck,
 } from 'lucide-react'
+import { useWorkspaceMessages } from './features/notifications/workspace-notifications'
 import { GlobalSearch } from './global-search'
 import type { Bootstrap } from './types'
 
 export const workspaces = [
-  { path: '/tasks', label: '工作板', icon: CheckCheck },
+  { path: '/tasks', label: 'ToDo', icon: CheckCheck },
+  { path: '/knowledge', label: '知识库', icon: BookOpen },
   { path: '/collection', label: '收件箱', icon: Inbox },
-  { path: '/agents', label: 'Agent', icon: Cpu },
-  { path: '/knowledge', label: '知识', icon: BookOpen },
+  { path: '/agents', label: 'Agent 会话', icon: Cpu },
   { path: '/usage', label: '统计', icon: ChartNoAxesCombined },
+  { path: '/messages', label: '消息', icon: Bell },
   { path: '/settings', label: '设置', icon: Settings },
 ] as const
 
@@ -32,53 +38,106 @@ export function AppShell({
   children: ReactNode
   className?: string
 }) {
+  const location = useLocation()
+  const unread = useWorkspaceMessages().filter((item) => !item.readAt).length
+  const selectedWorkspace =
+    workspaces.find(
+      ({ path }) => location.pathname === path || location.pathname.startsWith(`${path}/`),
+    )?.path ?? '/tasks'
   return (
     <div className={`workspace ${className}`}>
-      <aside className="sidebar">
-        <NavLink className="brand" to="/tasks" aria-label="ATM 我的工作台">
-          <img src="/mark.svg" alt="" />
-          <span>
-            ATM<small>我的工作台</small>
-          </span>
-        </NavLink>
-        <GlobalSearch writable={boot.capabilities?.todo_write === true} />
-        {boot.capabilities?.todo_write && (
-          <NavLink className="nav-item sidebar-create" to="/tasks?new=1" title="新建任务">
-            <SquarePen size={16} strokeWidth={1.75} />
-            <span>新建任务</span>
+      <nav className="workspace-rail" aria-label="主导航">
+        <Tooltip title="首页" placement="right" arrow={false}>
+          <NavLink className="rail-brand" to="/tasks" aria-label="ATM 首页" data-tooltip="首页">
+            <img src="/mark.svg" alt="" />
           </NavLink>
-        )}
-        <nav aria-label="工作空间" className="workspace-navigation">
-          {workspaces.map(({ path, label, icon: Icon }) => (
-            <Fragment key={path}>
-              {path === '/tasks' && <span className="nav-group-label">工作区</span>}
-              {path === '/settings' && (
-                <span className="nav-group-label nav-group-config">配置</span>
-              )}
-              <NavLink
-                to={path}
-                title={label}
-                aria-label={label}
-                className={({ isActive }) => `nav-item ${isActive ? 'selected' : ''}`}
-              >
-                <Icon size={16} strokeWidth={1.75} />
-                <span>{label}</span>
-              </NavLink>
-            </Fragment>
-          ))}
-        </nav>
-        <div className="sidebar-footer">
-          <div className="connection">
-            <span className="live-dot" />
-            本机工作区
-            <ShieldCheck size={13} />
-          </div>
+        </Tooltip>
+        <div className="rail-destinations">
+          {workspaces
+            .filter(({ path }) => path === '/tasks' || path === '/knowledge')
+            .map(({ path, label, icon: Icon }) => (
+              <Tooltip key={path} title={label} placement="right" arrow={false}>
+                <NavLink
+                  to={path}
+                  className={`rail-item ${selectedWorkspace === path ? 'selected' : ''}`}
+                  aria-label={label}
+                  data-tooltip={label}
+                >
+                  <Icon size={20} strokeWidth={1.75} />
+                </NavLink>
+              </Tooltip>
+            ))}
+          <Dropdown
+            trigger={['click']}
+            placement="bottomLeft"
+            menu={{
+              selectedKeys: [selectedWorkspace],
+              items: workspaces
+                .filter(({ path }) => !['/tasks', '/knowledge', '/settings'].includes(path))
+                .map(({ path, label, icon: Icon }) => ({
+                  key: path,
+                  icon: <Icon size={16} />,
+                  label: (
+                    <NavLink to={path}>
+                      {label}
+                      {path === '/messages' && unread > 0 ? ` · ${unread} 未读` : ''}
+                    </NavLink>
+                  ),
+                })),
+            }}
+          >
+            <AntButton
+              className={`rail-item ${!['/tasks', '/knowledge', '/settings'].includes(selectedWorkspace) ? 'selected' : ''}`}
+              aria-label="更多"
+              title="更多"
+            >
+              <Badge dot={unread > 0}>
+                <MoreHorizontal size={20} />
+              </Badge>
+            </AntButton>
+          </Dropdown>
         </div>
-      </aside>
+        <div className="rail-bottom">
+          {boot.capabilities?.todo_write && (
+            <Tooltip title="新建任务" placement="right" arrow={false}>
+              <NavLink
+                className="rail-item"
+                to="/tasks?new=1"
+                aria-label="新建任务"
+                data-tooltip="新建任务"
+              >
+                <SquarePen size={20} strokeWidth={1.75} />
+              </NavLink>
+            </Tooltip>
+          )}
+          <Tooltip title="搜索" placement="right" arrow={false}>
+            <AntButton
+              htmlType="button"
+              className="rail-item"
+              aria-label="搜索"
+              data-tooltip="搜索"
+              onClick={() => window.dispatchEvent(new Event('atm:open-search'))}
+            >
+              <Search size={20} strokeWidth={1.75} />
+            </AntButton>
+          </Tooltip>
+          <Tooltip title="设置" placement="right" arrow={false}>
+            <NavLink
+              to="/settings"
+              className={`rail-item ${selectedWorkspace === '/settings' ? 'selected' : ''}`}
+              aria-label="设置"
+              data-tooltip="设置"
+            >
+              <Settings size={20} strokeWidth={1.75} />
+            </NavLink>
+          </Tooltip>
+        </div>
+        <GlobalSearch writable={boot.capabilities?.todo_write === true} hideTrigger />
+      </nav>
       <main className="main">
         {boot.capabilities?.data_upgrade_required === true && (
           <div className="upgrade-notice" role="status">
-            <details>
+            <Disclosure>
               <summary>
                 <LockKeyhole size={13} />
                 <strong>只读预览</strong>
@@ -95,7 +154,7 @@ export function AppShell({
                 </pre>
                 <p>使用自定义数据目录时，沿用启动时的 --data-dir。</p>
               </div>
-            </details>
+            </Disclosure>
           </div>
         )}
         {children}

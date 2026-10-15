@@ -1,0 +1,37 @@
+async (page) => {
+ const check=(ok,message)=>{if(!ok)throw new Error(message)}
+ const fixture='http://127.0.0.1:5173/tests/fixtures/workspace-layout.html'
+ await page.setViewportSize({width:1280,height:900})
+ await page.goto(`${fixture}?scene=usage&view=usage`)
+ await page.getByRole('heading',{name:'用量',exact:true}).waitFor()
+ const clear=page.getByRole('button',{name:'清除筛选',exact:true})
+ if(await clear.isVisible()) await clear.click()
+ await page.locator('.activity-bar-column').first().waitFor()
+ const bar=page.locator('.activity-bar:not([style*="height: 0%"])').first()
+ check(await bar.evaluate(el=>{ const style=getComputedStyle(el),r=el.getBoundingClientRect();return r.height>0 && r.width>0 && style.backgroundColor !== 'rgba(0, 0, 0, 0)' }), 'Recorded usage has no visible bar')
+ const group=page.getByRole('group',{name:'用量趋势柱状图'})
+ await group.getByRole('button', {name: /2026-09-08T08:00:00/}).click()
+ check((await page.locator('.activity-chart-detail').textContent()).includes('3,200 Token'), 'Chart selection missing')
+ await page.getByText('费用',{exact:true}).first().click()
+ check(await bar.evaluate(el=>el.getBoundingClientRect().height>0), 'Cost bar disappeared')
+ await page.getByText('请求',{exact:true}).first().click()
+ check(await bar.evaluate(el=>el.getBoundingClientRect().height>0), 'Request bar disappeared')
+ await page.screenshot({path:'/private/tmp/atm-usage-trend.png'})
+ await page.getByRole('button',{name:'徽章日历',exact:true}).click()
+ const day=page.locator('.badge-calendar-day:not(:disabled)').first()
+ await day.waitFor()
+ const normal=await day.evaluate(el=>getComputedStyle(el).backgroundColor)
+ await day.click()
+ await page.waitForFunction(() => document.querySelector('.badge-calendar-day:not(:disabled)')?.getAttribute('aria-pressed') === 'true')
+ check(await day.getAttribute('aria-pressed')==='true', 'Badge selection missing')
+ check(await day.evaluate(el=>getComputedStyle(el).backgroundColor)===normal, 'Badge selection changes background')
+ await page.waitForFunction(() => getComputedStyle(document.querySelector('.badge-calendar-day:not(:disabled)')).boxShadow.includes('1px'))
+ check(await day.evaluate(el=>getComputedStyle(el).boxShadow.includes('1px') && getComputedStyle(el).borderRadius==='0px'), 'Badge border is not subtle')
+ await page.screenshot({path:'/private/tmp/atm-badge-selection.png'})
+ await page.goto(`${fixture}?scene=settings&section=runtime`)
+ await page.getByRole('heading',{name:'索引状态'}).waitFor()
+ check(await page.getByRole('heading',{name:'后台能力'}).isVisible(), 'Runtime capabilities missing')
+ for(const width of [390,760,1280]) {await page.setViewportSize({width,height:900});check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Runtime overflow')}
+ await page.screenshot({path:'/private/tmp/atm-runtime-settings.png'})
+ return 'PASS: visible Token/cost/request bars, chart selection, subtle badge selection, runtime layout'
+}

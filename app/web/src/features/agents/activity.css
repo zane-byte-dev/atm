@@ -1,0 +1,856 @@
+/* Agent session navigator and conversation details. */
+.activity-agents {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding-top: var(--page-padding-block);
+  padding-bottom: var(--page-padding-block);
+}
+.activity-agents .activity-heading {
+  margin-bottom: 12px;
+}
+.activity-agents > :not(.activity-session-grid) {
+  flex-shrink: 0;
+}
+.activity-index-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  margin: 7px 0 10px;
+}
+.activity-index-row .activity-source-note {
+  flex: 1;
+  margin: 0;
+}
+.activity-bindings {
+  margin: 0;
+  font-size: 12px;
+  color: var(--activity-muted);
+  max-height: 180px;
+  overflow: auto;
+}
+.activity-bindings[open] {
+  flex-basis: 100%;
+  border: 1px solid var(--activity-line);
+  background: var(--surface);
+  border-radius: 7px;
+  padding: 10px 14px;
+}
+.activity-bindings > p {
+  color: var(--activity-muted);
+  font-size: 12px;
+  margin: 12px 0;
+}
+.activity-bindings > div {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.activity-bindings article {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--activity-line);
+  border-radius: 7px;
+  min-width: 0;
+}
+.activity-bindings article > div {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+.activity-bindings article strong {
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.activity-bindings article .text-button {
+  font-size: 12px;
+  align-self: flex-start;
+}
+.activity-search input {
+  border: 0 !important;
+  max-width: none !important;
+  flex: 1;
+  background: transparent;
+  outline: none !important;
+}
+.activity-search button {
+  background: none;
+  border: 0;
+  color: var(--activity-muted);
+  padding: 2px;
+  display: flex;
+}
+.activity-search:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.activity-session-grid {
+  display: grid;
+  grid-template-columns: minmax(290px, 36%) minmax(0, 1fr);
+  border: 1px solid var(--activity-line);
+  border-radius: var(--panel-radius);
+  overflow: hidden;
+  background: var(--surface);
+  flex: 1;
+  min-height: 260px;
+}
+.activity-list {
+  border-right: 1px solid var(--activity-line);
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.activity-session-items {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.activity-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--activity-line);
+  font-size: 12px;
+  color: var(--activity-muted);
+  flex-shrink: 0;
+  background: var(--surface);
+  font-variant-numeric: tabular-nums;
+}
+.activity-pagination > span {
+  margin-right: auto;
+}
+.activity-pagination button {
+  padding: 5px 6px !important;
+  min-height: 30px;
+  min-width: 30px;
+}
+.activity-session-detail {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.activity-session-detail > .activity-empty {
+  flex: 1;
+}
+.activity-conversation-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 16px 20px;
+}
+.activity-conversation-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px 10px;
+  margin-bottom: 8px;
+}
+.activity-conversation-heading > div {
+  display: flex;
+  gap: 6px;
+  grid-column: 2;
+  grid-row: 1;
+}
+.activity-conversation-heading h2 {
+  font-size: 18px;
+  margin: 0;
+  grid-column: 1;
+  grid-row: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.activity-conversation-heading .text-button {
+  grid-column: 1 / -1;
+  justify-self: start;
+}
+.activity-session-id {
+  font:
+    11px/1.7 ui-monospace,
+    SFMono-Regular,
+    monospace;
+  color: var(--activity-muted);
+  grid-column: 1 / -1;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.activity-back {
+  display: none !important;
+}
+.activity-result,
+.activity-tools {
+  font-size: 12px;
+  padding: 3px 0;
+  overflow-wrap: anywhere;
+  color: var(--activity-muted);
+}
+.activity-conversation-meta {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--activity-line);
+}
+.activity-conversation-meta:empty {
+  display: none;
+}
+.activity-conversation-meta details[open] {
+  flex-basis: 100%;
+}
+.activity-result .markdown {
+  color: var(--text);
+}
+.activity-tools > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+}
+.activity-tool {
+  display: flex;
+  gap: 10px;
+  border-radius: 4px;
+  background: var(--soft);
+  padding: 4px 7px;
+  font-size: 11px;
+}
+.activity-tool b {
+  color: var(--text);
+}
+.activity-result .markdown {
+  font-size: 14px;
+}
+.activity-turn {
+  padding: 14px 0 5px;
+  border-bottom: 1px solid var(--activity-line);
+}
+.activity-turn-label {
+  font-size: 12px;
+  color: var(--activity-muted);
+  letter-spacing: 0.5px;
+  margin-bottom: 9px;
+}
+.activity-message {
+  font-size: 14px;
+  margin: 0 0 20px;
+  overflow-wrap: anywhere;
+}
+.activity-message > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  display: block;
+  margin-bottom: 9px;
+}
+.activity-message.user {
+  background: var(--canvas);
+  border-radius: 8px;
+  padding: 15px;
+}
+.activity-message .markdown {
+  font-size: 14px;
+  line-height: 1.8;
+}
+.activity-message .markdown p:first-child {
+  margin-top: 0;
+}
+.activity-message .markdown p:last-child {
+  margin-bottom: 0;
+}
+.activity-message .markdown pre {
+  max-width: 100%;
+  overflow: auto;
+}
+.activity-message .markdown table {
+  display: block;
+  overflow: auto;
+}
+.activity-progress {
+  font-size: 12px;
+  color: var(--activity-muted);
+  margin: 0 0 18px;
+}
+.activity-progress .markdown {
+  font-size: 13px;
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+  margin-top: 12px;
+}
+@media (min-width: 1450px) {
+  .activity-session-grid {
+    grid-template-columns: minmax(320px, 34%) minmax(0, 1fr);
+  }
+}
+@media (max-width: 1080px) {
+  .activity-session-grid {
+    grid-template-columns: minmax(245px, 39%) minmax(0, 1fr);
+  }
+  .activity-conversation-body {
+    padding: 18px;
+  }
+}
+@media (max-width: 760px) {
+  .activity-agents {
+    height: auto;
+    min-height: 0;
+  }
+  .activity-session-grid {
+    display: block;
+    flex: none;
+    min-height: 0;
+  }
+  .activity-session-grid:not(.has-selection) .activity-session-detail {
+    display: none;
+  }
+  .activity-session-grid.has-selection .activity-list {
+    display: none;
+  }
+  .activity-list {
+    border-right: 0;
+  }
+  .activity-session-items,
+  .activity-conversation-body {
+    overflow: visible;
+    scrollbar-gutter: auto;
+  }
+  .activity-back {
+    display: inline-flex !important;
+    align-self: flex-start;
+    margin: 14px 18px 0;
+  }
+  .activity-conversation-heading h2 {
+    font-size: 18px;
+  }
+}
+.activity-agents {
+  position: relative;
+}
+.activity-agents > .activity-heading {
+  position: absolute;
+  z-index: 4;
+  top: 0;
+  left: 0;
+  width: var(--navigator-width);
+  min-height: 64px;
+  padding: 14px 13px;
+  border-right: 1px solid var(--line);
+  background: var(--canvas);
+}
+.activity-agents > .activity-heading p,
+.activity-index-row {
+  display: none;
+}
+.activity-agents > .activity-heading .workspace-actions {
+  gap: 3px;
+  flex-wrap: nowrap;
+}
+.activity-agents > .activity-heading .workspace-actions .button {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  overflow: hidden;
+  border-color: transparent;
+  background: transparent;
+  font-size: 0;
+}
+.activity-agents > .activity-heading .workspace-actions .button:hover {
+  background: var(--accent-soft);
+}
+.activity-session-grid {
+  height: 100%;
+}
+.activity-agents .activity-list {
+  padding-top: 112px;
+}
+.activity-agents .activity-panel-heading {
+  min-height: 32px;
+  padding: 5px 14px;
+}
+.activity-agents .activity-panel-heading h2 {
+  color: var(--muted);
+  font-size: 12px;
+}
+.activity-agents .activity-conversation-body {
+  max-width: none;
+  margin: 0;
+  padding: 0 0 24px;
+}
+.activity-agents .activity-conversation-heading {
+  min-height: 108px;
+  margin: 0;
+  padding: 17px 24px 18px;
+}
+.activity-agents .activity-conversation-meta,
+.activity-agents .activity-transcript,
+.activity-agents .activity-inline-note {
+  width: min(900px, calc(100% - 48px));
+  margin-left: 24px;
+  margin-right: 24px;
+}
+.activity-agents .activity-conversation-meta {
+  margin-top: 10px;
+}
+
+@media (max-width: 760px) {
+  .activity-agents > .activity-heading {
+    width: 100%;
+    border-right: 0;
+  }
+  .activity-agents .activity-conversation-heading {
+    min-height: 0;
+    padding-inline: 16px;
+  }
+  .activity-agents .activity-conversation-meta,
+  .activity-agents .activity-transcript,
+  .activity-agents .activity-inline-note {
+    width: calc(100% - 24px);
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+}
+.activity-agents {
+  padding: 0;
+}
+.activity-index-row {
+  min-height: 30px;
+  margin: 0;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.activity-index-row .activity-source-note {
+  font-size: 11px;
+}
+.activity-session-grid {
+  grid-template-columns: var(--navigator-width) minmax(0, 1fr);
+  border: 0;
+  border-radius: 0;
+  background: var(--canvas);
+}
+.activity-list {
+  background: var(--canvas);
+}
+.activity-session-items {
+  padding: 0;
+}
+.activity-session-detail {
+  background: var(--canvas);
+}
+.activity-conversation-body {
+  max-width: 900px;
+  margin: 0;
+  padding: 0 24px 24px;
+}
+.activity-conversation-heading {
+  margin: 0 -24px 10px;
+  padding: 17px 24px 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+.activity-conversation-heading h2 {
+  max-width: 780px;
+  font-size: 20px;
+  font-weight: 560;
+  line-height: 1.35;
+}
+.activity-conversation-meta,
+.activity-transcript {
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 3px 14px var(--shadow-color);
+}
+.activity-transcript {
+  margin-top: 10px;
+}
+.activity-turn {
+  padding-block: 14px;
+}
+
+@media (max-width: 900px) {
+  .activity-index-row {
+    display: none;
+  }
+  .activity-session-grid {
+    grid-template-columns: minmax(250px, var(--navigator-width)) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .activity-conversation-body {
+    padding-inline: 14px;
+  }
+  .activity-conversation-heading {
+    margin-inline: -14px;
+    padding-inline: 16px;
+  }
+}
+.activity-agents > .activity-heading,
+.activity-agents .activity-list {
+  background: var(--list-pane);
+}
+.activity-agents > .activity-heading {
+  padding-inline: 20px;
+}
+.activity-agents .activity-conversation-meta,
+.activity-agents .activity-transcript {
+  box-shadow: 0 2px 8px #00000009;
+}
+.activity-session-detail > .activity-empty {
+  flex: none;
+  width: min(900px, calc(100% - 48px));
+  min-height: 180px;
+  margin: 12px 24px;
+  padding: 32px 24px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px #00000009;
+}
+.activity-session-items,
+.activity-conversation-body {
+  scrollbar-width: none;
+}
+.activity-session-items::-webkit-scrollbar,
+.activity-conversation-body::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+@media (max-width: 760px) {
+  .activity-session-detail > .activity-empty {
+    width: calc(100% - 24px);
+    margin: 10px 12px;
+  }
+}
+.activity-agents .activity-conversation-heading {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+}
+.activity-agents .activity-conversation-surface {
+  width: min(900px, calc(100% - 48px));
+  margin: 10px 24px 24px;
+  padding: 0 20px 8px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px #00000009;
+}
+.activity-agents .activity-conversation-surface > .activity-conversation-meta,
+.activity-agents .activity-conversation-surface > .activity-transcript {
+  width: auto;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.activity-agents .activity-conversation-surface > .activity-conversation-meta {
+  padding: 18px 0 16px;
+  border-bottom: 1px solid var(--line);
+}
+.activity-agents .activity-conversation-surface > .activity-conversation-meta:empty {
+  display: none;
+}
+.activity-agents .activity-conversation-surface > .activity-transcript {
+  padding: 0;
+}
+.activity-agents .activity-conversation-surface > .activity-inline-note {
+  width: auto;
+  margin: 12px 0;
+}
+.activity-agents .activity-conversation-surface .activity-turn:last-child {
+  border-bottom: 0;
+}
+
+@media (max-width: 760px) {
+  .activity-agents {
+    height: 100%;
+    min-height: 0;
+  }
+  .activity-agents .activity-session-grid {
+    display: block;
+    flex: 1 1 auto;
+    height: 100%;
+    min-height: 0;
+  }
+  .activity-agents .activity-list,
+  .activity-agents .activity-session-detail {
+    height: 100%;
+    min-height: 0;
+  }
+  .activity-agents .activity-session-grid:not(.has-selection) .activity-list,
+  .activity-agents .activity-session-grid.has-selection .activity-session-detail {
+    display: flex;
+  }
+  .activity-agents .activity-session-items,
+  .activity-agents .activity-conversation-body {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .activity-agents .activity-conversation-surface {
+    width: calc(100% - 24px);
+    margin: 10px 12px 20px;
+    padding: 0 16px 6px;
+  }
+}
+.activity-run-overview {
+  padding: 16px 0;
+  border-bottom: 1px solid var(--line);
+}
+.activity-run-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px 18px;
+  color: var(--activity-muted);
+  font-size: 11px;
+}
+.activity-run-facts span {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+}
+.activity-run-facts b {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 620;
+}
+.activity-run-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 12px;
+}
+.activity-run-controls > .button {
+  min-height: 27px;
+  padding: 4px 7px;
+}
+.activity-run-filter {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  margin-right: auto;
+  border-radius: 7px;
+  background: var(--soft);
+}
+.activity-run-filter button {
+  min-height: 24px;
+  padding: 3px 8px;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+}
+.activity-run-filter button.selected {
+  color: var(--text);
+  background: var(--surface);
+  box-shadow: 0 1px 3px var(--shadow-color);
+}
+.activity-run-timeline {
+  display: flex;
+  gap: 2px;
+  height: 7px;
+  margin-top: 13px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--soft);
+}
+.activity-run-event {
+  min-width: 3px;
+  flex: 1 1 8px;
+  border-radius: 999px;
+  background: var(--chart-secondary);
+}
+.activity-run-event.question {
+  background: var(--accent-line);
+}
+.activity-run-event.progress {
+  background: var(--warning);
+}
+.activity-run-event.answer {
+  background: var(--success);
+}
+.activity-run-overview + .activity-conversation-meta {
+  padding-top: 14px !important;
+}
+
+@media (max-width: 600px) {
+  .activity-run-controls > .button {
+    font-size: 0;
+  }
+  .activity-run-controls > .button svg {
+    width: 15px;
+    height: 15px;
+  }
+}
+
+/* Match the quiet navigator and reading surfaces used by Settings. */
+.activity-agents > .activity-heading,
+.activity-session-grid,
+.activity-agents .activity-list,
+.activity-session-detail {
+  background: var(--surface);
+}
+.activity-agents .activity-conversation-meta,
+.activity-agents .activity-transcript,
+.activity-session-detail > .activity-empty {
+  box-shadow: none;
+}
+.activity-agents .activity-conversation-surface {
+  padding-inline: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.activity-session-detail > .activity-empty {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+/* Keep the Agent navigator inside the middle column, like Settings. */
+.workspace .activity-agents .activity-session-grid {
+  grid-template-columns: var(--workspace-navigator-width, 280px) minmax(0, 1fr);
+  background: var(--surface);
+}
+.workspace .activity-agents .activity-list {
+  padding: 0;
+  background: var(--surface);
+}
+.workspace .activity-agents .activity-list > .activity-heading .workspace-actions {
+  flex: none;
+  gap: 2px;
+}
+.workspace .activity-agents .activity-list > .activity-heading .workspace-actions .button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  font-size: 0;
+}
+.workspace .activity-agents .activity-list > .activity-index-row {
+  display: flex;
+  min-height: 30px;
+  margin: 0;
+  padding: 4px 14px;
+  border: 0;
+  font-size: 11px;
+}
+.workspace .activity-agents .activity-list > .agent-filter-bar {
+  min-height: 32px;
+  padding: 4px 14px;
+  border: 0;
+}
+.workspace .activity-agents .agent-filter-popover {
+  right: auto;
+  left: 12px;
+  width: min(340px, calc(100vw - 80px));
+}
+.workspace .activity-agents .activity-panel-heading {
+  border-top: 0;
+}
+.workspace .activity-agents .activity-conversation-body > .activity-conversation-heading {
+  width: min(var(--workspace-reading-width, 920px), calc(100% - 80px));
+  min-height: 0;
+  margin: 0 auto;
+  padding: 54px 0 24px;
+  border: 0;
+  background: transparent;
+}
+.workspace .activity-agents .activity-conversation-heading h2 {
+  max-width: none;
+  font-size: 27px;
+  font-weight: 650;
+  line-height: 36px;
+}
+.workspace .activity-agents .activity-conversation-body > .activity-conversation-surface {
+  width: min(var(--workspace-reading-width, 920px), calc(100% - 80px));
+  margin: 0 auto;
+  padding: 0 0 32px;
+}
+@media (max-width: 760px) {
+  .workspace .activity-agents .activity-session-grid {
+    display: block;
+  }
+  .workspace .activity-agents .activity-conversation-body > .activity-conversation-heading,
+  .workspace .activity-agents .activity-conversation-body > .activity-conversation-surface {
+    width: calc(100% - 32px);
+  }
+  .workspace .activity-agents .activity-conversation-body > .activity-conversation-heading {
+    padding: 26px 0 20px;
+  }
+  .workspace .activity-agents .activity-conversation-heading h2 {
+    font-size: 23px;
+    line-height: 30px;
+  }
+}
+
+.agent-filter-content {
+  display: grid;
+  gap: 14px;
+  width: min(280px, calc(100vw - 64px));
+}
+.agent-filter-content > label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.agent-filter-content .ant-select {
+  width: 100%;
+}
+.agent-session-info {
+  max-width: min(400px, calc(100vw - 64px));
+  max-height: 60dvh;
+  overflow: auto;
+}
+.agent-session-info .activity-session-id {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.agent-conversation-caption {
+  display: flex;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+  margin-bottom: 20px;
+}
+.workspace .activity-conversation-actions .ant-btn {
+  padding: 4px;
+  color: var(--muted);
+}
+.agent-progress-collapse {
+  margin: 8px 0;
+  background: var(--soft);
+  border-radius: 8px;
+}

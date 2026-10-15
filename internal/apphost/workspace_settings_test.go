@@ -179,7 +179,7 @@ func TestWorkspaceSettingsRedactsCredentialsCommandsAndDiagnostics(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO sync_health(scope,last_status,last_error) VALUES ('all','failed',?)`, secret+config.AtmDir); err != nil {
+	if _, err := db.Exec(`INSERT INTO sync_health(scope,last_status,last_error) VALUES ('codex','failed',?)`, secret+config.AtmDir); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()

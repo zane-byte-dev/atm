@@ -1,6 +1,11 @@
 package store
 
-import "database/sql"
+import (
+	"crypto/sha256"
+	"database/sql"
+	"encoding/binary"
+	"encoding/json"
+)
 
 // RepriceUsage recomputes stored cost from the stored token buckets and the rate
 // table as it looks right now, for every usage row ATM has.
@@ -19,12 +24,25 @@ import "database/sql"
 // history onto the new rate. The pass is grouped by model rather than by row, so
 // its cost is one statement per distinct model, not one per request.
 func RepriceUsage(db *sql.DB) error {
+	first, second := pricingVersion()
+	if syncCacheMatches(db, "pricing", first, second, 1) {
+		return nil
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := acquireWorkWriteLock(tx); err != nil {
+		return err
+	}
+	if syncCacheMatches(tx, "pricing", first, second, 1) {
+		return nil
+	}
 	if err := repriceUsage(tx); err != nil {
+		return err
+	}
+	if err := saveSyncCache(tx, "pricing", first, second, 1); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -41,7 +59,9 @@ func repriceUsage(tx *sql.Tx) error {
 		if err := execTx(tx, `UPDATE usage_events SET cost_usd =
 			input_tokens * ? / 1e6 + output_tokens * ? / 1e6 +
 			cache_create_tokens * ? / 1e6 + cache_read_tokens * ? / 1e6
-			WHERE model = ?`, p[0], p[1], p[2], p[3], model); err != nil {
+			WHERE model = ? AND cost_usd IS NOT (
+				input_tokens * ? / 1e6 + output_tokens * ? / 1e6 +
+				cache_create_tokens * ? / 1e6 + cache_read_tokens * ? / 1e6)`, p[0], p[1], p[2], p[3], model, p[0], p[1], p[2], p[3]); err != nil {
 			return err
 		}
 	}
@@ -52,7 +72,8 @@ func repriceUsage(tx *sql.Tx) error {
 	// rate. Sum the events instead. Tokens are left alone; only cost moved.
 	if err := execTx(tx, `UPDATE usage SET cost_usd = COALESCE((
 			SELECT SUM(e.cost_usd) FROM usage_events e WHERE e.session_id = usage.session_id), 0)
-		WHERE EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id = usage.session_id)`); err != nil {
+		WHERE EXISTS (SELECT 1 FROM usage_events e WHERE e.session_id = usage.session_id)
+		AND cost_usd IS NOT COALESCE((SELECT SUM(e.cost_usd) FROM usage_events e WHERE e.session_id=usage.session_id),0)`); err != nil {
 		return err
 	}
 	// What is left are sessions whose transcript only ever reported a total, so
@@ -66,9 +87,11 @@ func repriceUsage(tx *sql.Tx) error {
 		if err := execTx(tx, `UPDATE usage SET cost_usd =
 			input_tokens * ? / 1e6 + output_tokens * ? / 1e6 +
 			cache_create_tokens * ? / 1e6 + cache_read_tokens * ? / 1e6
-			WHERE model = ? AND NOT EXISTS (
+			WHERE model = ? AND cost_usd IS NOT (
+				input_tokens * ? / 1e6 + output_tokens * ? / 1e6 +
+				cache_create_tokens * ? / 1e6 + cache_read_tokens * ? / 1e6) AND NOT EXISTS (
 				SELECT 1 FROM usage_events e WHERE e.session_id = usage.session_id)`,
-			p[0], p[1], p[2], p[3], model); err != nil {
+			p[0], p[1], p[2], p[3], model, p[0], p[1], p[2], p[3]); err != nil {
 			return err
 		}
 	}
@@ -91,4 +114,20 @@ func distinctUsageModels(tx *sql.Tx, table string) ([]string, error) {
 		models = append(models, model)
 	}
 	return models, rows.Err()
+}
+
+// Version the complete effective rate policy, including family fallback order.
+// New usage is priced on insertion; only a changed policy needs a history pass.
+func pricingVersion() (int64, int64) {
+	h := sha256.New()
+	enc := json.NewEncoder(h)
+	_ = enc.Encode("pricing-v1")
+	_ = enc.Encode(modelPricing)
+	_ = enc.Encode(defaultPricing)
+	for _, family := range familyPricing {
+		_ = enc.Encode(family.keyword)
+		_ = enc.Encode(family.price)
+	}
+	sum := h.Sum(nil)
+	return int64(binary.BigEndian.Uint64(sum[:8])), int64(binary.BigEndian.Uint64(sum[8:16]))
 }

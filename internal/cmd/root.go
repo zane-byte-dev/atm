@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zane-byte-dev/atm/internal/application"
 	"github.com/zane-byte-dev/atm/internal/config"
 	"github.com/zane-byte-dev/atm/internal/logging"
 	"github.com/zane-byte-dev/atm/internal/output"
@@ -84,11 +86,37 @@ func Execute() {
 		// App, collection and hooks all invoke atm unattended, and until this
 		// existed their failures vanished with the process.
 		logging.Failure("command_failed", failedCommandPath(), err, nil)
-		fmt.Fprintln(os.Stderr, err)
+		writeCommandError(err)
 		os.Exit(1)
 	}
 	flushBuiltinModelCalls()
 	recordCLIInvocation(started, nil, 0)
+}
+
+// writeCommandError reports a failure on stderr in the shape the caller asked
+// for. With --json it emits the same {code,message,details,retryable} envelope
+// the HTTP API returns, so a machine caller can branch on the code and on
+// retryable instead of parsing prose. Without it --json still printed one line
+// of bare text, which is how a permanent environment failure came to look like
+// a transient one and got retried until the caller gave up.
+func writeCommandError(err error) {
+	if !jsonOutput {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	appErr := &application.Error{Code: application.CodeInternal, Message: err.Error()}
+	var coded *application.Error
+	if errors.As(err, &coded) {
+		appErr = coded
+	}
+	// Error marshals with `json:"-"` on Cause, so the underlying driver detail
+	// stays out of the envelope exactly as it does on the HTTP path.
+	encoded, marshalErr := json.Marshal(map[string]any{"error": appErr})
+	if marshalErr != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	fmt.Fprintln(os.Stderr, string(encoded))
 }
 
 // failedCommandPath names the subcommand that failed, without its arguments.

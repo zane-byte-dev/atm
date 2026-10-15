@@ -91,8 +91,7 @@ func NewService(options ServiceOptions) Service {
 
 // Run refreshes the session index and samples quota history alongside it.
 //
-// Sampling rides on the refresh rather than a timer of its own: the workspace
-// already syncs every few minutes, which is resolution enough for an hourly rate.
+// Sampling rides on nightly or explicit refreshes, with no independent timer.
 func (service Service) Run(
 	ctx context.Context,
 	call application.Call,
@@ -129,7 +128,7 @@ func (service Service) Run(
 	if err != nil {
 		return RunResult{}, unavailable("sync sessions", err)
 	}
-	if warning := service.sample(ctx, db); warning != "" {
+	if warning := service.sample(ctx, db, agent); warning != "" {
 		result.Warnings = append(result.Warnings, warning)
 	}
 	return result, nil
@@ -140,12 +139,16 @@ func (service Service) Run(
 // vanish either: nobody reads stderr when the server runs this on a timer, and
 // quota history silently never accumulating is exactly the kind of fault that
 // needs a record.
-func (service Service) sample(ctx context.Context, db *sql.DB) string {
+func (service Service) sample(ctx context.Context, db *sql.DB, agent string) string {
 	if service.sampler == nil {
 		return ""
 	}
 	var err error
 	if sampler, ok := service.sampler.(interface {
+		RecordAgentSamplesContext(context.Context, *sql.DB, time.Time, string) error
+	}); ok {
+		err = sampler.RecordAgentSamplesContext(ctx, db, service.now(), agent)
+	} else if sampler, ok := service.sampler.(interface {
 		RecordSamplesContext(context.Context, *sql.DB, time.Time) error
 	}); ok {
 		err = sampler.RecordSamplesContext(ctx, db, service.now())

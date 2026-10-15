@@ -11,6 +11,7 @@ func ResetBusinessDefaults() {
 	Loc = time.FixedZone("CST", 8*3600)
 	Pricing, Subscriptions, ProjectAliases = nil, nil, nil
 	OwnerName = ""
+	SessionSyncAgents = "codex"
 	GrokLiveQuota, CollectionEnabled, TodoRefineOnAdd = false, false, false
 	CollectionIntervalMinutes, CollectionLookbackMinutes, CollectionMessageRetentionDays = 5, 60, 90
 	CollectionDigestCollection, CollectionDigestIntervalMinutes = "inbox", 60

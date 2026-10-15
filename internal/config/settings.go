@@ -26,6 +26,7 @@ var Default Service
 // serialised, so the only thing anyone outside can learn is whether one is
 // present.
 type Settings struct {
+	SessionSyncAgents              string `json:"session_sync_agents"`
 	OwnerName                      string `json:"owner_name"`
 	GrokLiveQuota                  bool   `json:"grok_live_quota"`
 	CollectionEnabled              bool   `json:"collection_enabled"`
@@ -44,6 +45,7 @@ type Settings struct {
 // difference between an omitted value and an explicit zero value; in particular
 // an empty TodoRefinePrompt restores the default policy.
 type SettingsPatch struct {
+	SessionSyncAgents              *string `json:"session_sync_agents,omitempty"`
 	OwnerName                      *string `json:"owner_name,omitempty"`
 	GrokLiveQuota                  *bool   `json:"grok_live_quota,omitempty"`
 	CollectionEnabled              *bool   `json:"collection_enabled,omitempty"`
@@ -66,6 +68,7 @@ type settingDefinition struct {
 // It belongs to the application service rather than either transport so CLI and
 // adapters cannot disagree about accepted values.
 var settingDefinitions = map[string]settingDefinition{
+	"session_sync_agents":               stringSetting(parseSessionSyncAgents),
 	"owner_name":                        stringSetting(parseNonEmptyStringValue),
 	"grok_live_quota":                   boolSetting(),
 	"collection_enabled":                boolSetting(),
@@ -127,6 +130,7 @@ func (service Service) Snapshot() (Settings, error) {
 		return Settings{}, err
 	}
 	return Settings{
+		SessionSyncAgents:              SessionSyncAgents,
 		OwnerName:                      OwnerName,
 		GrokLiveQuota:                  GrokLiveQuota,
 		CollectionEnabled:              CollectionEnabled,
@@ -213,6 +217,7 @@ func (patch SettingsPatch) values() map[string]any {
 			values[key] = value
 		}
 	}
+	add("session_sync_agents", dereference(patch.SessionSyncAgents), patch.SessionSyncAgents != nil)
 	add("owner_name", dereference(patch.OwnerName), patch.OwnerName != nil)
 	add("grok_live_quota", dereference(patch.GrokLiveQuota), patch.GrokLiveQuota != nil)
 	add("collection_enabled", dereference(patch.CollectionEnabled), patch.CollectionEnabled != nil)
@@ -292,6 +297,7 @@ func writeSettings(values map[string]any) error {
 // out because it is readable but deliberately not settable.
 func SettingValues(settings Settings) map[string]any {
 	return map[string]any{
+		"session_sync_agents":               settings.SessionSyncAgents,
 		"owner_name":                        settings.OwnerName,
 		"grok_live_quota":                   settings.GrokLiveQuota,
 		"collection_enabled":                settings.CollectionEnabled,
@@ -367,4 +373,54 @@ func parseNonEmptyStringValue(value string) (any, error) {
 		return nil, fmt.Errorf("value must not be empty")
 	}
 	return value, nil
+}
+
+// SessionSyncSources returns only explicitly enabled automatic sources.
+func SessionSyncSources(value string) []string {
+	if value == "none" || value == "" {
+		return nil
+	}
+	return strings.Split(value, ",")
+}
+
+func parseSessionSyncAgents(value string) (any, error) {
+	value = strings.TrimSpace(value)
+	if value == "none" {
+		return value, nil
+	}
+	var result []string
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(value, ",") {
+		agent := NormalizeAgent(raw)
+		if agent == "" || agent == "atm" {
+			return nil, fmt.Errorf("unknown session source %q (use comma-separated agents or none)", raw)
+		}
+		if !seen[agent] {
+			result = append(result, agent)
+			seen[agent] = true
+		}
+	}
+	// Keep the main workspace ahead of auxiliary histories.
+	if seen["codex"] {
+		result = append([]string{"codex"}, removeCodex(result)...)
+	}
+	return strings.Join(result, ","), nil
+}
+func removeCodex(agents []string) []string {
+	result := make([]string, 0, len(agents))
+	for _, agent := range agents {
+		if agent != "codex" {
+			result = append(result, agent)
+		}
+	}
+	return result
+}
+
+// PrimarySyncScope is the freshness shown by the default workspace.
+func PrimarySyncScope() string {
+	sources := SessionSyncSources(SessionSyncAgents)
+	if len(sources) > 0 {
+		return sources[0]
+	}
+	return "codex"
 }

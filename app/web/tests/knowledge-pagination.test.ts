@@ -1,11 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { InfiniteQueryObserver, QueryClient } from '@tanstack/react-query'
-import {
-  loadedKnowledgeDocuments,
-  nextKnowledgeCursor,
-} from '../src/workspaces/knowledge-pagination.ts'
-import type { KnowledgeQueryResult } from '../src/workspaces/knowledge-types.ts'
+import { loadedKnowledgeDocuments, nextKnowledgeCursor } from '../src/features/knowledge/knowledge-pagination.ts'
+import type { KnowledgeQueryResult } from '../src/features/knowledge/knowledge-types.ts'
 
 const documents = () =>
   Array.from({ length: 205 }, (_, index) => ({

@@ -107,6 +107,41 @@ func WithStoppedInstance(dataDir string, action func() error) error {
 	return action()
 }
 
+// WaitStopped waits for the instance lock to be released, including runtime
+// cleanup after HTTP has stopped. It does not create or remove runtime files.
+func WaitStopped(ctx context.Context, dataDir string) error {
+	dataDir, err := canonicalDataDir(dataDir, false)
+	if err != nil {
+		return err
+	}
+	lock, err := os.Open(filepath.Join(dataDir, "runtime", "server.lock"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := lockInstance(lock)
+		if err == nil {
+			unlockInstance(lock)
+			return nil
+		}
+		if !errors.Is(err, ErrAlreadyRunning) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
 func writePrivateJSON(path string, value any) error {
 	content, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {

@@ -1,13 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  collectTaskPages,
-  mergeTaskGroupRows,
-  selectedTaskRows,
-  taskSelectionScope,
-  taskWorkbenchInput,
-} from '../src/task-query.ts'
-import { groupTasks, matchingTasks } from '../src/task-view-model.ts'
+import { collectTaskPages, mergeTaskGroupRows, selectedTaskRows, taskSelectionScope, taskWorkbenchInput } from '../src/features/tasks/task-query.ts'
+import { groupTasks, matchingTasks } from '../src/features/tasks/task-view-model.ts'
 import type { Todo } from '../src/types.ts'
 
 test('workbench sends complete filters and derives groups from every display mode', () => {

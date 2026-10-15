@@ -71,7 +71,7 @@ func (service Service) ShowPage(ctx context.Context, input PageInput) (ShowResul
 		return ShowResult{}, err
 	}
 	return ShowResult{
-		ID: stored.FullID, Agent: stored.Agent, Project: stored.Project, QA: qas, Tools: stored.Tools,
+		ID: stored.FullID, Summary: stored.Summary, Agent: stored.Agent, Project: stored.Project, QA: qas, Tools: stored.Tools,
 		TotalTurns: total, ReturnedTurns: len(qas), Truncated: len(qas) < total,
 		ResumeID: stored.ResumeID, RootSessionID: stored.RootSessionID, ParentSessionID: stored.ParentSessionID,
 		AgentPath: stored.AgentPath, AgentNickname: stored.AgentNickname, SubagentDepth: stored.SubagentDepth, IsSubagent: stored.IsSubagent,
@@ -82,6 +82,7 @@ func (service Service) ShowPage(ctx context.Context, input PageInput) (ShowResul
 
 type ShowResult struct {
 	ID                    string         `json:"id"`
+	Summary               string         `json:"summary,omitempty"`
 	Agent                 string         `json:"agent"`
 	Project               string         `json:"project"`
 	QA                    []QA           `json:"qa"`
@@ -163,7 +164,7 @@ func (service Service) Show(ctx context.Context, input ShowInput) (ShowResult, e
 		return ShowResult{}, err
 	}
 	return ShowResult{
-		ID: stored.FullID, Agent: stored.Agent,
+		ID: stored.FullID, Summary: stored.Summary, Agent: stored.Agent,
 		Project: stored.Project, QA: qas, Tools: stored.Tools,
 		TotalTurns: len(allQAs), ReturnedTurns: len(qas),
 		Truncated: rangeTruncated || contentTruncated, ContentTruncated: contentTruncated,

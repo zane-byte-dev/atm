@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { adjacentMonth, calendarMonth, monthDays } from '../src/badge-calendar.ts'
+import { adjacentMonth, calendarMonth, monthDays } from '../src/features/usage/badge-calendar-model.ts'
 
 test('month grid follows Monday week alignment and leap-year boundaries', () => {
   const leap = monthDays('2024-02')

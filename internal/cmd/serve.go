@@ -55,7 +55,7 @@ func init() {
 	serveCmd.PersistentFlags().StringVar(&serveDataDir, "data-dir", "", "ATM data directory (default: configured directory)")
 	serveCmd.Flags().StringVar(&serveDevUI, "dev-ui", "", "proxy a local Vite server (http://127.0.0.1:5173) for frontend HMR")
 	serveCmd.AddCommand(&cobra.Command{Use: "status", Short: "Show this data directory's running workspace", Args: cobra.NoArgs, RunE: runServeStatus})
-	serveCmd.AddCommand(&cobra.Command{Use: "stop", Short: "Gracefully stop this data directory's workspace", Args: cobra.NoArgs, RunE: runServeStop})
+	serveCmd.AddCommand(&cobra.Command{Use: "stop", Short: "Gracefully stop this data directory's workspace and wait for cleanup", Args: cobra.NoArgs, RunE: runServeStop})
 	serveCmd.AddCommand(&cobra.Command{
 		Use: "migrate", Short: "Back up and explicitly upgrade an existing workspace database", Args: cobra.NoArgs, RunE: runServeMigrate,
 		Long: `Back up an existing ATM data directory, then upgrade its database for this build.
@@ -159,19 +159,26 @@ func runServeStop(command *cobra.Command, args []string) error {
 	if err := apphost.ConfigureDataDir(serveDataDir); err != nil {
 		return err
 	}
-	managed, err := stopManagedWorkspace(commandContext(command), config.AtmDir)
+	// HTTP closes before runtime workers finish. Do not report success until
+	// the instance lock is available for a replacement process.
+	ctx, cancel := context.WithTimeout(commandContext(command), 40*time.Second)
+	defer cancel()
+	managed, err := stopManagedWorkspace(ctx, config.AtmDir)
 	if err != nil {
 		return err
 	}
 	if !managed {
-		if err := webapp.Stop(commandContext(command), config.AtmDir); err != nil {
+		if err := webapp.Stop(ctx, config.AtmDir); err != nil {
 			return err
 		}
+	}
+	if err := webapp.WaitStopped(ctx, config.AtmDir); err != nil {
+		return fmt.Errorf("waiting for ATM workspace shutdown: %w", err)
 	}
 	if jsonOutput {
 		return json.NewEncoder(command.OutOrStdout()).Encode(map[string]bool{"stopping": true})
 	}
-	fmt.Fprintln(command.OutOrStdout(), "ATM workspace stop requested.")
+	fmt.Fprintln(command.OutOrStdout(), "ATM workspace stopped.")
 	return nil
 }
 

@@ -79,7 +79,8 @@ func workspaceRuntime(parent context.Context, host *apphost.Host) func(webapp.In
 			defer timer.Stop()
 			for {
 				_ = host.RefreshConfig(ctx)
-				_ = host.RefreshPresence(ctx)
+				// Hooks push live state directly. Do not scan every tool's local
+				// transcripts while the task/knowledge workspace is idle.
 				select {
 				case <-ctx.Done():
 					return

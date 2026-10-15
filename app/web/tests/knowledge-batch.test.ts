@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { updateDocumentBatch } from '../src/workspaces/knowledge-batch.ts'
-import type { KnowledgeDocument, KnowledgeDocumentRow } from '../src/workspaces/knowledge-types.ts'
+import { updateDocumentBatch } from '../src/features/knowledge/knowledge-batch.ts'
+import type { KnowledgeDocument, KnowledgeDocumentRow } from '../src/features/knowledge/knowledge-types.ts'
 const rows = ['one', 'two', 'three'].map((id) => ({
   document_id: id,
   title: id,

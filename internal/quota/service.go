@@ -253,8 +253,18 @@ func (service Service) RecordSamples(db *sql.DB, now time.Time) error {
 }
 
 func (service Service) RecordSamplesContext(ctx context.Context, db *sql.DB, now time.Time) error {
+	return service.RecordAgentSamplesContext(ctx, db, now, "")
+}
+
+func (service Service) RecordAgentSamplesContext(ctx context.Context, db *sql.DB, now time.Time, agent string) error {
 	var samples []store.QuotaSample
 	for _, source := range readers {
+		if agent != "" && agent != source.agent {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		reading := source.reading(ctx, false)
 		if reading == nil {
 			continue

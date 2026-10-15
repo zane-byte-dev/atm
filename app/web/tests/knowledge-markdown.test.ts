@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { canRoundTripMarkdown } from '../src/workspaces/knowledge-markdown.ts'
+import { canRoundTripMarkdown } from '../src/features/knowledge/knowledge-markdown.ts'
 
 test('permits formatting normalization while preserving Markdown meaning', () => {
   assert.equal(

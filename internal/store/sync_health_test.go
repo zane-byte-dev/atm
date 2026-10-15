@@ -32,7 +32,7 @@ func TestSyncHealthTracksFreshStaleAndFailedRuns(t *testing.T) {
 		t.Fatalf("fresh health = %#v", fresh)
 	}
 
-	stale, err := ReadSyncHealth(db, SyncScopeAll, started.Add(11*time.Minute), DefaultSyncStaleAfter)
+	stale, err := ReadSyncHealth(db, SyncScopeAll, started.Add(DefaultSyncStaleAfter+time.Minute), DefaultSyncStaleAfter)
 	if err != nil {
 		t.Fatalf("read stale health: %v", err)
 	}

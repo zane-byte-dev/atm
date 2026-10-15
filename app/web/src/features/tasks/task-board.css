@@ -1,0 +1,347 @@
+/* Card-based views share one surface and status heading; the list keeps its row layout. */
+.task-workbench .layout-kanban,
+.task-workbench .layout-swimlane {
+  padding: 20px 24px 28px;
+  background: var(--canvas);
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.workbench-content:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.task-workbench .workbench-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(280px, 1fr));
+  gap: 20px;
+  align-items: start;
+  min-height: 100%;
+}
+.task-board-column {
+  min-width: 0;
+}
+.task-workbench .task-board-column > h2 {
+  position: sticky;
+  top: -20px;
+  z-index: 2;
+  margin: 0 0 12px;
+  padding: 10px 2px 12px;
+  background: var(--canvas);
+  font-size: 13px;
+  font-weight: 550;
+}
+.task-board-heading {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+.task-workbench .task-board-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.task-workbench .workbench-row--tile {
+  position: relative;
+  display: block;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  transition:
+    border-color 120ms,
+    background-color 120ms;
+}
+.task-workbench .workbench-row--tile:hover {
+  border-color: color-mix(in srgb, var(--muted) 45%, var(--line));
+}
+.task-workbench .workbench-row--tile.is-selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.task-workbench .workbench-row--tile:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.task-workbench .workbench-row--tile .task-row-select {
+  position: absolute;
+  inset: 13px 12px auto auto;
+  z-index: 1;
+  margin: 0;
+  padding: 3px;
+}
+.task-workbench .workbench-row.workbench-row--tile .workbench-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  height: auto;
+  padding: 14px;
+  margin: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  box-shadow: none;
+  white-space: normal;
+  text-align: left;
+}
+.task-workbench .workbench-row--tile .task-row-id {
+  width: auto;
+  padding-right: 24px;
+  font-size: 11px;
+  line-height: 18px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.task-workbench .workbench-row--tile .task-row-content {
+  flex: auto;
+  width: 100%;
+  gap: 8px;
+}
+.task-workbench .workbench-row--tile .task-row-content:first-child,
+.task-workbench .workbench-row--tile .task-row-content:not(.task-row-id + .task-row-content) {
+  padding-right: 26px;
+}
+.task-workbench .workbench-row--tile strong {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.65;
+  font-size: 13px;
+  font-weight: 550;
+}
+.task-workbench .workbench-row--tile .task-row-attention {
+  display: flex;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.task-workbench .workbench-row--tile .task-row-attention > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+.task-workbench .workbench-row.workbench-row--tile .workbench-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: center;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 20px;
+}
+.task-workbench .workbench-row.workbench-row--tile .workbench-card-meta > span {
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.task-workbench .table-priority {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--muted);
+  background: var(--soft);
+}
+.task-workbench .table-priority-p0 {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.task-workbench .table-priority-p1 {
+  color: var(--warning);
+  background: var(--warning-soft);
+}
+.task-board-empty {
+  min-height: 84px;
+  display: grid;
+  place-content: center;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--subtle);
+  font-size: 12px;
+}
+.task-workbench .workbench-swimlane {
+  width: 100%;
+  min-width: 1312px;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+.task-workbench .workbench-swimlane th,
+.task-workbench .workbench-swimlane td {
+  padding: 14px 10px;
+  text-align: left;
+  vertical-align: top;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+}
+.task-workbench .workbench-swimlane thead th {
+  position: sticky;
+  top: -20px;
+  z-index: 3;
+  padding-block: 10px 16px;
+  background: var(--canvas);
+  font-weight: 550;
+  color: var(--text);
+}
+.task-workbench .workbench-swimlane th:first-child {
+  width: 152px;
+}
+.task-workbench .workbench-swimlane .task-project-heading,
+.task-workbench .workbench-swimlane thead th:first-child {
+  position: sticky;
+  left: -24px;
+  background: var(--canvas);
+  border-right: 1px solid var(--line);
+}
+.task-workbench .workbench-swimlane .task-project-heading {
+  z-index: 2;
+  padding-top: 22px;
+  font-weight: 550;
+}
+.task-workbench .task-project-heading > span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.task-workbench .task-project-heading small {
+  display: block;
+  margin-top: 8px;
+  font-size: 11px;
+}
+.task-workbench .workbench-swimlane thead th:first-child {
+  z-index: 4;
+}
+.task-workbench .workbench-swimlane .workbench-row--tile:last-child {
+  margin-bottom: 0;
+}
+.task-workbench .workbench-load-more {
+  border-radius: 8px;
+  font-size: 12px;
+}
+.task-workbench.density-comfortable .workbench-row.workbench-row--tile .workbench-card {
+  padding: 18px 14px;
+  gap: 14px;
+}
+
+/* Continuous table: quieter cell dividers, clear group/selection states, fixed identity. */
+.task-workbench .table-utility {
+  min-height: 46px;
+  padding-inline: 22px;
+}
+.task-workbench .task-data-table .workbench-table th,
+.task-workbench .task-data-table .workbench-table td {
+  border-right-color: transparent;
+  height: 48px;
+}
+.task-workbench .task-data-table .workbench-table thead th {
+  height: 42px;
+}
+.task-workbench .task-data-table .workbench-table .table-group th {
+  height: 38px;
+  background: var(--canvas);
+}
+.task-workbench .table-group small {
+  margin-left: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.task-workbench .table-task-link {
+  gap: 12px;
+}
+.task-workbench .table-task-link strong {
+  min-width: 0;
+}
+.task-workbench .workbench-table tbody tr {
+  --table-row-background: var(--surface);
+  background: var(--table-row-background);
+}
+.task-workbench .workbench-table tbody tr:hover {
+  --table-row-background: var(--hover);
+}
+.task-workbench .workbench-table tbody tr.selected {
+  --table-row-background: var(--accent-soft);
+}
+.task-workbench .workbench-table tbody tr:focus-within {
+  --table-row-background: var(--hover);
+}
+.task-workbench .workbench-table tbody tr.selected:focus-within {
+  --table-row-background: var(--accent-soft);
+}
+.task-workbench .workbench-table tr:not(.table-more) > td:first-child,
+.task-workbench .workbench-table thead th:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--table-row-background, var(--canvas));
+}
+@media (min-width: 761px) {
+  .task-workbench .workbench-table tr:not(.table-more) > td:nth-child(2),
+  .task-workbench .workbench-table thead th:nth-child(2) {
+    position: sticky;
+    left: 44px;
+    z-index: 2;
+    background: var(--table-row-background, var(--canvas));
+    box-shadow: 1px 0 var(--line);
+  }
+}
+.task-workbench .workbench-table thead th:first-child,
+.task-workbench .workbench-table thead th:nth-child(2) {
+  z-index: 3;
+}
+.task-workbench.density-comfortable .task-data-table .workbench-table td {
+  height: 58px;
+}
+@media (max-width: 760px) {
+  .task-workbench .layout-kanban,
+  .task-workbench .layout-swimlane {
+    padding: 12px 14px 20px;
+  }
+  .task-workbench .workbench-board {
+    grid-template-columns: repeat(4, minmax(250px, 1fr));
+    gap: 14px;
+  }
+  .task-workbench .task-board-column > h2,
+  .task-workbench .workbench-swimlane thead th {
+    top: -12px;
+  }
+  .task-workbench .workbench-swimlane {
+    min-width: 1120px;
+  }
+  .task-workbench .workbench-swimlane th:first-child {
+    width: 100px;
+  }
+  .task-workbench .workbench-swimlane .task-project-heading,
+  .task-workbench .workbench-swimlane thead th:first-child {
+    left: -14px;
+  }
+  .task-workbench .table-utility {
+    padding-inline: 12px;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-workbench .workbench-row--tile {
+    transition: none;
+  }
+}
+
+.task-workbench .workbench-row--tile .task-wait-label {
+  color: var(--warning);
+}

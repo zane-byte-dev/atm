@@ -34,10 +34,20 @@ func (h *Host) Call(ctx context.Context, call application.Call, method string, i
 		return invoke(input, func(value StartInput) (any, error) { return h.StartTodo(ctx, call, value) })
 	case "todo.done":
 		return invoke(input, func(value DoneInput) (any, error) { return h.DoneTodo(ctx, call, value) })
+	case "todo.submit":
+		return invoke(input, func(value DoneInput) (any, error) { return h.SubmitTodo(ctx, call, value) })
+	case "todo.return_to_open":
+		return invoke(input, func(value ReturnToOpenInput) (any, error) { return h.ReturnTodoToOpen(ctx, call, value) })
 	case "todo.archive":
 		return invoke(input, func(value TodoInput) (any, error) { return h.ArchiveTodo(ctx, call, value) })
 	case "todo.restore":
 		return invoke(input, func(value TodoInput) (any, error) { return h.RestoreTodo(ctx, call, value) })
+	case "knowledge.tasks":
+		return invoke(input, func(value KnowledgeTasksInput) (any, error) { return h.KnowledgeTasks(ctx, call, value) })
+	case "todo.knowledge.add", "todo.knowledge.remove":
+		return invoke(input, func(value TodoKnowledgeInput) (any, error) {
+			return h.LinkTodoKnowledge(ctx, call, value, method == "todo.knowledge.remove")
+		})
 	case "todo.plan.set":
 		return invoke(input, func(value PlanInput) (any, error) { return h.SetTodoPlan(ctx, call, value) })
 	case "todo.progress.append":
@@ -56,7 +66,7 @@ func (h *Host) Call(ctx context.Context, call application.Call, method string, i
 		return h.CallRuntime(ctx, call, method, input, idempotencyKey)
 	case "session.list", "session.search", "session.show", "session.status", "usage.snapshot", "quota.cached":
 		return h.callActivity(ctx, call, method, input)
-	case "knowledge.catalog", "knowledge.query", "knowledge.document.get", "knowledge.document.create", "knowledge.document.update", "knowledge.collection.create",
+	case "knowledge.catalog", "knowledge.query", "knowledge.document.get", "knowledge.document.create", "knowledge.document.update", "knowledge.collection.create", "knowledge.collection.update", "knowledge.collection.delete",
 		"memory.recall", "memory.get", "memory.create", "memory.supersede":
 		return h.callKnowledge(ctx, call, method, input)
 	case "collect.overview", "collect.items", "collect.item.show", "collect.history", "collect.item.read", "collect.item.archive", "collect.source.enabled", "collect.source.muted", "collect.source.save", "collect.source.delete", "collect.source.search":

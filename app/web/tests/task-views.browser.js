@@ -1,16 +1,39 @@
 // Run with playwright-cli run-code --filename=app/web/tests/task-views.browser.js
 // Use an isolated browser session and the local Vite server on port 5173.
 async (page) => {
+  // antd v6 Select keeps role="option" only on a 0x0 hidden a11y mirror listbox
+  // (whose text is the raw value), while the clickable visual items carry no role
+  // at all. getByRole('option') therefore resolves to an element Playwright can
+  // never click, so target the visible item by its exact title instead.
+  // antd animates the popup in and out with a slide-up motion. Playwright's
+  // actionability check needs the target to be stable (same box across two frames),
+  // so clicking mid-animation times out. A closing popup also lingers without
+  // `-hidden` until its leave motion ends, so exclude it from the search.
+  const LIVE_DROPDOWN =
+    '.ant-select-dropdown:not(.ant-select-dropdown-hidden):not([class*="ant-slide-up-leave"])'
+  const dropdownSettled = () =>
+    page.waitForFunction(() => {
+      const live = Array.from(document.querySelectorAll('.ant-select-dropdown')).filter(
+        (d) =>
+          !d.className.includes('ant-select-dropdown-hidden') &&
+          !d.className.includes('ant-slide-up-leave'),
+      )
+      return live.length > 0 && live.every((d) => !d.className.includes('ant-slide-up-appear'))
+    })
+  const option = async (label) => {
+    await dropdownSettled()
+    return page.locator(LIVE_DROPDOWN).locator(`.ant-select-item-option[title="${label}"]`).first()
+  }
   const selectValue = async (control, value) => {
     const label = await control.evaluate(
       (element, value) =>
-        Array.from(element.closest('.ui-select').querySelector('select').options).find(
+        Array.from(element.closest('.ds-select-bridge').querySelector('select').options).find(
           (option) => option.value === value,
         )?.textContent,
       value,
     )
     await control.click()
-    await page.getByRole('option', { name: label, exact: true }).click()
+    await (await option(label)).click()
   }
   const check = (value, message) => {
     if (!value) throw new Error(message)
@@ -102,7 +125,9 @@ async (page) => {
   await open('新增视图')
   await page.locator('.task-view-defaults > summary').click()
   check(
-    await page.locator('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth),
+    // antd Modal renders <div role="dialog">, not a native <dialog> element, so the
+    // CSS tag selector `locator('dialog')` never matched.
+    await page.getByRole('dialog').evaluate((el) => el.scrollWidth <= el.clientWidth),
     'mobile dialog overflows',
   )
   await page.screenshot({ path: '/tmp/task-view-mobile.png' })

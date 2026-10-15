@@ -33,6 +33,9 @@ func TestCLIInvocationClassificationNeverCopiesErrorContent(t *testing.T) {
 		{exitError{code: guardExitDenied, err: errors.New(secret)}, "guard_denied", "guard", false},
 		{exitError{code: guardExitPending, err: errors.New(secret)}, "guard_pending", "guard", true},
 		{errors.New(secret), "command_failed", "command", false},
+		// A precondition failure is an install/environment mistake, not flaky
+		// infrastructure, and must not be counted or retried as though it were.
+		{application.NewError(application.CodeFailedPrecondition, secret), "failed_precondition", "environment", false},
 	} {
 		code, cause, retry := classifyCLIInvocationError(test.err)
 		if code != test.code || cause != test.cause || retry != test.retryable ||

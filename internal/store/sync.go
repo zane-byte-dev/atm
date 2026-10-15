@@ -97,6 +97,9 @@ func syncAgentContext(ctx context.Context, db *sql.DB, a parser.Agent) (int, err
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	if path := parser.VirtualSourcePath(a.Name()); path != "" {
+		return syncVirtualSource(ctx, db, a.Name(), path)
+	}
 	files := a.Discover()
 	agent := a.Name()
 
@@ -202,6 +205,9 @@ func upsertSession(db *sql.DB, p *parser.ParsedFile, fp, agent string, mtime, si
 	lastTS := p.LastTS
 	if lastTS == 0 {
 		lastTS = mtime
+		if strings.Contains(fp, "://") {
+			lastTS = p.CreatedTS
+		}
 	}
 	if _, err = tx.Exec(`INSERT INTO sessions (id, short_id, agent, project, file_path, created_at, created_ts,
 		summary, last_ts, resume_id, root_session_id, parent_session_id, agent_path, agent_nickname,

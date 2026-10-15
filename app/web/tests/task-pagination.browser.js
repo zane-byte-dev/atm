@@ -1,11 +1,15 @@
 // Run in an isolated browser with the local Vite fixture; all requests are mocked by the fixture.
 async (page) => {
   const check = (condition, message) => { if (!condition) throw new Error(message) }
-  await page.goto('http://127.0.0.1:5199/tests/fixtures/task-pagination.html')
+  await page.goto('http://127.0.0.1:5173/tests/fixtures/task-pagination.html')
   await page.waitForFunction(() => document.querySelectorAll('[data-task-id]').length === 55)
   check(await page.getByText('查看更多任务 · 还有 70 项', { exact: true }).isVisible(), 'active remainder missing')
   check(await page.getByText('查看更多已完成 · 还有 4 项', { exact: true }).isVisible(), 'done remainder missing')
   check(await page.evaluate(() => window.paginationRequests.filter((input) => !input.metadata_only).every((input) => input.offset === 0 && input.partition)), 'initial view drained pages')
+  // `选择全部筛选结果` only exists in the table layout (src/features/tasks/task-data-table.tsx);
+  // the fixture defaults to layout=list, so switch first.
+  await page.getByRole('button', { name: '布局 table', exact: true }).click()
+  await page.locator('.workbench-table').waitFor()
   await page.getByRole('checkbox', { name: '选择全部筛选结果', exact: true }).check()
   check(await page.getByText('已选择 全部筛选结果 129 项', { exact: true }).isVisible(), 'select all only counted visible rows')
   await page.getByRole('checkbox', { name: '选择 t1', exact: true }).uncheck()

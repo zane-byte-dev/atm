@@ -91,6 +91,7 @@ var (
 	// Automatic collection reads private messaging data and creates work items,
 	// so it is opt-in even though the implementation remains local-first.
 	CollectionEnabled         = false
+	SessionSyncAgents         = "codex"
 	CollectionIntervalMinutes = 5
 	CollectionLookbackMinutes = 60
 	// Synced chat is kept for this many days; 0 keeps it forever. Reading a
@@ -266,6 +267,7 @@ type GuardConfig struct {
 }
 
 type FileConfig struct {
+	SessionSyncAgents string `json:"session_sync_agents,omitempty"`
 	Timezone          string `json:"timezone,omitempty"`
 	OwnerName         string `json:"owner_name,omitempty"`
 	ClaudeProjects    string `json:"claude_projects,omitempty"`
@@ -318,6 +320,11 @@ func loadConfigFile() {
 }
 
 func applyFileConfig(cfg FileConfig) {
+	if cfg.SessionSyncAgents != "" {
+		if value, err := parseSessionSyncAgents(cfg.SessionSyncAgents); err == nil {
+			SessionSyncAgents = value.(string)
+		}
+	}
 	if cfg.Timezone != "" {
 		loc, err := time.LoadLocation(cfg.Timezone)
 		if err == nil {
@@ -593,6 +600,7 @@ func expandHome(p string) string {
 
 func ShowConfig() string {
 	cfg := FileConfig{
+		SessionSyncAgents:              SessionSyncAgents,
 		Timezone:                       Loc.String(),
 		OwnerName:                      OwnerName,
 		ClaudeProjects:                 ClaudeProjects,
@@ -637,6 +645,7 @@ func InitConfig() error {
 		return err
 	}
 	cfg := FileConfig{
+		SessionSyncAgents:              SessionSyncAgents,
 		Timezone:                       "Asia/Shanghai",
 		ClaudeProjects:                 "~/.claude/projects",
 		CodexSessions:                  "~/.codex/sessions",

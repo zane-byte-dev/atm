@@ -96,6 +96,9 @@
 .agent-filter-bar button {
   background: none;
   border: 0;
+  /* Declared explicitly: this bare text button never set padding, so antd's
+     4px 15px leaked in and made 清除筛选 visibly wider than its neighbours. */
+  padding: 1px 6px;
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
@@ -123,7 +126,7 @@
   align-items: center;
   color: var(--text);
 }
-.agent-filter-popover :is(select, .ui-select) {
+.agent-filter-popover select {
   min-width: 0;
   max-width: 100%;
   padding: 6px;
@@ -241,12 +244,13 @@
 .workspace .workbench-row.is-selected {
   background: var(--soft);
 }
+/* `.task-row-select` now sits on the Ant Design Checkbox wrapper (a <label>), not
+   on a native input, so only the layout properties belong here. The old
+   width/height/accent-color sized and tinted the native box; antd draws its own
+   16px `.ant-checkbox-inner` and pinning the wrapper to 14px squeezed it. */
 .workspace .task-row-select {
   flex: none;
-  width: 14px;
-  height: 14px;
   margin: 0 8px;
-  accent-color: var(--text);
 }
 .workspace .workbench-row .workbench-card {
   display: flex;
@@ -313,27 +317,6 @@
 .task-wait-label {
   color: #936014;
 }
-.workspace .workbench-board .workbench-row,
-.workspace .workbench-swimlane .workbench-row {
-  align-items: flex-start;
-}
-.workspace .workbench-board .task-row-select,
-.workspace .workbench-swimlane .task-row-select {
-  margin-top: 13px;
-}
-.workspace .workbench-board .workbench-card,
-.workspace .workbench-swimlane .workbench-card {
-  flex-wrap: wrap;
-}
-.workspace .workbench-board .task-row-content,
-.workspace .workbench-swimlane .task-row-content {
-  flex-basis: calc(100% - 80px);
-}
-.workspace .workbench-board .workbench-card-meta,
-.workspace .workbench-swimlane .workbench-card-meta {
-  flex-basis: 100%;
-  flex-wrap: wrap;
-}
 .table-task-attention {
   display: block;
   max-width: 330px;
@@ -367,6 +350,10 @@
   line-height: 1.7;
 }
 .latest-progress-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.latest-progress-text.is-collapsed {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
@@ -409,7 +396,7 @@
   max-width: 100%;
 }
 .inline-property-form input,
-.inline-property-form :is(select, .ui-select) {
+.inline-property-form select {
   min-width: 0;
   width: 100%;
   font-size: 12px;
@@ -476,7 +463,7 @@
   padding-bottom: 110px;
 }
 
-.task-bulk-bar :is(select, .ui-select),
+.task-bulk-bar select,
 .task-bulk-bar input,
 .task-bulk-bar button {
   font-size: 12px;
@@ -486,21 +473,12 @@
   color: var(--text);
   background: var(--surface);
 }
-.task-batch-dialog {
+.task-batch-dialog.ant-modal {
   width: min(650px, calc(100vw - 32px));
-  max-height: 85dvh;
-  padding: 24px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  color: var(--text);
-  background: var(--surface);
 }
-.task-batch-dialog::backdrop {
-  background: #0004;
-}
-.task-batch-dialog h2 {
-  font-size: 18px;
-  margin: 0 0 12px;
+.task-batch-dialog .ant-modal-body {
+  max-height: 65dvh;
+  overflow: auto;
 }
 .task-batch-dialog p {
   font-size: 13px;

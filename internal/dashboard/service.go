@@ -353,7 +353,7 @@ func openDB(syncBeforeRead bool) (*sql.DB, error) {
 }
 
 func readIndexHealth(db *sql.DB) (IndexHealth, error) {
-	health, err := store.ReadSyncHealth(db, store.SyncScopeAll, time.Now(), store.DefaultSyncStaleAfter)
+	health, err := store.ReadSyncHealth(db, config.PrimarySyncScope(), time.Now(), store.DefaultSyncStaleAfter)
 	if err != nil {
 		return IndexHealth{}, err
 	}

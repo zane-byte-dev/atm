@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { taskTableCSV } from '../src/task-table-export.ts'
+import { taskTableCSV } from '../src/features/tasks/task-table-export.ts'
 test('CSV quotes multiline values and neutralizes spreadsheet formulas', () => {
   const csv = taskTableCSV(
     [{ id: 't1', title: '=SUM(1,2)', status: 'open', priority: 'P1', tags: ['含"引号', '两\n行'] }],

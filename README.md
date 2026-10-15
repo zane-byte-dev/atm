@@ -1,9 +1,10 @@
 # ATM — AI Team Manager
 
-给人用的 AI 管理面板。看 AI 都在干什么、干得怎么样、花了多少钱。
+以 ToDo 和知识库为主的本地工作台，同时保留 AI 会话检索与用量统计。
 
 本地优先、单机单用户：它读各家 AI CLI 已经写在你硬盘上的会话记录，索引成一个能查、能统计、
-能挂待办的库。日常主界面是本机浏览器：Web 提供工作板、收件箱、Agent、知识、统计和设置，AI Day 徽章日历放在统计页，
+能挂待办的库。日常主界面是本机浏览器：默认进入 ToDo，主导航保留 ToDo 和知识库；收件箱、Agent 会话、统计、消息收在“更多”，设置独立保留。
+任务可以关联知识文档，知识页可以查看关联任务、关联已有任务或创建下一步行动。AI Day 徽章日历放在统计页，
 Go 服务负责后台同步、采集、Hook 与通知路由；菜单栏和全局语音是可选的独立 App。它不代理你和 AI 的对话，
 停掉它也不影响任何会话。
 
@@ -63,11 +64,22 @@ atm serve stop           # 停止同一数据目录的实例
 才会退出。
 
 Web 提供任务生命周期、计划/依赖/等待、图片上传、AI 整理，知识文档原地编辑与共享记忆、采集来源管理、
-会话检索、用量与徽章日历，以及业务设置和五种主题。新建任务记住最近填写内容并在再次打开时自动填入；
+会话检索、用量与徽章日历，以及业务设置和五种主题。
+新建任务记住最近填写内容并在再次打开时自动填入；
 已有任务重新打开时读取服务端版本。知识与记忆编辑器提供独立的草稿恢复。并发编辑有版本检查，创建与后台执行保留幂等身份。
 页面通过合并的 SSE reset 刷新当前查询，CLI 变化在有订阅时每 2 秒检查。
 
-`serve` 负责自动同步、按配置采集、AI Day、Agent Hook 和通知路由；状态每 8 秒回补，
+`serve` 每晚按配置时区在 23:00 后同步一次本地 Agent 会话，次日 06:00 前启动或唤醒可补采；
+白天不自动同步，整晚离线则等下一晚，也可随时运行 `atm sync` 或在页面手动同步。
+同一晚的执行记录持久化，重启不重复采集；失败或中断保留记录，可手动重试。AI Day 在夜间同步成功后更新。
+默认只自动采集 Codex；其他工具的历史记录保留，可在会话筛选中查看、按需手动同步。
+设置 → 通用偏好 → 夜间会话采集可勾选辅助来源，全部取消则关闭夜间采集。
+CLI 对应 `atm config set session_sync_agents codex,qoderwork`；设为 `none` 关闭自动采集。
+`atm sync --agent qoderwork` 可单次同步辅助来源，`atm sync` 仍显式同步全部来源。
+Qoder/QoderWork 使用数据库及 WAL 变化检查、会话内容指纹和共享只读快照，未变化的历史不重建；
+费率指纹未变化时跳过历史重算，费率变化也只更新价格确实变化的记录。
+`serve` 还负责外部连接器的按配置采集、Agent Hook 和通知路由；实时状态由 Hook 事件推送，
+不再每 8 秒扫描各家 Agent 的会话文件。无 Hook 的工具可用 `atm session status` 按需查询。
 关闭网页或退出菜单栏都不会停止后台。临时写入验收必须显式使用独立数据目录；日常 `make dev` 默认接替日用服务并使用真实数据，详见 Web 开发说明。
 手动同步、采集、重建、额度刷新和 AI 整理通过有记录的后台执行完成，可查看结果或取消。
 
@@ -81,7 +93,7 @@ atm serve uninstall            # 取消登录服务，保留数据
 ```
 
 [ATM Menu](app/menubar/README.md) 使用普通 macOS 菜单，展示服务状态、今日 Token、当前任务与缓存额度摘要，并提供 Web、新增任务、同步及自身设置入口。[VoxCaret](app/voice/README.md) 独立提供全局语音，
-不依赖 Go 服务。构建步骤、旧偏好导入和测试边界见 [Web 开发说明](app/web/README.md)；架构见
+不依赖 Go 服务。构建步骤和测试边界见 [Web 开发说明](app/web/README.md)；架构见
 [技术方案](docs/design/local-web-runtime.md)。代码已实现这些入口，真实日用切换和新 App 的系统权限验收需另外完成。
 
 **现有数据**：当前 schema 为 v58，仅保留 v57 → v58 的一阶迁移，为任务增加持久化的最后变更时间。
@@ -229,7 +241,7 @@ open "app/voice/dist/VoxCaret.app"
 退出 ATM 服务后仍可使用。各自提供旧偏好的白名单导入，新 bundle 的系统权限必须实际授权。
 
 旧 Swift 主工作区已移除，源码和性能修复保存在 [Git 历史](https://github.com/zane-byte-dev/atm/tree/f96ed66f35dbd099de5ab16dbbea008c60381e27/app/macos)。
-旧界面偏好仍可通过 [`scripts/export-web-preferences.swift`](scripts/export-web-preferences.swift) 导出并导入 Web；Menu 和 Voice 各自保留旧偏好导入功能。
+Menu 和 Voice 各自保留旧偏好导入功能。
 
 `./scripts/release-check.sh native` 在隔离目录运行 Swift 测试、组装两个 Release App，并检查资源、权限说明、entitlements 和签名；不会安装或启动 App。Go、Web、开发进程与发布跨平台检查的分阶段命令见 [Web 开发说明](app/web/README.md#ci-与交付检查)。麦克风、系统授权、快捷键与目标 App 内输入仍需实机验收。
 

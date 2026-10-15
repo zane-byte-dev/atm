@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { updateTaskGroupSelection } from '../src/task-selection.ts'
+import { updateTaskGroupSelection } from '../src/features/tasks/task-selection.ts'
 
 test('selecting a partially selected group completes it and preserves other groups', () => {
   assert.deepEqual(updateTaskGroupSelection(['a', 'other'], new Set(['a', 'b']), true, false), [

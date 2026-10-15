@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { waitingReason, taskActivity, taskActivityLabel } from '../src/task-attention.ts'
+import { waitingReason, taskActivity, taskActivityLabel } from '../src/features/tasks/task-attention.ts'
 const todo = {
   id: 't1',
   title: 'Test',

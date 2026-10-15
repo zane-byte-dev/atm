@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyTaskBatch } from '../src/task-batch.ts'
+import { applyTaskBatch } from '../src/features/tasks/task-batch.ts'
 test('batch edits use preview versions, report partial failures and never retry writes', async () => {
   const calls = [],
     progress = []
@@ -45,7 +45,7 @@ test('archive uses the retention action, never completion', async () => {
 })
 
 test('undo uses each saved version and restores its original field only', async () => {
-  const { undoTaskBatch } = await import('../src/task-batch.ts')
+  const { undoTaskBatch } = await import('../src/features/tasks/task-batch.ts')
   const saved = await applyTaskBatch(
     [{ todo: { id: 't1', title: 'A', priority: 'P2' }, etag: 'before' }],
     'priority',
@@ -64,7 +64,7 @@ test('undo uses each saved version and restores its original field only', async 
 })
 
 test('undo preserves conflicts for review and never retries or overwrites newer data', async () => {
-  const { undoTaskBatch } = await import('../src/task-batch.ts')
+  const { undoTaskBatch } = await import('../src/features/tasks/task-batch.ts')
   let count = 0
   const result = await undoTaskBatch(
     [{ id: 't1', title: 'A', ok: true, undo: { operation: 'project', value: '', etag: 'v2' } }],

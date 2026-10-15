@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { contextImageURL, parseContext } from '../src/workspaces/collection-context-model.ts'
+import { contextImageURL, parseContext } from '../src/features/collection/collection-context-model.ts'
 
 test('collector messages retain multiline content, senders, timestamps and freshness', () => {
   const messages = parseContext(

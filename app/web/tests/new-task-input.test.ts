@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { createNewTaskInputStore } from '../src/new-task-input.ts'
+import { createNewTaskInputStore } from '../src/features/tasks/new-task-input.ts'
 import type { Draft } from '../src/types.ts'
 function setup() {
   const values = new Map<string, string>()

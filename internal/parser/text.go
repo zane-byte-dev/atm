@@ -35,6 +35,8 @@ func VisibleUserText(s string) string {
 		"# AGENTS.md instructions",
 		"<permissions instructions>",
 		"<app-context>",
+		"<external_codex_apps_open_page>",
+		"<in-app-browser-context",
 		"<environment_context>",
 		"<skills_instructions>",
 		"<image name=",

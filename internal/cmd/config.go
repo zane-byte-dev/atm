@@ -44,6 +44,7 @@ var configCmd = &cobra.Command{
   atm config update-pricing   Fetch latest model pricing from OpenRouter
 
 Settable keys:
+  session_sync_agents LIST       Nightly sources, comma-separated (default codex; none disables)
   owner_name NAME               How to name you when a todo you filed yourself
                                 is displayed (default 我). The stored creator
                                 stays "me", so renaming yourself never rewrites

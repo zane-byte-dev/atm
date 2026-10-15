@@ -10,13 +10,14 @@ import (
 
 func TestErrorCodesAreStableAndValid(t *testing.T) {
 	tests := map[ErrorCode]string{
-		CodeInvalidArgument: "invalid_argument",
-		CodeNotFound:        "not_found",
-		CodeConflict:        "conflict",
-		CodeForbidden:       "forbidden",
-		CodeBusy:            "busy",
-		CodeUnavailable:     "unavailable",
-		CodeInternal:        "internal",
+		CodeInvalidArgument:    "invalid_argument",
+		CodeNotFound:           "not_found",
+		CodeConflict:           "conflict",
+		CodeForbidden:          "forbidden",
+		CodeBusy:               "busy",
+		CodeUnavailable:        "unavailable",
+		CodeFailedPrecondition: "failed_precondition",
+		CodeInternal:           "internal",
 	}
 	for code, want := range tests {
 		if !code.Valid() {

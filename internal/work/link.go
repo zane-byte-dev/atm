@@ -239,6 +239,9 @@ func (service Service) RemoveLink(ctx context.Context, call application.Call, in
 // mutation calls it again inside the application service, so it is never a
 // transport-side security boundary.
 func NormalizeTodoLinkURL(raw string) (string, error) {
+	if id := KnowledgeLinkID(strings.TrimSpace(raw)); id != "" {
+		return KnowledgeLinkURL(id), nil
+	}
 	parsed, err := url.ParseRequestURI(strings.TrimSpace(raw))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return "", linkInvalidArgument("link must be a complete http/https URL", "url", raw)
@@ -273,6 +276,9 @@ func NormalizeTodoLinkURL(raw string) (string, error) {
 }
 
 func InferTodoLinkKind(raw string) string {
+	if KnowledgeLinkID(raw) != "" {
+		return "knowledge"
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return ""

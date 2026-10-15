@@ -74,6 +74,7 @@ type ShowResult struct {
 	Agent           string
 	AgentKey        string
 	Project         string
+	Summary         string
 	FullID          string
 	FilePath        string
 	ResumeID        string
@@ -353,7 +354,7 @@ func GetSession(db *sql.DB, idOrPrefix string) (*ShowResult, error) {
 func getSessionMetadata(db sqlQueryer, idOrPrefix string) (*ShowResult, error) {
 	var stored ShowResult
 	var internal bool
-	err := db.QueryRow(`SELECT s.id, s.agent, s.project, s.file_path, s.resume_id,
+	err := db.QueryRow(`SELECT s.id, s.agent, s.project, s.file_path, s.resume_id, s.summary,
 		s.root_session_id, s.parent_session_id, s.agent_path, s.agent_nickname,
 		s.subagent_depth, s.is_subagent, s.is_internal, s.parser_version,
 		CASE WHEN NOT EXISTS (SELECT 1 FROM sync_state st WHERE st.file_path = s.file_path)
@@ -361,7 +362,7 @@ func getSessionMetadata(db sqlQueryer, idOrPrefix string) (*ShowResult, error) {
 		s.result_status, s.latest_progress, s.final_result
 		FROM sessions s WHERE s.id = ? OR s.short_id LIKE ? ORDER BY s.last_ts DESC LIMIT 1`,
 		sessionLookupArgs(idOrPrefix)...).Scan(&stored.FullID, &stored.AgentKey, &stored.Project,
-		&stored.FilePath, &stored.ResumeID, &stored.RootSessionID, &stored.ParentSessionID,
+		&stored.FilePath, &stored.ResumeID, &stored.Summary, &stored.RootSessionID, &stored.ParentSessionID,
 		&stored.AgentPath, &stored.AgentNickname, &stored.SubagentDepth, &stored.IsSubagent,
 		&internal, &stored.ParserVersion, &stored.ContentState, &stored.ResultStatus,
 		&stored.LatestProgress, &stored.FinalResult)

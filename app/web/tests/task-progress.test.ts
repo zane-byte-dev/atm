@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { taskProgress } from '../src/task-progress.ts'
+import { taskProgress } from '../src/features/tasks/task-progress.ts'
 
 test('progress omits generated metadata and adjacent sections', () => {
   assert.equal(
@@ -21,7 +21,7 @@ test('headings in fenced code are not section boundaries', () => {
 })
 
 test('latest summary picks last appended milestone, excluding effect markers', async () => {
-  const { latestTaskProgress } = await import('../src/task-progress.ts')
+  const { latestTaskProgress } = await import('../src/features/tasks/task-progress.ts')
   assert.equal(
     latestTaskProgress(
       '## 进展\n- [2026-09-05 10:00] first\n- [2026-09-06 10:00] latest\n<!-- atm-progress:x -->\n## 备注\nother',

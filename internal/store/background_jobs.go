@@ -81,6 +81,8 @@ func ListBackgroundJobs(ctx context.Context, db *sql.DB, limit int, unfinished b
 func PruneScheduledBackgroundJobs(ctx context.Context, db *sql.DB) error {
 	_, err := db.ExecContext(ctx, `DELETE FROM background_jobs WHERE automatic=1
 		AND status NOT IN ('queued','running') AND id NOT IN
-		(SELECT id FROM background_jobs WHERE automatic=1 ORDER BY created_at DESC,id DESC LIMIT 200)`)
+		(SELECT id FROM background_jobs WHERE automatic=1 ORDER BY created_at DESC,id DESC LIMIT 200)
+		AND id NOT IN (SELECT id FROM background_jobs WHERE idempotency_key LIKE 'nightly-%'
+		ORDER BY created_at DESC,id DESC LIMIT 14)`)
 	return err
 }

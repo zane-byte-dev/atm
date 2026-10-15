@@ -2,10 +2,11 @@
 import React, { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { InlineKnowledgeField, useInlineKnowledge } from '../../src/workspaces/knowledge-inline'
-import type { KnowledgeDocument } from '../../src/workspaces/knowledge-types'
+import { InlineKnowledgeField, useInlineKnowledge } from '../../src/features/knowledge/knowledge-inline'
+import type { KnowledgeDocument } from '../../src/features/knowledge/knowledge-types'
 import '../../src/app.css'
-import '../../src/workspaces/knowledge.css'
+import '../../src/features/knowledge/knowledge.css'
+import { DesignSystemProvider } from '../../src/design-system'
 let server: KnowledgeDocument = {
   etag: 'v1',
   editable: true,
@@ -101,8 +102,10 @@ function Fixture() {
 }
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <QueryClientProvider client={new QueryClient()}>
-      <Fixture />
-    </QueryClientProvider>
+    <DesignSystemProvider>
+      <QueryClientProvider client={new QueryClient()}>
+        <Fixture />
+      </QueryClientProvider>
+    </DesignSystemProvider>
   </StrictMode>,
 )

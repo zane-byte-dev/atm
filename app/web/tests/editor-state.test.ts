@@ -1,13 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  applyMergeReview,
-  buildMergeReview,
-  existingCreationID,
-  freshDraft,
-  startSeparateCreation,
-  unresolvedFields,
-} from '../src/editor-state.ts'
+import { applyMergeReview, buildMergeReview, existingCreationID, freshDraft, startSeparateCreation, unresolvedFields } from '../src/features/tasks/editor-state.ts'
 import type { EditableFields, TodoDetail } from '../src/types.ts'
 
 function detail(fields: Partial<EditableFields> = {}, etag = 'v1'): TodoDetail {

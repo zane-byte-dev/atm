@@ -1,11 +1,13 @@
+import { Button as AntButton, Input as AntInput, Modal } from 'antd'
+import type { InputRef } from 'antd'
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Search, Plus, ArrowUpRight } from 'lucide-react'
 import { call } from './api'
-import type { CollectionList } from './workspaces/collection-types'
-import type { SessionSearch } from './workspaces/activity-types'
-import type { MemoryHit } from './workspaces/knowledge-types'
+import type { CollectionList } from './features/collection/collection-types'
+import type { SessionSearch } from './features/agents/activity-types'
+import type { MemoryHit } from './features/knowledge/knowledge-types'
 
 type Result = { title: string; path: string; meta?: string }
 type Group = { name: string; items: Result[]; failed?: boolean }
@@ -15,14 +17,14 @@ const url = (path: string, params: Record<string, string>) =>
 type SearchContext = { workspace: string; params: URLSearchParams }
 export function WorkspaceSearchButton() {
   return (
-    <button
+    <AntButton
       className="button workspace-search-button"
       title="搜索当前工作区"
       onClick={() => window.dispatchEvent(new Event('atm:open-search'))}
     >
       <Search size={15} />
       <span>搜索</span>
-    </button>
+    </AntButton>
   )
 }
 async function searchAll(
@@ -87,7 +89,7 @@ async function searchAll(
       {
         keyword: query,
         days: Number(params.get('days')) || (context ? 7 : 365),
-        agent: params.get('agent') || '',
+        agent: params.get('agent') === 'all' ? '' : params.get('agent') || (context ? 'codex' : ''),
         project: params.get('project') || '',
         limit: 20,
       },
@@ -104,7 +106,7 @@ async function searchAll(
               q: query,
               days: String(Number(params.get('days')) || (context ? 7 : 365)),
               ...(params.get('project') ? { project: params.get('project')! } : {}),
-              ...(params.get('agent') ? { agent: params.get('agent')! } : {}),
+              agent: params.get('agent') || (context ? 'codex' : 'all'),
             }),
           },
         ]),
@@ -157,13 +159,19 @@ async function searchAll(
   )
 }
 
-export function GlobalSearch({ writable }: { writable: boolean }) {
+export function GlobalSearch({
+  writable,
+  hideTrigger = false,
+}: {
+  writable: boolean
+  hideTrigger?: boolean
+}) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const [query, setQuery] = useState('')
   const [selected, setSelected] = useState(0)
-  const dialog = useRef<HTMLDialogElement>(null)
-  const input = useRef<HTMLInputElement>(null)
+  const resultsRef = useRef<HTMLDivElement>(null)
+  const input = useRef<InputRef>(null)
   const navigate = useNavigate()
   const location = useLocation()
   const workspace = location.pathname.split('/')[1]
@@ -208,12 +216,6 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
     return () => document.removeEventListener('keydown', handle)
   }, [])
   useEffect(() => {
-    if (open) {
-      dialog.current?.showModal()
-      input.current?.focus()
-    } else dialog.current?.close()
-  }, [open])
-  useEffect(() => {
     const timer = setTimeout(() => {
       setQuery(text.trim())
       setSelected(0)
@@ -249,34 +251,45 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
     navigate(result.path)
   }
   useEffect(() => {
-    dialog.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
+    resultsRef.current
+      ?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest' })
   }, [active])
   let index = 0
   return (
     <>
-      <button
-        className="nav-item sidebar-search"
-        onClick={() => setOpen(true)}
-        title="搜索 (⌘K / Ctrl+K)"
-      >
-        <Search size={18} />
-        <span>搜索…</span>
-        <kbd>{navigator.platform.includes('Mac') ? '⌘ K' : 'Ctrl K'}</kbd>
-      </button>
-      <dialog
-        ref={dialog}
+      {!hideTrigger && (
+        <AntButton
+          htmlType="button"
+          className="nav-item sidebar-search"
+          onClick={() => setOpen(true)}
+          title="搜索 (⌘K / Ctrl+K)"
+        >
+          <Search size={18} />
+          <span>搜索…</span>
+          <kbd>{navigator.platform.includes('Mac') ? '⌘ K' : 'Ctrl K'}</kbd>
+        </AntButton>
+      )}
+      <Modal
+        open={open}
+        centered
         className="global-search-dialog"
-        aria-label="统一搜索"
+        title="统一搜索"
+        width={680}
+        footer={null}
+        closable={false}
         onCancel={() => setOpen(false)}
-        onClose={() => setOpen(false)}
-        onClick={(event) => {
-          if (event.target === dialog.current) setOpen(false)
+        afterOpenChange={(opened) => {
+          // Fires after the open animation, so do not steal focus back from a
+          // result the user already moved to during that window.
+          if (opened && !document.activeElement?.closest('.global-search-panel'))
+            input.current?.focus()
         }}
       >
         <div className="global-search-panel">
           <div className="global-search-input">
             <Search size={22} />
-            <input
+            <AntInput
               ref={input}
               value={text}
               maxLength={200}
@@ -302,17 +315,19 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
                 }
               }}
             />
-            <button
+            <AntButton
+              htmlType="button"
               className="global-search-close"
               onClick={() => setOpen(false)}
               aria-label="关闭搜索"
             >
               Esc
-            </button>
+            </AntButton>
           </div>
           <div className="search-scope" role="group" aria-label="搜索范围">
             {canScope && (
-              <button
+              <AntButton
+                htmlType="button"
                 aria-pressed={scope === 'current'}
                 onClick={() => {
                   setScope('current')
@@ -321,9 +336,10 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
                 title={contextLabel}
               >
                 当前：{contextLabel}
-              </button>
+              </AntButton>
             )}
-            <button
+            <AntButton
+              htmlType="button"
               aria-pressed={!context}
               onClick={() => {
                 setScope('all')
@@ -331,9 +347,10 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
               }}
             >
               全部内容
-            </button>
+            </AntButton>
           </div>
           <div
+            ref={resultsRef}
             id="global-search-results"
             className="global-search-results"
             role="listbox"
@@ -348,7 +365,10 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
                     {group.failed && (
                       <span>
                         {' '}
-                        · 暂时无法搜索 <button onClick={() => void search.refetch()}>重试</button>
+                        · 暂时无法搜索{' '}
+                        <AntButton htmlType="button" onClick={() => void search.refetch()}>
+                          重试
+                        </AntButton>
                       </span>
                     )}
                   </div>
@@ -356,7 +376,7 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
                 {group.items.map((item) => {
                   const row = index++
                   return (
-                    <button
+                    <AntButton
                       key={item.path}
                       id={`global-result-${row}`}
                       role="option"
@@ -372,7 +392,7 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
                       )}
                       <span>{item.title}</span>
                       {item.meta && <small>{item.meta}</small>}
-                    </button>
+                    </AntButton>
                   )
                 })}
               </div>
@@ -390,7 +410,7 @@ export function GlobalSearch({ writable }: { writable: boolean }) {
             </div>
           </div>
         </div>
-      </dialog>
+      </Modal>
     </>
   )
 }

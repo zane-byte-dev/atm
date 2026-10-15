@@ -121,129 +121,6 @@
   }
 }
 
-/* A focused task composer, with metadata below the writing area. */
-.task-create-modal {
-  width: 760px;
-  max-height: min(90dvh, 850px);
-  border-radius: 18px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.task-create-modal .modal-heading {
-  flex: none;
-  align-items: center;
-  padding: 20px 26px 12px;
-}
-.task-create-modal .modal-heading > div {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.task-create-modal .modal-heading h2 {
-  font-size: 15px;
-  margin: 0;
-  font-weight: 600;
-}
-.task-create-modal .modal-heading .eyebrow {
-  font-size: 12px;
-  color: var(--muted);
-}
-.task-create-modal .editor-create {
-  padding: 12px 26px 0;
-  min-height: 0;
-  overflow: auto;
-}
-.editor-create > .field-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-}
-.editor-create .title-input {
-  border: 0;
-  border-radius: 0;
-  padding: 8px 0;
-  font-size: 23px;
-  font-weight: 550;
-  box-shadow: none;
-}
-.editor-create .description-label {
-  margin-top: 12px;
-}
-.editor-create .description-label .field-label {
-  font-size: 12px;
-}
-.editor-create .editor-description > textarea {
-  border: 0;
-  box-shadow: none;
-  padding: 4px 0;
-  min-height: 180px;
-  height: 190px;
-  resize: vertical;
-}
-.editor-create .editor-metadata {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 16px 0 12px;
-}
-.editor-create .editor-metadata label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 10px;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-}
-.editor-create .editor-metadata .field-label {
-  margin: 0;
-  white-space: nowrap;
-  font-size: 12px;
-}
-.editor-create .editor-metadata :is(input, :is(select, .ui-select)) {
-  width: 145px;
-  padding: 3px 0;
-  border: 0;
-  background: transparent;
-  font-size: 12px;
-}
-.editor-create .task-upload-status {
-  font-size: 11px;
-  margin-block: 8px;
-}
-.editor-create > details {
-  color: var(--muted);
-}
-.editor-create .editor-footer {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  margin: 16px -26px 0;
-  padding: 16px 26px;
-  background: var(--surface);
-}
-@media (max-width: 600px) {
-  .task-create-modal {
-    max-height: 94dvh;
-    border-radius: 12px;
-  }
-  .task-create-modal .modal-heading {
-    padding-inline: 18px;
-  }
-  .task-create-modal .editor-create {
-    padding-inline: 18px;
-  }
-  .editor-create .editor-footer {
-    margin-inline: -18px;
-    padding-inline: 18px;
-  }
-  .editor-create .title-input {
-    font-size: 20px;
-  }
-}
-
 .task-description-tools {
   display: flex;
   flex-direction: column;
@@ -470,21 +347,16 @@
   color: var(--muted);
   white-space: nowrap;
 }
-.global-search-dialog {
-  width: min(680px, calc(100vw - 32px));
-  max-height: min(660px, 80dvh);
+.global-search-dialog.ant-modal {
+  max-width: calc(100vw - 32px);
+}
+.global-search-dialog .ant-modal-content {
   padding: 0;
-  margin: 12vh auto auto;
-  border: 1px solid #e4e4e7;
-  border-radius: 16px;
-  background: var(--surface, white);
-  color: var(--text, #27272a);
-  box-shadow: 0 20px 70px #0003;
   overflow: hidden;
 }
-.global-search-dialog::backdrop {
-  background: #18181b35;
-  backdrop-filter: blur(3px);
+.global-search-dialog .ant-modal-header {
+  margin: 0;
+  padding: 12px 22px 0;
 }
 .global-search-panel {
   display: flex;
@@ -502,6 +374,10 @@
 .global-search-input input {
   flex: 1;
   min-width: 0;
+  /* Declared explicitly: antd's .ant-input ships its own inline padding and this
+     rule never set any, so the 17px search field gained an ~11px indent inside
+     the already-padded row. */
+  padding: 0;
   border: 0;
   outline: 0;
   background: none;
@@ -570,24 +446,22 @@
   box-shadow: none;
 }
 
-.workspace .collection-results-heading {
-  min-height: 52px;
-  padding: 10px 16px;
-  border-bottom: 1px solid var(--line);
-}
-.workspace .collection-results-heading h2 {
-  font-size: 16px;
-}
 .inbox-header-actions {
   position: relative;
   display: flex;
+  align-items: center;
   gap: 6px;
+}
+.workspace .collection-results-heading .workspace-search-button {
+  height: 34px;
+  min-height: 34px;
+  padding: 0 10px;
 }
 .inbox-icon-button {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   border: 0;
   border-radius: 7px;
   background: none;
@@ -618,12 +492,21 @@
   gap: 10px;
   width: 100%;
   border: 0;
-  padding: 10px;
+  padding: 0 10px;
+  min-height: 38px;
   background: none;
   color: inherit;
   text-align: left;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
+  box-shadow: none;
+}
+.inbox-popover button > svg {
+  flex: none;
+}
+.inbox-popover .ant-btn > span {
+  flex: 1;
+  text-align: left;
 }
 .inbox-popover button:hover {
   background: var(--hover, #f4f4f5);
@@ -656,7 +539,7 @@
   font-size: 12px;
   color: var(--muted);
 }
-.inbox-source-label :is(select, .ui-select) {
+.inbox-source-label select {
   width: 100%;
   min-width: 0;
 }
@@ -671,7 +554,7 @@
 .workspace .collection-view-items .collection-results {
   padding-top: 0;
 }
-.inbox-source-label :is(select, .ui-select) {
+.inbox-source-label select {
   padding: 7px 9px;
   border: 1px solid var(--line);
   border-radius: 6px;

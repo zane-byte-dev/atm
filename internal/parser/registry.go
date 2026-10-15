@@ -42,9 +42,10 @@ func All() []Agent {
 }
 
 func init() {
+	// Index the primary workspace first, before auxiliary tool histories.
+	register(codexAgent{})
 	register(piAgent{})
 	register(claudeAgent{})
-	register(codexAgent{})
 	register(copilotAgent{})
 	register(qoderAgent{})
 	register(qoderCLIAgent{})

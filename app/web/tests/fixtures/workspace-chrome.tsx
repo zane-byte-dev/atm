@@ -5,12 +5,13 @@ import { BrowserRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ListTodo } from 'lucide-react'
 import { AppShell } from '../../src/workspace-shell'
-import { WorkspaceTitle } from '../../src/workspace-title'
-import { TaskViews } from '../../src/task-views'
-import { KnowledgeManager } from '../../src/workspaces/knowledge-manager'
+import { WorkspaceNavigatorHeading } from '../../src/components/workspace-navigator'
+import { TaskViews } from '../../src/features/tasks/task-views'
+import { KnowledgeManager } from '../../src/features/knowledge/knowledge-manager'
 import type { Bootstrap } from '../../src/types'
 import '../../src/app.css'
-import '../../src/task-workbench.css'
+import '../../src/features/tasks/task-workbench.css'
+import { DesignSystemProvider } from '../../src/design-system'
 const boot = { capabilities: { todo_write: true }, version: 'test' } as Bootstrap
 window.fetch = async (url) => {
   if (String(url).endsWith('/knowledge.query'))
@@ -23,9 +24,7 @@ function Harness() {
   return (
     <AppShell boot={boot}>
       <section className="task-workbench">
-        <header className="workbench-heading">
-          <WorkspaceTitle icon={ListTodo}>任务</WorkspaceTitle>
-        </header>
+        <WorkspaceNavigatorHeading className="workbench-heading" icon={ListTodo} title="任务" />
         <div className="workbench-toolbar">
           <TaskViews params={params} items={[]} onChange={setParams} onOpenMenu={() => {}} />
         </div>
@@ -49,8 +48,10 @@ function Harness() {
 }
 createRoot(document.getElementById('root')!).render(
   <BrowserRouter>
-    <QueryClientProvider client={new QueryClient()}>
-      <Harness />
-    </QueryClientProvider>
+    <DesignSystemProvider>
+      <QueryClientProvider client={new QueryClient()}>
+        <Harness />
+      </QueryClientProvider>
+    </DesignSystemProvider>
   </BrowserRouter>,
 )

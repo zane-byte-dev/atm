@@ -25,12 +25,17 @@ type CollectionOverviewResult struct {
 	Sources         []CollectionSource     `json:"sources"`
 	Runs            []CollectionRun        `json:"runs"`
 	Messages        CollectionMessageStats `json:"messages"`
+	// ConnectorUsage carries the same health projection `atm collect status`
+	// prints, plus today/7-day run totals. It is the browser's only view of the
+	// external CLI each connector drives — for dingtalk that is `dws`.
+	ConnectorUsage []ConnectorUsage `json:"connector_usage"`
 }
 
 type CollectionSource = collector.WorkspaceCollectionSource
 type CollectionRun = collector.WorkspaceCollectionRun
 type CollectionSummary = collector.WorkspaceCollectionSummary
 type CollectionMessageStats = collector.WorkspaceCollectionMessageStats
+type ConnectorUsage = collector.WorkspaceConnectorUsage
 
 type CollectionListInput struct {
 	UnreadOnly bool   `json:"unread_only,omitempty"`
@@ -206,12 +211,16 @@ func collectionOverview(ctx context.Context) (CollectionOverviewResult, error) {
 		Enabled: config.CollectionEnabled, IntervalMinutes: config.CollectionIntervalMinutes,
 		LookbackMinutes: config.CollectionLookbackMinutes, RetentionDays: config.CollectionMessageRetentionDays,
 		WorkerStatus: "external_status_unknown", Sources: []CollectionSource{}, Runs: []CollectionRun{},
+		ConnectorUsage: []ConnectorUsage{},
 	}
 	overview, err := (collector.QueryService{}).Overview(ctx)
 	if err != nil {
 		return result, err
 	}
 	result.Summary, result.Sources, result.Runs, result.Messages = overview.Summary, overview.Sources, overview.Runs, overview.Messages
+	if overview.Usage != nil {
+		result.ConnectorUsage = overview.Usage
+	}
 	return result, nil
 }
 

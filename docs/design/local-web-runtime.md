@@ -13,7 +13,7 @@
 - 新建任务在 `localStorage` 记住最近填写内容，再次打开时自动填入；已有任务编辑不持久化。知识与记忆编辑器各自提供草稿恢复。
 - schema v58 是当前完整结构，仅保留 v57 → v58 的任务最后变更时间迁移；旧库只读预览已删除，`serve` 对 v57 提示先显式迁移。
 - `jobs.run/list/show/cancel` 支持同步、采集、重处理、AI Day、额度刷新和 `todo.refine`，保留幂等身份、ETag、取消与重启中断语义。
-- Go 默认接管后台：同步约 5 分钟，AI Day 约 7 分钟，采集按配置检查到期；Hook 即时接收，每 8 秒回补 presence。
+- Go 默认接管后台：默认仅 Codex 会话每晚 23:00 后同步一次，次日 06:00 前可补采，AI Day 随同步成功后更新；外部采集按配置检查到期，Hook 即时接收。
 - SSE 合并为 reset，由页面刷新当前查询；有订阅时每 2 秒检查全部业务域版本与文件指纹，服务内提交异步触发扫描，关闭页面不停止 Go 后台。
 - 用户级 LaunchAgent `serve install --print/install/uninstall`，固定当前完整二进制绝对路径，受控停机、登录启动及异常退出恢复。
 - 独立 [ATM Menu](../../app/menubar/README.md) 和 [VoxCaret](../../app/voice/README.md)，各自构建、偏好域和权限；旧 Swift 主工作区已从工作树移除，历史源码保存在 Git 中；当前 Go/Web/Menu/Voice 构建均独立于旧实现。
@@ -266,11 +266,11 @@ TypeScript DTO 维护 Go 公开契约的小型明确映射，不把整个 store 
 
 | 后台工作 | 触发 | 约束 |
 | --- | --- | --- |
-| 会话同步 | 启动和约每 5 分钟；用户可手动发起 | 共享跨进程执行锁，避免 Web/CLI 双重同步 |
-| Agent 活动 | Hook 立即更新，每 8 秒回补 presence 与配置 | 与浏览器可见性无关，过期状态会清理 |
+| 会话同步 | 默认仅 Codex，辅助来源需显式开启；按配置时区每晚 23:00 后一次，次日 06:00 前可补采；持久化去重，用户可手动发起 | 共享跨进程执行锁，避免 Web/CLI 双重同步 |
+| Agent 活动 | Hook 立即更新；仅配置每 8 秒刷新，不主动扫描会话 | 与浏览器可见性无关，过期状态会清理 |
 | 外部收集 | 用户开启后按现有配置间隔 | 保留连接器登录失效退避、mute 和游标语义 |
 | 配额/今日摘要 | 按需＋共享短 TTL；历史采样随 sync | 菜单栏只拿轻量摘要，不触发全范围统计 |
-| AI Day | 启动和约每 7 分钟更新当前结果；用户可重建所选日期 | 历史详情按需，不随每次 presence 变化重算 |
+| AI Day | 夜间同步成功后更新当前结果；用户可重建所选日期 | 历史详情按需，不随每次 presence 变化重算 |
 | 关联评审证据等慢查询 | 页面订阅或用户触发，保持现有节流 | 不因为存在 server 就把原按需能力全部设成定时任务 |
 
 读取接口不能通过请求中的 `sync=true` 绕开上述调度；HTTP 契约把同步明确拆成写操作。
@@ -281,7 +281,7 @@ TypeScript DTO 维护 Go 公开契约的小型明确映射，不把整个 store 
 
 Go 成为唯一接收者，移植现有事件解析、snapshot/stream、事件顺序、过期与状态合并规则。hook 无接收者时仍快速返回，保持旁路性质。先核验已有 Go 事件存储/发送能力，再只迁移缺失的接收和合并逻辑。
 
-保留 `ATM_NOTCH_SOCKET` 测试/配置覆盖；当前发送端有约 400 ms 交付上限，不扩大为长时间等待服务。Go 已实现 attention overlay、busy/completion 转换、过期与查询回补；重启后先建立状态基线，不补发历史完成提醒。回补周期固定 8 秒，未照搬 Swift 的窗口可见性调度。
+保留 `ATM_NOTCH_SOCKET` 测试/配置覆盖；当前发送端有约 400 ms 交付上限，不扩大为长时间等待服务。Go 已实现 attention overlay、busy/completion 转换、过期与查询回补；重启后先建立状态基线，不补发历史完成提醒。不再每 8 秒回补 presence；无 Hook 的工具通过 CLI 按需查询。
 
 不能在 Go 启动时无条件 unlink 已存在的 socket。实例锁与存活核验先确认没有其他 Go runtime 持有它，
 服务退出也只清理自己创建的 socket inode。旧 Swift 主工作区不属于受支持的并存客户端。
@@ -450,19 +450,7 @@ ATMVoiceInputDictionary
 
 ### 11.2 其他原生偏好如何处理
 
-提供独立脚本 [scripts/export-web-preferences.swift](../../scripts/export-web-preferences.swift)，使用方式为 `swift scripts/export-web-preferences.swift [--dev]`，导出 `kind: atm-native-preferences`、`version: 1` 和明确的正式/开发 bundle ID。
-浏览器在“设置 → 外观”选择 JSON、预览勾选后确认，只读取以下五项：
-
-| 原生键 | 导出字段 | Web 使用方式 |
-| --- | --- | --- |
-| `ATMKnowledgeCollectionOrder` | `knowledge_collection_order` | 知识集合排列；忽略已删除 ID，新条目附后 |
-| `ATMCollectionSourceOrder` | `collection_source_order` | 采集来源排列，规则同上 |
-| `atmUsageFilterModel` | `usage_filter_model` | 模型明细和对应时间桶筛选 |
-| `atmUsageFilterClient` | `usage_filter_client` | 规范化为已有 Agent 筛选 |
-| `atmUsageFilterProject` | `usage_filter_project` | 项目汇总/趋势优先，延续原生语义 |
-
-文件最多 2 MB，排序数组最多 1,000 项，单值最多 512 字符；未知字段、错误版本和格式直接拒绝。
-导入不上传到 Go，只影响当前浏览器；不同浏览器分别导入。模型/项目并无联合桶，界面明确项目优先，不能假算交叉结果。
+Web 不导入旧版主界面的偏好文件。知识集合、采集来源顺序及用量筛选由当前浏览器保存；首次使用采用默认顺序和筛选。
 通知开关、每类音效/音量与呼出热键由 Menu 导入，七项语音偏好和完整模型由 Voice 导入。
 窗口尺寸、旧分栏宽度、折叠、滚动、缓存采用新的网页布局；业务 config.json 继续共用，不复制凭证或转写历史。
 
@@ -478,14 +466,13 @@ internal/presence/             # Hook、presence、通知状态与渠道
 internal/<domain>/             # 现有 application services
 internal/store/                # SQLite、业务文件、当前 schema 基线
 app/web/src/                   # 路由、任务、草稿、API、主题、SSE
-app/web/src/workspaces/         # 按领域拆分的工作区、统计内徽章日历及偏好迁移
+app/web/src/workspaces/         # 按领域拆分的工作区及统计内徽章日历
 app/web/public/                # 静态资源
 app/web/dist/                  # Vite 生成资源，不手写
 app/web/assets_embed.go        # webui 构建标签 + go:embed
 app/web/assets_stub.go         # 无 webui 时的明确降级
 app/menubar/                   # 独立 ATM Menu，无旧主界面依赖
 app/voice/                     # 独立 VoxCaret，无 Go 数据依赖
-scripts/export-web-preferences.swift # 独立的旧原生偏好导出工具
 ```
 
 先在当前仓库内明确构建目标和依赖边界，避免同时引入多仓库发布协调。语音是独立产品边界，不意味着首日必须完成仓库搬家。
@@ -606,7 +593,7 @@ index.html 使用 no-cache，带内容 hash 的资源可长期缓存；API/敏�
 
 - SyncAllContext/SyncAgentContext 使用数据目录级跨进程锁，保护增量 offset 到提交的整个执行范围；收集执行/重处理共用锁，迁移也持有这些锁。
 - `internal/background` 使用当前 schema 的持久执行账本；模型调用结束落用量，任务 AI 整理在模型调用前后都核对 ETag，不覆盖并行编辑。
-- `internal/presence` 保留现有 Hook 协议，拒绝接管活跃外部 socket，只删除自己的 socket；8 秒回补与生命周期不依赖窗口。
+- `internal/presence` 保留现有 Hook 协议，拒绝接管活跃外部 socket，只删除自己的 socket；Hook 接收与生命周期不依赖窗口。
 - Menu 只消费轻量状态/通知，Voice 不连接 ATM 数据。通知采用唯一显示渠道与稳定 ID，备用横幅不保证撤回。
 - 日用部署仍必须统一实际调用的二进制、确认数据基线、登录服务和系统权限；独立目录里的测试构建不代表日用 CLI 已改用它。
 

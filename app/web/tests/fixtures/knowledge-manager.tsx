@@ -2,10 +2,11 @@
 import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { KnowledgeManager } from '../../src/workspaces/knowledge-manager'
-import type { KnowledgeDocument } from '../../src/workspaces/knowledge-types'
+import { KnowledgeManager } from '../../src/features/knowledge/knowledge-manager'
+import type { KnowledgeDocument } from '../../src/features/knowledge/knowledge-types'
 import '../../src/app.css'
-import '../../src/workspaces/knowledge.css'
+import '../../src/features/knowledge/knowledge.css'
+import { DesignSystemProvider } from '../../src/design-system'
 const documents = new Map(
   ['one', 'two', 'three'].map((id, index) => [
     id,
@@ -100,7 +101,11 @@ function Harness() {
   )
 }
 createRoot(document.getElementById('root')!).render(
-  <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
-    <Harness />
-  </QueryClientProvider>,
+  <DesignSystemProvider>
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      <Harness />
+    </QueryClientProvider>
+  </DesignSystemProvider>,
 )

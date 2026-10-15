@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { progressiveTasks } from '../src/task-progressive.ts'
+import { progressiveTasks } from '../src/features/tasks/task-progressive.ts'
 import type { Todo } from '../src/types.ts'
 test('limits completed tasks without hiding active tasks or changing order', () => {
   const rows: Todo[] = Array.from({ length: 20 }, (_, i) => ({

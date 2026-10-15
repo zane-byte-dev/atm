@@ -30,15 +30,17 @@ type MetadataEffect struct {
 type AddInput struct {
 	// IdempotencyKey identifies one create intent across transport retries.
 	// Existing CLI callers may omit it; Web callers must provide one.
-	IdempotencyKey string   `json:"idempotency_key,omitempty"`
-	Title          string   `json:"title"`
-	Description    string   `json:"description,omitempty"`
-	Priority       string   `json:"priority,omitempty"`
-	Project        string   `json:"project,omitempty"`
-	Source         string   `json:"source,omitempty"`
-	Creator        string   `json:"creator,omitempty"`
-	OnDone         string   `json:"on_done,omitempty"`
-	ImagePaths     []string `json:"image_paths,omitempty"`
+	IdempotencyKey      string   `json:"idempotency_key,omitempty"`
+	Title               string   `json:"title"`
+	Description         string   `json:"description,omitempty"`
+	Priority            string   `json:"priority,omitempty"`
+	Project             string   `json:"project,omitempty"`
+	Source              string   `json:"source,omitempty"`
+	Creator             string   `json:"creator,omitempty"`
+	OnDone              string   `json:"on_done,omitempty"`
+	ImagePaths          []string `json:"image_paths,omitempty"`
+	KnowledgeDocumentID string   `json:"knowledge_document_id,omitempty"`
+	KnowledgeTitle      string   `json:"-"`
 }
 
 type AddResult struct {
@@ -108,15 +110,17 @@ type MoveResult struct {
 }
 
 type normalizedAdd struct {
-	title       string
-	description string
-	priority    string
-	status      string
-	project     string
-	source      string
-	creator     string
-	onDone      string
-	imagePaths  []string
+	knowledgeDocumentID string
+	knowledgeTitle      string
+	title               string
+	description         string
+	priority            string
+	status              string
+	project             string
+	source              string
+	creator             string
+	onDone              string
+	imagePaths          []string
 }
 
 // Add validates and creates one Todo, including managed image import, in the
@@ -175,6 +179,9 @@ func (service Service) Add(ctx context.Context, call application.Call, input Add
 			Source:      normalized.source,
 			Creator:     normalized.creator,
 			OnDone:      normalized.onDone,
+		}
+		if normalized.knowledgeDocumentID != "" {
+			todo.Links = []TodoLink{{URL: KnowledgeLinkURL(normalized.knowledgeDocumentID), Kind: "knowledge", Title: normalized.knowledgeTitle}}
 		}
 		images, cleanup, importErr := store.ImportTodoImages(todo.ID, normalized.imagePaths)
 		if importErr != nil {
@@ -508,14 +515,19 @@ func withoutTodoTag(tags []string, target string) []string {
 }
 
 func normalizeAdd(call application.Call, input AddInput) (normalizedAdd, error) {
+	if input.KnowledgeDocumentID != "" && KnowledgeLinkID(KnowledgeLinkURL(input.KnowledgeDocumentID)) == "" {
+		return normalizedAdd{}, metadataInvalidArgument("invalid knowledge document ID", "knowledge_document_id", input.KnowledgeDocumentID)
+	}
 	normalized := normalizedAdd{
-		title:       strings.TrimSpace(input.Title),
-		description: input.Description,
-		status:      store.TodoStatusOpen,
-		project:     config.CanonicalProject(input.Project),
-		source:      strings.TrimSpace(input.Source),
-		onDone:      input.OnDone,
-		imagePaths:  append([]string(nil), input.ImagePaths...),
+		knowledgeDocumentID: input.KnowledgeDocumentID,
+		knowledgeTitle:      input.KnowledgeTitle,
+		title:               strings.TrimSpace(input.Title),
+		description:         input.Description,
+		status:              store.TodoStatusOpen,
+		project:             config.CanonicalProject(input.Project),
+		source:              strings.TrimSpace(input.Source),
+		onDone:              input.OnDone,
+		imagePaths:          append([]string(nil), input.ImagePaths...),
 	}
 	if normalized.title == "" {
 		return normalized, metadataInvalidArgument("todo title is required", "title", input.Title)

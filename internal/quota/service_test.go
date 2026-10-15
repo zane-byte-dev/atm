@@ -291,6 +291,20 @@ func TestRecordSamplesNeverAsksForALiveReading(t *testing.T) {
 	}
 }
 
+func TestRecordAgentSamplesDoesNotReadAuxiliarySources(t *testing.T) {
+	var read []string
+	withReaders(t, []reader{
+		{agent: "codex", read: func(bool) *parser.QuotaInfo { read = append(read, "codex"); return nil }},
+		{agent: "grokbuild", read: func(bool) *parser.QuotaInfo { read = append(read, "grokbuild"); return nil }},
+	})
+	if err := Default.RecordAgentSamplesContext(context.Background(), nil, time.Now(), "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 1 || read[0] != "codex" {
+		t.Fatalf("unexpected quota reads: %v", read)
+	}
+}
+
 // Storing the stale percentage of a refilled window would read as usage that
 // never drained, which is exactly what a trend is computed from.
 func TestSnapshotAndSamplesAgreeOnARefilledWindow(t *testing.T) {

@@ -2,11 +2,12 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { TaskWorkbench } from '../../src/task-workbench'
+import { TaskWorkbench } from '../../src/features/tasks/task-workbench'
 import { AppShell } from '../../src/workspace-shell'
 import { Select } from '../../src/components/select'
 import type { Bootstrap, Todo } from '../../src/types'
 import '../../src/app.css'
+import { DesignSystemProvider } from '../../src/design-system'
 const items = Array.from({ length: 12 }, (_, index) => ({
   id: `t${index + 1}`,
   title: ['梳理交付范围', '实现筛选菜单', '验收界面', '已完成任务'][index % 4],
@@ -71,10 +72,12 @@ function Harness() {
 }
 createRoot(document.getElementById('root')!).render(
   <BrowserRouter>
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
-      <Harness />
-    </QueryClientProvider>
+    <DesignSystemProvider>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <Harness />
+      </QueryClientProvider>
+    </DesignSystemProvider>
   </BrowserRouter>,
 )

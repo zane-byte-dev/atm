@@ -111,6 +111,11 @@ func applicationCauseClass(code application.ErrorCode) string {
 		return "contention"
 	case application.CodeUnavailable:
 		return "infrastructure"
+	case application.CodeFailedPrecondition:
+		// The environment, not a dependency, is wrong: a binary older than the
+		// database it opened. Kept out of "infrastructure" so telemetry does not
+		// count a permanent install mistake as transient flakiness.
+		return "environment"
 	default:
 		return "internal"
 	}

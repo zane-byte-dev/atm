@@ -36,14 +36,14 @@ body {
 button,
 input,
 textarea,
-:is(select, .ui-select) {
+select {
   font: inherit;
 }
 button,
 a,
 input,
 textarea,
-:is(select, .ui-select) {
+select {
   -webkit-tap-highlight-color: transparent;
 }
 button {
@@ -61,7 +61,7 @@ a {
 }
 input,
 textarea,
-:is(select, .ui-select) {
+select {
   outline: none;
 }
 button:focus-visible,
@@ -71,7 +71,7 @@ a:focus-visible {
 }
 input:focus,
 textarea:focus,
-:is(select, .ui-select):focus {
+select:focus {
   border-color: var(--accent-line) !important;
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
@@ -86,14 +86,6 @@ h2,
 h3,
 p {
   margin: 0;
-}
-.spin {
-  animation: spin 1.2s linear infinite;
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
 }
 .workspace {
   display: flex;
@@ -497,7 +489,7 @@ kbd {
   border-bottom-color: var(--accent-line);
   font-weight: 550;
 }
-.detail-tabs button span {
+.detail-tabs button .detail-tab-count {
   background: var(--soft);
   padding: 1px 4px;
   font-size: 11px;
@@ -702,9 +694,6 @@ kbd {
   white-space: nowrap;
   padding: 4px;
 }
-.notice span {
-  flex: 1;
-}
 .task-detail .notice,
 .editor .notice {
   margin: 15px 0;
@@ -784,7 +773,7 @@ kbd {
   margin-bottom: 9px;
 }
 .editor input,
-.editor :is(select, .ui-select),
+.editor select,
 .editor textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -1196,111 +1185,6 @@ kbd {
   padding-top: 11px;
   border-top: 1px solid var(--line);
 }
-.task-lifecycle-dialog {
-  width: min(440px, calc(100vw - 40px));
-  margin: auto;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  color: var(--text);
-  background: var(--surface);
-  box-shadow: 0 24px 80px var(--overlay);
-}
-.task-lifecycle-dialog::backdrop {
-  background: var(--overlay);
-  backdrop-filter: blur(2px);
-}
-.task-lifecycle-dialog > header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 18px 19px 16px;
-  border-bottom: 1px solid var(--line);
-}
-.task-lifecycle-dialog h2 {
-  margin: 5px 0 0;
-  font-size: 17px;
-  font-weight: 600;
-}
-.task-lifecycle-body {
-  padding: 18px 19px;
-}
-.task-lifecycle-status {
-  display: grid;
-  gap: 5px;
-  padding: 12px 13px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  background: var(--canvas);
-}
-.task-lifecycle-status span {
-  color: var(--muted);
-  font-size: 11px;
-}
-.task-lifecycle-status strong {
-  font-size: 13px;
-  font-weight: 580;
-}
-.task-lifecycle-body ul {
-  display: grid;
-  gap: 9px;
-  margin: 16px 0 0;
-  padding: 0;
-  list-style: none;
-}
-.task-lifecycle-body li {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.task-lifecycle-body li svg {
-  flex: none;
-  margin-top: 2px;
-  color: var(--success);
-}
-.task-lifecycle-reason {
-  display: grid;
-  gap: 7px;
-  margin-top: 17px;
-  color: var(--text);
-  font-size: 12px;
-  font-weight: 560;
-}
-.task-lifecycle-reason-label small {
-  margin-left: 4px;
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 450;
-}
-.task-lifecycle-reason textarea {
-  min-height: 84px;
-  resize: vertical;
-  padding: 10px 11px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--text);
-  background: var(--canvas);
-  font: inherit;
-  line-height: 1.55;
-}
-.task-lifecycle-dialog > footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 7px;
-  padding: 12px 19px;
-  border-top: 1px solid var(--line);
-  background: var(--canvas);
-}
-.task-lifecycle-dialog .button.danger {
-  border-color: var(--danger);
-  background: var(--danger);
-}
-
 @media (max-width: 1250px) {
   .detail-column:has(> .task-inspector) {
     grid-template-columns: minmax(0, 1fr) 216px;
@@ -1320,16 +1204,6 @@ kbd {
     margin: 0 12px 18px;
     border: 1px solid var(--line);
     border-radius: 12px;
-  }
-}
-@media (max-width: 600px) {
-  .task-lifecycle-dialog {
-    position: fixed;
-    inset: auto 8px 8px;
-    width: calc(100vw - 16px);
-    max-width: none;
-    margin: 0;
-    border-radius: 18px;
   }
 }
 .modal {
@@ -1454,7 +1328,7 @@ kbd {
   color: var(--muted);
 }
 .editor input,
-.editor :is(select, .ui-select),
+.editor select,
 .editor textarea {
   color: var(--text);
   font-size: 13px;
@@ -1504,7 +1378,7 @@ kbd {
 .task-operation-form textarea,
 .task-operation-form input,
 .task-dependency-add input,
-.task-plan-edit-row :is(select, .ui-select) {
+.task-plan-edit-row select {
   width: 100%;
   padding: 9px 10px;
   border: 1px solid var(--line);
@@ -1551,7 +1425,7 @@ kbd {
   color: var(--muted);
   font-size: 12px;
 }
-.task-plan-edit-row :is(select, .ui-select) {
+.task-plan-edit-row select {
   padding-inline: 7px;
 }
 .task-inline-action {
@@ -1652,7 +1526,7 @@ kbd {
   .task-plan-edit-row {
     grid-template-columns: 18px minmax(0, 1fr) 28px;
   }
-  .task-plan-edit-row :is(select, .ui-select) {
+  .task-plan-edit-row select {
     grid-column: 2;
     grid-row: auto;
   }
@@ -1766,7 +1640,7 @@ kbd {
   --control-radius: 7px;
   --metric-value-size: 23px;
   --section-title-size: 15px;
-  --navigator-width: 336px;
+  --navigator-width: 280px;
 }
 
 .workspace {
@@ -1950,10 +1824,9 @@ kbd {
   min-height: 330px;
   margin: 10px 24px 24px;
   padding: 18px 20px 22px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
-  box-shadow: 0 2px 8px #00000009;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .detail-body {
   min-height: 180px;
@@ -2224,16 +2097,6 @@ kbd {
   border-bottom: 1px solid var(--line);
   border-radius: 0;
   margin-bottom: 0;
-}
-.task-full-document {
-  margin-top: 28px;
-  padding-top: 16px;
-  border-top: 1px solid var(--line);
-}
-.task-full-document > summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 12px;
 }
 .task-inspector > section {
   padding: 24px 18px;

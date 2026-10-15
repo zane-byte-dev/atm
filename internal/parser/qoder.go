@@ -51,14 +51,14 @@ func DiscoverQoder() []string {
 //
 // parent_session_id was added by an upstream migration, so its absence has to
 // degrade to the unfiltered list rather than to no sessions at all.
-func qoderRootOnly(db *sql.DB) string {
+func qoderRootOnly(db sqliteReader) string {
 	if !qoderHasColumn(db, "chat_session", "parent_session_id") {
 		return ""
 	}
 	return " WHERE COALESCE(parent_session_id,'') = ''"
 }
 
-func qoderHasColumn(db *sql.DB, table, column string) bool {
+func qoderHasColumn(db sqliteReader, table, column string) bool {
 	rows, err := db.Query("SELECT 1 FROM pragma_table_info(?) WHERE name = ?", table, column)
 	if err != nil {
 		return false
@@ -67,7 +67,7 @@ func qoderHasColumn(db *sql.DB, table, column string) bool {
 	return rows.Next()
 }
 
-func qoderIsSubagent(db *sql.DB, sid string) bool {
+func qoderIsSubagent(db sqliteReader, sid string) bool {
 	if !qoderHasColumn(db, "chat_session", "parent_session_id") {
 		return false
 	}
@@ -87,7 +87,7 @@ func qoderIsSubagent(db *sql.DB, sid string) bool {
 // did not have. Tool calls stay put for the same reason — the parent already
 // counts the one call that did the delegating, and the child's calls are that
 // call's internals, not additional work at this level.
-func qoderAddSubagentUsage(db *sql.DB, sid string, usage *Usage, usageEvents *[]UsageEvent) {
+func qoderAddSubagentUsage(db sqliteReader, sid string, usage *Usage, usageEvents *[]UsageEvent) {
 	if !qoderHasColumn(db, "chat_session", "parent_session_id") {
 		return
 	}
@@ -185,10 +185,14 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 		return nil
 	}
 	defer db.Close()
+	return qoderParse(db, virtualPath, false)
+}
 
+func qoderParse(db sqliteReader, virtualPath string, keepEmpty bool) *ParsedFile {
+	sid := strings.TrimPrefix(virtualPath, "qoder://")
 	var title, project, mode string
 	var gmtCreate int64
-	err = db.QueryRow("SELECT session_title, COALESCE(project_name,''), COALESCE(mode,''), gmt_create FROM chat_session WHERE session_id = ?", sid).
+	err := db.QueryRow("SELECT session_title, COALESCE(project_name,''), COALESCE(mode,''), gmt_create FROM chat_session WHERE session_id = ?", sid).
 		Scan(&title, &project, &mode, &gmtCreate)
 	if err != nil {
 		return nil
@@ -270,13 +274,17 @@ func QoderParseFile(virtualPath string) *ParsedFile {
 		}
 	}
 
+	if rows.Err() != nil {
+		return nil
+	}
+
 	// The delegated work is this session's spend even though upstream books it
 	// against a row of its own, and that row is no longer indexed, so without the
 	// rollup those tokens would go unreported by every caller: 1.8M prompt tokens
 	// across five subagent rows on a live database.
 	qoderAddSubagentUsage(db, sid, &usage, &usageEvents)
 
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 && len(inputs) == 0 {
+	if !keepEmpty && usage.InputTokens == 0 && usage.OutputTokens == 0 && len(inputs) == 0 {
 		return nil
 	}
 

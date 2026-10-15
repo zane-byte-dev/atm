@@ -3,11 +3,12 @@ import { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
-import { TaskWorkbench } from '../../src/task-workbench'
-import { filterTasks, groupTasks } from '../../src/task-view-model'
-import { taskWorkbenchInput, type TaskWorkbenchMetadata } from '../../src/task-query'
+import { TaskWorkbench } from '../../src/features/tasks/task-workbench'
+import { filterTasks, groupTasks } from '../../src/features/tasks/task-view-model'
+import { taskWorkbenchInput, type TaskWorkbenchMetadata } from '../../src/features/tasks/task-query'
 import type { Todo } from '../../src/types'
 import '../../src/app.css'
+import { DesignSystemProvider } from '../../src/design-system'
 
 const rows: Todo[] = Array.from({ length: 129 }, (_, index) => ({
   id: `t${index + 1}`,
@@ -142,9 +143,11 @@ function Harness() {
   )
 }
 createRoot(document.getElementById('root')!).render(
-  <QueryClientProvider client={client}>
-    <BrowserRouter>
-      <Harness />
-    </BrowserRouter>
-  </QueryClientProvider>,
+  <DesignSystemProvider>
+    <QueryClientProvider client={client}>
+      <BrowserRouter>
+        <Harness />
+      </BrowserRouter>
+    </QueryClientProvider>
+  </DesignSystemProvider>,
 )

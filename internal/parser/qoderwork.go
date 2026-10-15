@@ -58,7 +58,11 @@ func QoderWorkParseFile(virtualPath string) *ParsedFile {
 		return nil
 	}
 	defer db.Close()
+	return qoderWorkParse(db, virtualPath, false)
+}
 
+func qoderWorkParse(db sqliteReader, virtualPath string, keepEmpty bool) *ParsedFile {
+	id := strings.TrimPrefix(virtualPath, "qoderwork://")
 	var subChatName, mode, modelLevel, chatName, projectName, projectPath string
 	var subCreated, subUpdated, chatCreated, chatUpdated int64
 	err := db.QueryRow(`SELECT COALESCE(sc.name,''), COALESCE(sc.mode,''), COALESCE(sc.model_level,''),
@@ -145,7 +149,10 @@ func QoderWorkParseFile(virtualPath string) *ParsedFile {
 			}
 		}
 	}
-	if len(messages) == 0 && len(tools) == 0 {
+	if rows.Err() != nil {
+		return nil
+	}
+	if !keepEmpty && len(messages) == 0 && len(tools) == 0 {
 		return nil
 	}
 	project := config.ProjectFromPath(projectPath)

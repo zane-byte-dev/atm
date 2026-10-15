@@ -454,3 +454,30 @@ func TestInstanceRecordCannotRedirectControlCredential(t *testing.T) {
 		}
 	}
 }
+
+// TestApplicationErrorStatusCoversWholeVocabulary keeps the HTTP mapping total.
+// applicationError falls back to 500 for an unmapped code, so a code added to
+// the application vocabulary without a matching entry here would silently report
+// every occurrence as a server defect — including failed_precondition, which
+// means "this binary does not match this database" and is the caller's to fix.
+func TestApplicationErrorStatusCoversWholeVocabulary(t *testing.T) {
+	for _, code := range application.AllErrorCodes() {
+		status := applicationErrorStatus[code]
+		if status == 0 {
+			t.Errorf("application code %q has no HTTP status and would fall back to 500", code)
+			continue
+		}
+		if status < 400 || status > 599 {
+			t.Errorf("application code %q maps to %d, want a 4xx or 5xx status", code, status)
+		}
+	}
+	// A precondition failure must not share 503 with unavailable: 503 reads as
+	// "transient, retry later", which is exactly the misreading that made a stale
+	// binary look like flaky infrastructure rather than a version mismatch.
+	if applicationErrorStatus[application.CodeFailedPrecondition] == applicationErrorStatus[application.CodeUnavailable] {
+		t.Error("failed_precondition shares a status with unavailable, so clients cannot tell permanent from transient")
+	}
+	if got := applicationErrorStatus[application.CodeFailedPrecondition]; got != 412 {
+		t.Errorf("failed_precondition status = %d, want 412", got)
+	}
+}

@@ -1,12 +1,17 @@
 import type { OperationWarning, Todo, TodoDetail, TodoList } from './types'
-import type { TaskGroupBy, TaskPage, TaskWorkbenchInput, TaskWorkbenchMetadata } from './task-query'
+import type {
+  TaskGroupBy,
+  TaskPage,
+  TaskWorkbenchInput,
+  TaskWorkbenchMetadata,
+} from './features/tasks/task-query'
 import type {
   KnowledgeCollection,
   KnowledgeDocument,
   KnowledgeQueryInput,
   KnowledgeQueryResult,
-} from './workspaces/knowledge-types'
-import type { RuntimeJob } from './workspaces/runtime-jobs'
+} from './features/knowledge/knowledge-types'
+import type { RuntimeJob } from './features/notifications/runtime-job-model'
 
 type Contract<Input, Output> = { input: Input; output: Output }
 type TodoIdentity = { todo_id: string }
@@ -63,10 +68,22 @@ export type ApiContracts = {
     TodoLegacyListInput | TodoMetadataInput | TodoPageInput,
     TodoList | TaskWorkbenchMetadata | TaskPage
   >
+  'todo.knowledge.add': Contract<{ todo_id: string; document_id: string }, Record<string, never>>
+  'todo.knowledge.remove': Contract<{ todo_id: string; document_id: string }, Record<string, never>>
+  'knowledge.tasks': Contract<
+    { document_id: string; offset?: number },
+    { items: { id: string; title: string; status: string; archived: boolean }[]; has_more: boolean }
+  >
   'todo.show': Contract<TodoIdentity, TodoDetail>
   'todo.doc': Contract<TodoIdentity, { exists: boolean; content: string }>
   'todo.create': Contract<
-    { title: string; description?: string; project?: string; priority?: string },
+    {
+      title: string
+      description?: string
+      project?: string
+      priority?: string
+      knowledge_document_id?: string
+    },
     TodoMutationResult
   >
   'todo.update': Contract<
@@ -74,6 +91,8 @@ export type ApiContracts = {
     TodoMutationResult
   >
   'todo.start': Contract<TodoIdentity & { reopen_reason?: string }, TodoMutationResult>
+  'todo.submit': Contract<TodoIdentity & { reason?: string }, TodoMutationResult>
+  'todo.return_to_open': Contract<TodoRevision, TodoMutationResult>
   'todo.done': Contract<TodoIdentity & { reason?: string }, TodoMutationResult>
   'todo.archive': Contract<TodoIdentity, TodoMutationResult>
   'todo.restore': Contract<TodoIdentity, TodoMutationResult>
@@ -105,6 +124,14 @@ export type ApiContracts = {
   'knowledge.document.get': Contract<{ document_id: string }, KnowledgeDocument>
   'knowledge.document.create': Contract<KnowledgeCreateInput, KnowledgeDocument>
   'knowledge.document.update': Contract<KnowledgeUpdateInput, KnowledgeDocument>
+  'knowledge.collection.update': Contract<
+    { id: string; name?: string; description?: string },
+    KnowledgeCollection
+  >
+  'knowledge.collection.delete': Contract<
+    { id: string; move_to?: string; confirmed: true },
+    { id: string; moved_to?: string; moved_documents: number }
+  >
   'knowledge.collection.create': Contract<
     { id: string; name?: string; description?: string },
     KnowledgeCollection
@@ -115,7 +142,12 @@ export type ApiInput<M extends ApiMethod> = ApiContracts[M]['input']
 export type ApiOutput<M extends ApiMethod> = ApiContracts[M]['output']
 export type TodoMutationMethod = Exclude<
   Extract<ApiMethod, `todo.${string}`>,
-  'todo.list' | 'todo.show' | 'todo.doc' | 'todo.dependency.list'
+  | 'todo.list'
+  | 'todo.show'
+  | 'todo.doc'
+  | 'todo.dependency.list'
+  | 'todo.knowledge.add'
+  | 'todo.knowledge.remove'
 >
 export type TodoMutationRequest = {
   [M in TodoMutationMethod]: { method: M; input: ApiInput<M> }

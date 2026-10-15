@@ -2,6 +2,7 @@ package background
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/zane-byte-dev/atm/internal/aiday"
@@ -26,6 +27,9 @@ func DefaultExecutor(dataDir string, refineOptions ...TodoRefineOptions) Executo
 		case TodoRefine:
 			return executeTodoRefine(ctx, call, input, progress, refinement)
 		case SessionSync:
+			if call.Actor.Kind == application.ActorController && !slices.Contains(config.SessionSyncSources(policy.SessionSyncAgents), input.Agent) {
+				return map[string]any{"skipped": true, "reason": "source_disabled"}, nil
+			}
 			progress("同步会话索引与额度历史")
 			result, err := syncapp.Default.Run(ctx, call, syncapp.RunInput{Agent: input.Agent})
 			return map[string]any{"synced_files": result.SyncedFiles, "warning_count": len(result.Warnings)}, err
@@ -131,18 +135,21 @@ func (m *Manager) scheduleTick() {
 		return
 	}
 	now := m.options.Now()
-	if m.lastSync.IsZero() || now.Sub(m.lastSync) >= m.options.SyncInterval {
+	if m.options.SyncInterval > 0 && (m.lastSync.IsZero() || now.Sub(m.lastSync) >= m.options.SyncInterval) {
 		if m.schedule(Request{Kind: SessionSync}) {
 			m.lastSync = now
 		}
 	}
-	if m.lastDay.IsZero() || now.Sub(m.lastDay) >= m.options.DayInterval {
+	if m.options.DayInterval > 0 && (m.lastDay.IsZero() || now.Sub(m.lastDay) >= m.options.DayInterval) {
 		if m.schedule(Request{Kind: DayRebuild}) {
 			m.lastDay = now
 		}
 	}
 	var due bool
 	err := m.options.WithConfig(m.ctx, func(ctx context.Context) error {
+		if m.options.SyncInterval <= 0 {
+			m.scheduleNightly(now.In(config.Loc))
+		}
 		var err error
 		due, err = m.options.CollectionDue(ctx, m.lastCollection)
 		return err
@@ -152,6 +159,45 @@ func (m *Manager) scheduleTick() {
 			m.lastCollection = now
 		}
 	}
+}
+
+// nightlySlot groups 23:00–06:00 into one local calendar night. Outside this
+// window we leave indexing idle; an explicit sync remains available all day.
+func nightlySlot(now time.Time) string {
+	if now.Hour() < 6 {
+		return now.AddDate(0, 0, -1).Format("2006-01-02")
+	}
+	if now.Hour() >= 23 {
+		return now.Format("2006-01-02")
+	}
+	return ""
+}
+
+func (m *Manager) scheduleNightly(now time.Time) {
+	slot := nightlySlot(now)
+	if slot == "" {
+		return
+	}
+	// Stable persisted keys survive midnight and service restarts. A failed or
+	// interrupted attempt stays visible for manual retry rather than looping.
+	call := application.Call{RequestID: "nightly-" + slot, Actor: application.Actor{Kind: application.ActorController, Origin: application.OriginController}}
+	sources := config.SessionSyncSources(config.SessionSyncAgents)
+	if len(sources) == 0 {
+		return
+	}
+	allSucceeded := true
+	for _, agent := range sources {
+		job, err := m.Run(m.ctx, call, Request{Kind: SessionSync, Agent: agent}, "nightly-sync-"+slot+"-"+agent)
+		if err != nil || !job.Terminal() {
+			return
+		}
+		allSucceeded = allSucceeded && job.Status == "succeeded"
+	}
+	if !allSucceeded || m.options.DayInterval > 0 {
+		return
+	}
+	// Rebuild only after the index has finished, so badges see the new data.
+	_, _ = m.Run(m.ctx, call, Request{Kind: DayRebuild}, "nightly-day-"+slot)
 }
 
 func (m *Manager) schedule(request Request) bool {
